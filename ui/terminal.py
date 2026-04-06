@@ -215,6 +215,7 @@ _HELP_TEXT = """
   [cyan]/save [name][/cyan]        save session under a name (default: current)
   [cyan]/sessions[/cyan]           list saved sessions
   [cyan]/tools[/cyan]              list available tools
+  [cyan]/apply [file][/cyan]       write last code block to file (bypass tool calling)
 
 [dim]Ctrl+D or Ctrl+C to quit[/dim]
 """
@@ -237,7 +238,7 @@ async def simple_loop(agent: "Agent", session_name: str = "default") -> None:
     console = Console()
 
     console.print(f"[bold]local-code-agent[/bold]  [dim]{cfg.llm.model}  {cfg.llm.ctx_window} ctx[/dim]")
-    console.print("[dim]/help /compact /tokens /reset /tools /save /sessions  ·  Ctrl+D to quit[/dim]\n")
+    console.print("[dim]/help /compact /tokens /reset /tools /apply /save /sessions  ·  Ctrl+D to quit[/dim]\n")
 
     while True:
         try:
@@ -304,14 +305,36 @@ async def simple_loop(agent: "Agent", session_name: str = "default") -> None:
                     fn = t["function"]
                     console.print(f"  [cyan]{fn['name']}[/cyan]  [dim]{fn.get('description','')[:60]}[/dim]")
 
+            elif cmd == "/apply":
+                from agent.agent import extract_last_code_block
+                from agent.tools.files import write_file
+                result = extract_last_code_block(agent.messages)
+                if not result:
+                    console.print("[yellow]No code block found in recent messages.[/yellow]")
+                else:
+                    fname, code = result
+                    target = arg.strip() or fname
+                    console.print(f"[dim]Writing to {target}:[/dim]")
+                    console.print(f"[dim]{code[:200]}{'…' if len(code) > 200 else ''}[/dim]")
+                    confirm = input("Apply? [Y/n]: ").strip().lower()
+                    if confirm in ("", "y", "yes"):
+                        r = write_file(target, code)
+                        if "error" in r:
+                            console.print(f"[red]{r['error']}[/red]")
+                        else:
+                            console.print(f"[green]Written to {target}[/green]")
+
             else:
                 console.print(f"[yellow]Unknown command '{cmd}'. Type /help for a list.[/yellow]")
 
             continue
 
         # ── Normal message ──────────────────────────────────────────────────
+        tool_results: list[str] = []
+
         def on_tool(name: str, args_str: str) -> None:
             console.print(f"  [dim]⚙ {name}[/dim]")
+            tool_results.append(name)
 
         try:
             response = await agent.chat(user_input, on_tool_call=on_tool)
@@ -322,6 +345,10 @@ async def simple_loop(agent: "Agent", session_name: str = "default") -> None:
         console.print()
         if response:
             console.print(Markdown(response))
+        elif tool_results:
+            console.print(f"[dim]Done. ({', '.join(tool_results)})[/dim]")
+        else:
+            console.print("[yellow]No response from model.[/yellow]")
 
         if cfg.ui.show_token_count:
             console.print(f"\n{_token_bar(agent.token_estimate(), cfg.llm.ctx_window)}\n")

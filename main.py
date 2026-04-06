@@ -161,6 +161,8 @@ def cmd_chat(args, config):
     session_name = args.session or "default"
     messages, meta = load_session(session_name)
     if messages:
+        # Strip internal flags that must not persist across sessions
+        messages = [{k: v for k, v in m.items() if not k.startswith("_")} for m in messages]
         agent.messages = messages
         console.print(f"Loaded session: {session_name} ({len(messages)} messages)")
 

@@ -178,24 +178,129 @@ async def run_turn(
 
     content = msg.content or ""
 
-    # Detect narration-without-action: model says it will call a tool but didn't.
-    # Nudge it once to actually do it (guard with a flag to avoid infinite loop).
-    if _is_narrating_tool_use(content) and not messages[-1].get("_nudged"):
-        messages = messages + [{"role": "assistant", "content": content}]
+    # Only check recent messages — old _nudged flags from prior turns must not block us
+    already_nudged = any(m.get("_nudged") for m in messages[-6:])
+
+    if _is_narrating_tool_use(content) and not already_nudged:
+        # Model described what it will do instead of doing it.
+        # Try to extract and apply code directly from this response first.
+        messages_with_current = messages + [{"role": "assistant", "content": content}]
+        applied = await _apply_code_from_history(messages_with_current, on_tool_call)
+        if applied:
+            messages = messages_with_current + [{"role": "assistant", "content": applied}]
+            return f"{content}\n\n{applied}", messages
+
+        # Extraction failed — fall back to nudging the model once
+        if on_tool_call:
+            on_tool_call("⟳ nudge", "")
+        messages = messages_with_current
         nudge = {"role": "user", "content": "Call the tool now. Do not describe it, execute it.", "_nudged": True}
         messages = messages + [nudge]
         return await run_turn(messages, config, client, on_token, on_tool_call)
+
+    if already_nudged and (not content.strip() or _is_narrating_tool_use(content)):
+        # Nudge also failed — last resort extraction
+        applied = await _apply_code_from_history(messages, on_tool_call)
+        if applied:
+            messages = messages + [{"role": "assistant", "content": applied}]
+            return applied, messages
 
     messages = messages + [{"role": "assistant", "content": content}]
     return content, messages
 
 
+def extract_last_code_block(messages: list[dict]) -> tuple[str, str] | None:
+    """
+    Scan recent assistant messages for a code block + a nearby filename.
+    Returns (filename, code) or None.
+    Handles fenced (```), indented (4-space), and shebang-leading blocks.
+    """
+    import re as _re
+
+    # Find the most recent assistant message with any code
+    content = ""
+    for m in reversed(messages):
+        if m.get("role") == "assistant" and m.get("content", "").strip():
+            content = m["content"]
+            break
+    if not content:
+        return None
+
+    # 1. Fenced code blocks: ```lang\n...\n```
+    fenced = _re.findall(r"```(?:\w*)\n(.*?)```", content, _re.DOTALL)
+
+    # 2. Indented blocks: 4+ spaces or tab at line start, 2+ consecutive lines
+    indented: list[str] = []
+    block_lines: list[str] = []
+    for line in content.splitlines():
+        if line.startswith("    ") or line.startswith("\t"):
+            block_lines.append(line.lstrip())
+        else:
+            if len(block_lines) >= 2:
+                indented.append("\n".join(block_lines))
+            block_lines = []
+    if len(block_lines) >= 2:
+        indented.append("\n".join(block_lines))
+
+    all_blocks = fenced + indented
+    if not all_blocks:
+        import sys
+        print(f"[extract] no code blocks found in: {content[:120]!r}", file=sys.stderr)
+        return None
+
+    code = max(all_blocks, key=len).strip()
+
+    # Find filename in recent messages
+    file_re = _re.compile(
+        r"\b([\w./\-]+\.(?:sh|bash|py|js|ts|jsx|tsx|go|rs|java|kt|c|cpp|h|hpp|rb|toml|yaml|yml|json|md|txt))\b"
+    )
+    filename = None
+    for m in reversed(messages[-12:]):
+        c = m.get("content") or ""
+        found = file_re.findall(c)
+        if found:
+            filename = found[0]
+            break
+
+    if not filename:
+        import sys
+        print(f"[extract] code found ({len(code)} chars) but no filename in last 12 msgs", file=sys.stderr)
+        return None
+
+    return filename, code
+
+
+async def _apply_code_from_history(messages: list[dict], on_tool_call) -> str | None:
+    result = extract_last_code_block(messages)
+    if not result:
+        return None
+    filename, code = result
+    from agent.tools.files import write_file
+    if on_tool_call:
+        on_tool_call(f"write_file (extracted)", filename)
+    r = write_file(filename, code)
+    if "error" in r:
+        return f"Failed to apply: {r['error']}"
+    return f"Applied changes to `{filename}`."
+
+
 _NARRATION_PHRASES = [
-    "i'll apply", "i will apply", "let me apply", "i'll call", "i will call",
-    "i'll use", "i will use", "i'll now", "i will now", "let me call",
-    "i'll patch", "i will patch", "i'll write", "i will write",
-    "i'll read", "i will read", "let me read", "let me use",
+    "i'll apply", "i will apply", "let me apply",
+    "i'll call", "i will call", "let me call",
+    "i'll use", "i will use", "let me use",
+    "i'll now", "i will now",
+    "i'll patch", "i will patch",
+    "i'll write", "i will write",
+    "i'll read", "i will read", "let me read",
     "i'll run", "i will run", "let me run",
+    "i'll modify", "i will modify", "let me modify",
+    "i'll update", "i will update", "let me update",
+    "i'll change", "i will change", "let me change",
+    "i'll create", "i will create",
+    "i'll execute", "i will execute",
+    "i need to call", "i need to use", "i need to read",
+    "i should call", "i should use",
+    "using the ", "using patch_file", "using write_file", "using read_file",
 ]
 
 
