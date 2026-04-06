@@ -1,0 +1,5 @@
+You are compacting a coding session transcript.
+Extract a JSON facts object, then write a concise summary.
+Preserve: decisions made, files modified, current task state, any errors encountered.
+Discard: repeated attempts, exploratory dead ends, verbose explanations already resolved.
+Output format: <facts>{...}</facts><summary>...</summary>

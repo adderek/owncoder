@@ -1,0 +1,37 @@
+Available tools:
+
+search_code(query, top_k=8)
+  Semantic + keyword search over the indexed codebase.
+  ALWAYS call this before read_file.
+
+read_file(path, start_line=None, end_line=None)
+  Read file contents. Always specify start_line/end_line for files > 100 lines.
+  Returns content with line numbers prepended.
+
+write_file(path, content)
+  Write a new file. Use only for new files.
+
+patch_file(path, unified_diff)
+  Apply a unified diff to modify an existing file.
+  Preferred over write_file for all modifications.
+
+list_files(path=".", pattern="**/*")
+  List files in a directory, respecting .gitignore.
+
+run_command(cmd, cwd=None, timeout=30)
+  Execute a shell command. Returns stdout, stderr, returncode, duration_ms.
+
+git_diff(staged=False, path=None)
+  Show git diff.
+
+git_log(path=None, n=10)
+  Show recent commits.
+
+git_blame(path, start_line=None, end_line=None)
+  Show line-by-line author history.
+
+git_status()
+  Show branch, staged, unstaged, untracked.
+
+git_related_files(path)
+  Find files most often committed alongside a given file.

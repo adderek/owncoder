@@ -1,0 +1,29 @@
+[llm]
+base_url = "http://localhost:8080/v1"
+api_key = "local"
+model = "qwen3-coder-30b"
+ctx_window = 16384
+compaction_threshold = 0.75
+max_output_tokens = 4096
+
+[embeddings]
+base_url = "http://localhost:8080/v1"
+model = "nomic-embed-text"
+dimensions = 768
+
+[rag]
+db_path = ".agent/index.db"
+chunk_min_tokens = 20
+chunk_max_tokens = 400
+top_k = 8
+hybrid = true
+
+[tools]
+allow_shell = true
+shell_timeout = 30
+working_dir = "."
+
+[ui]
+mode = "textual"
+syntax_highlight = true
+show_token_count = true

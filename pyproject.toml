@@ -1,0 +1,34 @@
+[project]
+name = "local-code-agent"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "tree-sitter>=0.21",
+    "tree-sitter-python",
+    "tree-sitter-javascript",
+    "tree-sitter-typescript",
+    "tree-sitter-c",
+    "tree-sitter-cpp",
+    "tree-sitter-rust",
+    "tree-sitter-go",
+    "tree-sitter-java",
+    "tree-sitter-kotlin",
+    "tree-sitter-bash",
+    "sqlite-vec>=0.1",
+    "openai>=1.0",
+    "textual>=0.50",
+    "tiktoken>=0.6",
+    "gitpython>=3.1",
+    "rich>=13.0",
+]
+
+[project.scripts]
+agent = "agent.main:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = [".."]
+include = ["agent*"]
