@@ -12,9 +12,10 @@ if TYPE_CHECKING:
 
 def _build_textual_app(agent: "Agent"):
     from textual.app import App, ComposeResult
-    from textual.widgets import Header, Footer, Input, RichLog, Static, ProgressBar
+    from textual.widgets import Header, Footer, Input, RichLog, Static, ProgressBar, TextArea
     from textual.containers import Vertical, Horizontal
     from textual.binding import Binding
+    from textual.message import Message
     from rich.text import Text
     from rich.markdown import Markdown
 
@@ -44,6 +45,23 @@ def _build_textual_app(agent: "Agent"):
         def set_status(self, text: str) -> None:
             self.update(text)
 
+    class PromptInput(TextArea):
+        """Wrapping multi-line input that submits on Enter (Shift+Enter for newline)."""
+
+        class Submitted(Message):
+            def __init__(self, area: "PromptInput", value: str) -> None:
+                super().__init__()
+                self.area = area
+                self.value = value
+
+        def _on_key(self, event) -> None:
+            if event.key == "enter":
+                event.prevent_default()
+                text = self.text.strip()
+                if text:
+                    self.post_message(PromptInput.Submitted(self, text))
+                    self.clear()
+
     class CodeAgentApp(App):
         CSS = """
         Screen {
@@ -70,7 +88,9 @@ def _build_textual_app(agent: "Agent"):
             padding: 0 1;
         }
         #input-bar {
-            height: 3;
+            height: auto;
+            max-height: 8;
+            min-height: 3;
             border: solid $accent;
         }
         TokenBar {
@@ -88,6 +108,8 @@ def _build_textual_app(agent: "Agent"):
             super().__init__(**kwargs)
             self._agent = agent
             self._last_tool_calls: list[str] = []
+            self._spinner_frame: int = 0
+            self._current_tool: str | None = None
 
         def compose(self) -> ComposeResult:
             cfg = self._agent.config
@@ -100,11 +122,11 @@ def _build_textual_app(agent: "Agent"):
             yield ConversationView(id="conversation", markup=True, highlight=True)
             yield ContextPanel("context: (none)", id="context-panel")
             yield GitStatusBar("git: loading...", id="git-status")
-            yield Input(placeholder="> type a message or /help", id="input-bar")
+            yield PromptInput(id="input-bar")
             yield Footer()
 
         def on_mount(self) -> None:
-            self.query_one("#input-bar", Input).focus()
+            self.query_one("#input-bar", PromptInput).focus()
             self._refresh_git()
 
         def action_show_help(self) -> None:
@@ -165,11 +187,10 @@ def _build_textual_app(agent: "Agent"):
             else:
                 conv.write(f"[yellow]Unknown command '{cmd}'. Type /help.[/yellow]")
 
-        async def on_input_submitted(self, event: Input.Submitted) -> None:
+        async def on_prompt_input_submitted(self, event: PromptInput.Submitted) -> None:
             user_text = event.value.strip()
             if not user_text:
                 return
-            event.input.clear()
 
             conv = self.query_one("#conversation", ConversationView)
 
@@ -180,18 +201,41 @@ def _build_textual_app(agent: "Agent"):
 
             conv.write(f"[bold cyan]You:[/bold cyan] {user_text}")
             self._last_tool_calls = []
+            self._current_tool = None
+            self._spinner_frame = 0
+
+            input_widget = self.query_one("#input-bar", PromptInput)
+            input_widget.disabled = True
+            context = self.query_one("#context-panel", ContextPanel)
+
+            _FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+            async def _spin() -> None:
+                while True:
+                    frame = _FRAMES[self._spinner_frame % len(_FRAMES)]
+                    tool_info = f"  ⚙ {self._current_tool}" if self._current_tool else ""
+                    context.set_context(f"[dim]{frame} thinking{tool_info}[/dim]")
+                    self._spinner_frame += 1
+                    await asyncio.sleep(0.1)
+
+            spinner = asyncio.create_task(_spin())
 
             def on_tool(name: str, args: str) -> None:
                 self._last_tool_calls.append(name)
+                self._current_tool = name
                 conv.write(f"[dim]  ⚙ {name}[/dim]")
-                self.query_one("#context-panel", ContextPanel).set_context(
-                    f"context: {', '.join(self._last_tool_calls[-3:])}"
-                )
 
             try:
                 response = await self._agent.chat(user_text, on_tool_call=on_tool)
             except Exception as e:
                 response = f"[red]Error: {e}[/red]"
+            finally:
+                spinner.cancel()
+                input_widget.disabled = False
+                input_widget.focus()
+                context.set_context(
+                    f"context: {', '.join(self._last_tool_calls[-3:])}" if self._last_tool_calls else "context: (none)"
+                )
 
             if response:
                 conv.write(f"[bold green]Agent:[/bold green] {response}")
