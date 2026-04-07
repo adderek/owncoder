@@ -46,6 +46,69 @@ def cmd_init(args, config):
                   f"skipped {stats['skipped']}, "
                   f"created {stats['chunks']} chunks.")
 
+    if getattr(args, "watch", False):
+        _watch_and_reindex(config, console, languages=languages, exclude=exclude)
+
+
+def _watch_and_reindex(config, console, languages=None, exclude=None):
+    """Watch working_dir for changes and re-index modified files using watchdog."""
+    try:
+        from watchdog.observers import Observer
+        from watchdog.events import FileSystemEventHandler
+    except ImportError:
+        console.print("[red]watchdog not installed. Run: pip install watchdog[/red]")
+        return
+
+    from agent.rag.indexer import index_directory
+    from agent.rag.store import VectorStore
+    from agent.rag.embedder import Embedder
+    import threading
+    import time
+
+    working_dir = config.tools.working_dir
+    debounce: dict[str, float] = {}
+    lock = threading.Lock()
+
+    class _Handler(FileSystemEventHandler):
+        def on_modified(self, event):
+            if event.is_directory:
+                return
+            with lock:
+                debounce[event.src_path] = time.monotonic()
+
+        on_created = on_modified
+
+    observer = Observer()
+    observer.schedule(_Handler(), working_dir, recursive=True)
+    observer.start()
+    console.print(f"[dim]Watching {working_dir} for changes. Ctrl+C to stop.[/dim]")
+
+    try:
+        while True:
+            time.sleep(1)
+            now = time.monotonic()
+            with lock:
+                ready = [p for p, t in list(debounce.items()) if now - t > 1.5]
+                for p in ready:
+                    del debounce[p]
+            if ready:
+                console.print(f"[dim]Re-indexing {len(ready)} changed file(s)…[/dim]")
+                store = VectorStore(config.rag)
+                embedder = Embedder(config.embeddings)
+                index_directory(
+                    root=working_dir,
+                    store=store,
+                    embedder=embedder,
+                    cfg=config.rag,
+                    languages=languages,
+                    exclude=exclude or [],
+                )
+                store.close()
+                console.print(f"[green]Re-indexed.[/green]")
+    except KeyboardInterrupt:
+        observer.stop()
+    observer.join()
+
 
 def cmd_index_update(args, config):
     from agent.rag.indexer import index_directory
@@ -175,12 +238,25 @@ def cmd_chat(args, config):
 
 
 def cmd_run(args, config):
+    import sys
     from agent.rag.store import VectorStore
     from agent.rag.embedder import Embedder
     from agent.agent import Agent
     from rich.console import Console
 
     console = Console()
+
+    # Support piped input: `echo "fix this" | agent run`
+    if args.prompt:
+        args.prompt_text = args.prompt
+    elif not sys.stdin.isatty():
+        args.prompt_text = sys.stdin.read().strip()
+        if not args.prompt_text:
+            console.print("[red]No prompt provided on stdin.[/red]")
+            return
+    else:
+        console.print("[red]Provide a prompt argument or pipe one via stdin.[/red]")
+        return
 
     store = None
     embedder = None
@@ -198,7 +274,7 @@ def cmd_run(args, config):
         console.print(f"  [dim]→ {name}[/dim]")
 
     async def _run():
-        response = await agent.chat(args.prompt, on_tool_call=on_tool)
+        response = await agent.chat(args.prompt_text, on_tool_call=on_tool)
         console.print(response)
         if config.ui.show_token_count:
             console.print(f"[dim][tokens: {agent.token_estimate()}/{config.llm.ctx_window}][/dim]")
@@ -244,7 +320,9 @@ def cmd_sessions(args, config):
 
 def cmd_debug_context(args, config):
     from agent.memory.session import load_session
+    from agent.memory.compactor import _count_tokens_approx
     from rich.console import Console
+    from rich.table import Table
     import json
 
     console = Console()
@@ -254,12 +332,45 @@ def cmd_debug_context(args, config):
         console.print("No session loaded.")
         return
 
+    table = Table(title=f"Context: session '{session_name}'", show_lines=True)
+    table.add_column("#", style="dim", width=4)
+    table.add_column("Role", width=10)
+    table.add_column("Tokens", justify="right", width=7)
+    table.add_column("Flags", width=14)
+    table.add_column("Preview", ratio=1)
+
+    total = 0
     for i, m in enumerate(messages):
         role = m.get("role", "?")
-        content = m.get("content", "")
+
+        content = m.get("content") or ""
         if isinstance(content, list):
-            content = json.dumps(content)
-        console.print(f"[bold]{i}. {role}:[/bold] {str(content)[:200]}")
+            content_str = json.dumps(content)
+        else:
+            content_str = str(content)
+
+        tool_calls = m.get("tool_calls", [])
+        tool_names = [tc["function"]["name"] for tc in tool_calls if isinstance(tc, dict)]
+
+        flags = []
+        if m.get("_nudged"):
+            flags.append("nudged")
+        if "[SESSION SUMMARY]" in content_str:
+            flags.append("compacted")
+        if tool_names:
+            flags.append("tools:" + ",".join(tool_names[:2]))
+
+        toks = _count_tokens_approx([m])
+        total += toks
+
+        preview = content_str[:120].replace("\n", "↵")
+        if len(content_str) > 120:
+            preview += "…"
+
+        table.add_row(str(i), role, str(toks), " ".join(flags), preview)
+
+    console.print(table)
+    console.print(f"[bold]Total:[/bold] {total} tokens across {len(messages)} messages")
 
 
 def main():
@@ -273,6 +384,7 @@ def main():
     init_p.add_argument("--languages", type=str, help="Comma-separated languages: py,js,kt,cpp")
     init_p.add_argument("--exclude", type=str, help="Comma-separated paths to exclude")
     init_p.add_argument("--force", action="store_true", help="Force re-index all files")
+    init_p.add_argument("--watch", action="store_true", help="Watch for file changes and re-index automatically")
 
     # index
     idx_p = sub.add_parser("index", help="Manage index")
@@ -289,7 +401,8 @@ def main():
 
     # run
     run_p = sub.add_parser("run", help="Run a single prompt non-interactively")
-    run_p.add_argument("prompt", type=str, help="Prompt to run")
+    run_p.add_argument("prompt", type=str, nargs="?", default=None,
+                       help="Prompt to run (reads stdin if omitted)")
 
     # sessions
     sess_p = sub.add_parser("sessions", help="Manage sessions")

@@ -91,14 +91,28 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
     },
 })
 def write_file(path: str, content: str) -> dict:
+    import difflib
     fpath = _resolve(path)
     fpath.parent.mkdir(parents=True, exist_ok=True)
 
     if fpath.exists():
-        _undo_stack[path] = fpath.read_text(encoding="utf-8", errors="replace")
+        original = fpath.read_text(encoding="utf-8", errors="replace")
+        _undo_stack[path] = original
+        diff_lines = list(difflib.unified_diff(
+            original.splitlines(keepends=True),
+            content.splitlines(keepends=True),
+            fromfile=f"a/{path}",
+            tofile=f"b/{path}",
+            n=3,
+        ))
+        diff_summary = "".join(diff_lines[:60])
+        if len(diff_lines) > 60:
+            diff_summary += f"\n... ({len(diff_lines) - 60} more diff lines)"
+    else:
+        diff_summary = f"(new file, {len(content.splitlines())} lines)"
 
     fpath.write_text(content, encoding="utf-8")
-    return {"ok": path}
+    return {"ok": path, "diff": diff_summary}
 
 
 @register("patch_file", {
@@ -164,6 +178,23 @@ def _apply_unified_diff(original: str, patch: str) -> str:
             os.unlink(backup)
 
 
+def undo_file(path: str) -> dict:
+    """Restore the last pre-write snapshot of a file (not a tool — called by UI /undo)."""
+    if path not in _undo_stack:
+        return {"error": f"No undo snapshot for: {path}"}
+    try:
+        fpath = _resolve(path)
+        fpath.write_text(_undo_stack.pop(path), encoding="utf-8")
+        return {"ok": path}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def undo_candidates() -> list[str]:
+    """Return paths that have undo snapshots."""
+    return list(_undo_stack.keys())
+
+
 @register("list_files", {
     "description": "List files in a directory, respecting .gitignore. Returns relative paths with size and mtime.",
     "parameters": {
@@ -176,6 +207,23 @@ def _apply_unified_diff(original: str, patch: str) -> str:
         "required": [],
     },
 })
+def _build_gitignore_spec(base: Path):
+    """Return a pathspec.PathSpec from .gitignore (or None if pathspec unavailable/missing)."""
+    try:
+        import pathspec  # type: ignore
+    except ImportError:
+        return None
+    gi = base / ".gitignore"
+    if not gi.exists():
+        return None
+    lines = [
+        line.strip()
+        for line in gi.read_text(encoding="utf-8", errors="replace").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    return pathspec.PathSpec.from_lines("gitwildmatch", lines)
+
+
 def list_files(path: str = ".", pattern: str = "**/*", ignore_patterns: list[str] | None = None) -> dict:
     import fnmatch
     base = _resolve(path)
@@ -185,14 +233,7 @@ def list_files(path: str = ".", pattern: str = "**/*", ignore_patterns: list[str
     default_ignore = {".git", "__pycache__", "node_modules", "*.pyc", "build", "dist", ".agent"}
     all_ignore = default_ignore | set(ignore_patterns or [])
 
-    # Load .gitignore
-    gitignore_patterns: list[str] = []
-    gi = base / ".gitignore"
-    if gi.exists():
-        for line in gi.read_text().splitlines():
-            line = line.strip()
-            if line and not line.startswith("#"):
-                gitignore_patterns.append(line)
+    gitignore_spec = _build_gitignore_spec(base)
 
     results = []
     for fpath in sorted(base.glob(pattern)):
@@ -210,11 +251,8 @@ def list_files(path: str = ".", pattern: str = "**/*", ignore_patterns: list[str
             if skip:
                 break
 
-        if not skip:
-            for pat in gitignore_patterns:
-                if fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(fpath.name, pat):
-                    skip = True
-                    break
+        if not skip and gitignore_spec is not None:
+            skip = gitignore_spec.match_file(rel)
 
         if not skip:
             stat = fpath.stat()

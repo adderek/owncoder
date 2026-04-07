@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -163,7 +164,7 @@ def _build_textual_app(agent: "Agent"):
         async def _run_slash(self, cmd: str, arg: str, conv: "ConversationView") -> None:
             from openai import AsyncOpenAI
             if cmd == "/help":
-                conv.write("[bold]Commands:[/bold]  /help  /compact  /tokens  /reset  /tools  /save [name]  /sessions")
+                conv.write("[bold]Commands:[/bold]  /help  /compact  /tokens  /reset  /tools  /save [name]  /load <name>  /sessions  /export [file]")
             elif cmd == "/compact":
                 from agent.memory.compactor import compact
                 cfg = self._agent.config
@@ -194,12 +195,63 @@ def _build_textual_app(agent: "Agent"):
                 name = arg.strip() or "default"
                 save_session(name, self._agent.messages)
                 conv.write(f"[dim]Saved as '{name}'.[/dim]")
+            elif cmd == "/load":
+                if not arg.strip():
+                    conv.write("[yellow]Usage: /load <session-name>[/yellow]")
+                else:
+                    from agent.memory.session import load_session
+                    loaded_msgs, _ = load_session(arg.strip())
+                    if not loaded_msgs:
+                        conv.write(f"[yellow]Session '{arg.strip()}' not found.[/yellow]")
+                    else:
+                        loaded_msgs = [{k: v for k, v in m.items() if not k.startswith("_")} for m in loaded_msgs]
+                        self._agent.messages = loaded_msgs
+                        conv.write(f"[dim]Loaded session '{arg.strip()}' ({len(loaded_msgs)} messages).[/dim]")
+                        self.query_one("#token-bar", TokenBar).update_tokens(self._agent.token_estimate())
             elif cmd == "/sessions":
                 from agent.memory.session import list_sessions
                 import datetime
                 for s in list_sessions():
                     ts = datetime.datetime.fromtimestamp(s["saved_at"]).strftime("%Y-%m-%d %H:%M") if s["saved_at"] else "?"
                     conv.write(f"  {s['name']}  {s['message_count']} msgs  {ts}")
+            elif cmd == "/undo":
+                from agent.tools.files import undo_file, undo_candidates
+                target = arg.strip()
+                if not target:
+                    candidates = undo_candidates()
+                    if not candidates:
+                        conv.write("[yellow]Nothing to undo.[/yellow]")
+                    else:
+                        conv.write("Undo candidates: " + ", ".join(candidates))
+                else:
+                    r = undo_file(target)
+                    if "error" in r:
+                        conv.write(f"[red]{r['error']}[/red]")
+                    else:
+                        conv.write(f"[green]Restored {target}[/green]")
+            elif cmd == "/export":
+                import json as _json
+                lines = []
+                for m in self._agent.messages:
+                    role = m.get("role", "?")
+                    if role == "system":
+                        continue
+                    content = m.get("content") or ""
+                    if isinstance(content, list):
+                        content = _json.dumps(content)
+                    tool_calls = m.get("tool_calls", [])
+                    if role == "user":
+                        lines.append(f"**You:** {content}\n")
+                    elif role == "assistant":
+                        if tool_calls:
+                            names = ", ".join(tc["function"]["name"] for tc in tool_calls if isinstance(tc, dict))
+                            lines.append(f"**Agent** *(tools: {names})*: {content}\n")
+                        else:
+                            lines.append(f"**Agent:** {content}\n")
+                md_text = "\n---\n".join(lines)
+                target = arg.strip() or "session.md"
+                Path(target).write_text(md_text, encoding="utf-8")
+                conv.write(f"[dim]Exported to {target} ({len(lines)} turns).[/dim]")
             else:
                 conv.write(f"[yellow]Unknown command '{cmd}'. Type /help.[/yellow]")
 
@@ -284,9 +336,12 @@ _HELP_TEXT = """
   [cyan]/clear[/cyan]              clear the screen
   [cyan]/reset[/cyan]              drop conversation history (keep system prompt)
   [cyan]/save [name][/cyan]        save session under a name (default: current)
+  [cyan]/load <name>[/cyan]        load a saved session into the current conversation
   [cyan]/sessions[/cyan]           list saved sessions
   [cyan]/tools[/cyan]              list available tools
   [cyan]/apply [file][/cyan]       write last code block to file (bypass tool calling)
+  [cyan]/undo [file][/cyan]        restore last pre-write snapshot of a file
+  [cyan]/export [file][/cyan]      export conversation as markdown
 
 [dim]Ctrl+D or Ctrl+C to quit[/dim]
 """
@@ -363,6 +418,20 @@ async def simple_loop(agent: "Agent", session_name: str = "default") -> None:
                 save_session(name, agent.messages)
                 console.print(f"[dim]Saved as '{name}'.[/dim]")
 
+            elif cmd == "/load":
+                if not arg.strip():
+                    console.print("[yellow]Usage: /load <session-name>[/yellow]")
+                else:
+                    from agent.memory.session import load_session
+                    loaded_msgs, _ = load_session(arg.strip())
+                    if not loaded_msgs:
+                        console.print(f"[yellow]Session '{arg.strip()}' not found.[/yellow]")
+                    else:
+                        loaded_msgs = [{k: v for k, v in m.items() if not k.startswith("_")} for m in loaded_msgs]
+                        agent.messages = loaded_msgs
+                        session_name = arg.strip()
+                        console.print(f"[dim]Loaded session '{session_name}' ({len(loaded_msgs)} messages).[/dim]")
+
             elif cmd == "/sessions":
                 from agent.memory.session import list_sessions
                 import datetime
@@ -395,6 +464,48 @@ async def simple_loop(agent: "Agent", session_name: str = "default") -> None:
                         else:
                             console.print(f"[green]Written to {target}[/green]")
 
+            elif cmd == "/undo":
+                from agent.tools.files import undo_file, undo_candidates
+                target = arg.strip()
+                if not target:
+                    candidates = undo_candidates()
+                    if not candidates:
+                        console.print("[yellow]Nothing to undo.[/yellow]")
+                    else:
+                        console.print("Undo candidates: " + ", ".join(candidates))
+                        console.print("[dim]Usage: /undo <file>[/dim]")
+                else:
+                    r = undo_file(target)
+                    if "error" in r:
+                        console.print(f"[red]{r['error']}[/red]")
+                    else:
+                        console.print(f"[green]Restored {target}[/green]")
+
+            elif cmd == "/export":
+                import json as _json
+                lines = []
+                for m in agent.messages:
+                    role = m.get("role", "?")
+                    if role == "system":
+                        continue
+                    content = m.get("content") or ""
+                    if isinstance(content, list):
+                        content = _json.dumps(content)
+                    tool_calls = m.get("tool_calls", [])
+                    if role == "user":
+                        lines.append(f"**You:** {content}\n")
+                    elif role == "assistant":
+                        if tool_calls:
+                            names = ", ".join(tc["function"]["name"] for tc in tool_calls if isinstance(tc, dict))
+                            lines.append(f"**Agent** *(tools: {names})*: {content}\n")
+                        else:
+                            lines.append(f"**Agent:** {content}\n")
+                    # skip tool result messages (role == "tool")
+                md_text = "\n---\n".join(lines)
+                target = arg.strip() or f"{session_name}.md"
+                Path(target).write_text(md_text, encoding="utf-8")
+                console.print(f"[dim]Exported to {target} ({len(lines)} turns).[/dim]")
+
             else:
                 console.print(f"[yellow]Unknown command '{cmd}'. Type /help for a list.[/yellow]")
 
@@ -402,19 +513,32 @@ async def simple_loop(agent: "Agent", session_name: str = "default") -> None:
 
         # ── Normal message ──────────────────────────────────────────────────
         tool_results: list[str] = []
+        streaming_tokens: list[str] = []
 
         def on_tool(name: str, args_str: str) -> None:
+            # Finish any in-progress streaming line before printing tool notice
+            if streaming_tokens:
+                console.print()
+                streaming_tokens.clear()
             console.print(f"  [dim]⚙ {name}[/dim]")
             tool_results.append(name)
 
+        def on_token(token: str) -> None:
+            streaming_tokens.append(token)
+            console.print(token, end="", highlight=False)
+
         try:
-            response = await agent.chat(user_input, on_tool_call=on_tool)
+            response = await agent.chat(user_input, on_tool_call=on_tool, on_token=on_token)
         except Exception as e:
             console.print(f"[red]Error: {e}[/red]")
             continue
 
-        console.print()
-        if response:
+        # If streaming was active, the text is already printed; just add newline.
+        # If no streaming occurred (tool-only turn), print the response normally.
+        if streaming_tokens:
+            console.print()  # end the streaming line
+        elif response:
+            console.print()
             console.print(Markdown(response))
         elif tool_results:
             console.print(f"[dim]Done. ({', '.join(tool_results)})[/dim]")

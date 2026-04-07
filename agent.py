@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -60,7 +61,16 @@ async def execute_tool(tool_call) -> str:
     try:
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(None, lambda: fn(**args))
-        return json.dumps(result, ensure_ascii=False)
+        serialised = json.dumps(result, ensure_ascii=False)
+        # Hard cap: ~32 K chars ≈ 8 K tokens. Truncate with a clear notice.
+        limit = 32_000
+        if len(serialised) > limit:
+            kept = serialised[:limit]
+            # Ensure valid JSON string by wrapping truncated content
+            truncation_notice = f'\n[...truncated: result was {len(serialised)} chars, kept first {limit}]'
+            # Return as a plain string notice rather than broken JSON
+            return kept + truncation_notice
+        return serialised
     except Exception as e:
         return json.dumps({"error": str(e)})
 
@@ -121,6 +131,63 @@ def _strip_tool_blocks(text: str) -> str:
     return text.strip()
 
 
+async def _stream_response(client, config, api_messages, tools, on_token):
+    """Stream a completion and accumulate content + tool calls. Returns (finish_reason, content, tool_calls)."""
+    content_parts: list[str] = []
+    # tool_call accumulators keyed by index
+    tc_acc: dict[int, dict] = {}
+    finish_reason = "stop"
+
+    stream = await client.chat.completions.create(
+        model=config.llm.model,
+        messages=api_messages,
+        tools=tools if tools else None,
+        max_tokens=config.llm.max_output_tokens,
+        stream=True,
+    )
+
+    async for chunk in stream:
+        choice = chunk.choices[0] if chunk.choices else None
+        if choice is None:
+            continue
+
+        if choice.finish_reason:
+            finish_reason = choice.finish_reason
+
+        delta = choice.delta
+        if delta.content:
+            content_parts.append(delta.content)
+            on_token(delta.content)
+
+        # Accumulate streaming tool call fragments
+        for tc_delta in (delta.tool_calls or []):
+            idx = tc_delta.index
+            if idx not in tc_acc:
+                tc_acc[idx] = {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
+            if tc_delta.id:
+                tc_acc[idx]["id"] = tc_delta.id
+            if tc_delta.function:
+                if tc_delta.function.name:
+                    tc_acc[idx]["function"]["name"] += tc_delta.function.name
+                if tc_delta.function.arguments:
+                    tc_acc[idx]["function"]["arguments"] += tc_delta.function.arguments
+
+    full_content = "".join(content_parts)
+
+    if tc_acc:
+        # Reconstruct _FakeToolCall-compatible objects
+        tool_calls = []
+        for idx in sorted(tc_acc):
+            raw = tc_acc[idx]
+            tool_calls.append(_FakeToolCall(raw["function"]["name"], json.loads(raw["function"]["arguments"] or "{}")))
+            # Restore the real id from streaming
+            tool_calls[-1].id = raw["id"] or tool_calls[-1].id
+    else:
+        tool_calls = None
+
+    return finish_reason, full_content, tool_calls
+
+
 async def run_turn(
     messages: list[dict],
     config: "Config",
@@ -136,15 +203,29 @@ async def run_turn(
     # Strip internal-only keys before sending to API
     api_messages = [{k: v for k, v in m.items() if not k.startswith("_")} for m in messages]
 
-    response = await client.chat.completions.create(
-        model=config.llm.model,
-        messages=api_messages,
-        tools=tools if tools else None,
-        max_tokens=config.llm.max_output_tokens,
-    )
-
-    choice = response.choices[0]
-    msg = choice.message
+    # Use streaming when a token callback is provided; non-streaming otherwise.
+    if on_token is not None:
+        finish_reason, full_content, raw_tool_calls = await _stream_response(
+            client, config, api_messages, tools, on_token
+        )
+        # Reconstruct a message-like namespace for uniform handling below
+        class _Msg:
+            content = full_content
+            tool_calls = raw_tool_calls or None
+        class _Choice:
+            message = _Msg()
+            finish_reason = finish_reason
+        msg = _Msg()
+        choice = _Choice()
+    else:
+        response = await client.chat.completions.create(
+            model=config.llm.model,
+            messages=api_messages,
+            tools=tools if tools else None,
+            max_tokens=config.llm.max_output_tokens,
+        )
+        choice = response.choices[0]
+        msg = choice.message
 
     # Structured tool calls (llama-server with --jinja, or cloud APIs)
     tool_calls = msg.tool_calls if (choice.finish_reason == "tool_calls" and msg.tool_calls) else None
@@ -166,10 +247,13 @@ async def run_turn(
             for tc in tool_calls
         ]}]
 
+        # Notify about all tool calls first (in order), then execute concurrently
         for tc in tool_calls:
             if on_tool_call:
                 on_tool_call(tc.function.name, tc.function.arguments)
-            result = await execute_tool(tc)
+
+        results = await asyncio.gather(*[execute_tool(tc) for tc in tool_calls])
+        for tc, result in zip(tool_calls, results):
             messages.append(_tool_result_message(tc.id, result))
 
         # Check compaction threshold
@@ -340,12 +424,14 @@ class Agent:
         self,
         user_input: str,
         on_tool_call: callable | None = None,
+        on_token: callable | None = None,
     ) -> str:
         self.messages.append({"role": "user", "content": user_input})
         response, self.messages = await run_turn(
             self.messages,
             self.config,
             self._client,
+            on_token=on_token,
             on_tool_call=on_tool_call,
         )
         return response
