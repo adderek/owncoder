@@ -355,6 +355,20 @@ def _token_bar(used: int, ctx: int, bar_len: int = 20) -> str:
     return f"[dim]tokens {used}/{ctx}[/dim] {bar}"
 
 
+async def _run_spinner(status_ref: list[str], stop: asyncio.Event) -> None:
+    import sys
+    frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    i = 0
+    while not stop.is_set():
+        frame = frames[i % len(frames)]
+        sys.stdout.write(f"\r\033[2m{frame} {status_ref[0]}\033[0m")
+        sys.stdout.flush()
+        i += 1
+        await asyncio.sleep(0.08)
+    sys.stdout.write("\r\033[K")
+    sys.stdout.flush()
+
+
 async def simple_loop(agent: "Agent", session_name: str = "default") -> None:
     from rich.console import Console
     from rich.markdown import Markdown
@@ -512,18 +526,29 @@ async def simple_loop(agent: "Agent", session_name: str = "default") -> None:
             continue
 
         # ── Normal message ──────────────────────────────────────────────────
+        import sys
         tool_results: list[str] = []
         streaming_tokens: list[str] = []
+        _spinner_status: list[str] = ["thinking…"]
+        _spinner_stop = asyncio.Event()
+        _spinner_task = asyncio.create_task(_run_spinner(_spinner_status, _spinner_stop))
 
         def on_tool(name: str, args_str: str) -> None:
-            # Finish any in-progress streaming line before printing tool notice
+            # Clear the spinner line before printing
+            sys.stdout.write("\r\033[K")
+            sys.stdout.flush()
             if streaming_tokens:
                 console.print()
                 streaming_tokens.clear()
             console.print(f"  [dim]⚙ {name}[/dim]")
             tool_results.append(name)
+            _spinner_status[0] = f"{name}…"
 
         def on_token(token: str) -> None:
+            if not streaming_tokens:
+                # First token — clear spinner line
+                sys.stdout.write("\r\033[K")
+                sys.stdout.flush()
             streaming_tokens.append(token)
             console.print(token, end="", highlight=False)
 
@@ -532,6 +557,9 @@ async def simple_loop(agent: "Agent", session_name: str = "default") -> None:
         except Exception as e:
             console.print(f"[red]Error: {e}[/red]")
             continue
+        finally:
+            _spinner_stop.set()
+            await _spinner_task
 
         # If streaming was active, the text is already printed; just add newline.
         # If no streaming occurred (tool-only turn), print the response normally.
