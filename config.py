@@ -137,5 +137,5 @@ def check_reachability(config: Config) -> None:
         with urllib.request.urlopen(req, timeout=3):
             pass
     except (urllib.error.URLError, OSError) as e:
-        import warnings
-        warnings.warn(f"LLM endpoint not reachable at {config.llm.base_url}: {e}")
+        import sys
+        print(f"Warning: LLM endpoint not reachable at {config.llm.base_url}: {e}", file=sys.stderr)

@@ -13,7 +13,19 @@ if TYPE_CHECKING:
 _config = None
 _transcript: list[dict] = []
 
-DANGEROUS_PREFIXES = ["rm -rf", "sudo", "curl | bash", "wget | bash", "> /dev/", "dd if="]
+_DANGEROUS_PATTERNS = [
+    "rm -rf", "rm -fr",
+    "sudo ",
+    "curl | bash", "curl|bash", "wget | bash", "wget|bash",
+    "bash <(", "sh <(",
+    "> /dev/", ">/dev/",
+    "dd if=",
+    "mkfs", "fdisk", "parted",
+    "chmod -R 777", "chmod 777 /",
+    ":(){:|:&};",   # fork bomb
+    "shutdown", "reboot", "halt", "poweroff",
+    "iptables -F",
+]
 
 
 def setup(config) -> None:
@@ -26,9 +38,10 @@ class ToolDisabledError(Exception):
 
 
 def _check_dangerous(cmd: str) -> str | None:
-    for prefix in DANGEROUS_PREFIXES:
-        if cmd.strip().startswith(prefix) or f" {prefix}" in cmd:
-            return prefix
+    lower = cmd.lower()
+    for pattern in _DANGEROUS_PATTERNS:
+        if pattern in lower:
+            return pattern
     return None
 
 

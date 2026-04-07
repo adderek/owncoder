@@ -30,7 +30,11 @@ def _resolve(path: str) -> Path:
     p = Path(path)
     if not p.is_absolute():
         p = _working_dir() / p
-    return p.resolve()
+    resolved = p.resolve()
+    base = _working_dir().resolve()
+    if resolved != base and not str(resolved).startswith(str(base) + "/"):
+        raise ValueError(f"Path escapes working directory: {path!r}")
+    return resolved
 
 
 @register("read_file", {
@@ -61,8 +65,13 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
     total = len(lines)
 
     if start_line is None and end_line is None and total > 500:
+        # Return the first 200 lines with a hint rather than nothing.
+        head = "\n".join(f"{i + 1:>4}: {l}" for i, l in enumerate(lines[:200]))
         return {
-            "warning": f"File has {total} lines. Specify start_line/end_line to read a range.",
+            "warning": f"File has {total} lines; showing first 200. Use start_line/end_line to read other ranges.",
+            "content": head,
+            "start_line": 1,
+            "end_line": 200,
             "total_lines": total,
             "path": path,
         }

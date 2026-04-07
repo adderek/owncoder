@@ -304,8 +304,10 @@ def main():
     args = parser.parse_args()
 
     from agent.config import load_config, check_reachability
+    from agent.memory.session import configure as configure_sessions
     config_path = Path(args.config) if args.config else None
     config = load_config(config_path)
+    configure_sessions(config.tools.working_dir)
 
     if args.command == "init":
         cmd_init(args, config)

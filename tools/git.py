@@ -70,7 +70,9 @@ def git_diff(staged: bool = False, path: str | None = None) -> dict:
     },
 })
 def git_log(path: str | None = None, n: int = 10, format: str = "oneline") -> dict:
-    args = ["log", f"--oneline" if format == "oneline" else f"--format={format}", f"-{n}"]
+    _allowed_formats = {"oneline", "short", "medium", "full", "fuller"}
+    safe_format = format if format in _allowed_formats else "oneline"
+    args = ["log", "--oneline" if safe_format == "oneline" else f"--format={safe_format}", f"-{n}"]
     if path:
         args += ["--", path]
     stdout, stderr, rc = _run_git(*args)
@@ -102,17 +104,16 @@ def git_blame(path: str, start_line: int | None = None, end_line: int | None = N
     if rc != 0:
         return {"error": stderr or "git blame failed"}
 
-    # Parse porcelain output into structured form
+    # Parse porcelain output into structured form.
+    # Each record starts with a 40-hex-char commit hash followed by line numbers.
+    import re as _re
+    _hash_re = _re.compile(r"^([0-9a-f]{40}) \d+ (\d+)")
     entries = []
     current: dict = {}
-    lines = stdout.splitlines()
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        if line and len(line) > 40 and line[:40].replace("0", "").replace("a-f0-9", "").isalnum():
-            parts = line.split(" ")
-            if len(parts) >= 4:
-                current = {"hash": parts[0], "lineno": int(parts[2])}
+    for line in stdout.splitlines():
+        m = _hash_re.match(line)
+        if m:
+            current = {"hash": m.group(1), "lineno": int(m.group(2))}
         elif line.startswith("author "):
             current["author"] = line[7:]
         elif line.startswith("author-time "):
@@ -123,7 +124,6 @@ def git_blame(path: str, start_line: int | None = None, end_line: int | None = N
             current["content"] = line[1:]
             entries.append(current)
             current = {}
-        i += 1
 
     return {"blame": entries, "path": path}
 

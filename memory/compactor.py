@@ -27,15 +27,16 @@ The facts object should contain:
 
 
 def _count_tokens_approx(messages: list[dict]) -> int:
+    from agent._tokens import count_tokens_approx
     total = 0
     for m in messages:
         content = m.get("content") or ""
         if isinstance(content, list):
             for part in content:
                 if isinstance(part, dict):
-                    total += len(str(part.get("text", ""))) // 4
+                    total += count_tokens_approx(str(part.get("text", "")))
         else:
-            total += len(str(content)) // 4
+            total += count_tokens_approx(str(content))
     return total
 
 
@@ -77,10 +78,22 @@ async def compact(
     if not to_compact:
         return messages
 
-    transcript_text = "\n".join(
-        f"[{m['role']}]: {m.get('content', '') if isinstance(m.get('content'), str) else json.dumps(m.get('content'))}"
-        for m in to_compact
-    )
+    def _msg_text(m: dict) -> str:
+        role = m.get("role", "?")
+        content = m.get("content")
+        if isinstance(content, str):
+            body = content
+        elif isinstance(content, list):
+            body = json.dumps(content)
+        elif m.get("tool_calls"):
+            calls = [f"{tc['function']['name']}({tc['function'].get('arguments', '')})"
+                     for tc in m["tool_calls"] if isinstance(tc, dict)]
+            body = "[tool_calls: " + ", ".join(calls) + "]"
+        else:
+            body = ""
+        return f"[{role}]: {body}"
+
+    transcript_text = "\n".join(_msg_text(m) for m in to_compact)
 
     compaction_messages = [
         {"role": "system", "content": COMPACTION_PROMPT},

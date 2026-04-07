@@ -126,7 +126,10 @@ async def run_turn(
     client: "AsyncOpenAI",
     on_token: callable | None = None,
     on_tool_call: callable | None = None,
+    _depth: int = 0,
 ) -> tuple[str, list[dict]]:
+    if _depth > 40:
+        return "[Error: too many recursive tool calls — stopping to prevent infinite loop]", messages
     tools = get_schemas()
 
     # Strip internal-only keys before sending to API
@@ -174,7 +177,7 @@ async def run_turn(
         if token_est > threshold:
             messages = await compact(messages, config, client)
 
-        return await run_turn(messages, config, client, on_token, on_tool_call)
+        return await run_turn(messages, config, client, on_token, on_tool_call, _depth + 1)
 
     content = msg.content or ""
 
@@ -196,7 +199,7 @@ async def run_turn(
         messages = messages_with_current
         nudge = {"role": "user", "content": "Call the tool now. Do not describe it, execute it.", "_nudged": True}
         messages = messages + [nudge]
-        return await run_turn(messages, config, client, on_token, on_tool_call)
+        return await run_turn(messages, config, client, on_token, on_tool_call, _depth + 1)
 
     if already_nudged and (not content.strip() or _is_narrating_tool_use(content)):
         # Nudge also failed — last resort extraction

@@ -5,12 +5,28 @@ import time
 from pathlib import Path
 
 
-SESSION_DIR = Path(".agent/sessions")
+_session_dir: Path | None = None
+
+
+def configure(working_dir: str) -> None:
+    """Set the session directory based on the project's working_dir."""
+    global _session_dir
+    _session_dir = Path(working_dir) / ".agent" / "sessions"
+
+
+def _get_session_dir() -> Path:
+    if _session_dir is not None:
+        return _session_dir
+    # Fallback to CWD for callers that haven't called configure().
+    return Path(".agent") / "sessions"
 
 
 def _session_path(name: str) -> Path:
-    SESSION_DIR.mkdir(parents=True, exist_ok=True)
-    return SESSION_DIR / f"{name}.json"
+    sdir = _get_session_dir()
+    sdir.mkdir(parents=True, exist_ok=True)
+    # Strip path components so names like "../../etc/cron.d/evil" can't escape.
+    safe_name = Path(name).name or "default"
+    return sdir / f"{safe_name}.json"
 
 
 def save_session(name: str, messages: list[dict], metadata: dict | None = None) -> None:
@@ -32,9 +48,10 @@ def load_session(name: str) -> tuple[list[dict], dict]:
 
 
 def list_sessions() -> list[dict]:
-    SESSION_DIR.mkdir(parents=True, exist_ok=True)
+    sdir = _get_session_dir()
+    sdir.mkdir(parents=True, exist_ok=True)
     sessions = []
-    for p in sorted(SESSION_DIR.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
+    for p in sorted(sdir.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
             sessions.append({

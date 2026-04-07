@@ -65,9 +65,7 @@ def _chunk_id(path: str, start_byte: int) -> str:
     return hashlib.sha256(f"{path}:{start_byte}".encode()).hexdigest()[:16]
 
 
-def _count_tokens_approx(text: str) -> int:
-    # rough: 1 token ≈ 4 chars
-    return len(text) // 4
+from agent._tokens import count_tokens_approx as _count_tokens_approx
 
 
 def _get_parser(language: str):
