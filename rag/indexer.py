@@ -67,8 +67,12 @@ def _chunk_id(path: str, start_byte: int) -> str:
 
 from agent._tokens import count_tokens_approx as _count_tokens_approx
 
+_parser_cache: dict = {}
+
 
 def _get_parser(language: str):
+    if language in _parser_cache:
+        return _parser_cache[language]
     try:
         from tree_sitter import Language, Parser
         mod_map = {
@@ -85,13 +89,16 @@ def _get_parser(language: str):
         }
         mod_name = mod_map.get(language)
         if not mod_name:
+            _parser_cache[language] = None
             return None
         import importlib
         mod = importlib.import_module(mod_name)
         lang = Language(mod.language())
         parser = Parser(lang)
+        _parser_cache[language] = parser
         return parser
     except Exception:
+        _parser_cache[language] = None
         return None
 
 
@@ -175,16 +182,17 @@ def _parse_with_tree_sitter(content: str, language: str, path: str, cfg: "RAGCon
         covered_lines.update(range(c["start_line"], c["end_line"] + 1))
 
     uncovered: list[str] = []
+    uncovered_bytes = 0
     start_line = None
     for i, line in enumerate(lines, 1):
         if i not in covered_lines:
             if start_line is None:
                 start_line = i
             uncovered.append(line)
+            uncovered_bytes += len(line)
             # flush when we hit chunk_max_tokens
-            text = "".join(uncovered)
-            if _count_tokens_approx(text) >= cfg.chunk_max_tokens:
-                if _count_tokens_approx(text) >= cfg.chunk_min_tokens:
+            if uncovered_bytes // 4 >= cfg.chunk_max_tokens:
+                if uncovered_bytes // 4 >= cfg.chunk_min_tokens:
                     chunks.append({
                         "id": _chunk_id(path, start_line * 100),
                         "path": path,
@@ -193,14 +201,14 @@ def _parse_with_tree_sitter(content: str, language: str, path: str, cfg: "RAGCon
                         "name": None,
                         "start_line": start_line,
                         "end_line": i,
-                        "content": text,
+                        "content": "".join(uncovered),
                     })
                 uncovered = []
+                uncovered_bytes = 0
                 start_line = None
         else:
             if uncovered:
-                text = "".join(uncovered)
-                if _count_tokens_approx(text) >= cfg.chunk_min_tokens:
+                if uncovered_bytes // 4 >= cfg.chunk_min_tokens:
                     chunks.append({
                         "id": _chunk_id(path, (start_line or 1) * 100),
                         "path": path,
@@ -209,14 +217,14 @@ def _parse_with_tree_sitter(content: str, language: str, path: str, cfg: "RAGCon
                         "name": None,
                         "start_line": start_line,
                         "end_line": i - 1,
-                        "content": text,
+                        "content": "".join(uncovered),
                     })
                 uncovered = []
+                uncovered_bytes = 0
                 start_line = None
 
     if uncovered:
-        text = "".join(uncovered)
-        if _count_tokens_approx(text) >= cfg.chunk_min_tokens:
+        if uncovered_bytes // 4 >= cfg.chunk_min_tokens:
             chunks.append({
                 "id": _chunk_id(path, (start_line or 1) * 100),
                 "path": path,
@@ -225,7 +233,7 @@ def _parse_with_tree_sitter(content: str, language: str, path: str, cfg: "RAGCon
                 "name": None,
                 "start_line": start_line,
                 "end_line": len(lines),
-                "content": text,
+                "content": "".join(uncovered),
             })
 
     return chunks
@@ -236,6 +244,7 @@ def _asm_chunks(content: str, path: str, cfg: "RAGConfig") -> list[dict]:
     lines = content.splitlines(keepends=True)
     chunks = []
     current: list[str] = []
+    current_bytes = 0
     start_line = 1
 
     label_re = re.compile(r"^\s*\w+:")
@@ -245,8 +254,7 @@ def _asm_chunks(content: str, path: str, cfg: "RAGConfig") -> list[dict]:
         is_blank = not line.strip()
 
         if (is_label or is_blank) and current:
-            text = "".join(current)
-            if _count_tokens_approx(text) >= cfg.chunk_min_tokens:
+            if current_bytes // 4 >= cfg.chunk_min_tokens:
                 chunks.append({
                     "id": _chunk_id(path, start_line),
                     "path": path,
@@ -255,15 +263,16 @@ def _asm_chunks(content: str, path: str, cfg: "RAGConfig") -> list[dict]:
                     "name": None,
                     "start_line": start_line,
                     "end_line": i - 1,
-                    "content": text,
+                    "content": "".join(current),
                 })
             current = []
+            current_bytes = 0
             start_line = i
 
         current.append(line)
+        current_bytes += len(line)
 
-        if _count_tokens_approx("".join(current)) >= cfg.chunk_max_tokens:
-            text = "".join(current)
+        if current_bytes // 4 >= cfg.chunk_max_tokens:
             chunks.append({
                 "id": _chunk_id(path, start_line),
                 "path": path,
@@ -272,14 +281,14 @@ def _asm_chunks(content: str, path: str, cfg: "RAGConfig") -> list[dict]:
                 "name": None,
                 "start_line": start_line,
                 "end_line": i,
-                "content": text,
+                "content": "".join(current),
             })
             current = []
+            current_bytes = 0
             start_line = i + 1
 
     if current:
-        text = "".join(current)
-        if _count_tokens_approx(text) >= cfg.chunk_min_tokens:
+        if current_bytes // 4 >= cfg.chunk_min_tokens:
             chunks.append({
                 "id": _chunk_id(path, start_line),
                 "path": path,
@@ -288,7 +297,7 @@ def _asm_chunks(content: str, path: str, cfg: "RAGConfig") -> list[dict]:
                 "name": None,
                 "start_line": start_line,
                 "end_line": len(lines),
-                "content": text,
+                "content": "".join(current),
             })
 
     return chunks
@@ -298,12 +307,13 @@ def _fallback_chunks(content: str, path: str, language: str, cfg: "RAGConfig") -
     lines = content.splitlines(keepends=True)
     chunks = []
     current: list[str] = []
+    current_bytes = 0
     start_line = 1
 
     for i, line in enumerate(lines, 1):
         current.append(line)
-        if _count_tokens_approx("".join(current)) >= cfg.chunk_max_tokens:
-            text = "".join(current)
+        current_bytes += len(line)
+        if current_bytes // 4 >= cfg.chunk_max_tokens:
             chunks.append({
                 "id": _chunk_id(path, start_line),
                 "path": path,
@@ -312,14 +322,14 @@ def _fallback_chunks(content: str, path: str, language: str, cfg: "RAGConfig") -
                 "name": None,
                 "start_line": start_line,
                 "end_line": i,
-                "content": text,
+                "content": "".join(current),
             })
             current = []
+            current_bytes = 0
             start_line = i + 1
 
     if current:
-        text = "".join(current)
-        if _count_tokens_approx(text) >= cfg.chunk_min_tokens:
+        if current_bytes // 4 >= cfg.chunk_min_tokens:
             chunks.append({
                 "id": _chunk_id(path, start_line),
                 "path": path,
@@ -328,7 +338,7 @@ def _fallback_chunks(content: str, path: str, language: str, cfg: "RAGConfig") -
                 "name": None,
                 "start_line": start_line,
                 "end_line": len(lines),
-                "content": text,
+                "content": "".join(current),
             })
 
     return chunks
