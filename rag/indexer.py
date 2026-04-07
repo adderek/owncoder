@@ -396,7 +396,7 @@ def index_directory(
 ) -> dict:
     root_path = Path(root).resolve()
     exclude = exclude or []
-    default_exclude = {".git", "__pycache__", "node_modules", "build", "dist", ".agent"}
+    default_exclude = {".git", "__pycache__", "node_modules", "build", "dist", ".agent", ".venv", "venv", ".env"}
     all_exclude = default_exclude | set(exclude)
 
     allowed_exts: set[str] | None = None

@@ -112,8 +112,9 @@ class VectorStore:
             emb = chunk["embedding"]
             dims = len(emb)
             self._ensure_vec_table(dims)
+            conn.execute("DELETE FROM vec_chunks WHERE chunk_id = ?", (chunk["id"],))
             conn.execute(
-                "INSERT OR REPLACE INTO vec_chunks(chunk_id, embedding) VALUES (?, ?)",
+                "INSERT INTO vec_chunks(chunk_id, embedding) VALUES (?, ?)",
                 (chunk["id"], sqlite_vec.serialize_float32(emb)),
             )
 
@@ -149,8 +150,9 @@ class VectorStore:
                 emb = chunk["embedding"]
                 dims = len(emb)
                 self._ensure_vec_table(dims)
+                conn.execute("DELETE FROM vec_chunks WHERE chunk_id = ?", (chunk["id"],))
                 conn.execute(
-                    "INSERT OR REPLACE INTO vec_chunks(chunk_id, embedding) VALUES (?, ?)",
+                    "INSERT INTO vec_chunks(chunk_id, embedding) VALUES (?, ?)",
                     (chunk["id"], sqlite_vec.serialize_float32(emb)),
                 )
 
