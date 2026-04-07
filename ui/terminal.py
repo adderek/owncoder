@@ -12,10 +12,12 @@ if TYPE_CHECKING:
 
 def _build_textual_app(agent: "Agent"):
     from textual.app import App, ComposeResult
-    from textual.widgets import Header, Footer, Input, RichLog, Static, ProgressBar, TextArea
+    from textual.widgets import Header, Footer, Input, RichLog, Static, ProgressBar, TextArea, LoadingIndicator
     from textual.containers import Vertical, Horizontal
     from textual.binding import Binding
     from textual.message import Message
+    from textual.worker import Worker, WorkerState
+    from textual import work
     from rich.text import Text
     from rich.markdown import Markdown
 
@@ -62,6 +64,11 @@ def _build_textual_app(agent: "Agent"):
                     self.post_message(PromptInput.Submitted(self, text))
                     self.clear()
 
+    class ToolCallEvent(Message):
+        def __init__(self, name: str) -> None:
+            super().__init__()
+            self.name = name
+
     class CodeAgentApp(App):
         CSS = """
         Screen {
@@ -96,6 +103,14 @@ def _build_textual_app(agent: "Agent"):
         TokenBar {
             height: 1;
         }
+        LoadingIndicator {
+            display: none;
+            height: 1;
+            background: $accent;
+        }
+        LoadingIndicator.active {
+            display: block;
+        }
         """
 
         BINDINGS = [
@@ -108,7 +123,6 @@ def _build_textual_app(agent: "Agent"):
             super().__init__(**kwargs)
             self._agent = agent
             self._last_tool_calls: list[str] = []
-            self._spinner_frame: int = 0
             self._current_tool: str | None = None
 
         def compose(self) -> ComposeResult:
@@ -120,6 +134,7 @@ def _build_textual_app(agent: "Agent"):
             )
             yield TokenBar(cfg.llm.ctx_window, id="token-bar")
             yield ConversationView(id="conversation", markup=True, highlight=True)
+            yield LoadingIndicator(id="loading-indicator")
             yield ContextPanel("context: (none)", id="context-panel")
             yield GitStatusBar("git: loading...", id="git-status")
             yield PromptInput(id="input-bar")
@@ -127,16 +142,17 @@ def _build_textual_app(agent: "Agent"):
 
         def on_mount(self) -> None:
             self.query_one("#input-bar", PromptInput).focus()
-            self._refresh_git()
+            self.call_later(self._refresh_git)
 
         def action_show_help(self) -> None:
             conv = self.query_one("#conversation", ConversationView)
             conv.write("[bold]Commands:[/bold]  /help  /compact  /tokens  /reset  /tools  /save  /sessions")
 
-        def _refresh_git(self) -> None:
+        async def _refresh_git(self) -> None:
             from agent.tools.git import git_status
             try:
-                s = git_status()
+                loop = asyncio.get_event_loop()
+                s = await loop.run_in_executor(None, git_status)
                 branch = s.get("branch", "?")
                 staged = len(s.get("staged", []))
                 bar = self.query_one("#git-status", GitStatusBar)
@@ -202,46 +218,57 @@ def _build_textual_app(agent: "Agent"):
             conv.write(f"[bold cyan]You:[/bold cyan] {user_text}")
             self._last_tool_calls = []
             self._current_tool = None
-            self._spinner_frame = 0
 
-            input_widget = self.query_one("#input-bar", PromptInput)
-            input_widget.disabled = True
-            context = self.query_one("#context-panel", ContextPanel)
+            self.query_one("#input-bar", PromptInput).disabled = True
+            self.query_one("#loading-indicator", LoadingIndicator).add_class("active")
+            self.query_one("#context-panel", ContextPanel).set_context("[dim]thinking…[/dim]")
 
-            _FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+            self._start_chat(user_text)
 
-            async def _spin() -> None:
-                while True:
-                    frame = _FRAMES[self._spinner_frame % len(_FRAMES)]
-                    tool_info = f"  ⚙ {self._current_tool}" if self._current_tool else ""
-                    context.set_context(f"[dim]{frame} thinking{tool_info}[/dim]")
-                    self._spinner_frame += 1
-                    await asyncio.sleep(0.1)
-
-            spinner = asyncio.create_task(_spin())
-
+        @work(exclusive=True, exit_on_error=False, name="chat")
+        async def _start_chat(self, user_text: str) -> str:
             def on_tool(name: str, args: str) -> None:
                 self._last_tool_calls.append(name)
                 self._current_tool = name
-                conv.write(f"[dim]  ⚙ {name}[/dim]")
+                self.post_message(ToolCallEvent(name))
 
-            try:
-                response = await self._agent.chat(user_text, on_tool_call=on_tool)
-            except Exception as e:
-                response = f"[red]Error: {e}[/red]"
-            finally:
-                spinner.cancel()
-                input_widget.disabled = False
-                input_widget.focus()
-                context.set_context(
-                    f"context: {', '.join(self._last_tool_calls[-3:])}" if self._last_tool_calls else "context: (none)"
-                )
+            return await self._agent.chat(user_text, on_tool_call=on_tool)
+
+        def on_tool_call_event(self, event: ToolCallEvent) -> None:
+            self.query_one("#conversation", ConversationView).write(f"[dim]  ⚙ {event.name}[/dim]")
+            self.query_one("#context-panel", ContextPanel).set_context(f"[dim]⚙ {event.name}[/dim]")
+
+        def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+            if event.worker.name != "chat":
+                return
+            if event.state not in (WorkerState.SUCCESS, WorkerState.ERROR, WorkerState.CANCELLED):
+                return
+
+            self.query_one("#loading-indicator", LoadingIndicator).remove_class("active")
+            input_widget = self.query_one("#input-bar", PromptInput)
+            input_widget.disabled = False
+            input_widget.focus()
+
+            if event.state == WorkerState.SUCCESS:
+                response = event.worker.result
+            elif event.state == WorkerState.ERROR:
+                response = f"[red]Error: {event.worker.error}[/red]"
+            else:
+                response = None
+
+            context_text = (
+                f"context: {', '.join(self._last_tool_calls[-3:])}"
+                if self._last_tool_calls else "context: (none)"
+            )
+            self.query_one("#context-panel", ContextPanel).set_context(context_text)
 
             if response:
-                conv.write(f"[bold green]Agent:[/bold green] {response}")
+                self.query_one("#conversation", ConversationView).write(
+                    f"[bold green]Agent:[/bold green] {response}"
+                )
 
             self.query_one("#token-bar", TokenBar).update_tokens(self._agent.token_estimate())
-            self._refresh_git()
+            self.call_later(self._refresh_git)
 
     return CodeAgentApp(agent)
 

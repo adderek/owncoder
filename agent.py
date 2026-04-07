@@ -58,7 +58,8 @@ async def execute_tool(tool_call) -> str:
         return json.dumps({"error": f"Unknown tool: {name}"})
 
     try:
-        result = fn(**args)
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, lambda: fn(**args))
         return json.dumps(result, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)})
