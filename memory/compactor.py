@@ -113,7 +113,7 @@ async def compact(
 
     facts, summary = _parse_compaction_output(output)
 
-    compacted_content = f"[SESSION SUMMARY]\n{json.dumps(facts, indent=2)}\n\n{summary}"
+    compacted_content = f"[SESSION SUMMARY]\n{json.dumps(facts, separators=(',', ':'))}\n\n{summary}"
     compacted_msg = {"role": "assistant", "content": compacted_content}
 
     result = []

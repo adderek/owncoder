@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import difflib
 import os
 import tempfile
 from pathlib import Path
@@ -66,27 +65,18 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
 
     if start_line is None and end_line is None and total > 500:
         # Return the first 200 lines with a hint rather than nothing.
-        head = "\n".join(f"{i + 1:>4}: {l}" for i, l in enumerate(lines[:200]))
+        head = "\n".join(f"{i + 1}:{l}" for i, l in enumerate(lines[:200]))
         return {
-            "warning": f"File has {total} lines; showing first 200. Use start_line/end_line to read other ranges.",
+            "warning": f"File has {total} lines; showing first 200. Use start_line/end_line for other ranges.",
             "content": head,
-            "start_line": 1,
-            "end_line": 200,
-            "total_lines": total,
-            "path": path,
         }
 
     sl = (start_line or 1) - 1
     el = end_line if end_line else total
     selected = lines[sl:el]
 
-    numbered = "\n".join(f"{sl + i + 1:>4}: {line}" for i, line in enumerate(selected))
-    return {
-        "content": numbered,
-        "start_line": sl + 1,
-        "end_line": sl + len(selected),
-        "total_lines": total,
-    }
+    numbered = "\n".join(f"{sl + i + 1}:{line}" for i, line in enumerate(selected))
+    return {"content": numbered}
 
 
 @register("write_file", {
@@ -104,23 +94,11 @@ def write_file(path: str, content: str) -> dict:
     fpath = _resolve(path)
     fpath.parent.mkdir(parents=True, exist_ok=True)
 
-    old_content = None
     if fpath.exists():
-        old_content = fpath.read_text(encoding="utf-8", errors="replace")
-        _undo_stack[path] = old_content
-
-        diff = list(difflib.unified_diff(
-            old_content.splitlines(keepends=True),
-            content.splitlines(keepends=True),
-            fromfile=f"a/{path}",
-            tofile=f"b/{path}",
-        ))
-        diff_str = "".join(diff)
-    else:
-        diff_str = f"(new file: {path})"
+        _undo_stack[path] = fpath.read_text(encoding="utf-8", errors="replace")
 
     fpath.write_text(content, encoding="utf-8")
-    return {"written": path, "diff": diff_str}
+    return {"ok": path}
 
 
 @register("patch_file", {
@@ -148,7 +126,7 @@ def patch_file(path: str, unified_diff: str) -> dict:
         return {"error": f"Patch failed: {e}"}
 
     fpath.write_text(patched, encoding="utf-8")
-    return {"patched": path, "lines_changed": abs(len(patched.splitlines()) - len(original.splitlines()))}
+    return {"ok": path}
 
 
 def _apply_unified_diff(original: str, patch: str) -> str:
@@ -240,6 +218,6 @@ def list_files(path: str = ".", pattern: str = "**/*", ignore_patterns: list[str
 
         if not skip:
             stat = fpath.stat()
-            results.append({"path": rel, "size": stat.st_size, "mtime": stat.st_mtime})
+            results.append({"path": rel, "size": stat.st_size})
 
     return {"files": results, "count": len(results)}
