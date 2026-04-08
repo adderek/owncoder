@@ -415,8 +415,11 @@ class Agent:
         user_input: str,
         on_tool_call: callable | None = None,
         on_token: callable | None = None,
+        on_user_message: callable | None = None,
     ) -> str:
         self.messages.append({"role": "user", "content": user_input})
+        if on_user_message is not None:
+            on_user_message()
         response, self.messages = await run_turn(
             self.messages,
             self.config,

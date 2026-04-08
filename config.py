@@ -39,6 +39,7 @@ class ToolsConfig:
     allow_shell: bool = True
     shell_timeout: int = 30
     working_dir: str = "."
+    agent_dir: str = ".agent"
 
 
 @dataclass

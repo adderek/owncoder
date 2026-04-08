@@ -11,27 +11,26 @@ if TYPE_CHECKING:
 
 # ── Textual UI ──────────────────────────────────────────────────────────────
 
-def _build_textual_app(agent: "Agent"):
+def _build_textual_app(agent: "Agent", session=None):
     t = agent.config.ui.theme  # shorthand used throughout
 
     from textual.app import App, ComposeResult
-    from textual.widgets import Header, Footer, Input, RichLog, Static, ProgressBar, TextArea, LoadingIndicator
-    from textual.containers import Vertical, Horizontal
+    from textual.widgets import (
+        Footer, RichLog, Static, TextArea, LoadingIndicator,
+        TabbedContent, TabPane,
+    )
     from textual.binding import Binding
     from textual.message import Message
     from textual.worker import Worker, WorkerState
     from textual import work
-    from rich.text import Text
     from rich.markdown import Markdown
 
     class TokenBar(Static):
         def __init__(self, ctx_window: int, **kwargs):
             super().__init__(**kwargs)
             self._ctx = ctx_window
-            self._used = 0
 
         def update_tokens(self, used: int) -> None:
-            self._used = used
             pct = used / self._ctx if self._ctx else 0
             bar_len = 20
             filled = int(pct * bar_len)
@@ -40,7 +39,10 @@ def _build_textual_app(agent: "Agent"):
             self.update(f"tokens: {used}/{self._ctx} {bar}")
 
     class ConversationView(RichLog):
-        pass
+        """Live chat log — user ↔ agent turns."""
+
+    class SysView(RichLog):
+        """System log — commands, session info, help output."""
 
     class ContextPanel(Static):
         def set_context(self, text: str) -> None:
@@ -51,7 +53,7 @@ def _build_textual_app(agent: "Agent"):
             self.update(text)
 
     class PromptInput(TextArea):
-        """Wrapping multi-line input that submits on Enter (Shift+Enter for newline)."""
+        """Multi-line input; Enter submits, Shift+Enter inserts newline."""
 
         class Submitted(Message):
             def __init__(self, area: "PromptInput", value: str) -> None:
@@ -72,6 +74,25 @@ def _build_textual_app(agent: "Agent"):
             super().__init__()
             self.name = name
 
+    _PLACEHOLDER_Q = (
+        "[bold]Q — User questions[/bold]\n\n"
+        "[dim]Placeholder.[/dim] Will show the conversation rephrased as a single\n"
+        "concise statement representing the user's intent or question per turn.\n\n"
+        "[dim]Useful for reviewing what was actually asked without re-reading full turns.[/dim]"
+    )
+    _PLACEHOLDER_A = (
+        "[bold]A — Agent answers[/bold]\n\n"
+        "[dim]Placeholder.[/dim] Will show agent responses summarized into a single\n"
+        "actionable statement or conclusion per turn.\n\n"
+        "[dim]Useful for extracting decisions or outcomes from long agentic runs.[/dim]"
+    )
+    _PLACEHOLDER_SPARSE = (
+        "[bold]sparse — Condensed dialogue[/bold]\n\n"
+        "[dim]Placeholder.[/dim] Will show the full conversation with each entry\n"
+        "shortened to its essential content, preserving the dialogue structure.\n\n"
+        "[dim]Useful for skimming long sessions without losing the back-and-forth shape.[/dim]"
+    )
+
     class CodeAgentApp(App):
         CSS = f"""
         Screen {{
@@ -84,13 +105,37 @@ def _build_textual_app(agent: "Agent"):
             color: {t.text_dim};
             padding: 0 1;
         }}
-        #conversation {{
+        TabbedContent {{
+            height: 1fr;
+        }}
+        ContentSwitcher {{
+            height: 1fr;
+        }}
+        TabPane {{
+            padding: 0;
+            height: 1fr;
+        }}
+        #chat-log {{
             height: 1fr;
             border: solid {t.border};
             padding: 0 1;
         }}
-        #conversation:focus {{
+        #chat-log:focus {{
             border: solid {t.active};
+        }}
+        #sys-log {{
+            height: 1fr;
+            border: solid {t.border};
+            padding: 0 1;
+        }}
+        #sys-log:focus {{
+            border: solid {t.active};
+        }}
+        .placeholder-pane {{
+            height: 1fr;
+            border: solid {t.border};
+            padding: 2 4;
+            color: {t.text_dim};
         }}
         #context-panel {{
             height: 3;
@@ -131,25 +176,39 @@ def _build_textual_app(agent: "Agent"):
             Binding("ctrl+q", "quit", "Quit"),
             Binding("ctrl+d", "quit", "Quit", show=False),
             Binding("f1", "show_help", "Help"),
-            Binding("tab", "focus_next", "Switch panel", show=True),
+            Binding("ctrl+tab", "focus_next", "Switch focus", show=False),
         ]
 
-        def __init__(self, agent: "Agent", **kwargs):
+        def __init__(self, agent: "Agent", session=None, **kwargs):
             super().__init__(**kwargs)
             self._agent = agent
+            self._session = session
             self._last_tool_calls: list[str] = []
             self._current_tool: str | None = None
             self._tokens_before: int = 0
 
         def compose(self) -> ComposeResult:
             cfg = self._agent.config
+            session_label = ""
+            if self._session:
+                label = self._session.short_name or self._session.id
+                session_label = f"  [{t.text_dim}]{label}[/{t.text_dim}]"
             yield Static(
-                f"[bold]local-code-agent[/bold]  model: {cfg.llm.model}  "
-                f"  /help for commands",
+                f"[bold]local-code-agent[/bold]  [{t.text_dim}]{cfg.llm.model}[/{t.text_dim}]{session_label}",
                 id="header-bar",
             )
             yield TokenBar(cfg.llm.ctx_window, id="token-bar")
-            yield ConversationView(id="conversation", markup=True, highlight=True)
+            with TabbedContent(initial="tab-chat", id="view-tabs"):
+                with TabPane("chat", id="tab-chat"):
+                    yield ConversationView(id="chat-log", markup=True, highlight=True)
+                with TabPane("Q", id="tab-q"):
+                    yield Static(_PLACEHOLDER_Q, id="placeholder-q", classes="placeholder-pane", markup=True)
+                with TabPane("A", id="tab-a"):
+                    yield Static(_PLACEHOLDER_A, id="placeholder-a", classes="placeholder-pane", markup=True)
+                with TabPane("sparse", id="tab-sparse"):
+                    yield Static(_PLACEHOLDER_SPARSE, id="placeholder-sparse", classes="placeholder-pane", markup=True)
+                with TabPane("sys", id="tab-sys"):
+                    yield SysView(id="sys-log", markup=True, highlight=True)
             yield LoadingIndicator(id="loading-indicator")
             yield ContextPanel("", id="context-panel")
             yield GitStatusBar("git: loading...", id="git-status")
@@ -159,10 +218,35 @@ def _build_textual_app(agent: "Agent"):
         def on_mount(self) -> None:
             self.query_one("#input-bar", PromptInput).focus()
             self.call_later(self._refresh_git)
+            # Seed the sys log with session info
+            sys_log = self.query_one("#sys-log", SysView)
+            if self._session:
+                sys_log.write(
+                    f"[{t.text_dim}]session  {self._session.id}[/{t.text_dim}]"
+                    + (f"  [{t.cmd_color}]{self._session.short_name}[/{t.cmd_color}]"
+                       if self._session.short_name else "")
+                )
+            sys_log.write(f"[{t.text_dim}]Type /help for commands  ·  F1 opens this tab[/{t.text_dim}]")
+
+        # ── helpers ──────────────────────────────────────────────────────────
+
+        def _write_sys(self, text: str) -> None:
+            """Write to the sys log and switch to that tab."""
+            self.query_one("#sys-log", SysView).write(text)
+            self.query_one(TabbedContent).active = "tab-sys"
+
+        def _write_chat(self, text: str) -> None:
+            self.query_one("#chat-log", ConversationView).write(text)
+
+        def _switch_to_chat(self) -> None:
+            self.query_one(TabbedContent).active = "tab-chat"
+
+        # ── actions ──────────────────────────────────────────────────────────
 
         def action_show_help(self) -> None:
-            conv = self.query_one("#conversation", ConversationView)
-            conv.write("[bold]Commands:[/bold]  /help  /compact  /tokens  /reset  /tools  /save  /sessions")
+            self._write_sys(_make_help_text(t))
+
+        # ── git refresh ──────────────────────────────────────────────────────
 
         async def _refresh_git(self) -> None:
             from agent.tools.git import git_status
@@ -171,79 +255,117 @@ def _build_textual_app(agent: "Agent"):
                 s = await loop.run_in_executor(None, git_status)
                 branch = s.get("branch", "?")
                 staged = len(s.get("staged", []))
-                bar = self.query_one("#git-status", GitStatusBar)
-                bar.set_status(f"git: {staged} staged  branch: {branch}")
+                self.query_one("#git-status", GitStatusBar).set_status(
+                    f"git: {staged} staged  branch: {branch}"
+                )
             except Exception:
                 pass
 
-        async def _run_slash(self, cmd: str, arg: str, conv: "ConversationView") -> None:
+        # ── slash commands → sys tab ─────────────────────────────────────────
+
+        async def _run_slash(self, cmd: str, arg: str) -> None:
             from openai import AsyncOpenAI
             if cmd == "/help":
-                conv.write(_make_help_text(t))
+                self._write_sys(_make_help_text(t))
+
             elif cmd == "/compact":
                 from agent.memory.compactor import compact
                 cfg = self._agent.config
                 client = AsyncOpenAI(base_url=cfg.llm.base_url, api_key=cfg.llm.api_key)
                 before = self._agent.token_estimate()
-                conv.write(f"[{t.text_dim}]Compacting…[/{t.text_dim}]")
+                self._write_sys(f"[{t.text_dim}]Compacting…[/{t.text_dim}]")
                 try:
                     self._agent.messages = await compact(self._agent.messages, cfg, client)
                     after = self._agent.token_estimate()
-                    conv.write(f"[{t.success}]Compacted.[/{t.success}] {before} → {after} tokens")
+                    self._write_sys(f"[{t.success}]Compacted.[/{t.success}] {before} → {after} tokens")
                 except Exception as e:
-                    conv.write(f"[{t.error}]Compact failed: {e}[/{t.error}]")
+                    self._write_sys(f"[{t.error}]Compact failed: {e}[/{t.error}]")
                 self.query_one("#token-bar", TokenBar).update_tokens(self._agent.token_estimate())
+
+            elif cmd == "/clear":
+                self.query_one("#chat-log", ConversationView).clear()
+                self._switch_to_chat()
+
             elif cmd == "/tokens":
                 used = self._agent.token_estimate()
                 cfg = self._agent.config
-                conv.write(f"tokens: {used}/{cfg.llm.ctx_window}  ({len(self._agent.messages)} messages)")
+                self._write_sys(
+                    f"tokens: {used}/{cfg.llm.ctx_window}  "
+                    f"({len(self._agent.messages)} messages)"
+                )
+
             elif cmd == "/reset":
                 system = next((m for m in self._agent.messages if m.get("role") == "system"), None)
                 self._agent.messages = [system] if system else []
-                conv.write(f"[{t.text_dim}]History cleared.[/{t.text_dim}]")
+                self._write_sys(f"[{t.text_dim}]Conversation history cleared.[/{t.text_dim}]")
+
             elif cmd == "/tools":
                 from agent.tools import get_schemas
                 names = [s["function"]["name"] for s in get_schemas()]
-                conv.write("Tools: " + "  ".join(names))
+                self._write_sys("Tools: " + "  ".join(names))
+
             elif cmd == "/save":
                 from agent.memory.session import save_session
-                name = arg.strip() or "default"
-                save_session(name, self._agent.messages)
-                conv.write(f"[{t.text_dim}]Saved as '{name}'.[/{t.text_dim}]")
+                save_session(self._session, self._agent.messages)
+                label = self._session.short_name or self._session.id
+                self._write_sys(f"[{t.text_dim}]Saved session '{label}'.[/{t.text_dim}]")
+
             elif cmd == "/load":
                 if not arg.strip():
-                    conv.write(f"[{t.warning}]Usage: /load <session-name>[/{t.warning}]")
+                    self._write_sys(f"[{t.warning}]Usage: /load <session-id-or-short-name>[/{t.warning}]")
                 else:
                     from agent.memory.session import load_session
-                    loaded_msgs, _ = load_session(arg.strip())
-                    if not loaded_msgs:
-                        conv.write(f"[{t.warning}]Session '{arg.strip()}' not found.[/{t.warning}]")
+                    loaded_session, loaded_msgs = load_session(arg.strip())
+                    if loaded_session is None:
+                        self._write_sys(f"[{t.warning}]Session '{arg.strip()}' not found.[/{t.warning}]")
                     else:
-                        loaded_msgs = [{k: v for k, v in m.items() if not k.startswith("_")} for m in loaded_msgs]
+                        loaded_msgs = [
+                            {k: v for k, v in m.items() if not k.startswith("_")}
+                            for m in loaded_msgs
+                        ]
                         self._agent.messages = loaded_msgs
-                        conv.write(f"[{t.text_dim}]Loaded session '{arg.strip()}' ({len(loaded_msgs)} messages).[/{t.text_dim}]")
-                        self.query_one("#token-bar", TokenBar).update_tokens(self._agent.token_estimate())
+                        self._session = loaded_session
+                        label = loaded_session.short_name or loaded_session.id
+                        self._write_sys(
+                            f"[{t.text_dim}]Loaded session '{label}' "
+                            f"({len(loaded_msgs)} messages).[/{t.text_dim}]"
+                        )
+                        self.query_one("#token-bar", TokenBar).update_tokens(
+                            self._agent.token_estimate()
+                        )
+
             elif cmd == "/sessions":
                 from agent.memory.session import list_sessions
                 import datetime
-                for s in list_sessions():
-                    ts = datetime.datetime.fromtimestamp(s["saved_at"]).strftime("%Y-%m-%d %H:%M") if s["saved_at"] else "?"
-                    conv.write(f"  [{t.cmd_color}]{s['name']}[/{t.cmd_color}]  {s['message_count']} msgs  [{t.text_dim}]{ts}[/{t.text_dim}]")
+                sessions = list_sessions()
+                if not sessions:
+                    self._write_sys(f"[{t.text_dim}]No sessions found.[/{t.text_dim}]")
+                for s in sessions:
+                    ts_val = s.get("updated_at") or s.get("created_at")
+                    ts = datetime.datetime.fromtimestamp(ts_val).strftime("%Y-%m-%d %H:%M") if ts_val else "?"
+                    label = s.get("short_name") or s["id"]
+                    name_extra = f"  [{t.text_dim}]{s['name']}[/{t.text_dim}]" if s.get("name") else ""
+                    self._write_sys(
+                        f"  [{t.cmd_color}]{label}[/{t.cmd_color}]{name_extra}"
+                        f"  {s['message_count']} msgs  [{t.text_dim}]{ts}[/{t.text_dim}]"
+                    )
+
             elif cmd == "/undo":
                 from agent.tools.files import undo_file, undo_candidates
                 target = arg.strip()
                 if not target:
                     candidates = undo_candidates()
                     if not candidates:
-                        conv.write(f"[{t.warning}]Nothing to undo.[/{t.warning}]")
+                        self._write_sys(f"[{t.warning}]Nothing to undo.[/{t.warning}]")
                     else:
-                        conv.write("Undo candidates: " + ", ".join(candidates))
+                        self._write_sys("Undo candidates: " + ", ".join(candidates))
                 else:
                     r = undo_file(target)
                     if "error" in r:
-                        conv.write(f"[{t.error}]{r['error']}[/{t.error}]")
+                        self._write_sys(f"[{t.error}]{r['error']}[/{t.error}]")
                     else:
-                        conv.write(f"[{t.success}]Restored {target}[/{t.success}]")
+                        self._write_sys(f"[{t.success}]Restored {target}[/{t.success}]")
+
             elif cmd == "/export":
                 import json as _json
                 lines = []
@@ -259,30 +381,38 @@ def _build_textual_app(agent: "Agent"):
                         lines.append(f"**You:** {content}\n")
                     elif role == "assistant":
                         if tool_calls:
-                            names = ", ".join(tc["function"]["name"] for tc in tool_calls if isinstance(tc, dict))
+                            names = ", ".join(
+                                tc["function"]["name"] for tc in tool_calls if isinstance(tc, dict)
+                            )
                             lines.append(f"**Agent** *(tools: {names})*: {content}\n")
                         else:
                             lines.append(f"**Agent:** {content}\n")
                 md_text = "\n---\n".join(lines)
-                target = arg.strip() or "session.md"
+                label = (self._session.short_name or self._session.id) if self._session else "session"
+                target = arg.strip() or f"{label}.md"
                 Path(target).write_text(md_text, encoding="utf-8")
-                conv.write(f"[{t.text_dim}]Exported to {target} ({len(lines)} turns).[/{t.text_dim}]")
+                self._write_sys(
+                    f"[{t.text_dim}]Exported to {target} ({len(lines)} turns).[/{t.text_dim}]"
+                )
+
             else:
-                conv.write(f"[{t.warning}]Unknown command '{cmd}'. Type /help.[/{t.warning}]")
+                self._write_sys(f"[{t.warning}]Unknown command '{cmd}'. Type /help.[/{t.warning}]")
+
+        # ── input handling ───────────────────────────────────────────────────
 
         async def on_prompt_input_submitted(self, event: PromptInput.Submitted) -> None:
             user_text = event.value.strip()
             if not user_text:
                 return
 
-            conv = self.query_one("#conversation", ConversationView)
-
             if user_text.startswith("/"):
                 parts = user_text.split(None, 1)
-                await self._run_slash(parts[0].lower(), parts[1] if len(parts) > 1 else "", conv)
+                await self._run_slash(parts[0].lower(), parts[1] if len(parts) > 1 else "")
                 return
 
-            conv.write(f"[bold {t.user_color}]You:[/bold {t.user_color}] {user_text}")
+            # Switch to chat tab so the user sees the exchange.
+            self._switch_to_chat()
+            self._write_chat(f"[bold {t.user_color}]You:[/bold {t.user_color}] {user_text}")
             self._last_tool_calls = []
             self._current_tool = None
             self._tokens_before = self._agent.token_estimate()
@@ -295,16 +425,29 @@ def _build_textual_app(agent: "Agent"):
 
         @work(exclusive=True, exit_on_error=False, name="chat")
         async def _start_chat(self, user_text: str) -> str:
+            from agent.memory.session import save_session
+
             def on_tool(name: str, args: str) -> None:
                 self._last_tool_calls.append(name)
                 self._current_tool = name
                 self.post_message(ToolCallEvent(name))
 
-            return await self._agent.chat(user_text, on_tool_call=on_tool)
+            def on_user_message() -> None:
+                if self._session is not None:
+                    save_session(self._session, self._agent.messages)
+
+            result = await self._agent.chat(
+                user_text, on_tool_call=on_tool, on_user_message=on_user_message
+            )
+            if self._session is not None:
+                save_session(self._session, self._agent.messages)
+            return result
 
         def on_tool_call_event(self, event: ToolCallEvent) -> None:
-            self.query_one("#conversation", ConversationView).write(f"[{t.tool_color}]  ⚙ {event.name}[/{t.tool_color}]")
-            self.query_one("#context-panel", ContextPanel).set_context(f"[{t.tool_color}]⚙ {event.name}[/{t.tool_color}]")
+            self._write_chat(f"[{t.tool_color}]  ⚙ {event.name}[/{t.tool_color}]")
+            self.query_one("#context-panel", ContextPanel).set_context(
+                f"[{t.tool_color}]⚙ {event.name}[/{t.tool_color}]"
+            )
 
         def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
             if event.worker.name != "chat":
@@ -320,7 +463,7 @@ def _build_textual_app(agent: "Agent"):
             if event.state == WorkerState.SUCCESS:
                 response = event.worker.result
             elif event.state == WorkerState.ERROR:
-                response = f"[red]Error: {event.worker.error}[/red]"
+                response = f"[{t.error}]Error: {event.worker.error}[/{t.error}]"
             else:
                 response = None
 
@@ -335,18 +478,19 @@ def _build_textual_app(agent: "Agent"):
                 f"[{t.active}]+{delta:,}[/{t.active}] new  "
                 f"total {tokens_after:,}[/{t.text_dim}]"
             )
-            panel_text = f"{tools_line}\n{token_line}" if tools_line else token_line
-            self.query_one("#context-panel", ContextPanel).set_context(panel_text)
+            self.query_one("#context-panel", ContextPanel).set_context(
+                f"{tools_line}\n{token_line}" if tools_line else token_line
+            )
 
             if response:
-                self.query_one("#conversation", ConversationView).write(
+                self._write_chat(
                     f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] {response}"
                 )
 
             self.query_one("#token-bar", TokenBar).update_tokens(self._agent.token_estimate())
             self.call_later(self._refresh_git)
 
-    return CodeAgentApp(agent)
+    return CodeAgentApp(agent, session=session)
 
 
 # ── Simple (Claude Code-style) ───────────────────────────────────────────────
@@ -479,7 +623,7 @@ def _hex_to_ansi(hex_color: str) -> str:
     return f"\033[38;2;{r};{g};{b}m"
 
 
-async def simple_loop(agent: "Agent", session_name: str = "default") -> None:
+async def simple_loop(agent: "Agent", session=None) -> None:
     from rich.console import Console
     from rich.markdown import Markdown
     import readline  # enables arrow keys / history on Linux
@@ -540,30 +684,37 @@ async def simple_loop(agent: "Agent", session_name: str = "default") -> None:
 
             elif cmd == "/save":
                 from agent.memory.session import save_session
-                name = arg.strip() or session_name
-                save_session(name, agent.messages)
-                console.print(f"[dim]Saved as '{name}'.[/dim]")
+                if session is not None:
+                    save_session(session, agent.messages)
+                    label = session.short_name or session.id
+                    console.print(f"[dim]Saved session '{label}'.[/dim]")
+                else:
+                    console.print("[yellow]No active session.[/yellow]")
 
             elif cmd == "/load":
                 if not arg.strip():
-                    console.print("[yellow]Usage: /load <session-name>[/yellow]")
+                    console.print("[yellow]Usage: /load <session-id-or-short-name>[/yellow]")
                 else:
                     from agent.memory.session import load_session
-                    loaded_msgs, _ = load_session(arg.strip())
-                    if not loaded_msgs:
+                    loaded_session, loaded_msgs = load_session(arg.strip())
+                    if loaded_session is None:
                         console.print(f"[yellow]Session '{arg.strip()}' not found.[/yellow]")
                     else:
                         loaded_msgs = [{k: v for k, v in m.items() if not k.startswith("_")} for m in loaded_msgs]
                         agent.messages = loaded_msgs
-                        session_name = arg.strip()
-                        console.print(f"[dim]Loaded session '{session_name}' ({len(loaded_msgs)} messages).[/dim]")
+                        session = loaded_session
+                        label = session.short_name or session.id
+                        console.print(f"[dim]Loaded session '{label}' ({len(loaded_msgs)} messages).[/dim]")
 
             elif cmd == "/sessions":
                 from agent.memory.session import list_sessions
                 import datetime
                 for s in list_sessions():
-                    ts = datetime.datetime.fromtimestamp(s["saved_at"]).strftime("%Y-%m-%d %H:%M") if s["saved_at"] else "?"
-                    console.print(f"  [cyan]{s['name']}[/cyan]  {s['message_count']} msgs  [dim]{ts}[/dim]")
+                    ts_val = s.get("updated_at") or s.get("created_at")
+                    ts = datetime.datetime.fromtimestamp(ts_val).strftime("%Y-%m-%d %H:%M") if ts_val else "?"
+                    label = s.get("short_name") or s["id"]
+                    name_part = f"  [dim]{s.get('name', '')}[/dim]" if s.get("name") else ""
+                    console.print(f"  [cyan]{label}[/cyan]{name_part}  {s['message_count']} msgs  [dim]{ts}[/dim]")
 
             elif cmd == "/tools":
                 from agent.tools import get_schemas
@@ -628,7 +779,8 @@ async def simple_loop(agent: "Agent", session_name: str = "default") -> None:
                             lines.append(f"**Agent:** {content}\n")
                     # skip tool result messages (role == "tool")
                 md_text = "\n---\n".join(lines)
-                target = arg.strip() or f"{session_name}.md"
+                _session_label = (session.short_name or session.id) if session else "session"
+                target = arg.strip() or f"{_session_label}.md"
                 Path(target).write_text(md_text, encoding="utf-8")
                 console.print(f"[dim]Exported to {target} ({len(lines)} turns).[/dim]")
 
@@ -665,14 +817,28 @@ async def simple_loop(agent: "Agent", session_name: str = "default") -> None:
             streaming_tokens.append(token)
             console.print(token, end="", highlight=False)
 
+        def _on_user_message() -> None:
+            if session is not None:
+                from agent.memory.session import save_session
+                save_session(session, agent.messages)
+
         try:
-            response = await agent.chat(user_input, on_tool_call=on_tool, on_token=on_token)
+            response = await agent.chat(
+                user_input,
+                on_tool_call=on_tool,
+                on_token=on_token,
+                on_user_message=_on_user_message,
+            )
         except Exception as e:
             console.print(f"[{t.error}]Error: {e}[/{t.error}]")
             continue
         finally:
             _spinner_stop.set()
             await _spinner_task
+
+        if session is not None:
+            from agent.memory.session import save_session
+            save_session(session, agent.messages)
 
         # If streaming was active, the text is already printed; just add newline.
         # If no streaming occurred (tool-only turn), print the response normally.
@@ -692,14 +858,14 @@ async def simple_loop(agent: "Agent", session_name: str = "default") -> None:
 
 # ── Entry point ──────────────────────────────────────────────────────────────
 
-def run_ui(agent: "Agent", session_name: str = "default") -> None:
+def run_ui(agent: "Agent", session=None) -> None:
     cfg = agent.config
     if cfg.ui.mode == "textual":
         try:
-            app = _build_textual_app(agent)
+            app = _build_textual_app(agent, session=session)
             app.run()
         except ImportError:
             print("Textual not available, falling back to simple mode.")
-            asyncio.run(simple_loop(agent, session_name=session_name))
+            asyncio.run(simple_loop(agent, session=session))
     else:
-        asyncio.run(simple_loop(agent, session_name=session_name))
+        asyncio.run(simple_loop(agent, session=session))

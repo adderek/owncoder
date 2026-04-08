@@ -189,7 +189,7 @@ def cmd_chat(args, config):
     from agent.rag.embedder import Embedder
     from agent.agent import Agent
     from agent.ui.terminal import run_ui
-    from agent.memory.session import load_session, save_session
+    from agent.memory.session import new_session, load_session, save_session
     from rich.console import Console
     import os
 
@@ -221,18 +221,24 @@ def cmd_chat(args, config):
 
     agent = Agent(config, store=store, embedder=embedder)
 
-    session_name = args.session or "default"
-    messages, meta = load_session(session_name)
-    if messages:
-        # Strip internal flags that must not persist across sessions
-        messages = [{k: v for k, v in m.items() if not k.startswith("_")} for m in messages]
-        agent.messages = messages
-        console.print(f"Loaded session: {session_name} ({len(messages)} messages)")
+    if args.session:
+        session, messages = load_session(args.session)
+        if session is None:
+            # Treat the arg as a short_name for a new session.
+            session = new_session(short_name=args.session)
+            messages = []
+        if messages:
+            messages = [{k: v for k, v in m.items() if not k.startswith("_")} for m in messages]
+            agent.messages = messages
+            console.print(f"Loaded session: {session.id} ({len(messages)} messages)")
+    else:
+        session = new_session()
+        console.print(f"New session: {session.id}")
 
     try:
-        run_ui(agent, session_name=session_name)
+        run_ui(agent, session=session)
     finally:
-        save_session(session_name, agent.messages)
+        save_session(session, agent.messages)
         if store:
             store.close()
 
@@ -294,11 +300,12 @@ def cmd_sessions(args, config):
     console = Console()
 
     if args.load:
-        messages, meta = load_session(args.load)
-        if not messages:
+        session, messages = load_session(args.load)
+        if session is None:
             console.print(f"Session '{args.load}' not found.")
             return
-        console.print(f"Session '{args.load}': {len(messages)} messages")
+        label = session.name or session.short_name or session.id
+        console.print(f"Session '{label}' ({session.id}): {len(messages)} messages")
         return
 
     sessions = list_sessions()
@@ -307,13 +314,24 @@ def cmd_sessions(args, config):
         return
 
     table = Table(title="Sessions")
+    table.add_column("ID")
+    table.add_column("Short name")
     table.add_column("Name")
-    table.add_column("Messages")
-    table.add_column("Saved At")
+    table.add_column("Tags")
+    table.add_column("Msgs", justify="right")
+    table.add_column("Updated")
 
     for s in sessions:
-        saved = datetime.datetime.fromtimestamp(s["saved_at"]).strftime("%Y-%m-%d %H:%M") if s["saved_at"] else "?"
-        table.add_row(s["name"], str(s["message_count"]), saved)
+        ts = s.get("updated_at") or s.get("created_at")
+        updated = datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else "?"
+        table.add_row(
+            s["id"],
+            s.get("short_name", ""),
+            s.get("name", ""),
+            ", ".join(s.get("tags", [])),
+            str(s["message_count"]),
+            updated,
+        )
 
     console.print(table)
 
@@ -327,12 +345,13 @@ def cmd_debug_context(args, config):
 
     console = Console()
     session_name = args.session or "default"
-    messages, _ = load_session(session_name)
+    session, messages = load_session(session_name)
     if not messages:
         console.print("No session loaded.")
         return
 
-    table = Table(title=f"Context: session '{session_name}'", show_lines=True)
+    label = (session.name or session.short_name or session.id) if session else session_name
+    table = Table(title=f"Context: session '{label}'", show_lines=True)
     table.add_column("#", style="dim", width=4)
     table.add_column("Role", width=10)
     table.add_column("Tokens", justify="right", width=7)
@@ -420,7 +439,7 @@ def main():
     from agent.memory.session import configure as configure_sessions
     config_path = Path(args.config) if args.config else None
     config = load_config(config_path)
-    configure_sessions(config.tools.working_dir)
+    configure_sessions(config.tools.working_dir, config.tools.agent_dir)
 
     if args.command == "init":
         cmd_init(args, config)
