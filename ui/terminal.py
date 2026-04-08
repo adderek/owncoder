@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import traceback
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from agent.agent import Agent
@@ -480,7 +484,10 @@ def _build_textual_app(agent: "Agent", session=None):
             if event.state == WorkerState.SUCCESS:
                 response = event.worker.result
             elif event.state == WorkerState.ERROR:
-                response = f"[{t.error}]Error: {event.worker.error}[/{t.error}]"
+                err = event.worker.error
+                tb = "".join(traceback.format_exception(type(err), err, err.__traceback__)) if err else ""
+                logger.error("chat worker error: %s\n%s", err, tb)
+                response = f"[{t.error}]Error: {err}[/{t.error}]"
             else:
                 response = None
 
@@ -865,6 +872,7 @@ async def simple_loop(agent: "Agent", session=None) -> None:
                 on_user_message=_on_user_message,
             )
         except Exception as e:
+            logger.error("chat error: %s\n%s", e, traceback.format_exc())
             console.print(f"[{t.error}]Error: {e}[/{t.error}]")
             continue
         finally:

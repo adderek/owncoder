@@ -57,3 +57,12 @@ or `AGENT_UI_MODE=readline agent chat`
 cd /home/adderek/src/ollama-turboquant
 ./go.sh
 ```
+
+owncoder/agent/ = inner agent repo, master branch (dev)
+owncoder-stable/agent/ = worktree of same repo but branch "stable"
+
+When I am sure that master is stable:
+```
+git -C /home/adderek/src/owncoder/agent merge master
+git -C /home/adderek/src/owncoder-stable/agent pull
+```

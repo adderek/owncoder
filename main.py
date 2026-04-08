@@ -4,8 +4,29 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import sys
 from pathlib import Path
+
+
+def _setup_logging(agent_dir: str | None = None) -> None:
+    """Configure root logger: DEBUG to agent.log, WARNING to stderr."""
+    log_dir = Path(agent_dir) if agent_dir else Path(".agent")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "agent.log"
+
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+
+    fh = logging.FileHandler(log_path, encoding="utf-8")
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s"))
+    root.addHandler(fh)
+
+    sh = logging.StreamHandler(sys.stderr)
+    sh.setLevel(logging.WARNING)
+    sh.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    root.addHandler(sh)
 
 
 def cmd_init(args, config):
@@ -440,6 +461,7 @@ def main():
     config_path = Path(args.config) if args.config else None
     config = load_config(config_path)
     configure_sessions(config.tools.working_dir, config.tools.agent_dir)
+    _setup_logging(str(Path(config.tools.working_dir) / config.tools.agent_dir))
 
     if args.command == "init":
         cmd_init(args, config)

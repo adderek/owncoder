@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import time
+import traceback
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, AsyncIterator
@@ -54,13 +55,16 @@ async def execute_tool(tool_call) -> str:
         args = json.loads(tool_call.function.arguments or "{}")
     except json.JSONDecodeError:
         args = {}
+    logger.debug("execute_tool: %s  args=%s", name, args)
     fn = get_tool(name)
     if fn is None:
+        logger.warning("execute_tool: unknown tool %r", name)
         return json.dumps({"error": f"Unknown tool: {name}"})
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(None, lambda: fn(**args))
         serialised = json.dumps(result, ensure_ascii=False)
+        logger.debug("execute_tool: %s  result_len=%d", name, len(serialised))
         # Hard cap: ~32 K chars ≈ 8 K tokens. Truncate with a clear notice.
         limit = 32_000
         if len(serialised) > limit:
@@ -71,7 +75,11 @@ async def execute_tool(tool_call) -> str:
             return kept + truncation_notice
         return serialised
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        logger.error(
+            "execute_tool: %s raised %s: %s\n%s",
+            name, type(e).__name__, e, traceback.format_exc(),
+        )
+        return json.dumps({"error": str(e), "tool": name, "error_type": type(e).__name__})
 
 
 # Tags that wrap raw tool call JSON in model output
@@ -307,7 +315,7 @@ async def run_turn(
         # Model described what it will do instead of doing it.
         # Try to extract and apply code directly from this response first.
         messages_with_current = messages + [{"role": "assistant", "content": content}]
-        applied = await _apply_code_from_history(messages_with_current, on_tool_call)
+        applied = _apply_code_from_history(messages_with_current, on_tool_call)
         if applied:
             messages = messages_with_current + [{"role": "assistant", "content": applied}]
             return f"{content}\n\n{applied}", messages
@@ -321,7 +329,7 @@ async def run_turn(
     
     if already_nudged and (not content.strip() or _is_narrating_tool_use(content)):
         # Nudge also failed — last resort extraction
-        applied = await _apply_code_from_history(messages, on_tool_call)
+        applied = _apply_code_from_history(messages, on_tool_call)
         if applied:
             messages = messages + [{"role": "assistant", "content": applied}]
             return applied, messages
