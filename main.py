@@ -466,3 +466,10 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# exec command handler
+elif args.command == "exec":
+    from agent.tools.exec_command import handle_exec_command
+    handle_exec_command(args, config)
+
