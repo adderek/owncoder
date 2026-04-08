@@ -460,6 +460,10 @@ def main():
         cmd_sessions(args, config)
     elif args.command == "debug":
         cmd_debug_context(args, config)
+    # exec command handler
+    elif args.command == "exec":
+        from agent.tools.exec_command import handle_exec_command
+        handle_exec_command(args, config)
     else:
         parser.print_help()
 
@@ -468,8 +472,4 @@ if __name__ == "__main__":
     main()
 
 
-# exec command handler
-elif args.command == "exec":
-    from agent.tools.exec_command import handle_exec_command
-    handle_exec_command(args, config)
 

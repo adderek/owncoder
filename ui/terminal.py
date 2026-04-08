@@ -366,6 +366,23 @@ def _build_textual_app(agent: "Agent", session=None):
                     else:
                         self._write_sys(f"[{t.success}]Restored {target}[/{t.success}]")
 
+            elif cmd == "/exec":
+                if not arg.strip():
+                    self._write_sys(f"[{t.warning}]Usage: /exec <command>[/{t.warning}]")
+                else:
+                    from agent.tools.shell import run_command
+                    self._write_sys(f"[{t.text_dim}]$ {arg.strip()}[/{t.text_dim}]")
+                    result = run_command(arg.strip())
+                    if result.get("stdout"):
+                        self._write_sys(result["stdout"].rstrip())
+                    if result.get("stderr"):
+                        self._write_sys(f"[{t.warning}]{result['stderr'].rstrip()}[/{t.warning}]")
+                    rc = result.get("returncode", 0)
+                    if rc != 0:
+                        self._write_sys(f"[{t.error}]exit code {rc}[/{t.error}]")
+                    elif result.get("error"):
+                        self._write_sys(f"[{t.error}]{result['error']}[/{t.error}]")
+
             elif cmd == "/export":
                 import json as _json
                 lines = []
@@ -509,6 +526,7 @@ def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
   [{c}]/load <name>[/{c}]        load a saved session into the current conversation
   [{c}]/sessions[/{c}]           list saved sessions
   [{c}]/tools[/{c}]              list available tools
+  [{c}]/exec <command>[/{c}]      run an OS command and show output
   [{c}]/apply [file][/{c}]       write last code block to file (bypass tool calling)
   [{c}]/undo [file][/{c}]        restore last pre-write snapshot of a file
   [{c}]/export [file][/{c}]      export conversation as markdown
@@ -634,7 +652,7 @@ async def simple_loop(agent: "Agent", session=None) -> None:
 
     prompt_esc = _hex_to_ansi(t.prompt)
     console.print(f"[bold {t.agent_color}]local-code-agent[/bold {t.agent_color}]  [dim]{cfg.llm.model}  {cfg.llm.ctx_window} ctx[/dim]")
-    console.print(f"[{t.text_dim}]/help /compact /tokens /reset /tools /apply /save /sessions  ·  Ctrl+D to quit[/{t.text_dim}]\n")
+    console.print(f"[{t.text_dim}]/help /compact /tokens /reset /tools /exec /apply /save /sessions  ·  Ctrl+D to quit[/{t.text_dim}]\n")
 
     while True:
         try:
@@ -757,6 +775,23 @@ async def simple_loop(agent: "Agent", session=None) -> None:
                         console.print(f"[red]{r['error']}[/red]")
                     else:
                         console.print(f"[green]Restored {target}[/green]")
+
+            elif cmd == "/exec":
+                if not arg.strip():
+                    console.print("[yellow]Usage: /exec <command>[/yellow]")
+                else:
+                    from agent.tools.shell import run_command
+                    console.print(f"[dim]$ {arg.strip()}[/dim]")
+                    result = run_command(arg.strip())
+                    if result.get("stdout"):
+                        console.print(result["stdout"].rstrip())
+                    if result.get("stderr"):
+                        console.print(f"[yellow]{result['stderr'].rstrip()}[/yellow]")
+                    rc = result.get("returncode", 0)
+                    if rc != 0:
+                        console.print(f"[red]exit code {rc}[/red]")
+                    elif result.get("error"):
+                        console.print(f"[red]{result['error']}[/red]")
 
             elif cmd == "/export":
                 import json as _json
