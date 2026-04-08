@@ -1,0 +1,32 @@
+# Dark Green + Orange theme (default)
+# Copy any of these into your agent.toml under [ui.theme] to override.
+#
+# Usage in agent.toml:
+#   [ui.theme]
+#   active      = "#E8801A"
+#   border      = "#2E7D32"
+
+[ui.theme]
+# ── Backgrounds ──────────────────────────────────────────────────────────────
+bg            = "#0C0C0C"   # main screen background
+panel_bg      = "#141414"   # header / status-bar background
+panel_bg_dark = "#0E0E0E"   # slightly darker panel (git bar)
+
+# ── Borders ───────────────────────────────────────────────────────────────────
+border = "#2E7D32"   # content-area border (dark forest green)
+active = "#E8801A"   # active / emphasised elements (orange)
+                     # → input box border, loading indicator, Agent: label
+
+# ── Text ──────────────────────────────────────────────────────────────────────
+text     = "#C0C0C0"   # normal text
+text_dim = "#505050"   # de-emphasised text
+
+# ── Semantic roles ────────────────────────────────────────────────────────────
+user_color  = "#388E3C"   # "You:" label  (medium green)
+agent_color = "#E8801A"   # "Agent:" label (orange — emphasised output)
+tool_color  = "#505050"   # tool-call indicator (dim)
+cmd_color   = "#388E3C"   # slash-command names in /help
+prompt      = "#388E3C"   # CLI input prompt ">"
+success     = "#388E3C"   # success messages
+warning     = "#F9A825"   # warnings / unknown commands
+error       = "#C62828"   # error messages

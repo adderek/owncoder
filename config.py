@@ -42,10 +42,46 @@ class ToolsConfig:
 
 
 @dataclass
+class ThemeConfig:
+    """Color theme for both the Textual TUI and the simple terminal loop.
+
+    All colors are hex strings (#RRGGBB).  Override any of these under
+    [ui.theme] in agent.toml to create your own theme.  Example:
+
+        [ui.theme]
+        active     = "#00BFFF"   # sky-blue accent instead of orange
+        border     = "#1A3A5C"   # navy border instead of green
+    """
+    # ── Backgrounds ────────────────────────────────────────────────────────
+    bg:            str = "#0C0C0C"   # main screen background
+    panel_bg:      str = "#141414"   # header / status-bar background
+    panel_bg_dark: str = "#0E0E0E"   # slightly darker panel (git bar)
+
+    # ── Borders ────────────────────────────────────────────────────────────
+    border: str = "#2E7D32"   # content area border (dark forest green)
+    active: str = "#E8801A"   # active / emphasized element border (orange)
+
+    # ── Text ───────────────────────────────────────────────────────────────
+    text:     str = "#C0C0C0"   # normal text
+    text_dim: str = "#505050"   # de-emphasised text
+
+    # ── Semantic roles ─────────────────────────────────────────────────────
+    user_color:  str = "#388E3C"   # "You:" label  (medium green)
+    agent_color: str = "#E8801A"   # "Agent:" label (orange — emphasised)
+    tool_color:  str = "#505050"   # tool-call indicator (dim)
+    cmd_color:   str = "#388E3C"   # slash-command names in /help (green)
+    prompt:      str = "#388E3C"   # CLI input prompt ">" (green)
+    success:     str = "#388E3C"   # success messages
+    warning:     str = "#F9A825"   # warning / unknown-command messages
+    error:       str = "#C62828"   # error messages
+
+
+@dataclass
 class UIConfig:
     mode: str = "textual"
     syntax_highlight: bool = True
     show_token_count: bool = True
+    theme: ThemeConfig = field(default_factory=ThemeConfig)
 
 
 @dataclass
@@ -95,19 +131,28 @@ def _load_toml(path: Path) -> dict:
         return tomllib.load(f)
 
 
+def _merge_obj(obj: object, data: dict) -> None:
+    """Recursively apply *data* dict onto a dataclass *obj*."""
+    for key, val in data.items():
+        if not hasattr(obj, key):
+            continue
+        attr = getattr(obj, key)
+        if isinstance(val, dict) and hasattr(attr, "__dataclass_fields__"):
+            _merge_obj(attr, val)
+        else:
+            setattr(obj, key, val)
+
+
 def _merge(config: Config, data: dict) -> None:
-    section_map = {
-        "llm": (config.llm, LLMConfig),
-        "embeddings": (config.embeddings, EmbeddingsConfig),
-        "rag": (config.rag, RAGConfig),
-        "tools": (config.tools, ToolsConfig),
-        "ui": (config.ui, UIConfig),
-    }
-    for section_name, (obj, _cls) in section_map.items():
+    for section_name, obj in (
+        ("llm", config.llm),
+        ("embeddings", config.embeddings),
+        ("rag", config.rag),
+        ("tools", config.tools),
+        ("ui", config.ui),
+    ):
         section_data = data.get(section_name, {})
-        for key, val in section_data.items():
-            if hasattr(obj, key):
-                setattr(obj, key, val)
+        _merge_obj(obj, section_data)
 
 
 def load_config(extra_path: Path | None = None) -> Config:

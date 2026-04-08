@@ -1,7 +1,7 @@
 from __future__ import annotations
-
 import json
 import re
+from functools import lru_cache
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -25,6 +25,19 @@ The facts object should contain:
 }
 """
 
+@lru_cache(maxsize=128)
+def count_tokens_approx_cached(messages: list[dict]) -> int:
+    from agent._tokens import count_tokens_approx
+    total = 0
+    for m in messages:
+        content = m.get("content") or ""
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict):
+                    total += count_tokens_approx(str(part.get("text", "")))
+        else:
+            total += count_tokens_approx(str(content))
+    return total
 
 def _count_tokens_approx(messages: list[dict]) -> int:
     from agent._tokens import count_tokens_approx
@@ -39,21 +52,19 @@ def _count_tokens_approx(messages: list[dict]) -> int:
             total += count_tokens_approx(str(content))
     return total
 
-
 def _parse_compaction_output(text: str) -> tuple[dict, str]:
     facts_match = re.search(r"<facts>(.*?)</facts>", text, re.DOTALL)
     summary_match = re.search(r"<summary>(.*?)</summary>", text, re.DOTALL)
-
+    
     facts = {}
     if facts_match:
         try:
             facts = json.loads(facts_match.group(1).strip())
         except json.JSONDecodeError:
             pass
-
+    
     summary = summary_match.group(1).strip() if summary_match else text[:2000]
     return facts, summary
-
 
 async def compact(
     messages: list[dict],
@@ -63,7 +74,7 @@ async def compact(
 ) -> list[dict]:
     if len(messages) <= keep_last * 2:
         return messages
-
+    
     system_msg = None
     conversation = []
     for m in messages:
@@ -71,13 +82,13 @@ async def compact(
             system_msg = m
         else:
             conversation.append(m)
-
+    
     to_compact = conversation[:-keep_last * 2] if len(conversation) > keep_last * 2 else []
     verbatim = conversation[-keep_last * 2:] if len(conversation) >= keep_last * 2 else conversation
-
+    
     if not to_compact:
         return messages
-
+    
     def _msg_text(m: dict) -> str:
         role = m.get("role", "?")
         content = m.get("content")
@@ -87,19 +98,19 @@ async def compact(
             body = json.dumps(content)
         elif m.get("tool_calls"):
             calls = [f"{tc['function']['name']}({tc['function'].get('arguments', '')})"
-                     for tc in m["tool_calls"] if isinstance(tc, dict)]
+                    for tc in m["tool_calls"] if isinstance(tc, dict)]
             body = "[tool_calls: " + ", ".join(calls) + "]"
         else:
             body = ""
         return f"[{role}]: {body}"
-
+    
     transcript_text = "\n".join(_msg_text(m) for m in to_compact)
-
+    
     compaction_messages = [
         {"role": "system", "content": COMPACTION_PROMPT},
         {"role": "user", "content": f"Compact this session transcript:\n\n{transcript_text}"},
     ]
-
+    
     try:
         response = await client.chat.completions.create(
             model=config.llm.model,
@@ -110,12 +121,11 @@ async def compact(
     except Exception as e:
         # Fallback: just truncate
         output = f"<facts>{{}}</facts><summary>Session compacted due to error: {e}</summary>"
-
+    
     facts, summary = _parse_compaction_output(output)
-
     compacted_content = f"[SESSION SUMMARY]\n{json.dumps(facts, separators=(',', ':'))}\n\n{summary}"
     compacted_msg = {"role": "assistant", "content": compacted_content}
-
+    
     result = []
     if system_msg:
         result.append(system_msg)

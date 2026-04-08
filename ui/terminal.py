@@ -12,6 +12,8 @@ if TYPE_CHECKING:
 # ── Textual UI ──────────────────────────────────────────────────────────────
 
 def _build_textual_app(agent: "Agent"):
+    t = agent.config.ui.theme  # shorthand used throughout
+
     from textual.app import App, ComposeResult
     from textual.widgets import Header, Footer, Input, RichLog, Static, ProgressBar, TextArea, LoadingIndicator
     from textual.containers import Vertical, Horizontal
@@ -71,53 +73,65 @@ def _build_textual_app(agent: "Agent"):
             self.name = name
 
     class CodeAgentApp(App):
-        CSS = """
-        Screen {
+        CSS = f"""
+        Screen {{
+            background: {t.bg};
             layout: vertical;
-        }
-        #header-bar {
+        }}
+        #header-bar {{
             height: 1;
-            background: $panel;
+            background: {t.panel_bg};
+            color: {t.text_dim};
             padding: 0 1;
-        }
-        #conversation {
+        }}
+        #conversation {{
             height: 1fr;
-            border: solid $primary;
+            border: solid {t.border};
             padding: 0 1;
-        }
-        #context-panel {
+        }}
+        #conversation:focus {{
+            border: solid {t.active};
+        }}
+        #context-panel {{
             height: 3;
-            background: $panel;
+            background: {t.panel_bg};
+            color: {t.text_dim};
             padding: 0 1;
-        }
-        #git-status {
+        }}
+        #git-status {{
             height: 1;
-            background: $panel-darken-1;
+            background: {t.panel_bg_dark};
+            color: {t.text_dim};
             padding: 0 1;
-        }
-        #input-bar {
+        }}
+        #input-bar {{
             height: auto;
             max-height: 8;
             min-height: 3;
-            border: solid $accent;
-        }
-        TokenBar {
+            border: solid {t.border};
+        }}
+        #input-bar:focus {{
+            border: solid {t.active};
+        }}
+        TokenBar {{
             height: 1;
-        }
-        LoadingIndicator {
+            color: {t.text_dim};
+        }}
+        LoadingIndicator {{
             display: none;
             height: 1;
-            background: $accent;
-        }
-        LoadingIndicator.active {
+            background: {t.active};
+        }}
+        LoadingIndicator.active {{
             display: block;
-        }
+        }}
         """
 
         BINDINGS = [
             Binding("ctrl+q", "quit", "Quit"),
             Binding("ctrl+d", "quit", "Quit", show=False),
             Binding("f1", "show_help", "Help"),
+            Binding("tab", "focus_next", "Switch panel", show=True),
         ]
 
         def __init__(self, agent: "Agent", **kwargs):
@@ -125,6 +139,7 @@ def _build_textual_app(agent: "Agent"):
             self._agent = agent
             self._last_tool_calls: list[str] = []
             self._current_tool: str | None = None
+            self._tokens_before: int = 0
 
         def compose(self) -> ComposeResult:
             cfg = self._agent.config
@@ -136,7 +151,7 @@ def _build_textual_app(agent: "Agent"):
             yield TokenBar(cfg.llm.ctx_window, id="token-bar")
             yield ConversationView(id="conversation", markup=True, highlight=True)
             yield LoadingIndicator(id="loading-indicator")
-            yield ContextPanel("context: (none)", id="context-panel")
+            yield ContextPanel("", id="context-panel")
             yield GitStatusBar("git: loading...", id="git-status")
             yield PromptInput(id="input-bar")
             yield Footer()
@@ -164,19 +179,19 @@ def _build_textual_app(agent: "Agent"):
         async def _run_slash(self, cmd: str, arg: str, conv: "ConversationView") -> None:
             from openai import AsyncOpenAI
             if cmd == "/help":
-                conv.write("[bold]Commands:[/bold]  /help  /compact  /tokens  /reset  /tools  /save [name]  /load <name>  /sessions  /export [file]")
+                conv.write(_make_help_text(t))
             elif cmd == "/compact":
                 from agent.memory.compactor import compact
                 cfg = self._agent.config
                 client = AsyncOpenAI(base_url=cfg.llm.base_url, api_key=cfg.llm.api_key)
                 before = self._agent.token_estimate()
-                conv.write("[dim]Compacting…[/dim]")
+                conv.write(f"[{t.text_dim}]Compacting…[/{t.text_dim}]")
                 try:
                     self._agent.messages = await compact(self._agent.messages, cfg, client)
                     after = self._agent.token_estimate()
-                    conv.write(f"[green]Compacted.[/green] {before} → {after} tokens")
+                    conv.write(f"[{t.success}]Compacted.[/{t.success}] {before} → {after} tokens")
                 except Exception as e:
-                    conv.write(f"[red]Compact failed: {e}[/red]")
+                    conv.write(f"[{t.error}]Compact failed: {e}[/{t.error}]")
                 self.query_one("#token-bar", TokenBar).update_tokens(self._agent.token_estimate())
             elif cmd == "/tokens":
                 used = self._agent.token_estimate()
@@ -185,50 +200,50 @@ def _build_textual_app(agent: "Agent"):
             elif cmd == "/reset":
                 system = next((m for m in self._agent.messages if m.get("role") == "system"), None)
                 self._agent.messages = [system] if system else []
-                conv.write("[dim]History cleared.[/dim]")
+                conv.write(f"[{t.text_dim}]History cleared.[/{t.text_dim}]")
             elif cmd == "/tools":
                 from agent.tools import get_schemas
-                names = [t["function"]["name"] for t in get_schemas()]
+                names = [s["function"]["name"] for s in get_schemas()]
                 conv.write("Tools: " + "  ".join(names))
             elif cmd == "/save":
                 from agent.memory.session import save_session
                 name = arg.strip() or "default"
                 save_session(name, self._agent.messages)
-                conv.write(f"[dim]Saved as '{name}'.[/dim]")
+                conv.write(f"[{t.text_dim}]Saved as '{name}'.[/{t.text_dim}]")
             elif cmd == "/load":
                 if not arg.strip():
-                    conv.write("[yellow]Usage: /load <session-name>[/yellow]")
+                    conv.write(f"[{t.warning}]Usage: /load <session-name>[/{t.warning}]")
                 else:
                     from agent.memory.session import load_session
                     loaded_msgs, _ = load_session(arg.strip())
                     if not loaded_msgs:
-                        conv.write(f"[yellow]Session '{arg.strip()}' not found.[/yellow]")
+                        conv.write(f"[{t.warning}]Session '{arg.strip()}' not found.[/{t.warning}]")
                     else:
                         loaded_msgs = [{k: v for k, v in m.items() if not k.startswith("_")} for m in loaded_msgs]
                         self._agent.messages = loaded_msgs
-                        conv.write(f"[dim]Loaded session '{arg.strip()}' ({len(loaded_msgs)} messages).[/dim]")
+                        conv.write(f"[{t.text_dim}]Loaded session '{arg.strip()}' ({len(loaded_msgs)} messages).[/{t.text_dim}]")
                         self.query_one("#token-bar", TokenBar).update_tokens(self._agent.token_estimate())
             elif cmd == "/sessions":
                 from agent.memory.session import list_sessions
                 import datetime
                 for s in list_sessions():
                     ts = datetime.datetime.fromtimestamp(s["saved_at"]).strftime("%Y-%m-%d %H:%M") if s["saved_at"] else "?"
-                    conv.write(f"  {s['name']}  {s['message_count']} msgs  {ts}")
+                    conv.write(f"  [{t.cmd_color}]{s['name']}[/{t.cmd_color}]  {s['message_count']} msgs  [{t.text_dim}]{ts}[/{t.text_dim}]")
             elif cmd == "/undo":
                 from agent.tools.files import undo_file, undo_candidates
                 target = arg.strip()
                 if not target:
                     candidates = undo_candidates()
                     if not candidates:
-                        conv.write("[yellow]Nothing to undo.[/yellow]")
+                        conv.write(f"[{t.warning}]Nothing to undo.[/{t.warning}]")
                     else:
                         conv.write("Undo candidates: " + ", ".join(candidates))
                 else:
                     r = undo_file(target)
                     if "error" in r:
-                        conv.write(f"[red]{r['error']}[/red]")
+                        conv.write(f"[{t.error}]{r['error']}[/{t.error}]")
                     else:
-                        conv.write(f"[green]Restored {target}[/green]")
+                        conv.write(f"[{t.success}]Restored {target}[/{t.success}]")
             elif cmd == "/export":
                 import json as _json
                 lines = []
@@ -251,9 +266,9 @@ def _build_textual_app(agent: "Agent"):
                 md_text = "\n---\n".join(lines)
                 target = arg.strip() or "session.md"
                 Path(target).write_text(md_text, encoding="utf-8")
-                conv.write(f"[dim]Exported to {target} ({len(lines)} turns).[/dim]")
+                conv.write(f"[{t.text_dim}]Exported to {target} ({len(lines)} turns).[/{t.text_dim}]")
             else:
-                conv.write(f"[yellow]Unknown command '{cmd}'. Type /help.[/yellow]")
+                conv.write(f"[{t.warning}]Unknown command '{cmd}'. Type /help.[/{t.warning}]")
 
         async def on_prompt_input_submitted(self, event: PromptInput.Submitted) -> None:
             user_text = event.value.strip()
@@ -267,9 +282,10 @@ def _build_textual_app(agent: "Agent"):
                 await self._run_slash(parts[0].lower(), parts[1] if len(parts) > 1 else "", conv)
                 return
 
-            conv.write(f"[bold cyan]You:[/bold cyan] {user_text}")
+            conv.write(f"[bold {t.user_color}]You:[/bold {t.user_color}] {user_text}")
             self._last_tool_calls = []
             self._current_tool = None
+            self._tokens_before = self._agent.token_estimate()
 
             self.query_one("#input-bar", PromptInput).disabled = True
             self.query_one("#loading-indicator", LoadingIndicator).add_class("active")
@@ -287,8 +303,8 @@ def _build_textual_app(agent: "Agent"):
             return await self._agent.chat(user_text, on_tool_call=on_tool)
 
         def on_tool_call_event(self, event: ToolCallEvent) -> None:
-            self.query_one("#conversation", ConversationView).write(f"[dim]  ⚙ {event.name}[/dim]")
-            self.query_one("#context-panel", ContextPanel).set_context(f"[dim]⚙ {event.name}[/dim]")
+            self.query_one("#conversation", ConversationView).write(f"[{t.tool_color}]  ⚙ {event.name}[/{t.tool_color}]")
+            self.query_one("#context-panel", ContextPanel).set_context(f"[{t.tool_color}]⚙ {event.name}[/{t.tool_color}]")
 
         def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
             if event.worker.name != "chat":
@@ -308,15 +324,23 @@ def _build_textual_app(agent: "Agent"):
             else:
                 response = None
 
-            context_text = (
-                f"context: {', '.join(self._last_tool_calls[-3:])}"
-                if self._last_tool_calls else "context: (none)"
+            tokens_after = self._agent.token_estimate()
+            delta = tokens_after - self._tokens_before
+            tools_line = (
+                f"[{t.tool_color}]⚙ {', '.join(self._last_tool_calls[-3:])}[/{t.tool_color}]"
+                if self._last_tool_calls else ""
             )
-            self.query_one("#context-panel", ContextPanel).set_context(context_text)
+            token_line = (
+                f"[{t.text_dim}]sent ≈{self._tokens_before:,}  "
+                f"[{t.active}]+{delta:,}[/{t.active}] new  "
+                f"total {tokens_after:,}[/{t.text_dim}]"
+            )
+            panel_text = f"{tools_line}\n{token_line}" if tools_line else token_line
+            self.query_one("#context-panel", ContextPanel).set_context(panel_text)
 
             if response:
                 self.query_one("#conversation", ConversationView).write(
-                    f"[bold green]Agent:[/bold green] {response}"
+                    f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] {response}"
                 )
 
             self.query_one("#token-bar", TokenBar).update_tokens(self._agent.token_estimate())
@@ -327,21 +351,23 @@ def _build_textual_app(agent: "Agent"):
 
 # ── Simple (Claude Code-style) ───────────────────────────────────────────────
 
-_HELP_TEXT = """
+def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
+    c = theme.cmd_color
+    return f"""
 [bold]Slash commands[/bold]
 
-  [cyan]/help[/cyan]               show this message
-  [cyan]/compact[/cyan]            summarise old messages to free context space
-  [cyan]/tokens[/cyan]             show token usage breakdown
-  [cyan]/clear[/cyan]              clear the screen
-  [cyan]/reset[/cyan]              drop conversation history (keep system prompt)
-  [cyan]/save [name][/cyan]        save session under a name (default: current)
-  [cyan]/load <name>[/cyan]        load a saved session into the current conversation
-  [cyan]/sessions[/cyan]           list saved sessions
-  [cyan]/tools[/cyan]              list available tools
-  [cyan]/apply [file][/cyan]       write last code block to file (bypass tool calling)
-  [cyan]/undo [file][/cyan]        restore last pre-write snapshot of a file
-  [cyan]/export [file][/cyan]      export conversation as markdown
+  [{c}]/help[/{c}]               show this message
+  [{c}]/compact[/{c}]            summarise old messages to free context space
+  [{c}]/tokens[/{c}]             show token usage breakdown
+  [{c}]/clear[/{c}]              clear the screen
+  [{c}]/reset[/{c}]              drop conversation history (keep system prompt)
+  [{c}]/save [name][/{c}]        save session under a name (default: current)
+  [{c}]/load <name>[/{c}]        load a saved session into the current conversation
+  [{c}]/sessions[/{c}]           list saved sessions
+  [{c}]/tools[/{c}]              list available tools
+  [{c}]/apply [file][/{c}]       write last code block to file (bypass tool calling)
+  [{c}]/undo [file][/{c}]        restore last pre-write snapshot of a file
+  [{c}]/export [file][/{c}]      export conversation as markdown
 
 [dim]Ctrl+D or Ctrl+C to quit[/dim]
 """
@@ -355,18 +381,102 @@ def _token_bar(used: int, ctx: int, bar_len: int = 20) -> str:
     return f"[dim]tokens {used}/{ctx}[/dim] {bar}"
 
 
-async def _run_spinner(status_ref: list[str], stop: asyncio.Event) -> None:
+def _spinner_status_fields(agent, status: str, elapsed: float) -> list[str]:
+    """Return status fields in priority order (most meaningful first).
+
+    Priority order (can be reordered by user preference in future):
+      1. ctx%    — context fill % — most actionable; warns when near limit
+      2. tokens  — used/total tokens — detail behind ctx%
+      3. msgs    — conversation depth (message count)
+      4. status  — current operation text (thinking / tool name)
+      5. files   — number of indexed files (if RAG store present)
+      6. chunks  — number of indexed chunks (if RAG store present)
+      7. model   — model name (useful when switching models)
+      8. time    — elapsed seconds for current operation
+    """
+    fields: list[str] = []
+
+    if agent is not None:
+        cfg = agent.config
+        ctx = cfg.llm.ctx_window or 0
+        used = agent.token_estimate()
+
+        if ctx:
+            pct = int(used / ctx * 100)
+            fields.append(f"ctx {pct}%")
+            k_used = f"{used/1000:.1f}k" if used >= 1000 else str(used)
+            k_ctx = f"{ctx//1000}k" if ctx >= 1000 else str(ctx)
+            fields.append(f"{k_used}/{k_ctx}")
+
+        msg_count = max(0, len(agent.messages) - 1)  # exclude system prompt
+        fields.append(f"{msg_count} msg")
+
+    fields.append(status)
+
+    if agent is not None and agent.store is not None:
+        try:
+            s = agent.store.stats()
+            fields.append(f"{s['files']} files")
+            fields.append(f"{s['chunks']} chunks")
+        except Exception:
+            pass
+
+    if agent is not None:
+        model = agent.config.llm.model or ""
+        if model:
+            fields.append(model)
+
+    fields.append(f"{elapsed:.1f}s")
+
+    return fields
+
+
+async def _run_spinner(status_ref: list[str], stop: asyncio.Event, agent=None) -> None:
     import sys
+    import shutil
+    import time as _time
     frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    # Animation prefix is at most 2 chars ("⠋ "), leaving the rest for status fields.
+    # Max animation width = 5 chars; we use 2, giving 3 chars of padding for future use.
+    ANIM_WIDTH = 2  # frame char + space
+    SEP = "  "      # separator between fields
     i = 0
+    t0 = _time.monotonic()
     while not stop.is_set():
         frame = frames[i % len(frames)]
-        sys.stdout.write(f"\r\033[2m{frame} {status_ref[0]}\033[0m")
+        elapsed = _time.monotonic() - t0
+        term_width = shutil.get_terminal_size((80, 24)).columns
+        available = term_width - ANIM_WIDTH
+
+        fields = _spinner_status_fields(agent, status_ref[0], elapsed)
+
+        # Greedily fit as many fields as possible from highest priority
+        parts: list[str] = []
+        remaining = available
+        for field in fields:
+            needed = len(field) + (len(SEP) if parts else 0)
+            if needed <= remaining:
+                parts.append(field)
+                remaining -= needed
+            # Always include at least the first field (status), even if truncated
+            elif not parts:
+                parts.append(field[:available])
+                break
+
+        info = SEP.join(parts)
+        sys.stdout.write(f"\r\033[2m{frame} {info}\033[0m")
         sys.stdout.flush()
         i += 1
         await asyncio.sleep(0.08)
     sys.stdout.write("\r\033[K")
     sys.stdout.flush()
+
+
+def _hex_to_ansi(hex_color: str) -> str:
+    """Convert #RRGGBB to an ANSI 24-bit foreground escape sequence."""
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f"\033[38;2;{r};{g};{b}m"
 
 
 async def simple_loop(agent: "Agent", session_name: str = "default") -> None:
@@ -375,16 +485,18 @@ async def simple_loop(agent: "Agent", session_name: str = "default") -> None:
     import readline  # enables arrow keys / history on Linux
 
     cfg = agent.config
+    t = cfg.ui.theme
     console = Console()
 
-    console.print(f"[bold]local-code-agent[/bold]  [dim]{cfg.llm.model}  {cfg.llm.ctx_window} ctx[/dim]")
-    console.print("[dim]/help /compact /tokens /reset /tools /apply /save /sessions  ·  Ctrl+D to quit[/dim]\n")
+    prompt_esc = _hex_to_ansi(t.prompt)
+    console.print(f"[bold {t.agent_color}]local-code-agent[/bold {t.agent_color}]  [dim]{cfg.llm.model}  {cfg.llm.ctx_window} ctx[/dim]")
+    console.print(f"[{t.text_dim}]/help /compact /tokens /reset /tools /apply /save /sessions  ·  Ctrl+D to quit[/{t.text_dim}]\n")
 
     while True:
         try:
-            user_input = input("\033[1;36m>\033[0m ").strip()
+            user_input = input(f"{prompt_esc}>\033[0m ").strip()
         except (EOFError, KeyboardInterrupt):
-            console.print("\n[dim]Bye.[/dim]")
+            console.print(f"\n[{t.text_dim}]Bye.[/{t.text_dim}]")
             break
 
         if not user_input:
@@ -397,7 +509,7 @@ async def simple_loop(agent: "Agent", session_name: str = "default") -> None:
             arg = parts[1] if len(parts) > 1 else ""
 
             if cmd == "/help":
-                console.print(_HELP_TEXT)
+                console.print(_make_help_text(t))
 
             elif cmd == "/tokens":
                 used = agent.token_estimate()
@@ -531,22 +643,23 @@ async def simple_loop(agent: "Agent", session_name: str = "default") -> None:
         streaming_tokens: list[str] = []
         _spinner_status: list[str] = ["thinking…"]
         _spinner_stop = asyncio.Event()
-        _spinner_task = asyncio.create_task(_run_spinner(_spinner_status, _spinner_stop))
+        _spinner_task = asyncio.create_task(_run_spinner(_spinner_status, _spinner_stop, agent=agent))
 
         def on_tool(name: str, args_str: str) -> None:
-            # Clear the spinner line before printing
+            # Stop spinner and clear its line before printing
+            _spinner_stop.set()
             sys.stdout.write("\r\033[K")
             sys.stdout.flush()
             if streaming_tokens:
                 console.print()
                 streaming_tokens.clear()
-            console.print(f"  [dim]⚙ {name}[/dim]")
+            console.print(f"  [{t.tool_color}]⚙ {name}[/{t.tool_color}]")
             tool_results.append(name)
-            _spinner_status[0] = f"{name}…"
 
         def on_token(token: str) -> None:
             if not streaming_tokens:
-                # First token — clear spinner line
+                # First token — stop spinner and clear its line
+                _spinner_stop.set()
                 sys.stdout.write("\r\033[K")
                 sys.stdout.flush()
             streaming_tokens.append(token)
@@ -555,7 +668,7 @@ async def simple_loop(agent: "Agent", session_name: str = "default") -> None:
         try:
             response = await agent.chat(user_input, on_tool_call=on_tool, on_token=on_token)
         except Exception as e:
-            console.print(f"[red]Error: {e}[/red]")
+            console.print(f"[{t.error}]Error: {e}[/{t.error}]")
             continue
         finally:
             _spinner_stop.set()
@@ -569,9 +682,9 @@ async def simple_loop(agent: "Agent", session_name: str = "default") -> None:
             console.print()
             console.print(Markdown(response))
         elif tool_results:
-            console.print(f"[dim]Done. ({', '.join(tool_results)})[/dim]")
+            console.print(f"[{t.text_dim}]Done. ({', '.join(tool_results)})[/{t.text_dim}]")
         else:
-            console.print("[yellow]No response from model.[/yellow]")
+            console.print(f"[{t.warning}]No response from model.[/{t.warning}]")
 
         if cfg.ui.show_token_count:
             console.print(f"\n{_token_bar(agent.token_estimate(), cfg.llm.ctx_window)}\n")

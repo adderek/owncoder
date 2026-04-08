@@ -1,0 +1,22 @@
+# Dark Blue + Cyan theme
+# A cooler alternative: navy/slate background with cyan accents.
+
+[ui.theme]
+bg            = "#0A0E1A"
+panel_bg      = "#111828"
+panel_bg_dark = "#0A0E1A"
+
+border = "#1A3A6A"   # dark navy border
+active = "#00BCD4"   # cyan — active / emphasised
+
+text     = "#B0C4DE"
+text_dim = "#3A4A5A"
+
+user_color  = "#4FC3F7"   # light blue
+agent_color = "#00BCD4"   # cyan (emphasised)
+tool_color  = "#3A4A5A"
+cmd_color   = "#4FC3F7"
+prompt      = "#4FC3F7"
+success     = "#26A69A"
+warning     = "#FFB300"
+error       = "#EF5350"

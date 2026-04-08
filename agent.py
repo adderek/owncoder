@@ -1,7 +1,7 @@
 from __future__ import annotations
-
 import asyncio
 import json
+import logging
 import re
 import time
 import uuid
@@ -17,6 +17,8 @@ if TYPE_CHECKING:
 
 SYSTEM_PROMPT_PATH = Path(__file__).parent / "prompts" / "system.txt"
 
+# Set up logging
+logger = logging.getLogger(__name__)
 
 def _build_system_prompt(config: "Config", project_name: str = "", indexed_count: int = 0) -> str:
     template = SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
@@ -30,7 +32,6 @@ def _build_system_prompt(config: "Config", project_name: str = "", indexed_count
         ).strip()
     except Exception:
         branch = "unknown"
-
     return template.format(
         project_name=project_name or Path(config.tools.working_dir).resolve().name,
         working_dir=config.tools.working_dir,
@@ -53,11 +54,9 @@ async def execute_tool(tool_call) -> str:
         args = json.loads(tool_call.function.arguments or "{}")
     except json.JSONDecodeError:
         args = {}
-
     fn = get_tool(name)
     if fn is None:
         return json.dumps({"error": f"Unknown tool: {name}"})
-
     try:
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(None, lambda: fn(**args))
@@ -102,21 +101,20 @@ def _extract_json_objects(text: str) -> list[dict]:
 def _parse_raw_tool_calls(text: str) -> list[dict] | None:
     """Extract tool calls from raw model text output. Returns None if none found."""
     calls = []
-
+    
     # Look inside <tool_call>, <tools>, <function_calls> tags first
     for m in _TAG_RE.finditer(text):
         for obj in _extract_json_objects(m.group(2)):
             if "name" in obj:
                 args = obj.get("arguments") or obj.get("parameters") or {}
                 calls.append({"name": obj["name"], "arguments": args})
-
+    
     # Fallback: bare JSON object with "name" key anywhere in text (no tags)
     if not calls:
         for obj in _extract_json_objects(text):
             if "name" in obj and ("arguments" in obj or "parameters" in obj):
                 args = obj.get("arguments") or obj.get("parameters") or {}
                 calls.append({"name": obj["name"], "arguments": args})
-
     return calls if calls else None
 
 
@@ -158,7 +156,6 @@ async def _stream_response(client, config, api_messages, tools, on_token):
         if delta.content:
             content_parts.append(delta.content)
             on_token(delta.content)
-
         # Accumulate streaming tool call fragments
         for tc_delta in (delta.tool_calls or []):
             idx = tc_delta.index
@@ -173,7 +170,6 @@ async def _stream_response(client, config, api_messages, tools, on_token):
                     tc_acc[idx]["function"]["arguments"] += tc_delta.function.arguments
 
     full_content = "".join(content_parts)
-
     if tc_acc:
         # Reconstruct _FakeToolCall-compatible objects
         tool_calls = []
@@ -188,177 +184,12 @@ async def _stream_response(client, config, api_messages, tools, on_token):
     return finish_reason, full_content, tool_calls
 
 
-async def run_turn(
-    messages: list[dict],
-    config: "Config",
-    client: "AsyncOpenAI",
-    on_token: callable | None = None,
-    on_tool_call: callable | None = None,
-    _depth: int = 0,
-) -> tuple[str, list[dict]]:
-    if _depth > 40:
-        return "[Error: too many recursive tool calls — stopping to prevent infinite loop]", messages
-    tools = get_schemas()
-
-    # Strip internal-only keys before sending to API
-    api_messages = [{k: v for k, v in m.items() if not k.startswith("_")} for m in messages]
-
-    # Use streaming when a token callback is provided; non-streaming otherwise.
-    if on_token is not None:
-        finish_reason, full_content, raw_tool_calls = await _stream_response(
-            client, config, api_messages, tools, on_token
-        )
-        # Reconstruct a message-like namespace for uniform handling below
-        class _Msg:
-            content = full_content
-            tool_calls = raw_tool_calls or None
-        class _Choice:
-            message = _Msg()
-            finish_reason = finish_reason
-        msg = _Msg()
-        choice = _Choice()
-    else:
-        response = await client.chat.completions.create(
-            model=config.llm.model,
-            messages=api_messages,
-            tools=tools if tools else None,
-            max_tokens=config.llm.max_output_tokens,
-        )
-        choice = response.choices[0]
-        msg = choice.message
-
-    # Structured tool calls (llama-server with --jinja, or cloud APIs)
-    tool_calls = msg.tool_calls if (choice.finish_reason == "tool_calls" and msg.tool_calls) else None
-
-    # Fallback: parse raw <tool_call> / <tools> blocks from text output
-    if not tool_calls and msg.content:
-        raw = _parse_raw_tool_calls(msg.content)
-        if raw:
-            tool_calls = [_FakeToolCall(c["name"], c["arguments"]) for c in raw]
-
-    if tool_calls:
-        clean_content = _strip_tool_blocks(msg.content or "") if msg.content else None
-        messages = messages + [{"role": "assistant", "content": clean_content, "tool_calls": [
-            {
-                "id": tc.id,
-                "type": "function",
-                "function": {"name": tc.function.name, "arguments": tc.function.arguments},
-            }
-            for tc in tool_calls
-        ]}]
-
-        # Notify about all tool calls first (in order), then execute concurrently
-        for tc in tool_calls:
-            if on_tool_call:
-                on_tool_call(tc.function.name, tc.function.arguments)
-
-        results = await asyncio.gather(*[execute_tool(tc) for tc in tool_calls])
-        for tc, result in zip(tool_calls, results):
-            messages.append(_tool_result_message(tc.id, result))
-
-        # Check compaction threshold
-        token_est = _count_tokens_approx(messages)
-        threshold = int(config.llm.ctx_window * config.llm.compaction_threshold)
-        if token_est > threshold:
-            messages = await compact(messages, config, client)
-
-        return await run_turn(messages, config, client, on_token, on_tool_call, _depth + 1)
-
-    content = msg.content or ""
-
-    # Only check recent messages — old _nudged flags from prior turns must not block us
-    already_nudged = any(m.get("_nudged") for m in messages[-6:])
-
-    if _is_narrating_tool_use(content) and not already_nudged:
-        # Model described what it will do instead of doing it.
-        # Try to extract and apply code directly from this response first.
-        messages_with_current = messages + [{"role": "assistant", "content": content}]
-        applied = await _apply_code_from_history(messages_with_current, on_tool_call)
-        if applied:
-            messages = messages_with_current + [{"role": "assistant", "content": applied}]
-            return f"{content}\n\n{applied}", messages
-
-        # Extraction failed — fall back to nudging the model once
-        if on_tool_call:
-            on_tool_call("⟳ nudge", "")
-        messages = messages_with_current
-        nudge = {"role": "user", "content": "Call the tool now. Do not describe it, execute it.", "_nudged": True}
-        messages = messages + [nudge]
-        return await run_turn(messages, config, client, on_token, on_tool_call, _depth + 1)
-
-    if already_nudged and (not content.strip() or _is_narrating_tool_use(content)):
-        # Nudge also failed — last resort extraction
-        applied = await _apply_code_from_history(messages, on_tool_call)
-        if applied:
-            messages = messages + [{"role": "assistant", "content": applied}]
-            return applied, messages
-
-    messages = messages + [{"role": "assistant", "content": content}]
-    return content, messages
+def _is_narrating_tool_use(text: str) -> bool:
+    lower = text.lower()
+    return any(phrase in lower for phrase in _NARRATION_PHRASES)
 
 
-def extract_last_code_block(messages: list[dict]) -> tuple[str, str] | None:
-    """
-    Scan recent assistant messages for a code block + a nearby filename.
-    Returns (filename, code) or None.
-    Handles fenced (```), indented (4-space), and shebang-leading blocks.
-    """
-    import re as _re
-
-    # Find the most recent assistant message with any code
-    content = ""
-    for m in reversed(messages):
-        if m.get("role") == "assistant" and m.get("content", "").strip():
-            content = m["content"]
-            break
-    if not content:
-        return None
-
-    # 1. Fenced code blocks: ```lang\n...\n```
-    fenced = _re.findall(r"```(?:\w*)\n(.*?)```", content, _re.DOTALL)
-
-    # 2. Indented blocks: 4+ spaces or tab at line start, 2+ consecutive lines
-    indented: list[str] = []
-    block_lines: list[str] = []
-    for line in content.splitlines():
-        if line.startswith("    ") or line.startswith("\t"):
-            block_lines.append(line.lstrip())
-        else:
-            if len(block_lines) >= 2:
-                indented.append("\n".join(block_lines))
-            block_lines = []
-    if len(block_lines) >= 2:
-        indented.append("\n".join(block_lines))
-
-    all_blocks = fenced + indented
-    if not all_blocks:
-        import sys
-        print(f"[extract] no code blocks found in: {content[:120]!r}", file=sys.stderr)
-        return None
-
-    code = max(all_blocks, key=len).strip()
-
-    # Find filename in recent messages
-    file_re = _re.compile(
-        r"\b([\w./\-]+\.(?:sh|bash|py|js|ts|jsx|tsx|go|rs|java|kt|c|cpp|h|hpp|rb|toml|yaml|yml|json|md|txt))\b"
-    )
-    filename = None
-    for m in reversed(messages[-12:]):
-        c = m.get("content") or ""
-        found = file_re.findall(c)
-        if found:
-            filename = found[0]
-            break
-
-    if not filename:
-        import sys
-        print(f"[extract] code found ({len(code)} chars) but no filename in last 12 msgs", file=sys.stderr)
-        return None
-
-    return filename, code
-
-
-async def _apply_code_from_history(messages: list[dict], on_tool_call) -> str | None:
+def _apply_code_from_history(messages: list[dict], on_tool_call) -> str | None:
     result = extract_last_code_block(messages)
     if not result:
         return None
@@ -392,16 +223,175 @@ _NARRATION_PHRASES = [
 ]
 
 
-def _is_narrating_tool_use(text: str) -> bool:
-    lower = text.lower()
-    return any(phrase in lower for phrase in _NARRATION_PHRASES)
+async def run_turn(
+    messages: list[dict],
+    config: "Config",
+    client: "AsyncOpenAI",
+    on_token: callable | None = None,
+    on_tool_call: callable | None = None,
+    _depth: int = 0,
+) -> tuple[str, list[dict]]:
+    if _depth > 40:
+        return "[Error: too many recursive tool calls — stopping to prevent infinite loop]", messages
+    tools = get_schemas()
+    # Strip internal-only keys before sending to API
+    api_messages = [{k: v for k, v in m.items() if not k.startswith("_")} for m in messages]
+    
+    # Use streaming when a token callback is provided; non-streaming otherwise.
+    if on_token is not None:
+        finish_reason, full_content, raw_tool_calls = await _stream_response(
+            client, config, api_messages, tools, on_token
+        )
+        # Reconstruct a message-like namespace for uniform handling below
+        class _Msg:
+            content = full_content
+            tool_calls = raw_tool_calls or None
+        class _Choice:
+            message = _Msg()
+            finish_reason = finish_reason
+        msg = _Msg()
+        choice = _Choice()
+    else:
+        response = await client.chat.completions.create(
+            model=config.llm.model,
+            messages=api_messages,
+            tools=tools if tools else None,
+            max_tokens=config.llm.max_output_tokens,
+        )
+        choice = response.choices[0]
+        msg = choice.message
+
+    # Structured tool calls (llama-server with --jinja, or cloud APIs)
+    tool_calls = msg.tool_calls if (choice.finish_reason == "tool_calls" and msg.tool_calls) else None
+
+    # Fallback: parse raw <tools> blocks from text output
+    if not tool_calls and msg.content:
+        raw = _parse_raw_tool_calls(msg.content)
+        if raw:
+            tool_calls = [_FakeToolCall(c["name"], c["arguments"]) for c in raw]
+
+    if tool_calls:
+        clean_content = _strip_tool_blocks(msg.content or "") if msg.content else None
+        messages = messages + [{
+            "role": "assistant",
+            "content": clean_content,
+            "tool_calls": [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                }
+                for tc in tool_calls
+            ],
+        }]
+        # Notify about all tool calls first (in order), then execute concurrently
+        for tc in tool_calls:
+            if on_tool_call:
+                on_tool_call(tc.function.name, tc.function.arguments)
+        results = await asyncio.gather(*[execute_tool(tc) for tc in tool_calls])
+        for tc, result in zip(tool_calls, results):
+            messages.append(_tool_result_message(tc.id, result))
+        # Check compaction threshold
+        token_est = _count_tokens_approx(messages)
+        threshold = int(config.llm.ctx_window * config.llm.compaction_threshold)
+        if token_est > threshold:
+            messages = await compact(messages, config, client)
+        return await run_turn(messages, config, client, on_token, on_tool_call, _depth + 1)
+    
+    content = msg.content or ""
+    
+    # Only check recent messages — old _nudged flags from prior turns must not block us
+    already_nudged = any(m.get("_nudged") for m in messages[-6:])
+    
+    if _is_narrating_tool_use(content) and not already_nudged:
+        # Model described what it will do instead of doing it.
+        # Try to extract and apply code directly from this response first.
+        messages_with_current = messages + [{"role": "assistant", "content": content}]
+        applied = await _apply_code_from_history(messages_with_current, on_tool_call)
+        if applied:
+            messages = messages_with_current + [{"role": "assistant", "content": applied}]
+            return f"{content}\n\n{applied}", messages
+        # Extraction failed — fall back to nudging the model once
+        if on_tool_call:
+            on_tool_call("⟳ nudge", "")
+        messages = messages_with_current
+        nudge = {"role": "user", "content": "Call the tool now. Do not describe it, execute it.", "_nudged": True}
+        messages = messages + [nudge]
+        return await run_turn(messages, config, client, on_token, on_tool_call, _depth + 1)
+    
+    if already_nudged and (not content.strip() or _is_narrating_tool_use(content)):
+        # Nudge also failed — last resort extraction
+        applied = await _apply_code_from_history(messages, on_tool_call)
+        if applied:
+            messages = messages + [{"role": "assistant", "content": applied}]
+            return applied, messages
+    
+    messages = messages + [{"role": "assistant", "content": content}]
+    return content, messages
+
+
+def extract_last_code_block(messages: list[dict]) -> tuple[str, str] | None:
+    """
+    Scan recent assistant messages for a code block + a nearby filename.
+    Returns (filename, code) or None.
+    Handles fenced (````), indented (4-space), and shebang-leading blocks.
+    """
+    import re
+    # Find the most recent assistant message with any code
+    content = ""
+    for m in reversed(messages):
+        if m.get("role") == "assistant" and m.get("content", "").strip():
+            content = m["content"]
+            break
+    if not content:
+        return None
+    
+    # 1. Fenced code blocks: ```lang\n...\n```
+    fenced = re.findall(r"```(?:\w*)\n(.*?)```", content, re.DOTALL)
+    
+    # 2. Indented blocks: 4+ spaces or tab at line start, 2+ consecutive lines
+    indented: list[str] = []
+    block_lines: list[str] = []
+    for line in content.splitlines():
+        if line.startswith("    ") or line.startswith("\t"):
+            block_lines.append(line.lstrip())
+        else:
+            if len(block_lines) >= 2:
+                indented.append("\n".join(block_lines))
+            block_lines = []
+    if len(block_lines) >= 2:
+        indented.append("\n".join(block_lines))
+    all_blocks = fenced + indented
+    if not all_blocks:
+        logger.debug(f"[extract] no code blocks found in: {content[:120]!r}")
+        return None
+    
+    code = max(all_blocks, key=len).strip()
+    
+    # Find filename in recent messages
+    file_re = re.compile(
+        r"\b([a-zA-Z0-9./\-_]+\.(?:sh|bash|py|js|ts|jsx|tsx|go|rs|java|kt|c|cpp|h|hpp|rb|toml|yaml|yml|json|md|txt))\b"
+    )
+    filename = None
+    for m in reversed(messages[-12:]):
+        c = m.get("content") or ""
+        found = file_re.findall(c)
+        if found:
+            filename = found[0]
+            break
+    
+    if not filename:
+        logger.debug(f"[extract] code found ({len(code)} chars) but no filename in last 12 msgs")
+        return None
+    
+    return filename, code
 
 
 class Agent:
     def __init__(self, config: "Config", store=None, embedder=None) -> None:
         from openai import AsyncOpenAI
         from agent.tools import load_all_tools
-
+        
         self.config = config
         self.store = store
         self.embedder = embedder
@@ -410,16 +400,16 @@ class Agent:
             base_url=config.llm.base_url,
             api_key=config.llm.api_key,
         )
-
+        
         load_all_tools(config=config, store=store, embedder=embedder)
-
+        
         indexed_count = store.stats()["chunks"] if store else 0
         system_content = _build_system_prompt(config, indexed_count=indexed_count)
         self.messages = [{"role": "system", "content": system_content}]
-
+        
     def token_estimate(self) -> int:
         return _count_tokens_approx(self.messages)
-
+    
     async def chat(
         self,
         user_input: str,
