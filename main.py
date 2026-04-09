@@ -424,6 +424,118 @@ def cmd_sessions(args, config):
     console.print(table)
 
 
+def cmd_commit(args, config):
+    import subprocess
+    import asyncio
+    from agent.agent import Agent
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.prompt import Prompt
+
+    console = Console()
+
+    # Resolve path
+    path = Path(args.path)
+    if not path.is_absolute():
+        path = Path(config.tools.working_dir) / path
+    path = path.resolve()
+
+    if not path.is_dir():
+        console.print(f"[red]Not a directory: {path}[/red]")
+        return
+
+    # Verify it's a git repo
+    result = subprocess.run(
+        ["git", "rev-parse", "--git-dir"],
+        cwd=str(path),
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        console.print(f"[red]Not a git repository: {path}[/red]")
+        return
+
+    def _git(*git_args: str) -> str:
+        r = subprocess.run(
+            ["git"] + list(git_args),
+            cwd=str(path),
+            capture_output=True, text=True,
+        )
+        return r.stdout.strip()
+
+    staged_diff = _git("diff", "--cached")
+    if not staged_diff:
+        console.print("[yellow]No staged changes found. Stage files first with git add.[/yellow]")
+        return
+
+    status = _git("status", "--short")
+    recent_log = _git("log", "--oneline", "-10")
+
+    # Build prompt for the LLM
+    prompt = f"""You are preparing a git commit message for the repository at: {path}
+
+Recent commits (for style reference):
+{recent_log or '(no prior commits)'}
+
+Git status:
+{status}
+
+Staged diff:
+{staged_diff}
+
+Write a concise, imperative-mood commit message for the staged changes above.
+Output ONLY the commit message — no explanation, no markdown, no quotes.
+First line: short summary (≤72 chars). Optionally follow with a blank line and a short body."""
+
+    console.print(f"[dim]Generating commit message for {path}…[/dim]")
+
+    agent = Agent(config)
+
+    async def _generate() -> str:
+        return await agent.chat(prompt)
+
+    message = asyncio.run(_generate()).strip()
+
+    # Strip any accidental markdown fences
+    if message.startswith("```"):
+        lines = message.splitlines()
+        lines = [l for l in lines if not l.startswith("```")]
+        message = "\n".join(lines).strip()
+
+    console.print(Panel(message, title="Proposed commit message", border_style="cyan"))
+
+    choice = Prompt.ask("Commit with this message?", choices=["y", "n", "e"], default="y")
+
+    if choice == "n":
+        console.print("[dim]Aborted.[/dim]")
+        return
+
+    if choice == "e":
+        import tempfile
+        import os
+        editor = os.environ.get("EDITOR", "vi")
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write(message)
+            tmp = f.name
+        subprocess.run([editor, tmp])
+        message = Path(tmp).read_text().strip()
+        Path(tmp).unlink(missing_ok=True)
+        console.print(Panel(message, title="Edited commit message", border_style="cyan"))
+        confirm = Prompt.ask("Commit?", choices=["y", "n"], default="y")
+        if confirm == "n":
+            console.print("[dim]Aborted.[/dim]")
+            return
+
+    result = subprocess.run(
+        ["git", "commit", "-m", message],
+        cwd=str(path),
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        console.print(f"[green]Committed.[/green]\n{result.stdout.strip()}")
+    else:
+        console.print(f"[red]Commit failed:[/red]\n{result.stderr.strip()}")
+
+
 def cmd_debug_context(args, config):
     from agent.memory.session import load_session
     from agent.memory.compactor import _count_tokens_approx
@@ -516,6 +628,11 @@ def main():
     sess_p.add_argument("--list", action="store_true", help="List sessions")
     sess_p.add_argument("--load", type=str, help="Show session details")
 
+    # commit
+    commit_p = sub.add_parser("commit", help="Generate and apply a commit message for a subrepo")
+    commit_p.add_argument("path", type=str, help="Path to subrepo (absolute or relative to working dir)")
+    commit_p.add_argument("--model", type=str, help="Override model name")
+
     # debug
     dbg_p = sub.add_parser("debug", help="Debug utilities")
     dbg_p.add_argument("--context", action="store_true", help="Show full context of current session")
@@ -550,6 +667,11 @@ def main():
             cmd_run(args, config)
         elif args.command == "sessions":
             cmd_sessions(args, config)
+        elif args.command == "commit":
+            if getattr(args, "model", None):
+                config.llm.model = args.model
+            check_reachability(config)
+            cmd_commit(args, config)
         elif args.command == "debug":
             cmd_debug_context(args, config)
         # exec command handler
