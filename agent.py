@@ -396,20 +396,21 @@ def extract_last_code_block(messages: list[dict]) -> tuple[str, str] | None:
 
 
 class Agent:
-    def __init__(self, config: "Config", store=None, embedder=None) -> None:
+    def __init__(self, config: "Config", store=None, embedder=None, asm_store=None) -> None:
         from openai import AsyncOpenAI
         from agent.tools import load_all_tools
-        
+
         self.config = config
         self.store = store
         self.embedder = embedder
+        self.asm_store = asm_store
         self.messages: list[dict] = []
         self._client = AsyncOpenAI(
             base_url=config.llm.base_url,
             api_key=config.llm.api_key,
         )
-        
-        load_all_tools(config=config, store=store, embedder=embedder)
+
+        load_all_tools(config=config, store=store, embedder=embedder, asm_store=asm_store)
         
         indexed_count = store.stats()["chunks"] if store else 0
         system_content = _build_system_prompt(config, indexed_count=indexed_count)

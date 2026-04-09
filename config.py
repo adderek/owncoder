@@ -35,6 +35,18 @@ class RAGConfig:
 
 
 @dataclass
+class AsmAnalysisConfig:
+    enabled: bool = False
+    splitter_ctx_tokens: int = 8192
+    splitter_overlap_lines: int = 20
+    describer_model: str = ""          # empty = inherit llm.model
+    describer_ctx_tokens: int = 8192
+    group_size: int = 8
+    max_levels: int = 6
+    batch_size: int = 4
+
+
+@dataclass
 class ToolsConfig:
     allow_shell: bool = True
     shell_timeout: int = 30
@@ -92,6 +104,7 @@ class Config:
     rag: RAGConfig = field(default_factory=RAGConfig)
     tools: ToolsConfig = field(default_factory=ToolsConfig)
     ui: UIConfig = field(default_factory=UIConfig)
+    asm: AsmAnalysisConfig = field(default_factory=AsmAnalysisConfig)
 
 
 def _apply_env_overrides(config: Config) -> None:
@@ -110,6 +123,14 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_TOOLS_SHELL_TIMEOUT": ("tools", "shell_timeout"),
         "AGENT_TOOLS_WORKING_DIR": ("tools", "working_dir"),
         "AGENT_UI_MODE": ("ui", "mode"),
+        "AGENT_ASM_ENABLED": ("asm", "enabled"),
+        "AGENT_ASM_SPLITTER_CTX_TOKENS": ("asm", "splitter_ctx_tokens"),
+        "AGENT_ASM_SPLITTER_OVERLAP_LINES": ("asm", "splitter_overlap_lines"),
+        "AGENT_ASM_DESCRIBER_MODEL": ("asm", "describer_model"),
+        "AGENT_ASM_DESCRIBER_CTX_TOKENS": ("asm", "describer_ctx_tokens"),
+        "AGENT_ASM_GROUP_SIZE": ("asm", "group_size"),
+        "AGENT_ASM_MAX_LEVELS": ("asm", "max_levels"),
+        "AGENT_ASM_BATCH_SIZE": ("asm", "batch_size"),
     }
     for env_key, (section, attr) in env_map.items():
         val = os.environ.get(env_key)
@@ -151,6 +172,7 @@ def _merge(config: Config, data: dict) -> None:
         ("rag", config.rag),
         ("tools", config.tools),
         ("ui", config.ui),
+        ("asm_analysis", config.asm),
     ):
         section_data = data.get(section_name, {})
         _merge_obj(obj, section_data)

@@ -416,8 +416,53 @@ def _build_textual_app(agent: "Agent", session=None):
                     f"[{t.text_dim}]Exported to {target} ({len(lines)} turns).[/{t.text_dim}]"
                 )
 
+            elif cmd == "/analyze-asm":
+                await self._run_analyze_asm(arg)
+
             else:
                 self._write_sys(f"[{t.warning}]Unknown command '{cmd}'. Type /help.[/{t.warning}]")
+
+        async def _run_analyze_asm(self, arg: str) -> None:
+            from agent.tools.analyze_asm import analyze_asm, get_interrupt_flag
+            parts = arg.split()
+            if not parts:
+                self._write_sys(
+                    f"[{t.warning}]Usage: /analyze-asm <file> [--resume] [--force] [--levels N][/{t.warning}]"
+                )
+                return
+            path = parts[0]
+            resume = "--resume" in parts
+            force = "--force" in parts
+            max_levels = None
+            if "--levels" in parts:
+                idx = parts.index("--levels")
+                if idx + 1 < len(parts):
+                    try:
+                        max_levels = int(parts[idx + 1])
+                    except ValueError:
+                        pass
+
+            interrupt = get_interrupt_flag()
+            interrupt.clear()
+            self._write_sys(f"[{t.text_dim}]Analyzing {path}…  ESC to interrupt[/{t.text_dim}]")
+
+            def _do_analyze():
+                kwargs = {"path": path, "resume": resume, "force": force}
+                if max_levels is not None:
+                    kwargs["max_levels"] = max_levels
+                return analyze_asm(**kwargs)
+
+            loop = asyncio.get_event_loop()
+            try:
+                result = await loop.run_in_executor(None, _do_analyze)
+            except Exception as e:
+                self._write_sys(f"[{t.error}]analyze-asm error: {e}[/{t.error}]")
+                return
+
+            if "error" in result:
+                self._write_sys(f"[{t.error}]{result['error']}[/{t.error}]")
+            else:
+                self._write_sys(f"[{t.success}]{result.get('message', str(result))}[/{t.success}]")
 
         # ── input handling ───────────────────────────────────────────────────
 
@@ -537,6 +582,8 @@ def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
   [{c}]/apply [file][/{c}]       write last code block to file (bypass tool calling)
   [{c}]/undo [file][/{c}]        restore last pre-write snapshot of a file
   [{c}]/export [file][/{c}]      export conversation as markdown
+  [{c}]/analyze-asm <file>[/{c}]  LLM-driven assembly analysis and summarization
+                       options: --resume  --force  --levels N
 
 [dim]Ctrl+D or Ctrl+C to quit[/dim]
 """
@@ -825,6 +872,42 @@ async def simple_loop(agent: "Agent", session=None) -> None:
                 target = arg.strip() or f"{_session_label}.md"
                 Path(target).write_text(md_text, encoding="utf-8")
                 console.print(f"[dim]Exported to {target} ({len(lines)} turns).[/dim]")
+
+            elif cmd == "/analyze-asm":
+                from agent.tools.analyze_asm import analyze_asm, get_interrupt_flag
+                parts = arg.split()
+                if not parts:
+                    console.print("[yellow]Usage: /analyze-asm <file> [--resume] [--force] [--levels N][/yellow]")
+                else:
+                    path_arg = parts[0]
+                    resume = "--resume" in parts
+                    force_flag = "--force" in parts
+                    max_lvls = None
+                    if "--levels" in parts:
+                        idx = parts.index("--levels")
+                        if idx + 1 < len(parts):
+                            try:
+                                max_lvls = int(parts[idx + 1])
+                            except ValueError:
+                                pass
+                    interrupt = get_interrupt_flag()
+                    interrupt.clear()
+                    console.print(f"[dim]Analyzing {path_arg}… (Ctrl+C to interrupt)[/dim]")
+                    try:
+                        kwargs = {"path": path_arg, "resume": resume, "force": force_flag}
+                        if max_lvls is not None:
+                            kwargs["max_levels"] = max_lvls
+                        loop = asyncio.get_event_loop()
+                        result = await loop.run_in_executor(None, lambda: analyze_asm(**kwargs))
+                        if "error" in result:
+                            console.print(f"[red]{result['error']}[/red]")
+                        else:
+                            console.print(f"[green]{result.get('message', str(result))}[/green]")
+                    except KeyboardInterrupt:
+                        interrupt.set()
+                        console.print("[yellow]Interrupted.[/yellow]")
+                    except Exception as e:
+                        console.print(f"[red]analyze-asm error: {e}[/red]")
 
             else:
                 console.print(f"[yellow]Unknown command '{cmd}'. Type /help for a list.[/yellow]")

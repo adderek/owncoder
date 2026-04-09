@@ -230,17 +230,21 @@ def cmd_chat(args, config):
 
     store = None
     embedder = None
+    asm_store = None
     db_path = Path(config.rag.db_path)
     if db_path.exists():
         try:
             store = VectorStore(config.rag)
             embedder = Embedder(config.embeddings)
+            if config.asm.enabled:
+                from agent.rag.asm_store import AsmStore
+                asm_store = AsmStore(config.rag)
         except Exception as e:
             console.print(f"[yellow]Warning: could not load index: {e}[/yellow]")
     else:
         console.print("[yellow]No index found. Run 'agent init' to build one.[/yellow]")
 
-    agent = Agent(config, store=store, embedder=embedder)
+    agent = Agent(config, store=store, embedder=embedder, asm_store=asm_store)
 
     if args.session:
         session, messages = load_session(args.session)
@@ -262,6 +266,8 @@ def cmd_chat(args, config):
         save_session(session, agent.messages)
         if store:
             store.close()
+        if asm_store:
+            asm_store.close()
 
 
 def cmd_run(args, config):

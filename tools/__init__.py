@@ -25,12 +25,13 @@ def get_schemas() -> list[dict]:
     return list(_schemas)
 
 
-def load_all_tools(config=None, store=None, embedder=None) -> None:
+def load_all_tools(config=None, store=None, embedder=None, asm_store=None) -> None:
     global _tools_loaded
-    from agent.tools import files, shell, git, search
+    from agent.tools import files, shell, git, search, analyze_asm
     # Always update config/store/embedder so a second call refreshes dependencies.
     files.setup(config)
     shell.setup(config)
     git.setup(config)
-    search.setup(config, store, embedder)
+    search.setup(config, store, embedder, asm_store=asm_store)
+    analyze_asm.setup(config, asm_store, embedder)
     _tools_loaded = True
