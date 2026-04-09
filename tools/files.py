@@ -195,18 +195,6 @@ def undo_candidates() -> list[str]:
     return list(_undo_stack.keys())
 
 
-@register("list_files", {
-    "description": "List files in a directory, respecting .gitignore. Returns relative paths with size and mtime.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "path": {"type": "string", "description": "Directory to list (default: working dir)", "default": "."},
-            "pattern": {"type": "string", "description": "Glob pattern", "default": "**/*"},
-            "ignore_patterns": {"type": "array", "items": {"type": "string"}, "description": "Patterns to ignore"},
-        },
-        "required": [],
-    },
-})
 def _build_gitignore_spec(base: Path):
     """Return a pathspec.PathSpec from .gitignore (or None if pathspec unavailable/missing)."""
     try:
@@ -224,6 +212,18 @@ def _build_gitignore_spec(base: Path):
     return pathspec.PathSpec.from_lines("gitwildmatch", lines)
 
 
+@register("list_files", {
+    "description": "List files in a directory, respecting .gitignore. Returns relative paths with size and mtime.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Directory to list (default: working dir)", "default": "."},
+            "pattern": {"type": "string", "description": "Glob pattern", "default": "**/*"},
+            "ignore_patterns": {"type": "array", "items": {"type": "string"}, "description": "Patterns to ignore"},
+        },
+        "required": [],
+    },
+})
 def list_files(path: str = ".", pattern: str = "**/*", ignore_patterns: list[str] | None = None) -> dict:
     import fnmatch
     base = _resolve(path)

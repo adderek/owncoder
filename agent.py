@@ -254,13 +254,15 @@ async def run_turn(
             )
             # Reconstruct a message-like namespace for uniform handling below
             class _Msg:
-                content = full_content
-                tool_calls = raw_tool_calls or None
-            class _Choice:
-                message = _Msg()
-                finish_reason = finish_reason
+                pass
             msg = _Msg()
+            msg.content = full_content
+            msg.tool_calls = raw_tool_calls or None
+            class _Choice:
+                pass
             choice = _Choice()
+            choice.message = msg
+            choice.finish_reason = finish_reason
         else:
             response = await client.chat.completions.create(
                 model=config.llm.model,

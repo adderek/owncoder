@@ -6,7 +6,68 @@ import argparse
 import asyncio
 import logging
 import sys
+import traceback
+from datetime import datetime
 from pathlib import Path
+
+
+def _write_exception_dump(
+    exc: BaseException,
+    argv: list[str] | None = None,
+    config=None,
+    log_path: Path | None = None,
+) -> Path | None:
+    """Write a human-readable exception dump to .agent/exception-<timestamp>.dump."""
+    import platform
+
+    try:
+        # Determine dump directory
+        if config is not None:
+            dump_dir = Path(config.tools.working_dir) / config.tools.agent_dir
+        else:
+            dump_dir = Path(".agent")
+        dump_dir.mkdir(parents=True, exist_ok=True)
+
+        ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+        dump_path = dump_dir / f"exception-{ts}.dump"
+
+        lines: list[str] = []
+        lines.append("=== Exception Dump ===")
+        lines.append(f"Timestamp : {datetime.now().isoformat(timespec='seconds')}")
+        lines.append(f"Python    : {sys.version}")
+        lines.append(f"Platform  : {platform.platform()}")
+        lines.append(f"Command   : {' '.join(argv or sys.argv)}")
+        lines.append("")
+
+        lines.append("=== Traceback ===")
+        lines.append("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)).rstrip())
+        lines.append("")
+
+        if config is not None:
+            lines.append("=== Config ===")
+            try:
+                lines.append(f"model      : {config.llm.model}")
+                lines.append(f"base_url   : {config.llm.base_url}")
+                lines.append(f"working_dir: {config.tools.working_dir}")
+                lines.append(f"agent_dir  : {config.tools.agent_dir}")
+                lines.append(f"ctx_window : {config.llm.ctx_window}")
+            except Exception as ce:
+                lines.append(f"(error reading config: {ce})")
+            lines.append("")
+
+        if log_path is not None and log_path.exists():
+            lines.append("=== Recent Log (last 60 lines) ===")
+            try:
+                log_lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                lines.extend(log_lines[-60:])
+            except Exception as le:
+                lines.append(f"(error reading log: {le})")
+            lines.append("")
+
+        dump_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return dump_path
+    except Exception:
+        return None
 
 
 def _setup_logging(agent_dir: str | None = None) -> None:
@@ -467,33 +528,46 @@ def main():
     config_path = Path(args.config) if args.config else None
     config = load_config(config_path)
     configure_sessions(config.tools.working_dir, config.tools.agent_dir)
-    _setup_logging(str(Path(config.tools.working_dir) / config.tools.agent_dir))
+    log_dir = Path(config.tools.working_dir) / config.tools.agent_dir
+    _setup_logging(str(log_dir))
+    log_path = log_dir / "agent.log"
 
-    if args.command == "init":
-        cmd_init(args, config)
-    elif args.command == "index":
-        if args.update:
-            cmd_index_update(args, config)
-        elif args.stats:
-            cmd_index_stats(args, config)
+    try:
+        if args.command == "init":
+            cmd_init(args, config)
+        elif args.command == "index":
+            if args.update:
+                cmd_index_update(args, config)
+            elif args.stats:
+                cmd_index_stats(args, config)
+            else:
+                parser.parse_args(["index", "--help"])
+        elif args.command == "chat":
+            check_reachability(config)
+            cmd_chat(args, config)
+        elif args.command == "run":
+            check_reachability(config)
+            cmd_run(args, config)
+        elif args.command == "sessions":
+            cmd_sessions(args, config)
+        elif args.command == "debug":
+            cmd_debug_context(args, config)
+        # exec command handler
+        elif args.command == "exec":
+            from agent.tools.exec_command import handle_exec_command
+            handle_exec_command(args, config)
         else:
-            parser.parse_args(["index", "--help"])
-    elif args.command == "chat":
-        check_reachability(config)
-        cmd_chat(args, config)
-    elif args.command == "run":
-        check_reachability(config)
-        cmd_run(args, config)
-    elif args.command == "sessions":
-        cmd_sessions(args, config)
-    elif args.command == "debug":
-        cmd_debug_context(args, config)
-    # exec command handler
-    elif args.command == "exec":
-        from agent.tools.exec_command import handle_exec_command
-        handle_exec_command(args, config)
-    else:
-        parser.print_help()
+            parser.print_help()
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception as exc:
+        dump_path = _write_exception_dump(exc, argv=sys.argv, config=config, log_path=log_path)
+        msg = f"\nUnhandled exception: {type(exc).__name__}: {exc}"
+        if dump_path:
+            msg += f"\nDump written to: {dump_path}"
+        print(msg, file=sys.stderr)
+        traceback.print_exc()
+        sys.exit(1)
 
 
 if __name__ == "__main__":
