@@ -56,8 +56,12 @@ def _build_textual_app(agent: "Agent", session=None):
         def set_status(self, text: str) -> None:
             self.update(text)
 
+    class HintBar(Static):
+        """Contextual hints shown during history navigation."""
+
     class PromptInput(TextArea):
-        """Multi-line input; Enter submits, Shift+Enter inserts newline."""
+        """Multi-line input; Enter submits, Shift+Enter inserts newline.
+        Up/Down when empty browses history; ESC cancels; Enter edits & retries."""
 
         class Submitted(Message):
             def __init__(self, area: "PromptInput", value: str) -> None:
@@ -65,13 +69,111 @@ def _build_textual_app(agent: "Agent", session=None):
                 self.area = area
                 self.value = value
 
+        class HistorySubmitted(Message):
+            """User confirmed editing a past message. remove_count interactions will be rolled back."""
+            def __init__(self, area: "PromptInput", value: str, remove_count: int) -> None:
+                super().__init__()
+                self.area = area
+                self.value = value
+                self.remove_count = remove_count
+
+        class HintChanged(Message):
+            def __init__(self, text: str) -> None:
+                super().__init__()
+                self.text = text
+
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self._history: list[str] = []
+            self._mode: str = "normal"   # "normal" | "browsing" | "editing"
+            self._history_idx: int | None = None
+            self._edit_source_idx: int | None = None
+            self._saved_text: str = ""
+
+        def add_to_history(self, text: str) -> None:
+            if not self._history or self._history[-1] != text:
+                self._history.append(text)
+
+        def _remove_count_for(self, idx: int) -> int:
+            """How many interactions are removed when editing history[idx]."""
+            return len(self._history) - idx
+
+        def _enter_browsing(self, idx: int) -> None:
+            self._mode = "browsing"
+            self._history_idx = idx
+            self.load_text(self._history[idx])
+            self.move_cursor(self.document.end)
+            rc = self._remove_count_for(idx)
+            rc_str = f"  [dim](removes {rc} interaction{'s' if rc != 1 else ''})[/dim]"
+            self.post_message(self.HintChanged(
+                f"[bold]↑↓[/bold] navigate  [bold]ENTER[/bold]=edit&retry  [bold]ESC[/bold]=cancel{rc_str}"
+            ))
+
+        def _exit_browsing(self) -> None:
+            self._mode = "normal"
+            self._history_idx = None
+            self.load_text(self._saved_text)
+            self._saved_text = ""
+            self.move_cursor(self.document.end)
+            self.post_message(self.HintChanged(""))
+
+        def _enter_editing(self) -> None:
+            self._mode = "editing"
+            self._edit_source_idx = self._history_idx
+            rc = self._remove_count_for(self._edit_source_idx)
+            rc_str = f"  [dim](removes {rc} interaction{'s' if rc != 1 else ''})[/dim]"
+            self.post_message(self.HintChanged(
+                f"[bold]ENTER[/bold]=retry  [bold]ESC[/bold]=cancel{rc_str}"
+            ))
+
         def _on_key(self, event) -> None:
-            if event.key == "enter":
+            if self._mode == "normal":
+                if event.key == "up" and not self.text.strip():
+                    event.prevent_default()
+                    if self._history:
+                        self._saved_text = self.text
+                        self._enter_browsing(len(self._history) - 1)
+                    return
+                if event.key == "enter":
+                    event.prevent_default()
+                    text = self.text.strip()
+                    if text:
+                        self.post_message(PromptInput.Submitted(self, text))
+                        self.clear()
+
+            elif self._mode == "browsing":
                 event.prevent_default()
-                text = self.text.strip()
-                if text:
-                    self.post_message(PromptInput.Submitted(self, text))
-                    self.clear()
+                if event.key == "up":
+                    if self._history_idx is not None and self._history_idx > 0:
+                        self._enter_browsing(self._history_idx - 1)
+                elif event.key == "down":
+                    if self._history_idx is not None:
+                        if self._history_idx < len(self._history) - 1:
+                            self._enter_browsing(self._history_idx + 1)
+                        else:
+                            self._exit_browsing()
+                elif event.key == "escape":
+                    self._exit_browsing()
+                elif event.key == "enter":
+                    self._enter_editing()
+
+            elif self._mode == "editing":
+                if event.key == "escape":
+                    event.prevent_default()
+                    self._mode = "browsing"
+                    if self._edit_source_idx is not None:
+                        self._enter_browsing(self._edit_source_idx)
+                elif event.key == "enter":
+                    event.prevent_default()
+                    text = self.text.strip()
+                    if text:
+                        rc = self._remove_count_for(self._edit_source_idx)
+                        self.post_message(PromptInput.HistorySubmitted(self, text, rc))
+                        self._mode = "normal"
+                        self._history_idx = None
+                        self._edit_source_idx = None
+                        self.clear()
+                        self.post_message(self.HintChanged(""))
 
     class ToolCallEvent(Message):
         def __init__(self, name: str) -> None:
@@ -162,6 +264,15 @@ def _build_textual_app(agent: "Agent", session=None):
         #input-bar:focus {{
             border: solid {t.active};
         }}
+        HintBar {{
+            height: 0;
+            background: {t.panel_bg};
+            color: {t.text_dim};
+            padding: 0 1;
+        }}
+        HintBar.visible {{
+            height: 1;
+        }}
         TokenBar {{
             height: 1;
             color: {t.text_dim};
@@ -217,6 +328,7 @@ def _build_textual_app(agent: "Agent", session=None):
             yield ContextPanel("", id="context-panel")
             yield GitStatusBar("git: loading...", id="git-status")
             yield PromptInput(id="input-bar")
+            yield HintBar("", id="hint-bar", markup=True)
             yield Footer()
 
         def on_mount(self) -> None:
@@ -466,6 +578,15 @@ def _build_textual_app(agent: "Agent", session=None):
 
         # ── input handling ───────────────────────────────────────────────────
 
+        def on_prompt_input_hint_changed(self, event: PromptInput.HintChanged) -> None:
+            hint_bar = self.query_one("#hint-bar", HintBar)
+            if event.text:
+                hint_bar.update(event.text)
+                hint_bar.add_class("visible")
+            else:
+                hint_bar.update("")
+                hint_bar.remove_class("visible")
+
         async def on_prompt_input_submitted(self, event: PromptInput.Submitted) -> None:
             user_text = event.value.strip()
             if not user_text:
@@ -476,6 +597,40 @@ def _build_textual_app(agent: "Agent", session=None):
                 await self._run_slash(parts[0].lower(), parts[1] if len(parts) > 1 else "")
                 return
 
+            input_widget = self.query_one("#input-bar", PromptInput)
+            input_widget.add_to_history(user_text)
+            self._begin_chat(user_text)
+
+        async def on_prompt_input_history_submitted(self, event: PromptInput.HistorySubmitted) -> None:
+            user_text = event.value.strip()
+            if not user_text:
+                return
+
+            # Roll back agent messages: remove the last remove_count user turns
+            if event.remove_count > 0:
+                user_positions = [
+                    i for i, m in enumerate(self._agent.messages)
+                    if m.get("role") == "user"
+                ]
+                if event.remove_count >= len(user_positions):
+                    system = next(
+                        (m for m in self._agent.messages if m.get("role") == "system"), None
+                    )
+                    self._agent.messages = [system] if system else []
+                else:
+                    cut = user_positions[-event.remove_count]
+                    self._agent.messages = self._agent.messages[:cut]
+                self.query_one("#token-bar", TokenBar).update_tokens(self._agent.token_estimate())
+
+            # Truncate history to the edit point and add the new version
+            input_widget = self.query_one("#input-bar", PromptInput)
+            if event.area._edit_source_idx is not None:
+                input_widget._history = input_widget._history[:event.area._edit_source_idx]
+            input_widget.add_to_history(user_text)
+
+            self._begin_chat(user_text)
+
+        def _begin_chat(self, user_text: str) -> None:
             # Switch to chat tab so the user sees the exchange.
             self._switch_to_chat()
             self._write_chat(f"[bold {t.user_color}]You:[/bold {t.user_color}] {user_text}")
