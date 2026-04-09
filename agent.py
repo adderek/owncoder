@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, AsyncIterator
 
 from agent.tools import get_tool, get_schemas
 from agent.memory.compactor import compact, _count_tokens_approx
+from openai import BadRequestError
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
@@ -246,28 +247,36 @@ async def run_turn(
     api_messages = [{k: v for k, v in m.items() if not k.startswith("_")} for m in messages]
     
     # Use streaming when a token callback is provided; non-streaming otherwise.
-    if on_token is not None:
-        finish_reason, full_content, raw_tool_calls = await _stream_response(
-            client, config, api_messages, tools, on_token
-        )
-        # Reconstruct a message-like namespace for uniform handling below
-        class _Msg:
-            content = full_content
-            tool_calls = raw_tool_calls or None
-        class _Choice:
-            message = _Msg()
-            finish_reason = finish_reason
-        msg = _Msg()
-        choice = _Choice()
-    else:
-        response = await client.chat.completions.create(
-            model=config.llm.model,
-            messages=api_messages,
-            tools=tools if tools else None,
-            max_tokens=config.llm.max_output_tokens,
-        )
-        choice = response.choices[0]
-        msg = choice.message
+    try:
+        if on_token is not None:
+            finish_reason, full_content, raw_tool_calls = await _stream_response(
+                client, config, api_messages, tools, on_token
+            )
+            # Reconstruct a message-like namespace for uniform handling below
+            class _Msg:
+                content = full_content
+                tool_calls = raw_tool_calls or None
+            class _Choice:
+                message = _Msg()
+                finish_reason = finish_reason
+            msg = _Msg()
+            choice = _Choice()
+        else:
+            response = await client.chat.completions.create(
+                model=config.llm.model,
+                messages=api_messages,
+                tools=tools if tools else None,
+                max_tokens=config.llm.max_output_tokens,
+            )
+            choice = response.choices[0]
+            msg = choice.message
+    except BadRequestError as e:
+        err_body = e.body or {}
+        if isinstance(err_body, dict) and err_body.get("error", {}).get("type") == "exceed_context_size_error":
+            logger.warning("Context size exceeded, compacting conversation and retrying...")
+            messages = await compact(messages, config, client)
+            return await run_turn(messages, config, client, on_token, on_tool_call, _depth + 1)
+        raise
 
     # Structured tool calls (llama-server with --jinja, or cloud APIs)
     tool_calls = msg.tool_calls if (choice.finish_reason == "tool_calls" and msg.tool_calls) else None
