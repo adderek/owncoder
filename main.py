@@ -322,7 +322,9 @@ def cmd_chat(args, config):
         console.print(f"New session: {session.id}")
 
     try:
-        run_ui(agent, session=session)
+        active_session = run_ui(agent, session=session)
+        if active_session is not None:
+            session = active_session
     finally:
         save_session(session, agent.messages)
         if store:
@@ -632,6 +634,10 @@ def main():
     commit_p = sub.add_parser("commit", help="Generate and apply a commit message for a subrepo")
     commit_p.add_argument("path", type=str, help="Path to subrepo (absolute or relative to working dir)")
     commit_p.add_argument("--model", type=str, help="Override model name")
+
+    # exec
+    exec_p = sub.add_parser("exec", help="Execute a system command in the project directory")
+    exec_p.add_argument("prompt", type=str, help="Command to execute")
 
     # debug
     dbg_p = sub.add_parser("debug", help="Debug utilities")

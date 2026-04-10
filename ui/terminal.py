@@ -1063,7 +1063,7 @@ def _hex_to_ansi(hex_color: str) -> str:
     return f"\033[38;2;{r};{g};{b}m"
 
 
-async def simple_loop(agent: "Agent", session=None) -> None:
+async def simple_loop(agent: "Agent", session=None):
     from rich.console import Console
     from rich.markdown import Markdown
     import readline  # enables arrow keys / history on Linux
@@ -1158,8 +1158,8 @@ async def simple_loop(agent: "Agent", session=None) -> None:
 
             elif cmd == "/tools":
                 from agent.tools import get_schemas
-                for t in get_schemas():
-                    fn = t["function"]
+                for schema in get_schemas():
+                    fn = schema["function"]
                     console.print(f"  [cyan]{fn['name']}[/cyan]  [dim]{fn.get('description','')[:60]}[/dim]")
 
             elif cmd == "/apply":
@@ -1349,17 +1349,20 @@ async def simple_loop(agent: "Agent", session=None) -> None:
         if cfg.ui.show_token_count:
             console.print(f"\n{_token_bar(agent.token_estimate(), cfg.llm.ctx_window)}\n")
 
+    return session
+
 
 # ── Entry point ──────────────────────────────────────────────────────────────
 
-def run_ui(agent: "Agent", session=None) -> None:
+def run_ui(agent: "Agent", session=None):
     cfg = agent.config
     if cfg.ui.mode == "textual":
         try:
             app = _build_textual_app(agent, session=session)
             app.run()
+            return session
         except ImportError:
             print("Textual not available, falling back to simple mode.")
-            asyncio.run(simple_loop(agent, session=session))
+            return asyncio.run(simple_loop(agent, session=session))
     else:
-        asyncio.run(simple_loop(agent, session=session))
+        return asyncio.run(simple_loop(agent, session=session))

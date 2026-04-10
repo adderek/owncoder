@@ -1,7 +1,6 @@
 from __future__ import annotations
 import json
 import re
-from functools import lru_cache
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -24,20 +23,6 @@ The facts object should contain:
   "code_written": [{"name": "...", "path": "...", "purpose": "..."}]
 }
 """
-
-@lru_cache(maxsize=128)
-def count_tokens_approx_cached(messages: list[dict]) -> int:
-    from agent._tokens import count_tokens_approx
-    total = 0
-    for m in messages:
-        content = m.get("content") or ""
-        if isinstance(content, list):
-            for part in content:
-                if isinstance(part, dict):
-                    total += count_tokens_approx(str(part.get("text", "")))
-        else:
-            total += count_tokens_approx(str(content))
-    return total
 
 def _count_tokens_approx(messages: list[dict]) -> int:
     from agent._tokens import count_tokens_approx

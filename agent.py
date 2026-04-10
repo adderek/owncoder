@@ -69,11 +69,11 @@ async def execute_tool(tool_call) -> str:
         # Hard cap: ~32 K chars ≈ 8 K tokens. Truncate with a clear notice.
         limit = 32_000
         if len(serialised) > limit:
-            kept = serialised[:limit]
-            # Ensure valid JSON string by wrapping truncated content
-            truncation_notice = f'\n[...truncated: result was {len(serialised)} chars, kept first {limit}]'
-            # Return as a plain string notice rather than broken JSON
-            return kept + truncation_notice
+            return json.dumps({
+                "truncated": True,
+                "partial_content": serialised[:limit],
+                "original_length": len(serialised),
+            }, ensure_ascii=False)
         return serialised
     except Exception as e:
         logger.error(
@@ -184,7 +184,11 @@ async def _stream_response(client, config, api_messages, tools, on_token):
         tool_calls = []
         for idx in sorted(tc_acc):
             raw = tc_acc[idx]
-            tool_calls.append(_FakeToolCall(raw["function"]["name"], json.loads(raw["function"]["arguments"] or "{}")))
+            try:
+                args = json.loads(raw["function"]["arguments"] or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            tool_calls.append(_FakeToolCall(raw["function"]["name"], args))
             # Restore the real id from streaming
             tool_calls[-1].id = raw["id"] or tool_calls[-1].id
     else:
@@ -281,7 +285,8 @@ async def run_turn(
         raise
 
     # Structured tool calls (llama-server with --jinja, or cloud APIs)
-    tool_calls = msg.tool_calls if (choice.finish_reason == "tool_calls" and msg.tool_calls) else None
+    # Some providers return finish_reason="stop" even when tool_calls are present
+    tool_calls = msg.tool_calls if msg.tool_calls else None
 
     # Fallback: parse raw <tools> blocks from text output
     if not tool_calls and msg.content:

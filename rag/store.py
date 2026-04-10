@@ -128,7 +128,6 @@ class VectorStore:
         conn.commit()
 
     def upsert_many(self, chunks: list[dict]) -> None:
-        import sqlite_vec
         conn = self._get_conn()
         for chunk in chunks:
             existing = conn.execute(
@@ -154,6 +153,7 @@ class VectorStore:
             )
 
             if chunk.get("embedding"):
+                import sqlite_vec
                 emb = chunk["embedding"]
                 dims = len(emb)
                 self._ensure_vec_table(dims)
