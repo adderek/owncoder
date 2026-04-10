@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -13,22 +14,28 @@ class VectorStore:
         self._cfg = cfg
         db_path = Path(cfg.db_path)
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(db_path))
-        self._conn.row_factory = sqlite3.Row
-        self._conn.enable_load_extension(True)
+        self._db_path = str(db_path.resolve())
+        self._local = threading.local()
         self._setup()
-        self._conn.enable_load_extension(False)
         # Dimension of the vec0 KNN table; set on first embedding insert, read back from _meta.
         self._vec_dims: int | None = self._read_vec_dims()
 
-    def _setup(self) -> None:
-        conn = self._conn
-        try:
-            import sqlite_vec
-            sqlite_vec.load(conn)
-        except Exception as e:
-            raise RuntimeError(f"Failed to load sqlite-vec: {e}") from e
+    def _get_conn(self) -> sqlite3.Connection:
+        if not hasattr(self._local, "conn"):
+            conn = sqlite3.connect(self._db_path, timeout=30, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            conn.enable_load_extension(True)
+            try:
+                import sqlite_vec
+                sqlite_vec.load(conn)
+            except Exception as e:
+                raise RuntimeError(f"Failed to load sqlite-vec: {e}") from e
+            conn.enable_load_extension(False)
+            self._local.conn = conn
+        return self._local.conn
 
+    def _setup(self) -> None:
+        conn = self._get_conn()
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS chunks (
                 id TEXT PRIMARY KEY,
@@ -59,7 +66,7 @@ class VectorStore:
         conn.commit()
 
     def _read_vec_dims(self) -> int | None:
-        row = self._conn.execute(
+        row = self._get_conn().execute(
             "SELECT value FROM _meta WHERE key = 'embedding_dims'"
         ).fetchone()
         return int(row["value"]) if row else None
@@ -68,7 +75,7 @@ class VectorStore:
         """Create the vec0 KNN table if it doesn't exist for the given dimensions."""
         if self._vec_dims == dims:
             return
-        conn = self._conn
+        conn = self._get_conn()
         conn.execute(f"""
             CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
                 chunk_id TEXT PRIMARY KEY,
@@ -83,7 +90,7 @@ class VectorStore:
         self._vec_dims = dims
 
     def upsert(self, chunk: dict) -> None:
-        conn = self._conn
+        conn = self._get_conn()
         # Remove stale FTS entry (INSERT OR REPLACE on chunks changes the rowid).
         existing = conn.execute(
             "SELECT rowid FROM chunks WHERE id = ?", (chunk["id"],)
@@ -122,7 +129,7 @@ class VectorStore:
 
     def upsert_many(self, chunks: list[dict]) -> None:
         import sqlite_vec
-        conn = self._conn
+        conn = self._get_conn()
         for chunk in chunks:
             existing = conn.execute(
                 "SELECT rowid FROM chunks WHERE id = ?", (chunk["id"],)
@@ -159,7 +166,7 @@ class VectorStore:
         conn.commit()
 
     def delete_by_path(self, path: str) -> None:
-        conn = self._conn
+        conn = self._get_conn()
         rows = conn.execute("SELECT id, rowid FROM chunks WHERE path = ?", (path,)).fetchall()
         if not rows:
             return
@@ -174,7 +181,7 @@ class VectorStore:
         conn.commit()
 
     def get_mtime(self, path: str) -> float | None:
-        row = self._conn.execute(
+        row = self._get_conn().execute(
             "SELECT mtime FROM chunks WHERE path = ? LIMIT 1", (path,)
         ).fetchone()
         return row["mtime"] if row else None
@@ -184,7 +191,7 @@ class VectorStore:
         if self._vec_dims is None or self._vec_dims != len(embedding):
             return []
         query_blob = sqlite_vec.serialize_float32(embedding)
-        rows = self._conn.execute("""
+        rows = self._get_conn().execute("""
             SELECT vc.chunk_id, vc.distance,
                    c.id, c.path, c.language, c.node_type, c.name,
                    c.start_line, c.end_line, c.content
@@ -198,7 +205,7 @@ class VectorStore:
 
     def fts_search(self, query: str, top_k: int = 20) -> list[dict]:
         try:
-            rows = self._conn.execute("""
+            rows = self._get_conn().execute("""
                 SELECT c.id, c.path, c.language, c.node_type, c.name,
                        c.start_line, c.end_line, c.content,
                        bm25(chunks_fts) AS score
@@ -247,9 +254,12 @@ class VectorStore:
         return [{"combined_score": s, **d} for s, d in combined[:top_k]]
 
     def stats(self) -> dict:
-        row = self._conn.execute("SELECT COUNT(*) as cnt FROM chunks").fetchone()
-        paths = self._conn.execute("SELECT COUNT(DISTINCT path) as cnt FROM chunks").fetchone()
+        conn = self._get_conn()
+        row = conn.execute("SELECT COUNT(*) as cnt FROM chunks").fetchone()
+        paths = conn.execute("SELECT COUNT(DISTINCT path) as cnt FROM chunks").fetchone()
         return {"chunks": row["cnt"], "files": paths["cnt"]}
 
     def close(self) -> None:
-        self._conn.close()
+        if hasattr(self._local, "conn"):
+            self._local.conn.close()
+            del self._local.conn

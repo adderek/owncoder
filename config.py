@@ -23,6 +23,7 @@ class EmbeddingsConfig:
     base_url: str = "http://localhost:8080/v1"
     model: str = "nomic-embed-text"
     dimensions: int = 768
+    max_tokens: int = 512  # truncate input to this many tokens before embedding (0 = no limit)
 
 
 @dataclass
@@ -117,6 +118,7 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_EMBEDDINGS_BASE_URL": ("embeddings", "base_url"),
         "AGENT_EMBEDDINGS_MODEL": ("embeddings", "model"),
         "AGENT_EMBEDDINGS_DIMENSIONS": ("embeddings", "dimensions"),
+        "AGENT_EMBEDDINGS_MAX_TOKENS": ("embeddings", "max_tokens"),
         "AGENT_RAG_DB_PATH": ("rag", "db_path"),
         "AGENT_RAG_TOP_K": ("rag", "top_k"),
         "AGENT_TOOLS_ALLOW_SHELL": ("tools", "allow_shell"),

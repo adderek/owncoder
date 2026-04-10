@@ -334,6 +334,18 @@ def _build_textual_app(agent: "Agent", session=None):
         def on_mount(self) -> None:
             self.query_one("#input-bar", PromptInput).focus()
             self.call_later(self._refresh_git)
+            # Register a thread-safe progress callback for analyze_asm
+            try:
+                from agent.tools.analyze_asm import set_ui_progress_cb
+                app_ref = self
+                def _asm_ui_cb(msg: str) -> None:
+                    app_ref.call_from_thread(
+                        app_ref.query_one("#context-panel", ContextPanel).set_context,
+                        f"[{t.tool_color}]{msg}[/{t.tool_color}]",
+                    )
+                set_ui_progress_cb(_asm_ui_cb)
+            except Exception:
+                pass
             # Seed the sys log with session info
             sys_log = self.query_one("#sys-log", SysView)
             if self._session:
@@ -358,6 +370,14 @@ def _build_textual_app(agent: "Agent", session=None):
             self.query_one(TabbedContent).active = "tab-chat"
 
         # ── actions ──────────────────────────────────────────────────────────
+
+        def action_quit(self) -> None:
+            try:
+                from agent.tools.analyze_asm import get_interrupt_flag
+                get_interrupt_flag().set()
+            except Exception:
+                pass
+            self.exit()
 
         def action_show_help(self) -> None:
             self._write_sys(_make_help_text(t))

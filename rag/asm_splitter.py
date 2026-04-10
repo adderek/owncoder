@@ -86,25 +86,68 @@ def _merge_proposals(proposals: list[int], num_lines: int) -> list[int]:
 
 
 class AsmLogicalSplitter:
-    def __init__(self, llm_client, cfg: "AsmAnalysisConfig", llm_cfg: "LLMConfig") -> None:
+    def __init__(
+        self,
+        llm_client,
+        cfg: "AsmAnalysisConfig",
+        llm_cfg: "LLMConfig",
+        progress_cb=None,
+    ) -> None:
         self._client = llm_client
         self._cfg = cfg
         self._llm_cfg = llm_cfg
         self._model = cfg.describer_model or llm_cfg.model
+        self._progress_cb = progress_cb or (lambda event, data: None)
 
-    def split(self, path: str, lines: list[str]) -> list[tuple[int, int]]:
-        """Return list of (start_line, end_line) 1-indexed, non-overlapping, covering all lines."""
+    def split(
+        self,
+        path: str,
+        lines: list[str],
+        *,
+        interrupt=None,
+        checkpoint_save=None,
+        preloaded: "dict[int, dict] | None" = None,
+    ) -> "list[tuple[int, int]] | None":
+        """Return list of (start_line, end_line) 1-indexed, non-overlapping, covering all lines.
+
+        Returns None if interrupted before all windows are processed.
+        checkpoint_save(window_index, start_line, end_line, boundaries) is called after each window.
+        preloaded maps window_index -> {start_line, end_line, boundaries} for already-done windows.
+        """
         num_lines = len(lines)
         if num_lines == 0:
             return []
 
         window_size_chars = self._cfg.splitter_ctx_tokens * 4
         overlap = self._cfg.splitter_overlap_lines
+        preloaded = preloaded or {}
+
+        # Pre-count windows so we can report progress
+        total_windows = 0
+        _ws = 0
+        while _ws < num_lines:
+            _wl = 0
+            _cc = 0
+            for i in range(_ws, num_lines):
+                _line = lines[i]
+                if _cc + len(_line) > window_size_chars and _wl:
+                    break
+                _wl += 1
+                _cc += len(_line)
+            total_windows += 1
+            _adv = _wl - overlap
+            _ws += _adv if _adv > 0 else _wl
 
         all_proposals: list[int] = []
         window_start = 0  # 0-indexed
+        window_index = 0
 
         while window_start < num_lines:
+            # Check interrupt before starting each window
+            if interrupt is not None and interrupt.is_set():
+                logger.info("AsmLogicalSplitter: interrupted at window %d/%d", window_index, total_windows)
+                return None
+
             # Build window
             window_lines = []
             char_count = 0
@@ -119,19 +162,41 @@ class AsmLogicalSplitter:
             start_1 = window_start + 1  # 1-indexed
             end_1 = window_end + 1
 
-            window_content = "".join(
-                f"{start_1 + i:6d}  {line}" for i, line in enumerate(window_lines)
-            )
-
-            prompt = _SPLIT_PROMPT.format(
-                start_line=start_1,
-                end_line=end_1,
-                path=path,
-                window_content=window_content,
-            )
-
-            boundaries = self._call_llm_for_boundaries(prompt, path, start_1, end_1)
-            all_proposals.extend(boundaries)
+            if window_index in preloaded:
+                # Reuse saved proposals for this window — skip LLM call
+                boundaries = preloaded[window_index]["boundaries"]
+                all_proposals.extend(boundaries)
+                window_index += 1
+                self._progress_cb("splitting_window", {
+                    "window": window_index,
+                    "total_windows": total_windows,
+                    "start_line": start_1,
+                    "end_line": end_1,
+                    "total_lines": num_lines,
+                    "cached": True,
+                })
+            else:
+                window_content = "".join(
+                    f"{start_1 + i:6d}  {line}" for i, line in enumerate(window_lines)
+                )
+                prompt = _SPLIT_PROMPT.format(
+                    start_line=start_1,
+                    end_line=end_1,
+                    path=path,
+                    window_content=window_content,
+                )
+                boundaries = self._call_llm_for_boundaries(prompt, path, start_1, end_1)
+                all_proposals.extend(boundaries)
+                window_index += 1
+                self._progress_cb("splitting_window", {
+                    "window": window_index,
+                    "total_windows": total_windows,
+                    "start_line": start_1,
+                    "end_line": end_1,
+                    "total_lines": num_lines,
+                })
+                if checkpoint_save is not None:
+                    checkpoint_save(window_index - 1, start_1, end_1, boundaries)
 
             # Advance by window size minus overlap
             advance = len(window_lines) - overlap

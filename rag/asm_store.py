@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -17,15 +18,34 @@ class AsmStore:
     def __init__(self, cfg: "RAGConfig") -> None:
         db_path = Path(cfg.db_path)
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(db_path), timeout=30, check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA foreign_keys=ON")
+        self._db_path = str(db_path.resolve())
+        self._local = threading.local()
+        # Initialise tables using the main-thread connection, then read vec dims.
         self._setup()
         self._vec_dims: int | None = self._read_vec_dims()
 
-    def _setup(self) -> None:
-        self._conn.executescript("""
+    @property
+    def _conn(self) -> sqlite3.Connection:
+        """Return a per-thread connection, creating one if needed.
+
+        sqlite-vec extensions are registered per-connection and SQLite virtual
+        table cursors have thread affinity even when check_same_thread=False is
+        set, so we give each thread its own connection instead of sharing one.
+        """
+        if not hasattr(self._local, "conn"):
+            conn = sqlite3.connect(self._db_path, timeout=30, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            self._local.conn = conn
+            # Re-run idempotent DDL so the new connection knows about all tables,
+            # and load the sqlite-vec extension so vec0 virtual table is accessible.
+            self._setup_conn(conn)
+        return self._local.conn
+
+    def _setup_conn(self, conn: sqlite3.Connection) -> None:
+        """Load extension + run DDL on a single connection (idempotent)."""
+        conn.executescript("""
             CREATE TABLE IF NOT EXISTS asm_units (
                 id          TEXT PRIMARY KEY,
                 path        TEXT NOT NULL,
@@ -65,8 +85,28 @@ class AsmStore:
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS asm_files (
+                path        TEXT PRIMARY KEY,
+                checksum    TEXT NOT NULL,
+                status      TEXT NOT NULL DEFAULT 'split',
+                analyzed_at REAL
+            );
+
+            CREATE TABLE IF NOT EXISTS asm_split_progress (
+                path         TEXT NOT NULL,
+                window_index INTEGER NOT NULL,
+                start_line   INTEGER NOT NULL,
+                end_line     INTEGER NOT NULL,
+                boundaries   TEXT NOT NULL,
+                PRIMARY KEY (path, window_index)
+            );
         """)
-        self._conn.commit()
+        conn.commit()
+
+    def _setup(self) -> None:
+        """Initialise the main-thread connection and run DDL."""
+        self._setup_conn(self._conn)
 
     def _read_vec_dims(self) -> int | None:
         row = self._conn.execute(
@@ -75,25 +115,25 @@ class AsmStore:
         return int(row["value"]) if row else None
 
     def _ensure_vec_table(self, dims: int) -> None:
-        if self._vec_dims == dims:
-            return
+        conn = self._conn  # thread-local connection
         try:
             import sqlite_vec
-            sqlite_vec.load(self._conn)
+            sqlite_vec.load(conn)
         except Exception as e:
             raise RuntimeError(f"Failed to load sqlite-vec: {e}") from e
-        self._conn.execute(f"""
+        conn.execute(f"""
             CREATE VIRTUAL TABLE IF NOT EXISTS vec_asm_units USING vec0(
                 unit_id TEXT PRIMARY KEY,
                 embedding float[{dims}] distance_metric=cosine
             )
         """)
-        self._conn.execute(
-            "INSERT OR REPLACE INTO _asm_meta(key, value) VALUES ('vec_asm_dims', ?)",
-            (str(dims),),
-        )
-        self._conn.commit()
-        self._vec_dims = dims
+        if self._vec_dims != dims:
+            conn.execute(
+                "INSERT OR REPLACE INTO _asm_meta(key, value) VALUES ('vec_asm_dims', ?)",
+                (str(dims),),
+            )
+            self._vec_dims = dims
+        conn.commit()
 
     def upsert_unit(self, unit: dict) -> None:
         conn = self._conn
@@ -204,7 +244,7 @@ class AsmStore:
     def get_pending_units(self, path: str, level: int) -> list[dict]:
         rows = self._conn.execute("""
             SELECT * FROM asm_units
-            WHERE path = ? AND level = ? AND status IN ('pending', 'described')
+            WHERE path = ? AND level = ? AND status = 'pending'
             ORDER BY start_line
         """, (path, level)).fetchall()
         return [dict(r) for r in rows]
@@ -212,13 +252,14 @@ class AsmStore:
     def semantic_search(self, embedding: list[float], top_k: int = 10) -> list[dict]:
         if self._vec_dims is None or self._vec_dims != len(embedding):
             return []
+        conn = self._conn  # thread-local connection
         try:
             import sqlite_vec
-            sqlite_vec.load(self._conn)
+            sqlite_vec.load(conn)
         except Exception:
             return []
         query_blob = sqlite_vec.serialize_float32(embedding)
-        rows = self._conn.execute("""
+        rows = conn.execute("""
             SELECT v.unit_id, v.distance,
                    u.id, u.path, u.level, u.start_line, u.end_line,
                    u.description, u.inferred_name, u.status, u.confidence
@@ -229,5 +270,53 @@ class AsmStore:
         """, (query_blob, top_k)).fetchall()
         return [{"score": 1.0 - row["distance"] / 2.0, **dict(row)} for row in rows]
 
+    def save_split_window(
+        self, path: str, window_index: int, start_line: int, end_line: int, boundaries: list[int]
+    ) -> None:
+        import json
+        self._conn.execute(
+            "INSERT OR REPLACE INTO asm_split_progress"
+            "(path, window_index, start_line, end_line, boundaries) VALUES (?, ?, ?, ?, ?)",
+            (path, window_index, start_line, end_line, json.dumps(boundaries)),
+        )
+        self._conn.commit()
+
+    def load_split_windows(self, path: str) -> dict[int, dict]:
+        import json
+        rows = self._conn.execute(
+            "SELECT window_index, start_line, end_line, boundaries"
+            " FROM asm_split_progress WHERE path = ? ORDER BY window_index",
+            (path,),
+        ).fetchall()
+        return {
+            r["window_index"]: {
+                "start_line": r["start_line"],
+                "end_line": r["end_line"],
+                "boundaries": json.loads(r["boundaries"]),
+            }
+            for r in rows
+        }
+
+    def clear_split_windows(self, path: str) -> None:
+        self._conn.execute("DELETE FROM asm_split_progress WHERE path = ?", (path,))
+        self._conn.commit()
+
+    def get_file_record(self, path: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT checksum, status FROM asm_files WHERE path = ?", (path,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def set_file_record(self, path: str, checksum: str, status: str = "split") -> None:
+        import time
+        self._conn.execute(
+            "INSERT OR REPLACE INTO asm_files(path, checksum, status, analyzed_at) VALUES (?, ?, ?, ?)",
+            (path, checksum, status, time.time()),
+        )
+        self._conn.commit()
+
     def close(self) -> None:
-        self._conn.close()
+        # Close only the calling thread's connection (typically the main thread).
+        if hasattr(self._local, "conn"):
+            self._local.conn.close()
+            del self._local.conn

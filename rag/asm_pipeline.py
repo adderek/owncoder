@@ -71,6 +71,7 @@ class AsmAnalysisPipeline:
         lines = content.splitlines(keepends=True)
         num_lines = len(lines)
         mtime = p.stat().st_mtime
+        file_checksum = hashlib.sha256(content.encode()).hexdigest()[:16]
 
         # ── Phase 1: Split ──────────────────────────────────────────────────
         existing_units = self._store.get_units_for_file(path, level=0)
@@ -78,64 +79,110 @@ class AsmAnalysisPipeline:
 
         if force:
             self._store.delete_units_for_file(path)
+            self._store.clear_split_windows(path)
             existing_by_id = {}
 
-        # Compute intervals using LLM splitter
-        intervals = self._splitter.split(path, lines)
+        file_record = self._store.get_file_record(path)
+        stored_checksum = file_record["checksum"] if file_record else None
+        file_unchanged = (not force) and bool(existing_by_id) and (stored_checksum == file_checksum)
+
+        if file_unchanged and file_record and file_record["status"] == "complete":
+            return {"chunks": len(existing_by_id), "described": 0, "levels_built": 0, "interrupted": False, "cached": True}
 
         new_units: list[dict] = []
         changed_ids: list[str] = []
 
-        for start_line, end_line in intervals:
-            unit_lines = lines[start_line - 1:end_line]
-            checksum = _content_checksum(unit_lines)
-            uid = _unit_id(path, start_line, 0)
-            content_slice = "".join(unit_lines)
+        if file_unchanged:
+            # File hasn't changed — reuse existing splits, skip LLM splitting entirely.
+            new_units = sorted(existing_by_id.values(), key=lambda u: u["start_line"])
+            self._progress_cb("split_complete", {
+                "chunks": len(new_units),
+                "total_lines": num_lines,
+                "cached": True,
+            })
+        else:
+            # Load any partial split progress; clear it if the file changed.
+            if stored_checksum != file_checksum:
+                self._store.clear_split_windows(path)
+                preloaded: dict[int, dict] = {}
+            else:
+                preloaded = self._store.load_split_windows(path)
 
-            existing = existing_by_id.get(uid)
-            if existing and existing["checksum"] == checksum and not force:
-                # Unchanged — keep as-is
-                new_units.append(existing)
-                continue
+            intervals = self._splitter.split(
+                path,
+                lines,
+                interrupt=self._interrupt,
+                checkpoint_save=lambda wi, sl, el, b: self._store.save_split_window(path, wi, sl, el, b),
+                preloaded=preloaded,
+            )
 
-            revision = (existing["revision"] + 1) if existing else 1
-            unit = {
-                "id": uid,
-                "path": path,
-                "level": 0,
-                "start_line": start_line,
-                "end_line": end_line,
-                "checksum": checksum,
-                "revision": revision,
-                "status": "pending",
-                "mtime": mtime,
-                "content": content_slice,
-            }
-            new_units.append(unit)
-            changed_ids.append(uid)
-            self._store.upsert_unit(unit)
-            if existing:
-                self._store.mark_pending_above(uid)
+            if intervals is None:
+                # Interrupted mid-split; checkpoints are saved — safe to resume later.
+                return {"chunks": 0, "described": 0, "levels_built": 0, "interrupted": True}
 
-        # Delete units that no longer exist
-        new_ids = {u["id"] for u in new_units}
-        for uid, existing in existing_by_id.items():
-            if uid not in new_ids:
-                self._store.mark_pending_above(uid)
+            self._store.clear_split_windows(path)
+            self._progress_cb("split_complete", {
+                "chunks": len(intervals),
+                "total_lines": num_lines,
+            })
+
+            for start_line, end_line in intervals:
+                unit_lines = lines[start_line - 1:end_line]
+                checksum = _content_checksum(unit_lines)
+                uid = _unit_id(path, start_line, 0)
+                content_slice = "".join(unit_lines)
+
+                existing = existing_by_id.get(uid)
+                if existing and existing["checksum"] == checksum:
+                    # Unchanged — keep as-is
+                    new_units.append(existing)
+                    continue
+
+                revision = (existing["revision"] + 1) if existing else 1
+                unit = {
+                    "id": uid,
+                    "path": path,
+                    "level": 0,
+                    "start_line": start_line,
+                    "end_line": end_line,
+                    "checksum": checksum,
+                    "revision": revision,
+                    "status": "pending",
+                    "mtime": mtime,
+                    "content": content_slice,
+                }
+                new_units.append(unit)
+                changed_ids.append(uid)
+                self._store.upsert_unit(unit)
+                if existing:
+                    self._store.mark_pending_above(uid)
+
+            # Delete units that no longer exist
+            new_ids = {u["id"] for u in new_units}
+            for uid, existing in existing_by_id.items():
+                if uid not in new_ids:
+                    self._store.mark_pending_above(uid)
+
+            self._store.set_file_record(path, file_checksum, status="split")
 
         # Set prev/next sibling links
         self._link_siblings(new_units)
 
         # ── Phase 2: Embed raw content ──────────────────────────────────────
         if self._embedder:
-            for unit in new_units:
-                if unit["id"] in changed_ids or force:
-                    try:
-                        emb = self._embedder.embed_one(unit.get("content", ""))
-                        unit["embedding"] = emb
-                        self._store.upsert_unit(unit)
-                    except Exception as e:
-                        logger.warning("Embed failed for unit %s: %s", unit["id"], e)
+            embed_targets = [u for u in new_units if u["id"] in changed_ids or force]
+            for embed_idx, unit in enumerate(embed_targets):
+                self._progress_cb("embedding", {
+                    "index": embed_idx + 1,
+                    "total": len(embed_targets),
+                    "unit_id": unit["id"],
+                })
+                try:
+                    emb = self._embedder.embed_one(unit.get("content", ""))
+                    unit["embedding"] = emb
+                    self._store.upsert_unit(unit)
+                except Exception as e:
+                    logger.warning("Embed failed for unit %s: %s", unit["id"], e)
 
         # ── Phase 3: Describe ───────────────────────────────────────────────
         pending = self._store.get_pending_units(path, level=0)
@@ -144,6 +191,7 @@ class AsmAnalysisPipeline:
         idx_map = {u["id"]: i for i, u in enumerate(all_level0)}
 
         described_count = 0
+        total_pending = len(pending)
         for unit in pending:
             if self._interrupt.is_set():
                 break
@@ -169,6 +217,8 @@ class AsmAnalysisPipeline:
 
             self._store.upsert_unit(unit)
             described_count += 1
+            unit["_index"] = described_count
+            unit["_total"] = total_pending
             self._progress_cb("described", unit)
 
         # ── Phase 4: Hierarchical summarization ────────────────────────────
@@ -188,7 +238,7 @@ class AsmAnalysisPipeline:
             ]
 
             parent_units: list[dict] = []
-            for group in groups:
+            for group_idx, group in enumerate(groups):
                 if self._interrupt.is_set():
                     break
 
@@ -235,17 +285,23 @@ class AsmAnalysisPipeline:
                     self._store.upsert_unit(child)
 
                 parent_units.append(parent_unit)
+                parent_unit["_group_index"] = group_idx + 1
+                parent_unit["_group_total"] = len(groups)
                 self._progress_cb("grouped", parent_unit)
 
             self._link_siblings(parent_units)
             levels_built += 1
             level += 1
 
+        interrupted = self._interrupt.is_set()
+        if not interrupted:
+            self._store.set_file_record(path, file_checksum, status="complete")
+
         return {
             "chunks": len(new_units),
             "described": described_count,
             "levels_built": levels_built,
-            "interrupted": self._interrupt.is_set(),
+            "interrupted": interrupted,
         }
 
     def _link_siblings(self, units: list[dict]) -> None:
