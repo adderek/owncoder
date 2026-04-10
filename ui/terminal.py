@@ -13,6 +13,38 @@ if TYPE_CHECKING:
     from agent.config import Config
 
 
+# ── Slash-command registry (used by completion and help) ────────────────────
+
+# (primary_name, aliases, short_description, takes_arg)
+_SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
+    ("/analyze-asm", ["/asm"],  "analyze assembly file  --resume --force --levels N", True),
+    ("/apply",       [],        "write last code block to file", False),
+    ("/clear",       [],        "clear the chat screen", False),
+    ("/compact",     [],        "summarize old messages to free context", False),
+    ("/exec",        [],        "run a shell command", True),
+    ("/export",      [],        "export conversation as markdown", False),
+    ("/help",        ["/?"],    "show this help", False),
+    ("/load",        [],        "load a saved session", True),
+    ("/reset",       [],        "drop conversation history", False),
+    ("/save",        [],        "save session under a name", False),
+    ("/sessions",    [],        "list saved sessions", False),
+    ("/tokens",      [],        "show token usage", False),
+    ("/tools",       [],        "list available tools", False),
+    ("/undo",        [],        "restore last file snapshot", False),
+]
+
+
+def _match_commands(prefix: str) -> list[tuple[str, str, bool]]:
+    """Return (primary_name, description, takes_arg) for commands whose primary
+    name or any alias starts with *prefix* (case-insensitive)."""
+    pl = prefix.lower()
+    out = []
+    for primary, aliases, desc, takes_arg in _SLASH_COMMANDS:
+        if primary.startswith(pl) or any(a.startswith(pl) for a in aliases):
+            out.append((primary, desc, takes_arg))
+    return out
+
+
 # ── Textual UI ──────────────────────────────────────────────────────────────
 
 def _build_textual_app(agent: "Agent", session=None):
@@ -59,6 +91,37 @@ def _build_textual_app(agent: "Agent", session=None):
     class HintBar(Static):
         """Contextual hints shown during history navigation."""
 
+    class CompletionBar(Static):
+        """Inline completion list shown while the user types a /command."""
+
+        MAX_VISIBLE = 6
+
+        def set_completions(
+            self,
+            matches: "list[tuple[str, str, bool]]",
+            selected_idx: int,
+        ) -> None:
+            if not matches:
+                self.update("")
+                self.remove_class("visible")
+                return
+            lines = []
+            for i, (cmd, desc, _) in enumerate(matches[:self.MAX_VISIBLE]):
+                marker = "▸" if i == selected_idx else " "
+                if i == selected_idx:
+                    cmd_part = f"[bold {t.cmd_color}]{cmd}[/bold {t.cmd_color}]"
+                else:
+                    cmd_part = f"[{t.cmd_color}]{cmd}[/{t.cmd_color}]"
+                lines.append(
+                    f" {marker} {cmd_part:<20} [{t.text_dim}]{desc}[/{t.text_dim}]"
+                )
+            if len(matches) > self.MAX_VISIBLE:
+                lines.append(
+                    f"[{t.text_dim}]   … {len(matches) - self.MAX_VISIBLE} more[/{t.text_dim}]"
+                )
+            self.update("\n".join(lines))
+            self.add_class("visible")
+
     class PromptInput(TextArea):
         """Multi-line input; Enter submits, Shift+Enter inserts newline.
         Up/Down when empty browses history; ESC cancels; Enter edits & retries."""
@@ -82,6 +145,16 @@ def _build_textual_app(agent: "Agent", session=None):
                 super().__init__()
                 self.text = text
 
+        class CompletionChanged(Message):
+            def __init__(
+                self,
+                matches: "list[tuple[str, str, bool]]",
+                selected_idx: int,
+            ) -> None:
+                super().__init__()
+                self.matches = matches
+                self.selected_idx = selected_idx
+
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
             self._history: list[str] = []
@@ -89,6 +162,9 @@ def _build_textual_app(agent: "Agent", session=None):
             self._history_idx: int | None = None
             self._edit_source_idx: int | None = None
             self._saved_text: str = ""
+            self._comp_matches: list[tuple[str, str, bool]] = []
+            self._comp_idx: int = -1          # -1 = no item highlighted
+            self._comp_suppress_update: bool = False
 
         def add_to_history(self, text: str) -> None:
             if not self._history or self._history[-1] != text:
@@ -126,8 +202,71 @@ def _build_textual_app(agent: "Agent", session=None):
                 f"[bold]ENTER[/bold]=retry  [bold]ESC[/bold]=cancel{rc_str}"
             ))
 
+        # ── completion helpers ────────────────────────────────────────────────
+
+        def _post_completion(self) -> None:
+            self.post_message(
+                PromptInput.CompletionChanged(self._comp_matches, self._comp_idx)
+            )
+
+        def _clear_completions(self) -> None:
+            self._comp_matches = []
+            self._comp_idx = -1
+            self._post_completion()
+
+        def _fill_completion(self) -> None:
+            """Replace input text with the currently selected (or first) completion."""
+            if not self._comp_matches:
+                return
+            idx = max(self._comp_idx, 0)
+            cmd, _, takes_arg = self._comp_matches[idx]
+            filled = cmd + (" " if takes_arg else "")
+            self._comp_suppress_update = True
+            self.load_text(filled)
+            self.move_cursor(self.document.end)
+
+        def on_text_area_changed(self, _event) -> None:
+            if self._comp_suppress_update:
+                self._comp_suppress_update = False
+                return
+            if self._mode != "normal":
+                return
+            text = self.text
+            if text.startswith("/"):
+                cmd_part = text.split()[0] if text.split() else text
+                self._comp_matches = _match_commands(cmd_part)
+            else:
+                self._comp_matches = []
+            self._comp_idx = -1
+            self._post_completion()
+
+        # ── key handling ─────────────────────────────────────────────────────
+
         def _on_key(self, event) -> None:
             if self._mode == "normal":
+                # ── completion navigation (takes priority) ─────────────────
+                if self._comp_matches:
+                    if event.key == "tab":
+                        event.prevent_default()
+                        self._comp_idx = (self._comp_idx + 1) % len(self._comp_matches)
+                        self._fill_completion()
+                        self._post_completion()
+                        return
+                    if event.key == "down":
+                        event.prevent_default()
+                        self._comp_idx = (self._comp_idx + 1) % len(self._comp_matches)
+                        self._post_completion()
+                        return
+                    if event.key == "up":
+                        event.prevent_default()
+                        self._comp_idx = (self._comp_idx - 1) % len(self._comp_matches)
+                        self._post_completion()
+                        return
+                    if event.key == "escape":
+                        event.prevent_default()
+                        self._clear_completions()
+                        return
+
                 if event.key == "up" and not self.text.strip():
                     event.prevent_default()
                     if self._history:
@@ -138,6 +277,7 @@ def _build_textual_app(agent: "Agent", session=None):
                     event.prevent_default()
                     text = self.text.strip()
                     if text:
+                        self._clear_completions()
                         self.post_message(PromptInput.Submitted(self, text))
                         self.clear()
 
@@ -264,6 +404,17 @@ def _build_textual_app(agent: "Agent", session=None):
         #input-bar:focus {{
             border: solid {t.active};
         }}
+        CompletionBar {{
+            height: auto;
+            max-height: 8;
+            display: none;
+            background: {t.panel_bg_dark};
+            color: {t.text_dim};
+            padding: 0 1;
+        }}
+        CompletionBar.visible {{
+            display: block;
+        }}
         HintBar {{
             height: 0;
             background: {t.panel_bg};
@@ -328,6 +479,7 @@ def _build_textual_app(agent: "Agent", session=None):
             yield ContextPanel("", id="context-panel")
             yield GitStatusBar("git: loading...", id="git-status")
             yield PromptInput(id="input-bar")
+            yield CompletionBar("", id="completion-bar", markup=True)
             yield HintBar("", id="hint-bar", markup=True)
             yield Footer()
 
@@ -597,6 +749,13 @@ def _build_textual_app(agent: "Agent", session=None):
                 self._write_sys(f"[{t.success}]{result.get('message', str(result))}[/{t.success}]")
 
         # ── input handling ───────────────────────────────────────────────────
+
+        def on_prompt_input_completion_changed(
+            self, event: PromptInput.CompletionChanged
+        ) -> None:
+            self.query_one("#completion-bar", CompletionBar).set_completions(
+                event.matches, event.selected_idx
+            )
 
         def on_prompt_input_hint_changed(self, event: PromptInput.HintChanged) -> None:
             hint_bar = self.query_one("#hint-bar", HintBar)
