@@ -507,6 +507,9 @@ def _build_textual_app(agent: "Agent", session=None):
                        if self._session.short_name else "")
                 )
             sys_log.write(f"[{t.text_dim}]Type /help for commands  ·  F1 opens this tab[/{t.text_dim}]")
+            # Restore prior dialogue if session was loaded before the UI started
+            if self._agent.messages:
+                self._restore_chat_history(self._agent.messages)
 
         # ── helpers ──────────────────────────────────────────────────────────
 
@@ -520,6 +523,35 @@ def _build_textual_app(agent: "Agent", session=None):
 
         def _switch_to_chat(self) -> None:
             self.query_one(TabbedContent).active = "tab-chat"
+
+        def _restore_chat_history(self, messages: list) -> None:
+            """Replay session messages into the chat log (clears first)."""
+            import json as _json
+            chat_log = self.query_one("#chat-log", ConversationView)
+            chat_log.clear()
+            for m in messages:
+                role = m.get("role", "")
+                if role == "system":
+                    continue
+                content = m.get("content") or ""
+                if isinstance(content, list):
+                    content = _json.dumps(content)
+                tool_calls = m.get("tool_calls") or []
+                if role == "user":
+                    chat_log.write(
+                        f"[bold {t.user_color}]You:[/bold {t.user_color}] {content}"
+                    )
+                elif role == "assistant":
+                    for tc in tool_calls:
+                        if isinstance(tc, dict):
+                            name = tc.get("function", {}).get("name", "?")
+                            chat_log.write(
+                                f"[{t.tool_color}]  ⚙ {name}[/{t.tool_color}]"
+                            )
+                    if content:
+                        chat_log.write(
+                            f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] {content}"
+                        )
 
         # ── actions ──────────────────────────────────────────────────────────
 
@@ -621,6 +653,8 @@ def _build_textual_app(agent: "Agent", session=None):
                         self.query_one("#token-bar", TokenBar).update_tokens(
                             self._agent.token_estimate()
                         )
+                        self._restore_chat_history(loaded_msgs)
+                        self._switch_to_chat()
 
             elif cmd == "/sessions":
                 from agent.memory.session import list_sessions
