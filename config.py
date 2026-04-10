@@ -14,6 +14,7 @@ class LLMConfig:
     api_key: str = "local"
     model: str = "qwen3-coder-30b"
     ctx_window: int = 16384
+    auto_detect_ctx: bool = True   # query server for actual context size on startup
     compaction_threshold: float = 0.75
     max_output_tokens: int = 4096
 
@@ -115,6 +116,7 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_LLM_MODEL": ("llm", "model"),
         "AGENT_LLM_CTX_WINDOW": ("llm", "ctx_window"),
         "AGENT_LLM_MAX_OUTPUT_TOKENS": ("llm", "max_output_tokens"),
+        "AGENT_LLM_AUTO_DETECT_CTX": ("llm", "auto_detect_ctx"),
         "AGENT_EMBEDDINGS_BASE_URL": ("embeddings", "base_url"),
         "AGENT_EMBEDDINGS_MODEL": ("embeddings", "model"),
         "AGENT_EMBEDDINGS_DIMENSIONS": ("embeddings", "dimensions"),
@@ -204,8 +206,46 @@ def check_reachability(config: Config) -> None:
     try:
         req = urllib.request.Request(url, method="GET")
         req.add_header("Authorization", f"Bearer {config.llm.api_key}")
-        with urllib.request.urlopen(req, timeout=3):
-            pass
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            if config.llm.auto_detect_ctx:
+                _try_detect_ctx_window(config, resp)
     except (urllib.error.URLError, OSError) as e:
         import sys
         print(f"Warning: LLM endpoint not reachable at {config.llm.base_url}: {e}", file=sys.stderr)
+
+
+def _try_detect_ctx_window(config: Config, resp) -> None:
+    """Try to detect context window size from the /models endpoint response.
+
+    Works with llama.cpp, vLLM, and other OpenAI-compatible servers that report
+    context length in their model metadata.
+    """
+    import json
+    import sys
+    try:
+        data = json.loads(resp.read())
+        models = data.get("data", [])
+        if not models:
+            return
+        # Find our model or use the first one
+        model_info = models[0]
+        for m in models:
+            if m.get("id") == config.llm.model:
+                model_info = m
+                break
+        # Different servers use different field names
+        ctx_size = (
+            model_info.get("context_length")
+            or model_info.get("max_model_len")
+            or model_info.get("n_ctx")
+        )
+        if ctx_size and isinstance(ctx_size, int) and ctx_size > 0:
+            if ctx_size != config.llm.ctx_window:
+                print(
+                    f"Auto-detected context window: {ctx_size} tokens "
+                    f"(config had {config.llm.ctx_window})",
+                    file=sys.stderr,
+                )
+                config.llm.ctx_window = ctx_size
+    except Exception:
+        pass  # best-effort detection

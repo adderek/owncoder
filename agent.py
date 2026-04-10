@@ -50,7 +50,18 @@ def _tool_result_message(tool_call_id: str, content: str) -> dict:
     }
 
 
-async def execute_tool(tool_call) -> str:
+def _tool_result_char_limit(config: "Config") -> int:
+    """Dynamic tool-result truncation limit based on context window.
+
+    Reserves ~30% of the context window for a single tool result (in chars).
+    Assumes ~4 chars per token as a rough estimate.
+    """
+    ctx_tokens = config.llm.ctx_window
+    # Reserve 30% of context for a single tool result, convert tokens→chars
+    return max(2_000, int(ctx_tokens * 0.30 * 4))
+
+
+async def execute_tool(tool_call, config: "Config | None" = None) -> str:
     name = tool_call.function.name
     try:
         args = json.loads(tool_call.function.arguments or "{}")
@@ -66,13 +77,14 @@ async def execute_tool(tool_call) -> str:
         result = await loop.run_in_executor(None, lambda: fn(**args))
         serialised = json.dumps(result, ensure_ascii=False)
         logger.debug("execute_tool: %s  result_len=%d", name, len(serialised))
-        # Hard cap: ~32 K chars ≈ 8 K tokens. Truncate with a clear notice.
-        limit = 32_000
+        # Dynamic cap based on context window size
+        limit = _tool_result_char_limit(config) if config else 32_000
         if len(serialised) > limit:
             return json.dumps({
                 "truncated": True,
                 "partial_content": serialised[:limit],
                 "original_length": len(serialised),
+                "hint": "Use start_line/end_line or a more specific query to get smaller results.",
             }, ensure_ascii=False)
         return serialised
     except Exception as e:
@@ -236,6 +248,42 @@ _NARRATION_PHRASES = [
 ]
 
 
+def _truncate_large_messages(messages: list[dict], token_budget: int) -> list[dict]:
+    """Aggressively truncate tool-result messages to fit within token_budget.
+
+    Preserves system and user messages. Shrinks the longest tool results first.
+    """
+    from agent._tokens import count_tokens_approx
+
+    result = [m.copy() for m in messages]
+    # Never touch system or the most recent user message
+    for _ in range(10):  # iterate until under budget or no progress
+        total = sum(count_tokens_approx(m.get("content") or "") for m in result)
+        if total <= token_budget:
+            break
+        # Find the longest tool/assistant message
+        longest_idx = -1
+        longest_len = 0
+        for i, m in enumerate(result):
+            if m.get("role") in ("system",):
+                continue
+            content = m.get("content") or ""
+            toks = count_tokens_approx(content)
+            if toks > longest_len:
+                longest_len = toks
+                longest_idx = i
+        if longest_idx < 0 or longest_len < 100:
+            break
+        # Truncate to ~25% of current size
+        content = result[longest_idx].get("content") or ""
+        keep_chars = max(200, len(content) // 4)
+        result[longest_idx] = {
+            **result[longest_idx],
+            "content": content[:keep_chars] + "\n\n[... truncated to fit context window ...]",
+        }
+    return result
+
+
 async def run_turn(
     messages: list[dict],
     config: "Config",
@@ -247,9 +295,29 @@ async def run_turn(
     if _depth > 40:
         return "[Error: too many recursive tool calls — stopping to prevent infinite loop]", messages
     tools = get_schemas()
+
+    # ── Pre-flight: estimate tokens and compact proactively ────────────
+    token_est = _count_tokens_approx(messages)
+    # Leave room for max_output_tokens + tool schemas (~500 tokens overhead)
+    budget = config.llm.ctx_window - config.llm.max_output_tokens - 500
+    if token_est > budget:
+        logger.warning(
+            "Pre-flight: estimated %d tokens exceeds budget %d, compacting...",
+            token_est, budget,
+        )
+        messages = await compact(messages, config, client)
+        token_est = _count_tokens_approx(messages)
+        if token_est > budget:
+            # Aggressive fallback: truncate large tool results in-place
+            messages = _truncate_large_messages(messages, budget)
+            logger.warning(
+                "Post-truncation: %d tokens (budget %d)",
+                _count_tokens_approx(messages), budget,
+            )
+
     # Strip internal-only keys before sending to API
     api_messages = [{k: v for k, v in m.items() if not k.startswith("_")} for m in messages]
-    
+
     # Use streaming when a token callback is provided; non-streaming otherwise.
     try:
         if on_token is not None:
@@ -279,8 +347,28 @@ async def run_turn(
     except BadRequestError as e:
         err_body = e.body or {}
         if isinstance(err_body, dict) and err_body.get("error", {}).get("type") == "exceed_context_size_error":
-            logger.warning("Context size exceeded, compacting conversation and retrying...")
+            err_detail = err_body.get("error", {})
+            # Update ctx_window from server response if available
+            server_ctx = err_detail.get("n_ctx")
+            if server_ctx and server_ctx < config.llm.ctx_window:
+                logger.warning(
+                    "Server reports ctx_window=%d, config had %d — adjusting",
+                    server_ctx, config.llm.ctx_window,
+                )
+                config.llm.ctx_window = server_ctx
+            logger.warning("Context size exceeded (%s), compacting and retrying...",
+                           err_detail.get("message", ""))
+            old_count = _count_tokens_approx(messages)
             messages = await compact(messages, config, client)
+            if _count_tokens_approx(messages) >= old_count:
+                # Compaction did nothing, must truncate to avoid infinite loop
+                messages = _truncate_large_messages(messages, budget)
+
+            # If compaction wasn't enough, aggressively truncate
+            token_est = _count_tokens_approx(messages)
+            budget = config.llm.ctx_window - config.llm.max_output_tokens - 500
+            if token_est > budget:
+                messages = _truncate_large_messages(messages, budget)
             return await run_turn(messages, config, client, on_token, on_tool_call, _depth + 1)
         raise
 
@@ -312,7 +400,7 @@ async def run_turn(
         for tc in tool_calls:
             if on_tool_call:
                 on_tool_call(tc.function.name, tc.function.arguments)
-        results = await asyncio.gather(*[execute_tool(tc) for tc in tool_calls])
+        results = await asyncio.gather(*[execute_tool(tc, config) for tc in tool_calls])
         for tc, result in zip(tool_calls, results):
             messages.append(_tool_result_message(tc.id, result))
         # Check compaction threshold

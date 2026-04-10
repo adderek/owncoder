@@ -2,6 +2,7 @@
 """Execute system commands in the project directory."""
 
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -52,7 +53,7 @@ def handle_exec_command(args, config):
         return 1
     
     # Parse the command from the prompt
-    command_parts = args.prompt.split()
+    command_parts = shlex.split(args.prompt)
     
     # Validate command
     if not command_parts:

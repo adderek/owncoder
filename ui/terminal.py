@@ -1360,7 +1360,7 @@ def run_ui(agent: "Agent", session=None):
         try:
             app = _build_textual_app(agent, session=session)
             app.run()
-            return session
+            return app._session
         except ImportError:
             print("Textual not available, falling back to simple mode.")
             return asyncio.run(simple_loop(agent, session=session))
