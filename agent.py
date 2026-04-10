@@ -292,154 +292,156 @@ async def run_turn(
     on_tool_call: callable | None = None,
     _depth: int = 0,
 ) -> tuple[str, list[dict]]:
-    if _depth > 40:
-        return "[Error: too many recursive tool calls — stopping to prevent infinite loop]", messages
     tools = get_schemas()
+    nudge_count = 0
+    MAX_NUDGES = 3
 
-    # ── Pre-flight: estimate tokens and compact proactively ────────────
-    token_est = _count_tokens_approx(messages)
-    # Leave room for max_output_tokens + tool schemas (~500 tokens overhead)
-    budget = config.llm.ctx_window - config.llm.max_output_tokens - 500
-    if token_est > budget:
-        logger.warning(
-            "Pre-flight: estimated %d tokens exceeds budget %d, compacting...",
-            token_est, budget,
-        )
-        messages = await compact(messages, config, client)
+    while True:
+        # ── Pre-flight: estimate tokens and compact proactively ────────────
         token_est = _count_tokens_approx(messages)
+        # Leave room for max_output_tokens + tool schemas (~500 tokens overhead)
+        budget = config.llm.ctx_window - config.llm.max_output_tokens - 500
         if token_est > budget:
-            # Aggressive fallback: truncate large tool results in-place
-            messages = _truncate_large_messages(messages, budget)
             logger.warning(
-                "Post-truncation: %d tokens (budget %d)",
-                _count_tokens_approx(messages), budget,
+                "Pre-flight: estimated %d tokens exceeds budget %d, compacting...",
+                token_est, budget,
             )
-
-    # Strip internal-only keys before sending to API
-    api_messages = [{k: v for k, v in m.items() if not k.startswith("_")} for m in messages]
-
-    # Use streaming when a token callback is provided; non-streaming otherwise.
-    try:
-        if on_token is not None:
-            finish_reason, full_content, raw_tool_calls = await _stream_response(
-                client, config, api_messages, tools, on_token
-            )
-            # Reconstruct a message-like namespace for uniform handling below
-            class _Msg:
-                pass
-            msg = _Msg()
-            msg.content = full_content
-            msg.tool_calls = raw_tool_calls or None
-            class _Choice:
-                pass
-            choice = _Choice()
-            choice.message = msg
-            choice.finish_reason = finish_reason
-        else:
-            response = await client.chat.completions.create(
-                model=config.llm.model,
-                messages=api_messages,
-                tools=tools if tools else None,
-                max_tokens=config.llm.max_output_tokens,
-            )
-            choice = response.choices[0]
-            msg = choice.message
-    except BadRequestError as e:
-        err_body = e.body or {}
-        if isinstance(err_body, dict) and err_body.get("error", {}).get("type") == "exceed_context_size_error":
-            err_detail = err_body.get("error", {})
-            # Update ctx_window from server response if available
-            server_ctx = err_detail.get("n_ctx")
-            if server_ctx and server_ctx < config.llm.ctx_window:
-                logger.warning(
-                    "Server reports ctx_window=%d, config had %d — adjusting",
-                    server_ctx, config.llm.ctx_window,
-                )
-                config.llm.ctx_window = server_ctx
-            logger.warning("Context size exceeded (%s), compacting and retrying...",
-                           err_detail.get("message", ""))
-            old_count = _count_tokens_approx(messages)
             messages = await compact(messages, config, client)
-            if _count_tokens_approx(messages) >= old_count:
-                # Compaction did nothing, must truncate to avoid infinite loop
-                messages = _truncate_large_messages(messages, budget)
-
-            # If compaction wasn't enough, aggressively truncate
             token_est = _count_tokens_approx(messages)
-            budget = config.llm.ctx_window - config.llm.max_output_tokens - 500
             if token_est > budget:
+                # Aggressive fallback: truncate large tool results in-place
                 messages = _truncate_large_messages(messages, budget)
-            return await run_turn(messages, config, client, on_token, on_tool_call, _depth + 1)
-        raise
+                logger.warning(
+                    "Post-truncation: %d tokens (budget %d)",
+                    _count_tokens_approx(messages), budget,
+                )
 
-    # Structured tool calls (llama-server with --jinja, or cloud APIs)
-    # Some providers return finish_reason="stop" even when tool_calls are present
-    tool_calls = msg.tool_calls if msg.tool_calls else None
+        # Strip internal-only keys before sending to API
+        api_messages = [{k: v for k, v in m.items() if not k.startswith("_")} for m in messages]
 
-    # Fallback: parse raw <tools> blocks from text output
-    if not tool_calls and msg.content:
-        raw = _parse_raw_tool_calls(msg.content)
-        if raw:
-            tool_calls = [_FakeToolCall(c["name"], c["arguments"]) for c in raw]
+        # Use streaming when a token callback is provided; non-streaming otherwise.
+        try:
+            if on_token is not None:
+                finish_reason, full_content, raw_tool_calls = await _stream_response(
+                    client, config, api_messages, tools, on_token
+                )
+                # Reconstruct a message-like namespace for uniform handling below
+                class _Msg:
+                    pass
+                msg = _Msg()
+                msg.content = full_content
+                msg.tool_calls = raw_tool_calls or None
+                class _Choice:
+                    pass
+                choice = _Choice()
+                choice.message = msg
+                choice.finish_reason = finish_reason
+            else:
+                response = await client.chat.completions.create(
+                    model=config.llm.model,
+                    messages=api_messages,
+                    tools=tools if tools else None,
+                    max_tokens=config.llm.max_output_tokens,
+                )
+                choice = response.choices[0]
+                msg = choice.message
+        except BadRequestError as e:
+            err_body = e.body or {}
+            if isinstance(err_body, dict) and err_body.get("error", {}).get("type") == "exceed_context_size_error":
+                err_detail = err_body.get("error", {})
+                # Update ctx_window from server response if available
+                server_ctx = err_detail.get("n_ctx")
+                if server_ctx and server_ctx < config.llm.ctx_window:
+                    logger.warning(
+                        "Server reports ctx_window=%d, config had %d — adjusting",
+                        server_ctx, config.llm.ctx_window,
+                    )
+                    config.llm.ctx_window = server_ctx
+                logger.warning("Context size exceeded (%s), compacting and retrying...",
+                               err_detail.get("message", ""))
+                old_count = _count_tokens_approx(messages)
+                messages = await compact(messages, config, client)
+                if _count_tokens_approx(messages) >= old_count:
+                    # Compaction did nothing, must truncate to avoid infinite loop
+                    messages = _truncate_large_messages(messages, budget)
 
-    if tool_calls:
-        clean_content = _strip_tool_blocks(msg.content or "") if msg.content else None
-        messages = messages + [{
-            "role": "assistant",
-            "content": clean_content,
-            "tool_calls": [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
-                }
-                for tc in tool_calls
-            ],
-        }]
-        # Notify about all tool calls first (in order), then execute concurrently
-        for tc in tool_calls:
+                # If compaction wasn't enough, aggressively truncate
+                token_est = _count_tokens_approx(messages)
+                budget = config.llm.ctx_window - config.llm.max_output_tokens - 500
+                if token_est > budget:
+                    messages = _truncate_large_messages(messages, budget)
+                continue  # retry the loop with compacted messages
+            raise
+
+        # Structured tool calls (llama-server with --jinja, or cloud APIs)
+        # Some providers return finish_reason="stop" even when tool_calls are present
+        tool_calls = msg.tool_calls if msg.tool_calls else None
+
+        # Fallback: parse raw <tools> blocks from text output
+        if not tool_calls and msg.content:
+            raw = _parse_raw_tool_calls(msg.content)
+            if raw:
+                tool_calls = [_FakeToolCall(c["name"], c["arguments"]) for c in raw]
+
+        if tool_calls:
+            clean_content = _strip_tool_blocks(msg.content or "") if msg.content else None
+            messages = messages + [{
+                "role": "assistant",
+                "content": clean_content,
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                    }
+                    for tc in tool_calls
+                ],
+            }]
+            # Notify about all tool calls first (in order), then execute concurrently
+            for tc in tool_calls:
+                if on_tool_call:
+                    on_tool_call(tc.function.name, tc.function.arguments)
+            results = await asyncio.gather(*[execute_tool(tc, config) for tc in tool_calls])
+            for tc, result in zip(tool_calls, results):
+                messages.append(_tool_result_message(tc.id, result))
+            # Check compaction threshold
+            token_est = _count_tokens_approx(messages)
+            threshold = int(config.llm.ctx_window * config.llm.compaction_threshold)
+            if token_est > threshold:
+                messages = await compact(messages, config, client)
+            continue  # next iteration: send tool results back to model
+
+        content = msg.content or ""
+
+        # Only check recent messages — old _nudged flags from prior turns must not block us
+        already_nudged = any(m.get("_nudged") for m in messages[-6:])
+
+        if _is_narrating_tool_use(content) and not already_nudged and nudge_count < MAX_NUDGES:
+            # Model described what it will do instead of doing it.
+            # Try to extract and apply code directly from this response first.
+            messages_with_current = messages + [{"role": "assistant", "content": content}]
+            applied = _apply_code_from_history(messages_with_current, on_tool_call)
+            if applied:
+                messages = messages_with_current + [{"role": "assistant", "content": applied}]
+                return f"{content}\n\n{applied}", messages
+            # Extraction failed — fall back to nudging the model once
             if on_tool_call:
-                on_tool_call(tc.function.name, tc.function.arguments)
-        results = await asyncio.gather(*[execute_tool(tc, config) for tc in tool_calls])
-        for tc, result in zip(tool_calls, results):
-            messages.append(_tool_result_message(tc.id, result))
-        # Check compaction threshold
-        token_est = _count_tokens_approx(messages)
-        threshold = int(config.llm.ctx_window * config.llm.compaction_threshold)
-        if token_est > threshold:
-            messages = await compact(messages, config, client)
-        return await run_turn(messages, config, client, on_token, on_tool_call, _depth + 1)
-    
-    content = msg.content or ""
-    
-    # Only check recent messages — old _nudged flags from prior turns must not block us
-    already_nudged = any(m.get("_nudged") for m in messages[-6:])
-    
-    if _is_narrating_tool_use(content) and not already_nudged:
-        # Model described what it will do instead of doing it.
-        # Try to extract and apply code directly from this response first.
-        messages_with_current = messages + [{"role": "assistant", "content": content}]
-        applied = _apply_code_from_history(messages_with_current, on_tool_call)
-        if applied:
-            messages = messages_with_current + [{"role": "assistant", "content": applied}]
-            return f"{content}\n\n{applied}", messages
-        # Extraction failed — fall back to nudging the model once
-        if on_tool_call:
-            on_tool_call("⟳ nudge", "")
-        messages = messages_with_current
-        nudge = {"role": "user", "content": "Call the tool now. Do not describe it, execute it.", "_nudged": True}
-        messages = messages + [nudge]
-        return await run_turn(messages, config, client, on_token, on_tool_call, _depth + 1)
-    
-    if already_nudged and (not content.strip() or _is_narrating_tool_use(content)):
-        # Nudge also failed — last resort extraction
-        applied = _apply_code_from_history(messages, on_tool_call)
-        if applied:
-            messages = messages + [{"role": "assistant", "content": applied}]
-            return applied, messages
-    
-    messages = messages + [{"role": "assistant", "content": content}]
-    return content, messages
+                on_tool_call("⟳ nudge", "")
+            messages = messages_with_current
+            nudge = {"role": "user", "content": "Call the tool now. Do not describe it, execute it.", "_nudged": True}
+            messages = messages + [nudge]
+            nudge_count += 1
+            continue  # retry with nudge
+
+        if already_nudged and (not content.strip() or _is_narrating_tool_use(content)):
+            # Nudge also failed — last resort extraction
+            applied = _apply_code_from_history(messages, on_tool_call)
+            if applied:
+                messages = messages + [{"role": "assistant", "content": applied}]
+                return applied, messages
+
+        messages = messages + [{"role": "assistant", "content": content}]
+        return content, messages
 
 
 def extract_last_code_block(messages: list[dict]) -> tuple[str, str] | None:
