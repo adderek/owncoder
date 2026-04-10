@@ -84,16 +84,24 @@ class AsmAnalysisPipeline:
 
         file_record = self._store.get_file_record(path)
         stored_checksum = file_record["checksum"] if file_record else None
-        file_unchanged = (not force) and bool(existing_by_id) and (stored_checksum == file_checksum)
+        stored_status = file_record["status"] if file_record else None
 
-        if file_unchanged and file_record and file_record["status"] == "complete":
+        # "unchanged" means split is fully done (not mid-split) and the file matches.
+        file_unchanged = (
+            (not force)
+            and bool(existing_by_id)
+            and stored_checksum == file_checksum
+            and stored_status not in (None, "splitting")
+        )
+
+        if file_unchanged and stored_status == "complete":
             return {"chunks": len(existing_by_id), "described": 0, "levels_built": 0, "interrupted": False, "cached": True}
 
         new_units: list[dict] = []
         changed_ids: list[str] = []
 
         if file_unchanged:
-            # File hasn't changed — reuse existing splits, skip LLM splitting entirely.
+            # Phase 1 already done — reuse existing splits, skip LLM splitting.
             new_units = sorted(existing_by_id.values(), key=lambda u: u["start_line"])
             self._progress_cb("split_complete", {
                 "chunks": len(new_units),
@@ -101,12 +109,18 @@ class AsmAnalysisPipeline:
                 "cached": True,
             })
         else:
-            # Load any partial split progress; clear it if the file changed.
-            if stored_checksum != file_checksum:
-                self._store.clear_split_windows(path)
-                preloaded: dict[int, dict] = {}
+            # Determine whether we can resume a previous partial split.
+            if stored_checksum == file_checksum:
+                # Same file — load any saved window checkpoints.
+                preloaded: dict[int, dict] = self._store.load_split_windows(path)
             else:
-                preloaded = self._store.load_split_windows(path)
+                # File changed (or never started) — discard stale checkpoints.
+                self._store.clear_split_windows(path)
+                preloaded = {}
+
+            # Mark that splitting is in progress BEFORE the first LLM call so that
+            # the checksum is persisted even if we are interrupted mid-split.
+            self._store.set_file_record(path, file_checksum, status="splitting")
 
             intervals = self._splitter.split(
                 path,
@@ -117,7 +131,8 @@ class AsmAnalysisPipeline:
             )
 
             if intervals is None:
-                # Interrupted mid-split; checkpoints are saved — safe to resume later.
+                # Interrupted mid-split; checkpoints and the 'splitting' record are
+                # both saved, so the next run will resume from where we left off.
                 return {"chunks": 0, "described": 0, "levels_built": 0, "interrupted": True}
 
             self._store.clear_split_windows(path)
