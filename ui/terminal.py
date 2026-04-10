@@ -320,6 +320,11 @@ def _build_textual_app(agent: "Agent", session=None):
             super().__init__()
             self.name = name
 
+    class TokenStreamEvent(Message):
+        def __init__(self, token: str) -> None:
+            super().__init__()
+            self.token = token
+
     _PLACEHOLDER_Q = (
         "[bold]Q — User questions[/bold]\n\n"
         "[dim]Placeholder.[/dim] Will show the conversation rephrased as a single\n"
@@ -436,6 +441,17 @@ def _build_textual_app(agent: "Agent", session=None):
         LoadingIndicator.active {{
             display: block;
         }}
+        #stream-view {{
+            height: auto;
+            max-height: 10;
+            display: none;
+            background: {t.bg};
+            padding: 0 1;
+            color: {t.text};
+        }}
+        #stream-view.active {{
+            display: block;
+        }}
         """
 
         BINDINGS = [
@@ -452,6 +468,8 @@ def _build_textual_app(agent: "Agent", session=None):
             self._last_tool_calls: list[str] = []
             self._current_tool: str | None = None
             self._tokens_before: int = 0
+            self._streaming_active: bool = False
+            self._stream_buffer: str = ""
 
         def compose(self) -> ComposeResult:
             cfg = self._agent.config
@@ -467,6 +485,7 @@ def _build_textual_app(agent: "Agent", session=None):
             with TabbedContent(initial="tab-chat", id="view-tabs"):
                 with TabPane("chat", id="tab-chat"):
                     yield ConversationView(id="chat-log", markup=True, highlight=True)
+                    yield Static("", id="stream-view", markup=True)
                 with TabPane("Q", id="tab-q"):
                     yield Static(_PLACEHOLDER_Q, id="placeholder-q", classes="placeholder-pane", markup=True)
                 with TabPane("A", id="tab-a"):
@@ -850,6 +869,8 @@ def _build_textual_app(agent: "Agent", session=None):
             self._last_tool_calls = []
             self._current_tool = None
             self._tokens_before = self._agent.token_estimate()
+            self._streaming_active = False
+            self._stream_buffer = ""
 
             self.query_one("#input-bar", PromptInput).disabled = True
             self.query_one("#loading-indicator", LoadingIndicator).add_class("active")
@@ -870,8 +891,11 @@ def _build_textual_app(agent: "Agent", session=None):
                 if self._session is not None:
                     save_session(self._session, self._agent.messages)
 
+            def on_token(token: str) -> None:
+                self.post_message(TokenStreamEvent(token))
+
             result = await self._agent.chat(
-                user_text, on_tool_call=on_tool, on_user_message=on_user_message
+                user_text, on_tool_call=on_tool, on_user_message=on_user_message, on_token=on_token
             )
             if self._session is not None:
                 save_session(self._session, self._agent.messages)
@@ -881,6 +905,19 @@ def _build_textual_app(agent: "Agent", session=None):
             self._write_chat(f"[{t.tool_color}]  ⚙ {event.name}[/{t.tool_color}]")
             self.query_one("#context-panel", ContextPanel).set_context(
                 f"[{t.tool_color}]⚙ {event.name}[/{t.tool_color}]"
+            )
+
+        def on_token_stream_event(self, event: TokenStreamEvent) -> None:
+            from rich.markup import escape
+            self._stream_buffer += event.token
+            stream_view = self.query_one("#stream-view", Static)
+            if not self._streaming_active:
+                self._streaming_active = True
+                stream_view.add_class("active")
+            # Show tail of accumulated text to avoid unbounded growth in the widget
+            tail = self._stream_buffer[-800:] if len(self._stream_buffer) > 800 else self._stream_buffer
+            stream_view.update(
+                f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] {escape(tail)}▌"
             )
 
         def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
@@ -918,6 +955,14 @@ def _build_textual_app(agent: "Agent", session=None):
             self.query_one("#context-panel", ContextPanel).set_context(
                 f"{tools_line}\n{token_line}" if tools_line else token_line
             )
+
+            # Clear streaming widget before writing final response
+            if self._streaming_active:
+                stream_view = self.query_one("#stream-view", Static)
+                stream_view.remove_class("active")
+                stream_view.update("")
+                self._streaming_active = False
+                self._stream_buffer = ""
 
             if response:
                 self._write_chat(
