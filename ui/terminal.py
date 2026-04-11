@@ -920,7 +920,7 @@ def _build_textual_app(agent: "Agent", session=None):
             )
 
         def on_token_stream_event(self, event: TokenStreamEvent) -> None:
-            from rich.markup import escape
+            from rich.text import Text
             self._stream_buffer += event.token
             stream_view = self.query_one("#stream-view", Static)
             if not self._streaming_active:
@@ -928,9 +928,11 @@ def _build_textual_app(agent: "Agent", session=None):
                 stream_view.add_class("active")
             # Show tail of accumulated text to avoid unbounded growth in the widget
             tail = self._stream_buffer[-800:] if len(self._stream_buffer) > 800 else self._stream_buffer
-            stream_view.update(
-                f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] {escape(tail)}▌"
+            content = Text.assemble(
+                ("Agent:", f"bold {t.agent_color}"),
+                (f" {tail}▌",),
             )
+            stream_view.update(content)
 
         def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
             if event.worker.name != "chat":
