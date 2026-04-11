@@ -316,9 +316,10 @@ def _build_textual_app(agent: "Agent", session=None):
                         self.post_message(self.HintChanged(""))
 
     class ToolCallEvent(Message):
-        def __init__(self, name: str) -> None:
+        def __init__(self, name: str, args: str = "") -> None:
             super().__init__()
             self.name = name
+            self.args = args
 
     class TokenStreamEvent(Message):
         def __init__(self, token: str) -> None:
@@ -885,7 +886,7 @@ def _build_textual_app(agent: "Agent", session=None):
             def on_tool(name: str, args: str) -> None:
                 self._last_tool_calls.append(name)
                 self._current_tool = name
-                self.post_message(ToolCallEvent(name))
+                self.post_message(ToolCallEvent(name, args))
 
             def on_user_message() -> None:
                 if self._session is not None:
@@ -902,9 +903,20 @@ def _build_textual_app(agent: "Agent", session=None):
             return result
 
         def on_tool_call_event(self, event: ToolCallEvent) -> None:
-            self._write_chat(f"[{t.tool_color}]  ⚙ {event.name}[/{t.tool_color}]")
+            from rich.markup import escape
+            import json
+            args_preview = ""
+            if event.args:
+                try:
+                    args = json.loads(event.args) if isinstance(event.args, str) else event.args
+                    parts = [f"{k}={repr(v)[:40]}" for k, v in args.items()]
+                    args_preview = f"  {', '.join(parts[:3])}"
+                except Exception:
+                    args_preview = f"  {str(event.args)[:80]}"
+            label = escape(f"{event.name}{args_preview}")
+            self._write_chat(f"[{t.tool_color}]  ⚙ {label}[/{t.tool_color}]")
             self.query_one("#context-panel", ContextPanel).set_context(
-                f"[{t.tool_color}]⚙ {event.name}[/{t.tool_color}]"
+                f"[{t.tool_color}]⚙ {escape(event.name)}[/{t.tool_color}]"
             )
 
         def on_token_stream_event(self, event: TokenStreamEvent) -> None:
