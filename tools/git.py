@@ -182,19 +182,15 @@ def git_status() -> dict:
     },
 })
 def git_related_files(path: str) -> dict:
-    hashes_out, _, rc = _run_git("log", "--format=%H", "--", path)
-    if rc != 0 or not hashes_out.strip():
+    out, _, rc = _run_git("log", "-n", "50", "--format=", "--name-only", "--", path)
+    if rc != 0 or not out.strip():
         return {"related": [], "path": path}
 
-    hashes = hashes_out.strip().splitlines()[:50]
-
     counts: dict[str, int] = {}
-    for h in hashes:
-        out, _, _ = _run_git("diff-tree", "--no-commit-id", "-r", "--name-only", h)
-        for f in out.splitlines():
-            f = f.strip()
-            if f and f != path:
-                counts[f] = counts.get(f, 0) + 1
+    for f in out.splitlines():
+        f = f.strip()
+        if f and f != path:
+            counts[f] = counts.get(f, 0) + 1
 
     ranked = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:10]
     return {"related": [{"file": f, "count": c} for f, c in ranked], "path": path}
