@@ -604,10 +604,17 @@ class Agent:
         )
 
         load_all_tools(config=config, store=store, embedder=embedder, asm_store=asm_store)
-        
+
         indexed_count = store.stats()["chunks"] if store else 0
         system_content = _build_system_prompt(config, indexed_count=indexed_count)
+
+        from agent.context import ensure_context_files, load_always_context
+        ensure_context_files(config, system_content)
+        user_context = load_always_context(config)
+
         self.messages = [{"role": "system", "content": system_content}]
+        if user_context:
+            self.messages.append({"role": "system", "content": user_context})
         
     def token_estimate(self) -> int:
         return _count_tokens_approx(self.messages)
