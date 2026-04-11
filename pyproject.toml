@@ -24,12 +24,27 @@ dependencies = [
     "watchdog>=3.0",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-watch>=4.2",
+]
+
 [project.scripts]
 agent = "agent.main:main"
 
 [build-system]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "e2e: end-to-end tests requiring a live LLM server",
+]
+addopts = "-m 'not e2e'"
 
 [tool.setuptools.packages.find]
 where = [".."]
