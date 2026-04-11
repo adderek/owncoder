@@ -118,7 +118,6 @@ class AsmStore:
         conn = self._conn  # thread-local connection
         try:
             import sqlite_vec
-            sqlite_vec.load(conn)
         except Exception as e:
             raise RuntimeError(f"Failed to load sqlite-vec: {e}") from e
         conn.execute(f"""

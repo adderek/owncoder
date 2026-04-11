@@ -11,6 +11,7 @@ from agent.tools.rules import get_rules
 if TYPE_CHECKING:
     from agent.config import Config
 
+
 _config = None
 _undo_stack: dict[str, str] = {}
 
@@ -174,9 +175,64 @@ def patch_file(path: str, unified_diff: str) -> dict:
     try:
         patched = _apply_unified_diff(original, unified_diff)
     except Exception as e:
-        return {"error": f"Patch failed: {e}"}
+        error_msg = str(e)
+        if "patch dry-run failed" in error_msg:
+            error_msg = "The provided unified diff does not match the file content (dry-run failed). Check your hunk headers, line numbers, and context lines."
+        elif "malformed patch" in error_msg:
+            error_msg = "The provided diff is malformed. Ensure it is a valid unified diff with correct hunk headers (@@ -L,C +L,C @@)."
+        return {"error": f"Patch failed: {error_msg}"}
 
     fpath.write_text(patched, encoding="utf-8")
+    return {"ok": path}
+
+
+@register("replace_text", {
+    "description": "Replace a block of text in a file with a new block of text. Much more reliable than patch_file for LLMs.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "File path to modify"},
+            "search_block": {"type": "string", "description": "The exact text currently in the file that should be replaced."},
+            "replace_block": {"type": "string", "description": "The new text to put in place of the search block."},
+        },
+        "required": ["path", "search_block", "replace_block"],
+    },
+})
+def replace_text(path: str, search_block: str, replace_block: str) -> dict:
+    fpath = _resolve(path)
+
+    # Rule checks: .agent.ignore, .agent.ro
+    rules = get_rules()
+    rel = str(fpath.relative_to(_working_dir()))
+    allowed, msg = rules.check_write(rel)
+    if not allowed:
+        return {"error": msg or f"Cannot write to: {path}"}
+
+    if not fpath.exists():
+        return {"error": f"File not found: {path}"}
+
+    original = fpath.read_text(encoding="utf-8", errors="replace")
+    
+    if search_block not in original:
+        return {"error": "The search_block was not found exactly as provided in the file."}
+
+    # Perform the replacement
+    new_content = original.replace(search_block, replace_block)
+
+    # Rule checks: max size
+    size_ok, size_msg = rules.check_write_size(new_content)
+    if not size_ok:
+        return {"error": size_msg}
+
+    if rules.config.dry_run:
+        return {"dry_run": True, "path": path, "would_replace": f"replaces {len(search_block)} chars with {len(replace_block)} chars"}
+
+    # Save for undo
+    _undo_stack[path] = original
+
+    # Write new content
+    fpath.write_text(new_content, encoding="utf-8")
+    
     return {"ok": path}
 
 
