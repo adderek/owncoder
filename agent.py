@@ -85,9 +85,23 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
                 "tool": name,
                 "hint": f"Call {name} again and include: {', '.join(missing)}",
             })
+    # Check approval rules before executing
+    from agent.tools.rules import get_rules
+    rules = get_rules()
+    needs_approval, approval_reason = rules.check_approval(name, args)
+    if needs_approval:
+        return json.dumps({
+            "error": approval_reason,
+            "requires_approval": True,
+            "tool": name,
+        })
+
     try:
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(None, lambda: fn(**args))
+        # Audit logging
+        if isinstance(result, dict):
+            rules.log_action(name, args, result)
         serialised = json.dumps(result, ensure_ascii=False)
         logger.debug("execute_tool: %s  result_len=%d", name, len(serialised))
         # Dynamic cap based on context window size

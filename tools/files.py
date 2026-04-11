@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agent.tools import register
+from agent.tools.rules import get_rules
 
 if TYPE_CHECKING:
     from agent.config import Config
@@ -50,6 +51,13 @@ def _resolve(path: str) -> Path:
 })
 def read_file(path: str, start_line: int | None = None, end_line: int | None = None) -> dict:
     fpath = _resolve(path)
+
+    # Rule check: .agent.ignore — pretend file doesn't exist
+    rel = str(fpath.relative_to(_working_dir()))
+    allowed, _ = get_rules().check_read(rel)
+    if not allowed:
+        return {"error": f"File not found: {path}"}
+
     if not fpath.exists():
         return {"error": f"File not found: {path}"}
     if not fpath.is_file():
@@ -93,6 +101,22 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
 def write_file(path: str, content: str) -> dict:
     import difflib
     fpath = _resolve(path)
+
+    # Rule checks: .agent.ignore, .agent.ro, language allowlist, max files
+    rules = get_rules()
+    rel = str(fpath.relative_to(_working_dir()))
+    is_new = not fpath.exists()
+    allowed, msg = rules.check_write(rel, is_new=is_new)
+    if not allowed:
+        return {"error": msg or f"Cannot write to: {path}"}
+    size_ok, size_msg = rules.check_write_size(content)
+    if not size_ok:
+        return {"error": size_msg}
+    if rules.config.dry_run:
+        return {"dry_run": True, "path": path, "would_write": f"{len(content)} bytes"}
+    if is_new and rules.config.confirm_create:
+        return {"error": f"Creating new files requires confirmation: {path}", "requires_confirm": True}
+
     fpath.parent.mkdir(parents=True, exist_ok=True)
 
     if fpath.exists():
@@ -128,6 +152,19 @@ def write_file(path: str, content: str) -> dict:
 })
 def patch_file(path: str, unified_diff: str) -> dict:
     fpath = _resolve(path)
+
+    # Rule checks: .agent.ignore, .agent.ro, patch size
+    rules = get_rules()
+    rel = str(fpath.relative_to(_working_dir()))
+    allowed, msg = rules.check_write(rel)
+    if not allowed:
+        return {"error": msg or f"Cannot write to: {path}"}
+    lines_ok, lines_msg = rules.check_patch_lines(unified_diff)
+    if not lines_ok:
+        return {"error": lines_msg}
+    if rules.config.dry_run:
+        return {"dry_run": True, "path": path, "would_patch": f"{unified_diff.count(chr(10))+1} lines"}
+
     if not fpath.exists():
         return {"error": f"File not found: {path}"}
 
@@ -235,6 +272,7 @@ def list_files(path: str = ".", pattern: str = "**/*", ignore_patterns: list[str
 
     gitignore_spec = _build_gitignore_spec(base)
 
+    rules = get_rules()
     results = []
     for fpath in sorted(base.glob(pattern)):
         if not fpath.is_file():
@@ -253,6 +291,10 @@ def list_files(path: str = ".", pattern: str = "**/*", ignore_patterns: list[str
 
         if not skip and gitignore_spec is not None:
             skip = gitignore_spec.match_file(rel)
+
+        # Rule check: .agent.ignore
+        if not skip and rules.ignore.matches(rel):
+            skip = True
 
         if not skip:
             stat = fpath.stat()

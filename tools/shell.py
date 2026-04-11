@@ -6,6 +6,7 @@ import time
 from typing import TYPE_CHECKING
 
 from agent.tools import register
+from agent.tools.rules import get_rules
 
 if TYPE_CHECKING:
     from agent.config import Config
@@ -69,8 +70,38 @@ def run_command(cmd: str, cwd: str | None = None, timeout: int | None = None) ->
             "requires_confirm": True,
         }
 
+    # ── Rule checks (.agent.config, .agent.sandbox, .agent.ro, .agent.boundary) ──
+    rules = get_rules()
+
+    # Hard block: sandbox allowlist or blocked patterns
+    cmd_ok, cmd_msg = rules.check_command(cmd)
+    if not cmd_ok:
+        return {"error": cmd_msg, "cmd": cmd}
+
+    # Hard block: shell writes to read-only files
+    ro_ok, ro_msg = rules.check_shell_writes_readonly(cmd)
+    if not ro_ok:
+        return {"error": ro_msg, "cmd": cmd}
+
+    # Hard block: network boundary
+    net_ok, net_msg = rules.check_network_command(cmd)
+    if not net_ok:
+        return {"error": net_msg, "cmd": cmd}
+
+    # Soft block: confirmation patterns
+    need_confirm, confirm_reason = rules.check_command_confirm(cmd)
+    if need_confirm:
+        return {"error": confirm_reason, "cmd": cmd, "requires_confirm": True}
+
+    # Dry-run mode
+    if rules.config.dry_run:
+        return {"dry_run": True, "cmd": cmd, "would_execute": True}
+
     effective_cwd = cwd or (_config.tools.working_dir if _config else ".")
     effective_timeout = timeout or (_config.tools.shell_timeout if _config else 30)
+    # .agent.config max_timeout override
+    if rules.config.max_timeout > 0:
+        effective_timeout = min(effective_timeout, rules.config.max_timeout)
 
     start = time.monotonic()
     try:

@@ -403,6 +403,10 @@ def index_directory(
     if languages:
         allowed_exts = {ext for ext, lang in LANGUAGE_MAP.items() if lang in languages}
 
+    # Load agent rules to respect .agent.ignore during indexing
+    from agent.tools.rules import get_rules
+    rules = get_rules()
+
     files = []
     for dirpath, dirnames, filenames in os.walk(root_path):
         # prune excluded dirs
@@ -412,6 +416,10 @@ def index_directory(
             if allowed_exts and fpath.suffix.lower() not in allowed_exts:
                 continue
             if fpath.suffix.lower() not in LANGUAGE_MAP:
+                continue
+            # Skip files matching .agent.ignore
+            rel = str(fpath.relative_to(root_path))
+            if rules.ignore.matches(rel):
                 continue
             files.append(fpath)
 

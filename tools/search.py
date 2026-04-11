@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from agent.tools import register
+from agent.tools.rules import get_rules
 
 if TYPE_CHECKING:
     from agent.config import Config
@@ -85,5 +86,10 @@ def search_code(query: str, top_k: int | None = None) -> dict:
                     })
         except Exception:
             pass
+
+    # Rule check: filter out .agent.ignore paths
+    rules = get_rules()
+    if not rules.ignore.empty:
+        cleaned = [r for r in cleaned if not rules.ignore.matches(r.get("path", ""))]
 
     return {"results": cleaned, "count": len(cleaned), "query": query}
