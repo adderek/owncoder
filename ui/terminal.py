@@ -933,12 +933,16 @@ def _build_textual_app(agent: "Agent", session=None):
 
             if event.state == WorkerState.SUCCESS:
                 response = event.worker.result
+                if not response:
+                    logger.warning("chat worker returned empty response")
+                    response = f"[{t.text_dim}](done)[/{t.text_dim}]"
             elif event.state == WorkerState.ERROR:
                 err = event.worker.error
                 tb = "".join(traceback.format_exception(type(err), err, err.__traceback__)) if err else ""
                 logger.error("chat worker error: %s\n%s", err, tb)
                 response = f"[{t.error}]Error: {err}[/{t.error}]"
             else:
+                logger.warning("chat worker cancelled")
                 response = None
 
             tokens_after = self._agent.token_estimate()

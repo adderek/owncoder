@@ -413,8 +413,10 @@ async def run_turn(
 
         content = msg.content or ""
 
-        # Only check recent messages — old _nudged flags from prior turns must not block us
-        already_nudged = any(m.get("_nudged") for m in messages[-6:])
+        # Use nudge_count (per-turn) rather than scanning message history — old _nudged flags
+        # from prior turns would otherwise incorrectly suppress nudging or trigger last-resort
+        # extraction when the model is responding normally.
+        already_nudged = nudge_count > 0
 
         if _is_narrating_tool_use(content) and not already_nudged and nudge_count < MAX_NUDGES:
             # Model described what it will do instead of doing it.
@@ -440,6 +442,8 @@ async def run_turn(
                 messages = messages + [{"role": "assistant", "content": applied}]
                 return applied, messages
 
+        if not content.strip():
+            logger.warning("run_turn: model returned empty/blank response (finish_reason=%r)", finish_reason)
         messages = messages + [{"role": "assistant", "content": content}]
         return content, messages
 
