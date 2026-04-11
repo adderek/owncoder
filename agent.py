@@ -72,6 +72,19 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
     if fn is None:
         logger.warning("execute_tool: unknown tool %r", name)
         return json.dumps({"error": f"Unknown tool: {name}"})
+    # Validate required arguments before calling to give the model a clear error
+    from agent.tools import get_schemas
+    _schemas_map = {s["function"]["name"]: s["function"] for s in get_schemas()}
+    if name in _schemas_map:
+        required = _schemas_map[name].get("parameters", {}).get("required", [])
+        missing = [r for r in required if r not in args]
+        if missing:
+            logger.warning("execute_tool: %s missing required args: %s", name, missing)
+            return json.dumps({
+                "error": f"Missing required argument(s): {', '.join(missing)}",
+                "tool": name,
+                "hint": f"Call {name} again and include: {', '.join(missing)}",
+            })
     try:
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(None, lambda: fn(**args))

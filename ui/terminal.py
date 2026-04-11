@@ -55,10 +55,12 @@ def _build_textual_app(agent: "Agent", session=None):
         Footer, RichLog, Static, TextArea, LoadingIndicator,
         TabbedContent, TabPane,
     )
+    from textual.containers import Horizontal
     from textual.binding import Binding
     from textual.message import Message
     from textual.worker import Worker, WorkerState
     from textual import work
+    from rich.markup import escape as _escape
     from rich.markdown import Markdown
 
     class TokenBar(Static):
@@ -434,13 +436,24 @@ def _build_textual_app(agent: "Agent", session=None):
             height: 1;
             color: {t.text_dim};
         }}
-        LoadingIndicator {{
+        #loading-row {{
             display: none;
+            height: 1;
+        }}
+        #loading-row.active {{
+            display: block;
+        }}
+        LoadingIndicator {{
+            width: auto;
             height: 1;
             background: {t.active};
         }}
-        LoadingIndicator.active {{
-            display: block;
+        #loading-tokens {{
+            height: 1;
+            width: 1fr;
+            background: {t.active};
+            color: white;
+            padding: 0 1;
         }}
         #stream-view {{
             height: auto;
@@ -471,6 +484,8 @@ def _build_textual_app(agent: "Agent", session=None):
             self._tokens_before: int = 0
             self._streaming_active: bool = False
             self._stream_buffer: str = ""
+            self._modified_files: list[str] = []
+            self._loading_timer = None
 
         def compose(self) -> ComposeResult:
             cfg = self._agent.config
@@ -495,7 +510,9 @@ def _build_textual_app(agent: "Agent", session=None):
                     yield Static(_PLACEHOLDER_SPARSE, id="placeholder-sparse", classes="placeholder-pane", markup=True)
                 with TabPane("sys", id="tab-sys"):
                     yield SysView(id="sys-log", markup=True, highlight=True)
-            yield LoadingIndicator(id="loading-indicator")
+            with Horizontal(id="loading-row"):
+                yield LoadingIndicator(id="loading-indicator")
+                yield Static("", id="loading-tokens", markup=True)
             yield ContextPanel("", id="context-panel")
             yield GitStatusBar("git: loading...", id="git-status")
             yield PromptInput(id="input-bar")
@@ -863,6 +880,16 @@ def _build_textual_app(agent: "Agent", session=None):
 
             self._begin_chat(user_text)
 
+        def _update_loading_tokens(self) -> None:
+            """Periodic callback to refresh token counts on the loading bar."""
+            try:
+                est = self._agent.token_estimate()
+                rcvd = max(0, est - self._tokens_before)
+                text = f"in: [bold]{self._tokens_before:,}[/bold]  out: +{rcvd:,}"
+                self.query_one("#loading-tokens", Static).update(text)
+            except Exception:
+                pass
+
         def _begin_chat(self, user_text: str) -> None:
             # Switch to chat tab so the user sees the exchange.
             self._switch_to_chat()
@@ -872,9 +899,14 @@ def _build_textual_app(agent: "Agent", session=None):
             self._tokens_before = self._agent.token_estimate()
             self._streaming_active = False
             self._stream_buffer = ""
+            self._modified_files = []
 
             self.query_one("#input-bar", PromptInput).disabled = True
-            self.query_one("#loading-indicator", LoadingIndicator).add_class("active")
+            self.query_one("#loading-row").add_class("active")
+            self.query_one("#loading-tokens", Static).update(f"in: [bold]{self._tokens_before:,}[/bold]")
+            if self._loading_timer is not None:
+                self._loading_timer.stop()
+            self._loading_timer = self.set_interval(0.3, self._update_loading_tokens)
             self.query_one("#context-panel", ContextPanel).set_context("[dim]thinking…[/dim]")
 
             self._start_chat(user_text)
@@ -903,20 +935,19 @@ def _build_textual_app(agent: "Agent", session=None):
             return result
 
         def on_tool_call_event(self, event: ToolCallEvent) -> None:
-            from rich.markup import escape
             import json
-            args_preview = ""
-            if event.args:
+            # Track modified files for write_file / patch_file
+            if event.name in ("write_file", "patch_file"):
                 try:
                     args = json.loads(event.args) if isinstance(event.args, str) else event.args
-                    parts = [f"{k}={repr(v)[:40]}" for k, v in args.items()]
-                    args_preview = f"  {', '.join(parts[:3])}"
+                    path = args.get("path", "")
+                    if path and path not in self._modified_files:
+                        self._modified_files.append(path)
                 except Exception:
-                    args_preview = f"  {str(event.args)[:80]}"
-            label = escape(f"{event.name}{args_preview}")
-            self._write_chat(f"[{t.tool_color}]  ⚙ {label}[/{t.tool_color}]")
+                    pass
+            # Update context panel with current tool (visible while working)
             self.query_one("#context-panel", ContextPanel).set_context(
-                f"[{t.tool_color}]⚙ {escape(event.name)}[/{t.tool_color}]"
+                f"[{t.tool_color}]⚙ {_escape(event.name)}[/{t.tool_color}]"
             )
 
         def on_token_stream_event(self, event: TokenStreamEvent) -> None:
@@ -940,7 +971,12 @@ def _build_textual_app(agent: "Agent", session=None):
             if event.state not in (WorkerState.SUCCESS, WorkerState.ERROR, WorkerState.CANCELLED):
                 return
 
-            self.query_one("#loading-indicator", LoadingIndicator).remove_class("active")
+            # Stop timer and hide loading row
+            if self._loading_timer is not None:
+                self._loading_timer.stop()
+                self._loading_timer = None
+            self.query_one("#loading-row").remove_class("active")
+
             input_widget = self.query_one("#input-bar", PromptInput)
             input_widget.disabled = False
             input_widget.focus()
@@ -981,6 +1017,19 @@ def _build_textual_app(agent: "Agent", session=None):
                 stream_view.update("")
                 self._streaming_active = False
                 self._stream_buffer = ""
+
+            # Write folded tool-call summary (collapsed single line)
+            if self._last_tool_calls:
+                seen = list(dict.fromkeys(self._last_tool_calls))  # deduplicate, preserve order
+                tool_part = f"[{t.tool_color}]⚙ {_escape(', '.join(seen))}[/{t.tool_color}]"
+                if self._modified_files:
+                    files_part = f"[{t.success}]{_escape('  '.join(self._modified_files))}[/{t.success}]"
+                    self._write_chat(f"  {tool_part}  ·  {files_part}")
+                else:
+                    self._write_chat(f"  {tool_part}")
+            elif self._modified_files:
+                files_part = f"[{t.success}]{_escape('  '.join(self._modified_files))}[/{t.success}]"
+                self._write_chat(f"  {files_part}")
 
             if response:
                 self._write_chat(

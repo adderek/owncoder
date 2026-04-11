@@ -266,6 +266,15 @@ def _pick_ui_mode(current: str) -> str:
     return _UI_MODES.get(choice, (current,))[0]
 
 
+def _is_first_run() -> bool:
+    """Return True if no agent.toml is found in standard locations."""
+    paths = [
+        Path.home() / ".config" / "agent" / "agent.toml",
+        Path("agent.toml"),
+    ]
+    return not any(p.exists() for p in paths)
+
+
 def cmd_chat(args, config):
     from agent.rag.store import VectorStore
     from agent.rag.embedder import Embedder
@@ -289,6 +298,14 @@ def cmd_chat(args, config):
     elif not os.environ.get("AGENT_UI_MODE"):
         config.ui.mode = _pick_ui_mode(config.ui.mode)
 
+    # Explain first-run / uninitialized directory
+    if _is_first_run():
+        console.print(
+            "[yellow]No agent.toml found.[/yellow] Using defaults "
+            f"(model=[bold]{config.llm.model}[/bold]  endpoint=[bold]{config.llm.base_url}[/bold]).\n"
+            "  Create [bold]agent.toml[/bold] in this directory to customise settings.\n"
+        )
+
     store = None
     embedder = None
     asm_store = None
@@ -303,7 +320,10 @@ def cmd_chat(args, config):
         except Exception as e:
             console.print(f"[yellow]Warning: could not load index: {e}[/yellow]")
     else:
-        console.print("[yellow]No index found. Run 'agent init' to build one.[/yellow]")
+        console.print(
+            "[yellow]No index found[/yellow] — code search disabled. "
+            "Run [bold]agent init[/bold] to build one."
+        )
 
     agent = Agent(config, store=store, embedder=embedder, asm_store=asm_store)
 

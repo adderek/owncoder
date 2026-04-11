@@ -211,7 +211,13 @@ def check_reachability(config: Config) -> None:
                 _try_detect_ctx_window(config, resp)
     except (urllib.error.URLError, OSError) as e:
         import sys
-        print(f"Warning: LLM endpoint not reachable at {config.llm.base_url}: {e}", file=sys.stderr)
+        print(
+            f"\nWarning: LLM endpoint not reachable at {config.llm.base_url}\n"
+            f"  Reason: {e}\n"
+            f"  Make sure your LLM server is running, or set [llm] base_url in agent.toml.\n"
+            f"  Continuing anyway — chat will fail until the server is available.\n",
+            file=sys.stderr,
+        )
 
 
 def _try_detect_ctx_window(config: Config, resp) -> None:
