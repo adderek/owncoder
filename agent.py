@@ -248,6 +248,75 @@ _NARRATION_PHRASES = [
 ]
 
 
+def _collapse_tool_rounds(messages: list[dict], result_preview: int = 200) -> list[dict]:
+    """Replace completed tool-call/result pairs with a single compact summary message.
+
+    Called after the model gives a final (non-tool) response so that the full
+    call+result blobs are no longer needed verbatim in context.
+    """
+    out: list[dict] = []
+    i = 0
+    while i < len(messages):
+        m = messages[i]
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            tool_calls = m["tool_calls"]
+            # Collect immediately following tool-result messages
+            j = i + 1
+            result_msgs: list[dict] = []
+            while j < len(messages) and messages[j].get("role") == "tool":
+                result_msgs.append(messages[j])
+                j += 1
+
+            # Preserve any text the model emitted alongside the tool calls
+            if m.get("content") and str(m["content"]).strip():
+                out.append({"role": "assistant", "content": m["content"]})
+
+            # Build one compact summary line per tool call
+            parts: list[str] = []
+            for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    continue
+                name = tc.get("function", {}).get("name", "?")
+                args_raw = tc.get("function", {}).get("arguments", "{}")
+                try:
+                    args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+                    arg_str = ", ".join(
+                        f"{k}={repr(v)[:40]}" for k, v in list(args.items())[:2]
+                    )
+                except Exception:
+                    arg_str = str(args_raw)[:60]
+
+                # Find the matching result by tool_call_id
+                result_content = ""
+                for r in result_msgs:
+                    if r.get("tool_call_id") == tc.get("id"):
+                        raw = r.get("content", "")
+                        try:
+                            parsed = json.loads(raw)
+                            if isinstance(parsed, dict):
+                                if "error" in parsed:
+                                    result_content = f"ERROR: {parsed['error']}"
+                                elif "truncated" in parsed:
+                                    result_content = f"(truncated, {parsed.get('original_length', '?')} chars)"
+                                else:
+                                    result_content = str(list(parsed.keys()))[:result_preview]
+                            else:
+                                result_content = str(parsed)[:result_preview]
+                        except Exception:
+                            result_content = raw[:result_preview]
+                        break
+
+                parts.append(f"{name}({arg_str}) → {result_content}")
+
+            summary = "[tools: " + " | ".join(parts) + "]"
+            out.append({"role": "system", "content": summary})
+            i = j  # skip all consumed messages
+        else:
+            out.append(m)
+            i += 1
+    return out
+
+
 def _truncate_large_messages(messages: list[dict], token_budget: int) -> list[dict]:
     """Aggressively truncate tool-result messages to fit within token_budget.
 
@@ -445,6 +514,7 @@ async def run_turn(
         if not content.strip():
             logger.warning("run_turn: model returned empty/blank response (finish_reason=%r)", finish_reason)
         messages = messages + [{"role": "assistant", "content": content}]
+        messages = _collapse_tool_rounds(messages)
         return content, messages
 
 
