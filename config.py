@@ -94,6 +94,7 @@ class ThemeConfig:
 @dataclass
 class UIConfig:
     mode: str = "textual"
+    q_summaries: bool = False
     syntax_highlight: bool = True
     show_token_count: bool = True
     theme: ThemeConfig = field(default_factory=ThemeConfig)

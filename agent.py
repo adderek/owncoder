@@ -553,6 +553,19 @@ async def run_turn(
         content_parts.append(content)
         messages = messages + [{"role": "assistant", "content": content}]
         messages = _collapse_tool_rounds(messages)
+
+        # Trigger background summarization if enabled
+        if config.ui.q_summaries:
+            from agent.summarizer import summarize_session_background
+            asyncio.create_task(
+                summarize_session_background(
+                    config,
+                    client,
+                    messages,
+                    on_summary_ready=lambda s: setattr(session, "summary", s) if "session" in locals() else None,
+                )
+            )
+
         return "".join(content_parts), messages
 
 

@@ -33,6 +33,7 @@ class Session:
     short_name: str = ""       # ASCII-only, filesystem-safe identifier
     name: str = ""             # UTF-8 display name (not too long)
     description: str = ""      # Long-form description
+    summary: str = ""          # Concise summary of the session
     tags: list[str] = field(default_factory=list)  # Short ASCII tags
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
@@ -67,6 +68,7 @@ def _session_from_data(data: dict, file_path: Path | None = None) -> Session:
         short_name=data.get("short_name", ""),
         name=data.get("name", ""),
         description=data.get("description", ""),
+        summary=data.get("summary", ""),
         tags=data.get("tags", []),
         created_at=data.get("created_at", data.get("saved_at", time.time())),
         updated_at=data.get("updated_at", data.get("saved_at", time.time())),
@@ -81,6 +83,7 @@ def _session_to_data(session: Session, messages: list[dict]) -> dict:
         "short_name": session.short_name,
         "name": session.name,
         "description": session.description,
+        "summary": session.summary,
         "tags": session.tags,
         "created_at": session.created_at,
         "updated_at": session.updated_at,
@@ -94,6 +97,7 @@ def new_session(
     short_name: str = "",
     name: str = "",
     description: str = "",
+    summary: str = "",
     tags: list[str] | None = None,
 ) -> Session:
     """Create a new Session with a UTC ISO-8601 timestamp ID."""
@@ -181,6 +185,7 @@ def list_sessions() -> list[dict]:
                 "short_name": data.get("short_name", ""),
                 "name": data.get("name", p.stem),
                 "description": data.get("description", ""),
+                "summary": data.get("summary", ""),
                 "tags": data.get("tags", []),
                 "created_at": data.get("created_at", data.get("saved_at")),
                 "updated_at": data.get("updated_at", data.get("saved_at")),
