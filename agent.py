@@ -391,6 +391,7 @@ async def run_turn(
     tools = get_schemas()
     nudge_count = 0
     MAX_NUDGES = 3
+    content_parts: list[str] = []  # accumulate across length-truncated continuations
 
     while True:
         # ── Pre-flight: estimate tokens and compact proactively ────────────
@@ -469,6 +470,8 @@ async def run_turn(
                 continue  # retry the loop with compacted messages
             raise
 
+        finish_reason = getattr(choice, "finish_reason", None)
+
         # Structured tool calls (llama-server with --jinja, or cloud APIs)
         # Some providers return finish_reason="stop" even when tool_calls are present
         tool_calls = msg.tool_calls if msg.tool_calls else None
@@ -538,11 +541,19 @@ async def run_turn(
                 messages = messages + [{"role": "assistant", "content": applied}]
                 return applied, messages
 
+        # Auto-continue if the model was cut off by max_tokens
+        if finish_reason == "length" and content.strip():
+            logger.info("run_turn: finish_reason=length, auto-continuing")
+            content_parts.append(content)
+            messages = messages + [{"role": "assistant", "content": content}]
+            continue
+
         if not content.strip():
             logger.warning("run_turn: model returned empty/blank response (finish_reason=%r)", finish_reason)
+        content_parts.append(content)
         messages = messages + [{"role": "assistant", "content": content}]
         messages = _collapse_tool_rounds(messages)
-        return content, messages
+        return "".join(content_parts), messages
 
 
 def extract_last_code_block(messages: list[dict]) -> tuple[str, str] | None:
