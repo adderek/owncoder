@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
+import re
 import tempfile
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -14,6 +17,20 @@ if TYPE_CHECKING:
 
 _config = None
 _undo_stack: dict[str, str] = {}
+
+
+def _log_edit(tool: str, path: str, outcome: str, **extra) -> None:
+    """Append one JSONL record per edit attempt so usage can be audited later."""
+    try:
+        agent_dir = Path(_config.tools.agent_dir) if _config else Path(".agent")
+        if not agent_dir.is_absolute():
+            agent_dir = _working_dir() / agent_dir
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        rec = {"ts": time.time(), "tool": tool, "path": path, "outcome": outcome, **extra}
+        with (agent_dir / "edit_stats.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(rec) + "\n")
+    except Exception:
+        pass
 
 
 def setup(config) -> None:
@@ -141,7 +158,7 @@ def write_file(path: str, content: str) -> dict:
 
 
 @register("patch_file", {
-    "description": "Apply a unified diff patch to an existing file. Preferred over write_file for modifying code.",
+    "description": "DEPRECATED — prefer replace_text or replace_symbol. Apply a unified diff patch to an existing file.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -183,57 +200,212 @@ def patch_file(path: str, unified_diff: str) -> dict:
         return {"error": f"Patch failed: {error_msg}"}
 
     fpath.write_text(patched, encoding="utf-8")
+    _log_edit("patch_file", path, "ok")
     return {"ok": path}
 
 
+def _find_matches_fuzzy(haystack: str, needle: str) -> list[tuple[int, int]]:
+    """Return (start, end) match spans using whitespace-tolerant matching.
+
+    Preserves one match per fuzzy hit. Collapses runs of whitespace (incl. newlines)
+    in the needle to `\\s+` and escapes the rest. Leading/trailing whitespace on each
+    side is matched loosely so indentation drift doesn't break things.
+    """
+    stripped = needle.strip("\n")
+    if not stripped:
+        return []
+    parts = re.split(r"\s+", stripped)
+    pattern = r"\s+".join(re.escape(p) for p in parts if p)
+    if not pattern:
+        return []
+    return [(m.start(), m.end()) for m in re.finditer(pattern, haystack)]
+
+
+def _context_for(text: str, start: int, end: int, ctx_lines: int = 3) -> dict:
+    before = text[:start].splitlines()
+    matched = text[start:end].splitlines()
+    start_line = len(before) + (0 if before and not text[:start].endswith("\n") else 1)
+    snippet_before = "\n".join(before[-ctx_lines:])
+    snippet_after = "\n".join(text[end:].splitlines()[:ctx_lines])
+    return {
+        "line": start_line,
+        "before": snippet_before,
+        "match": "\n".join(matched),
+        "after": snippet_after,
+    }
+
+
 @register("replace_text", {
-    "description": "Replace a block of text in a file with a new block of text. Much more reliable than patch_file for LLMs.",
+    "description": (
+        "Replace a block of text in a file. Whitespace-tolerant: matches even if indentation/"
+        "newlines differ slightly. On non-unique match, returns all candidate locations with "
+        "context so you can disambiguate by passing match_index. Prefer this over patch_file."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "File path to modify"},
-            "search_block": {"type": "string", "description": "The exact text currently in the file that should be replaced."},
-            "replace_block": {"type": "string", "description": "The new text to put in place of the search block."},
+            "search_block": {"type": "string", "description": "Text currently in the file to replace. Whitespace-tolerant."},
+            "replace_block": {"type": "string", "description": "New text to insert."},
+            "match_index": {
+                "type": "integer",
+                "description": "If search_block matches multiple locations, pick this 0-based index. Omit to require a unique match.",
+            },
         },
         "required": ["path", "search_block", "replace_block"],
     },
 })
-def replace_text(path: str, search_block: str, replace_block: str) -> dict:
+def replace_text(path: str, search_block: str, replace_block: str, match_index: int | None = None) -> dict:
     fpath = _resolve(path)
 
-    # Rule checks: .agent.ignore, .agent.ro
     rules = get_rules()
     rel = str(fpath.relative_to(_working_dir()))
     allowed, msg = rules.check_write(rel)
     if not allowed:
+        _log_edit("replace_text", path, "blocked", reason=msg)
         return {"error": msg or f"Cannot write to: {path}"}
 
     if not fpath.exists():
+        _log_edit("replace_text", path, "not_found")
         return {"error": f"File not found: {path}"}
 
     original = fpath.read_text(encoding="utf-8", errors="replace")
-    
-    if search_block not in original:
-        return {"error": "The search_block was not found exactly as provided in the file."}
 
-    # Perform the replacement
-    new_content = original.replace(search_block, replace_block)
+    # Exact match first (preserves old behavior + is fastest).
+    spans: list[tuple[int, int]] = []
+    idx = original.find(search_block)
+    while idx != -1:
+        spans.append((idx, idx + len(search_block)))
+        idx = original.find(search_block, idx + 1)
 
-    # Rule checks: max size
+    match_mode = "exact"
+    if not spans:
+        spans = _find_matches_fuzzy(original, search_block)
+        match_mode = "fuzzy"
+
+    if not spans:
+        _log_edit("replace_text", path, "no_match")
+        return {"error": "search_block not found (tried exact and whitespace-tolerant match). Re-read the file and try again."}
+
+    if len(spans) > 1 and match_index is None:
+        candidates = [
+            {"index": i, **_context_for(original, s, e)}
+            for i, (s, e) in enumerate(spans)
+        ]
+        _log_edit("replace_text", path, "ambiguous", candidates=len(spans))
+        return {
+            "error": f"search_block matched {len(spans)} locations. Re-call with match_index.",
+            "match_count": len(spans),
+            "candidates": candidates,
+        }
+
+    pick = match_index if match_index is not None else 0
+    if pick < 0 or pick >= len(spans):
+        return {"error": f"match_index {pick} out of range (0..{len(spans)-1})"}
+
+    s, e = spans[pick]
+    new_content = original[:s] + replace_block + original[e:]
+
     size_ok, size_msg = rules.check_write_size(new_content)
     if not size_ok:
         return {"error": size_msg}
 
     if rules.config.dry_run:
-        return {"dry_run": True, "path": path, "would_replace": f"replaces {len(search_block)} chars with {len(replace_block)} chars"}
+        return {"dry_run": True, "path": path, "would_replace": f"{e - s} chars -> {len(replace_block)} chars", "match_mode": match_mode}
 
-    # Save for undo
     _undo_stack[path] = original
-
-    # Write new content
     fpath.write_text(new_content, encoding="utf-8")
-    
-    return {"ok": path}
+    _log_edit("replace_text", path, "ok", match_mode=match_mode, candidates=len(spans))
+    return {"ok": path, "match_mode": match_mode}
+
+
+@register("replace_symbol", {
+    "description": (
+        "Replace the full source of a top-level or nested Python function/class by name. "
+        "Immune to whitespace drift and duplicate text elsewhere in the file. "
+        "Use dotted names for nested symbols (e.g. 'MyClass.method'). Python files only."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Python file path"},
+            "symbol": {"type": "string", "description": "Symbol name, dotted for nesting (e.g. 'Foo.bar')"},
+            "new_source": {"type": "string", "description": "Full replacement source for the symbol, including def/class line. Will be re-indented to match the original."},
+        },
+        "required": ["path", "symbol", "new_source"],
+    },
+})
+def replace_symbol(path: str, symbol: str, new_source: str) -> dict:
+    import ast
+    import textwrap
+
+    fpath = _resolve(path)
+    rules = get_rules()
+    rel = str(fpath.relative_to(_working_dir()))
+    allowed, msg = rules.check_write(rel)
+    if not allowed:
+        _log_edit("replace_symbol", path, "blocked", reason=msg)
+        return {"error": msg or f"Cannot write to: {path}"}
+
+    if not fpath.exists():
+        return {"error": f"File not found: {path}"}
+    if fpath.suffix != ".py":
+        return {"error": "replace_symbol currently supports Python files only."}
+
+    original = fpath.read_text(encoding="utf-8", errors="replace")
+    try:
+        tree = ast.parse(original)
+    except SyntaxError as e:
+        return {"error": f"File has a syntax error; fix it first or use replace_text. ({e})"}
+
+    parts = symbol.split(".")
+    node = None
+    parent_body = tree.body
+    for i, part in enumerate(parts):
+        found = None
+        for child in parent_body:
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and child.name == part:
+                found = child
+                break
+        if found is None:
+            return {"error": f"Symbol not found: {'.'.join(parts[:i+1])}"}
+        node = found
+        if i < len(parts) - 1:
+            if not isinstance(node, ast.ClassDef):
+                return {"error": f"{'.'.join(parts[:i+1])} is not a class; cannot descend into it."}
+            parent_body = node.body
+
+    assert node is not None
+    lines = original.splitlines(keepends=True)
+    # Include preceding decorators in the replaced span.
+    start_line = min([d.lineno for d in getattr(node, "decorator_list", [])] + [node.lineno]) - 1
+    end_line = node.end_lineno  # 1-indexed, exclusive when used as slice end
+    orig_block = "".join(lines[start_line:end_line])
+
+    indent_match = re.match(r"[ \t]*", lines[start_line])
+    indent = indent_match.group(0) if indent_match else ""
+
+    new_body = textwrap.dedent(new_source).rstrip("\n")
+    new_indented = "\n".join((indent + ln if ln else ln) for ln in new_body.split("\n")) + "\n"
+
+    # Re-parse the whole file after substitution to catch obviously broken replacements.
+    candidate = "".join(lines[:start_line]) + new_indented + "".join(lines[end_line:])
+    try:
+        ast.parse(candidate)
+    except SyntaxError as e:
+        return {"error": f"Replacement would break the file's syntax: {e}. Check indentation and completeness of new_source."}
+
+    size_ok, size_msg = rules.check_write_size(candidate)
+    if not size_ok:
+        return {"error": size_msg}
+
+    if rules.config.dry_run:
+        return {"dry_run": True, "path": path, "symbol": symbol, "old_lines": end_line - start_line, "new_lines": new_indented.count("\n")}
+
+    _undo_stack[path] = original
+    fpath.write_text(candidate, encoding="utf-8")
+    _log_edit("replace_symbol", path, "ok", symbol=symbol)
+    return {"ok": path, "symbol": symbol, "replaced_lines": end_line - start_line}
 
 
 def _apply_unified_diff(original: str, patch: str) -> str:
