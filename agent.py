@@ -567,7 +567,7 @@ def extract_last_code_block(messages: list[dict]) -> tuple[str, str] | None:
     # Find the most recent assistant message with any code
     content = ""
     for m in reversed(messages):
-        if m.get("role") == "assistant" and m.get("content", "").strip():
+        if m.get("role") == "assistant" and (m.get("content") or "").strip():
             content = m["content"]
             break
     if not content:
