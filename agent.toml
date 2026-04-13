@@ -27,3 +27,5 @@ working_dir = "."
 mode = "textual"
 syntax_highlight = true
 show_token_count = true
+q_summaries = true
+

@@ -486,6 +486,8 @@ def _build_textual_app(agent: "Agent", session=None):
             self._stream_buffer: str = ""
             self._modified_files: list[str] = []
             self._loading_timer = None
+            if session is not None:
+                agent.set_session_id(session.id)
 
         def compose(self) -> ComposeResult:
             cfg = self._agent.config
@@ -1183,6 +1185,9 @@ async def simple_loop(agent: "Agent", session=None):
     cfg = agent.config
     t = cfg.ui.theme
     console = Console()
+
+    if session is not None:
+        agent.set_session_id(session.id)
 
     prompt_esc = _hex_to_ansi(t.prompt)
     console.print(f"[bold {t.agent_color}]local-code-agent[/bold {t.agent_color}]  [dim]{cfg.llm.model}  {cfg.llm.ctx_window} ctx[/dim]")

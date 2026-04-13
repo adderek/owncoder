@@ -554,18 +554,6 @@ async def run_turn(
         messages = messages + [{"role": "assistant", "content": content}]
         messages = _collapse_tool_rounds(messages)
 
-        # Trigger background summarization if enabled
-        if config.ui.q_summaries:
-            from agent.summarizer import summarize_session_background
-            asyncio.create_task(
-                summarize_session_background(
-                    config,
-                    client,
-                    messages,
-                    on_summary_ready=lambda s: setattr(session, "summary", s) if "session" in locals() else None,
-                )
-            )
-
         return "".join(content_parts), messages
 
 
@@ -626,6 +614,28 @@ def extract_last_code_block(messages: list[dict]) -> tuple[str, str] | None:
     return filename, code
 
 
+async def _post_turn_capture_and_summarize(
+    qa_logger,
+    config: "Config",
+    turn_id: int,
+    user_input: str,
+    response: str,
+    tool_calls: list[str],
+    modified_files: list[str],
+) -> None:
+    """Background: capture Q/A to disk and optionally summarize."""
+    try:
+        q_path, a_path = await asyncio.gather(
+            qa_logger.capture_q(turn_id, user_input),
+            qa_logger.capture_a(turn_id, response, tool_calls=tool_calls, modified_files=modified_files),
+        )
+        if config.ui.q_summaries:
+            from agent.summarizer import summarize_turn_background
+            await summarize_turn_background(config, q_path, a_path)
+    except Exception:
+        logger.exception("_post_turn_capture_and_summarize: error (ignored)")
+
+
 class Agent:
     def __init__(self, config: "Config", store=None, embedder=None, asm_store=None) -> None:
         from openai import AsyncOpenAI
@@ -640,6 +650,8 @@ class Agent:
             base_url=config.llm.base_url,
             api_key=config.llm.api_key,
         )
+        self._qa_logger = None
+        self._turn_id: int = 0
 
         load_all_tools(config=config, store=store, embedder=embedder, asm_store=asm_store)
 
@@ -654,9 +666,14 @@ class Agent:
         if user_context:
             self.messages.append({"role": "system", "content": user_context})
         
+    def set_session_id(self, session_id: str) -> None:
+        """Wire up a QALogger for this session. Call once the session is known."""
+        from agent.memory.qa_log import QALogger
+        self._qa_logger = QALogger(session_id)
+
     def token_estimate(self) -> int:
         return _count_tokens_approx(self.messages)
-    
+
     async def chat(
         self,
         user_input: str,
@@ -664,6 +681,28 @@ class Agent:
         on_token: callable | None = None,
         on_user_message: callable | None = None,
     ) -> str:
+        self._turn_id += 1
+        turn_id = self._turn_id
+
+        # Track tool calls and modified files for Q/A capture metadata.
+        _turn_tool_calls: list[str] = []
+        _turn_modified_files: list[str] = []
+
+        original_on_tool_call = on_tool_call
+
+        def _tracking_on_tool_call(name: str, args: str) -> None:
+            _turn_tool_calls.append(name)
+            if name in ("write_file", "patch_file"):
+                try:
+                    parsed = json.loads(args) if isinstance(args, str) else args
+                    path = parsed.get("path", "")
+                    if path and path not in _turn_modified_files:
+                        _turn_modified_files.append(path)
+                except Exception:
+                    pass
+            if original_on_tool_call is not None:
+                original_on_tool_call(name, args)
+
         self.messages.append({"role": "user", "content": user_input})
         if on_user_message is not None:
             on_user_message()
@@ -672,6 +711,21 @@ class Agent:
             self.config,
             self._client,
             on_token=on_token,
-            on_tool_call=on_tool_call,
+            on_tool_call=_tracking_on_tool_call,
         )
+
+        # Fire-and-forget: capture Q/A to disk and optionally summarize.
+        if self._qa_logger is not None:
+            asyncio.create_task(
+                _post_turn_capture_and_summarize(
+                    self._qa_logger,
+                    self.config,
+                    turn_id,
+                    user_input,
+                    response,
+                    list(_turn_tool_calls),
+                    list(_turn_modified_files),
+                )
+            )
+
         return response

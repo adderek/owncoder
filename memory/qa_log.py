@@ -24,8 +24,8 @@ class QALogger:
 
     async def capture_q(
         self, turn_id: int, content: str
-    ) -> None:
-        """Saves the user's message (Q)."""
+    ) -> Path:
+        """Saves the user's message (Q). Returns the written file path."""
         timestamp = datetime.now(timezone.utc).isoformat()
         filename = f"Q-{timestamp.replace(':', '-')}.json"
         data = {
@@ -35,6 +35,7 @@ class QALogger:
             "content": content,
         }
         await asyncio.to_thread(self._write_json, self._get_q_dir(), filename, data)
+        return self._get_q_dir() / filename
 
     async def capture_a(
         self,
@@ -42,8 +43,8 @@ class QALogger:
         content: str,
         tool_calls: Optional[List[Dict[str, Any]]] = None,
         modified_files: Optional[List[str]] = None,
-    ) -> None:
-        """Saves the agent's response (A)."""
+    ) -> Path:
+        """Saves the agent's response (A). Returns the written file path."""
         timestamp = datetime.now(timezone.utc).isoformat()
         filename = f"A-{timestamp.replace(':', '-')}.json"
         data = {
@@ -55,6 +56,7 @@ class QALogger:
             "modified_files": modified_files or [],
         }
         await asyncio.to_thread(self._write_json, self._get_a_dir(), filename, data)
+        return self._get_a_dir() / filename
 
     def _write_json(self, directory: Path, filename: str, data: Dict[str, Any]) -> None:
         directory.mkdir(parents=True, exist_ok=True)

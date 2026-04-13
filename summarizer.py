@@ -1,80 +1,107 @@
+from __future__ import annotations
+
 import asyncio
+import json
 import logging
+import re
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from agent.config import Config
-    from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
 
-async def summarize_session_background(
+_Q_SYSTEM = (
+    "Summarise the following user message in one concise sentence that captures the intent. "
+    "Output only the summary sentence — no labels, no punctuation other than a period."
+)
+_A_SYSTEM = (
+    "Summarise the following agent response in one concise sentence that captures the outcome. "
+    "Output only the summary sentence — no labels, no punctuation other than a period."
+)
+
+
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+async def _call_llm_one_line(
     config: "Config",
-    client: "AsyncOpenAI",
-    messages: list[dict],
-    on_summary_ready: callable | None = None,
+    system_prompt: str,
+    content: str,
+) -> str:
+    """Stream a one-line summary from a fresh isolated client.
+
+    Streaming lets the model use as many thinking tokens as it needs without
+    a hard cap cutting off the answer.  <think>…</think> blocks are stripped
+    from the final output so only the summary sentence is returned.
+    """
+    from openai import AsyncOpenAI
+    client = AsyncOpenAI(base_url=config.llm.base_url, api_key=config.llm.api_key)
+    try:
+        parts: list[str] = []
+        stream = await client.chat.completions.create(
+            model=config.llm.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": content[:4000]},
+            ],
+            stream=True,
+        )
+        async for chunk in stream:
+            delta = chunk.choices[0].delta if chunk.choices else None
+            if delta and delta.content:
+                parts.append(delta.content)
+    finally:
+        await client.close()
+
+    full = "".join(parts)
+    full = _THINK_RE.sub("", full).strip()
+    return full
+
+
+def _update_json_file(path: Path, updates: dict) -> None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data.update(updates)
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception as e:
+        logger.warning("summarizer: failed to update %s: %s", path, e)
+
+
+async def summarize_turn_background(
+    config: "Config",
+    q_path: Path,
+    a_path: Path,
 ) -> None:
-    \"\"\"
-    Background task to summarize the conversation history.
-    This is meant to be spawned and not awaited in the main loop.
-    \"\"\"
+    """Background task: add summary_q / summary_a to the Q and A JSON files.
+
+    Runs in isolation — never touches the agent's primary conversation context.
+    Errors are silently logged and never propagate to the caller.
+    """
     if not config.ui.q_summaries:
         return
-
-    # We want to avoid summarizing if the history is too short
-    # or if we just did a compaction.
-    if len(messages) < 10:
-        return
-
     try:
-        # 1. Prepare the summarization prompt
-        # We only want to summarize the messages that aren't the most recent ones
-        # to keep the context relevant, but for a "Q-summary" we might want
-        # a more holistic view.
-        
-        # Let's take the history excluding the last few messages
-        # so we don't summarize what the user just said or what the assistant just responded to.
-        summary_messages = messages[:-5]
-        
-        if not summary_messages:
+        q_content = json.loads(q_path.read_text(encoding="utf-8")).get("content", "")
+        a_content = json.loads(a_path.read_text(encoding="utf-8")).get("content", "")
+
+        if not q_content and not a_content:
             return
 
-        # 2. Call the LLM to generate a summary
-        # We use a specific system prompt for summarization.
-        summary_system_prompt = (
-            "You are a helpful assistant that summarizes conversation history. "
-            "Provide a concise, bulleted summary of the key points, decisions made, "
-            "and tasks completed in this session. Focus on technical details and progress."
+        summary_q, summary_a = await asyncio.gather(
+            _call_llm_one_line(config, _Q_SYSTEM, q_content) if q_content else asyncio.sleep(0, result=""),
+            _call_llm_one_line(config, _A_SYSTEM, a_content) if a_content else asyncio.sleep(0, result=""),
         )
 
-        api_messages = [
-            {"role": "system", "content": summary_system_prompt},
-            *summary_messages
-        ]
+        if summary_q:
+            await asyncio.to_thread(_update_json_file, q_path, {"summary_q": summary_q})
+        if summary_a:
+            await asyncio.to_thread(_update_json_file, a_path, {"summary_a": summary_a})
 
-        response = await client.chat.completions.create(
-            model=config.llm.model,
-            messages=api_messages,
-            max_tokens=500,
+        logger.debug(
+            "summarize_turn_background: done — Q=%r A=%r",
+            summary_q[:60] if summary_q else "",
+            summary_a[:60] if summary_a else "",
         )
-
-        summary_text = response.choices[0].message.content
-        if not summary_text:
-            return
-
-        # 3. Notify the UI or update the session
-        if on_summary_ready:
-            # The callback might be a simple function that updates the session object
-            # or it might be a coroutine that handles more complex logic.
-            if asyncio.iscoroutinefunction(on_summary_ready):
-                await on_summary_ready(summary_text)
-            else:
-                on_summary_ready(summary_text)
-
-    except Exception as e:
-        logger.error(f"Error in background summarization: {e}", exc_info=True)
-
-def _count_tokens_approx(text: str) -> int:
-    # Placeholder for the actual token counting logic used in agent.py
-    # In a real implementation, this would use tiktoken.
-    return len(text) // 4
+    except BaseException:
+        logger.exception("summarize_turn_background: unexpected error (ignored)")
