@@ -101,6 +101,28 @@ class UIConfig:
 
 
 @dataclass
+class LogsConfig:
+    """Logging configuration.
+
+    `level` sets the root logger level (for the file handler). `stderr_level`
+    sets the stderr handler level. `sources` is a mapping of logger name to
+    level string — use it to silence noisy third-party loggers without code
+    changes, e.g. {"httpcore": "WARNING", "openai._base_client": "INFO"}.
+    """
+    level: str = "DEBUG"
+    stderr_level: str = "WARNING"
+    max_bytes: int = 20 * 1024 * 1024   # 20 MB per log file
+    backup_count: int = 5
+    dedupe_preamble: bool = True        # log system+tools once, reference by hash after
+    sources: dict = field(default_factory=lambda: {
+        "httpcore": "WARNING",
+        "httpx": "WARNING",
+        "openai._base_client": "INFO",
+        "asyncio": "INFO",
+    })
+
+
+@dataclass
 class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
@@ -108,6 +130,7 @@ class Config:
     tools: ToolsConfig = field(default_factory=ToolsConfig)
     ui: UIConfig = field(default_factory=UIConfig)
     asm: AsmAnalysisConfig = field(default_factory=AsmAnalysisConfig)
+    logs: LogsConfig = field(default_factory=LogsConfig)
 
 
 def _apply_env_overrides(config: Config) -> None:
@@ -166,6 +189,8 @@ def _merge_obj(obj: object, data: dict) -> None:
         attr = getattr(obj, key)
         if isinstance(val, dict) and hasattr(attr, "__dataclass_fields__"):
             _merge_obj(attr, val)
+        elif isinstance(val, dict) and isinstance(attr, dict):
+            attr.update(val)
         else:
             setattr(obj, key, val)
 
@@ -178,6 +203,7 @@ def _merge(config: Config, data: dict) -> None:
         ("tools", config.tools),
         ("ui", config.ui),
         ("asm_analysis", config.asm),
+        ("logs", config.logs),
     ):
         section_data = data.get(section_name, {})
         _merge_obj(obj, section_data)

@@ -70,24 +70,39 @@ def _write_exception_dump(
         return None
 
 
-def _setup_logging(agent_dir: str | None = None) -> None:
-    """Configure root logger: DEBUG to agent.log, WARNING to stderr."""
+def _setup_logging(agent_dir: str | None = None, logs_cfg=None) -> None:
+    """Configure logging per [logs] config: rotating file + stderr + per-source levels."""
+    from logging.handlers import RotatingFileHandler
+
     log_dir = Path(agent_dir) if agent_dir else Path(".agent")
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "agent.log"
 
-    root = logging.getLogger()
-    root.setLevel(logging.DEBUG)
+    level_name = (getattr(logs_cfg, "level", None) or "DEBUG").upper()
+    stderr_level = (getattr(logs_cfg, "stderr_level", None) or "WARNING").upper()
+    max_bytes = getattr(logs_cfg, "max_bytes", 20 * 1024 * 1024)
+    backup_count = getattr(logs_cfg, "backup_count", 5)
+    sources = getattr(logs_cfg, "sources", {}) or {}
 
-    fh = logging.FileHandler(log_path, encoding="utf-8")
-    fh.setLevel(logging.DEBUG)
+    root = logging.getLogger()
+    root.setLevel(getattr(logging, level_name, logging.DEBUG))
+
+    fh = RotatingFileHandler(
+        log_path, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8"
+    )
+    fh.setLevel(getattr(logging, level_name, logging.DEBUG))
     fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s"))
     root.addHandler(fh)
 
     sh = logging.StreamHandler(sys.stderr)
-    sh.setLevel(logging.WARNING)
+    sh.setLevel(getattr(logging, stderr_level, logging.WARNING))
     sh.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
     root.addHandler(sh)
+
+    for source_name, source_level in sources.items():
+        lvl = getattr(logging, str(source_level).upper(), None)
+        if lvl is not None:
+            logging.getLogger(source_name).setLevel(lvl)
 
 
 def cmd_init(args, config):
@@ -672,7 +687,7 @@ def main():
     config = load_config(config_path)
     configure_sessions(config.tools.working_dir, config.tools.agent_dir)
     log_dir = Path(config.tools.working_dir) / config.tools.agent_dir
-    _setup_logging(str(log_dir))
+    _setup_logging(str(log_dir), config.logs)
     log_path = log_dir / "agent.log"
 
     try:

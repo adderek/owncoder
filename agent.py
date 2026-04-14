@@ -22,6 +22,34 @@ SYSTEM_PROMPT_PATH = Path(__file__).parent / "prompts" / "system.txt"
 # Set up logging
 logger = logging.getLogger(__name__)
 
+# Preamble dedup: static parts of each LLM request (system prompt + tools schema
+# + any future static injections like skills/guardrails) rarely change between
+# turns, yet they dominate the log. We hash them on first sight and log only a
+# short reference on subsequent calls.
+_PREAMBLE_CACHE: set[str] = set()
+
+
+def _log_llm_request(messages: list, tools, config: "Config") -> None:
+    """Emit a compact one-line log for each LLM call, deduping the static preamble."""
+    if not getattr(config, "logs", None) or not getattr(config.logs, "dedupe_preamble", True):
+        return
+    import hashlib
+    system_parts = [m.get("content", "") for m in messages if m.get("role") == "system"]
+    preamble_src = json.dumps(
+        {"system": system_parts, "tools": tools or []},
+        sort_keys=True, default=str,
+    )
+    h = hashlib.sha256(preamble_src.encode("utf-8", errors="replace")).hexdigest()[:10]
+    dynamic = [m for m in messages if m.get("role") != "system"]
+    if h not in _PREAMBLE_CACHE:
+        _PREAMBLE_CACHE.add(h)
+        logger.info("llm.preamble id=%s bytes=%d (logged once; future calls reference id only)",
+                    h, len(preamble_src))
+        logger.debug("llm.preamble id=%s content=%s", h, preamble_src)
+    last_roles = ",".join(m.get("role", "?") for m in dynamic[-5:])
+    logger.info("llm.request preamble=%s msgs=%d tail_roles=[%s]",
+                h, len(dynamic), last_roles)
+
 def _build_system_prompt(config: "Config", project_name: str = "", indexed_count: int = 0) -> str:
     template = SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
     import subprocess
@@ -184,6 +212,7 @@ async def _stream_response(client, config, api_messages, tools, on_token):
     tc_acc: dict[int, dict] = {}
     finish_reason = "stop"
 
+    _log_llm_request(api_messages, tools, config)
     stream = await client.chat.completions.create(
         model=config.llm.model,
         messages=api_messages,
@@ -434,6 +463,7 @@ async def run_turn(
                 choice.message = msg
                 choice.finish_reason = finish_reason
             else:
+                _log_llm_request(api_messages, tools, config)
                 response = await client.chat.completions.create(
                     model=config.llm.model,
                     messages=api_messages,

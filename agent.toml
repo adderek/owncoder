@@ -29,3 +29,26 @@ syntax_highlight = true
 show_token_count = true
 q_summaries = true
 
+[logs]
+# Root file-log level. Set to "INFO" to shrink the log further.
+level = "DEBUG"
+# Level for the stderr handler (what you see in the terminal).
+stderr_level = "WARNING"
+# Rotation: roll over at max_bytes, keep backup_count archives.
+max_bytes = 20971520   # 20 MB
+backup_count = 5
+# When true, the static system prompt + tools schema is logged once per process
+# (identified by a short hash) and future LLM calls reference it by id.
+dedupe_preamble = true
+
+# Per-source log levels. Merges with built-in defaults — add a source here to
+# silence (or re-enable) a specific logger without code changes.
+#   e.g. to debug raw HTTP: "httpcore.http11" = "DEBUG"
+[logs.sources]
+"httpcore" = "WARNING"
+"httpcore.http11" = "WARNING"
+"httpcore.connection" = "WARNING"
+"httpx" = "WARNING"
+"openai._base_client" = "INFO"
+"asyncio" = "INFO"
+
