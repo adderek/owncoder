@@ -29,7 +29,7 @@ def _get_session_dir() -> Path:
 
 @dataclass
 class Session:
-    id: str                    # ISO-8601 UTC timestamp, e.g. "2026-04-08T12:34:56.789Z"
+    id: str                    # Basic ISO-8601 format, e.g. "20260414T222821.610Z"
     short_name: str = ""       # ASCII-only, filesystem-safe identifier
     name: str = ""             # UTF-8 display name (not too long)
     description: str = ""      # Long-form description
@@ -55,16 +55,28 @@ def _sanitize_short_name(short_name: str) -> str:
 def _session_filename(session: Session) -> str:
     """Return relative path for a session (YYYY/MM/DD/TIMESTAMP/session.json)."""
     try:
-        # session.id is "2026-04-14T21:35:09.950Z"
-        # Replace Z with +00:00 for fromisoformat
-        dt = datetime.fromisoformat(session.id.replace("Z", "+00:00"))
+        # Try parsing basic ISO-8601 (e.g. "20260414T222821.610Z")
+        # First remove 'Z' and replace with '+00:00' for fromisoformat if needed, 
+        # but fromisoformat doesn't like the lack of separators in many versions.
+        # Let's try strptime for the new format.
+        if "-" not in session.id:
+            # Format: 20260414T222821.610Z
+            # We need to handle the fractional seconds carefully.
+            # Using strptime with %f handles up to 6 digits.
+            # Since we have 3 digits (ms), it should work.
+            # Note: %f is microseconds, but it parses what's there.
+            clean_id = session.id.replace("Z", "")
+            # We need to handle the dot.
+            # For "20260414T222821.610", we can use %Y%m%dT%H%M%S.%f
+            dt = datetime.strptime(clean_id, "%Y%m%dT%H%M%S.%f").replace(tzinfo=timezone.utc)
+        else:
+            # Old format: 2026-04-14T222821.610Z
+            dt = datetime.fromisoformat(session.id.replace("Z", "+00:00"))
     except Exception:
         # Fallback if parsing fails
         dt = datetime.now(timezone.utc)
 
-    safe_id = session.id.replace(":", "-")
-    # The user wants YYYY/MM/DD/TIMESTAMP/session.json
-    return f"{dt.strftime('%Y/%m/%d')}/{safe_id}/session.json"
+    return f"{dt.strftime('%Y/%m/%d')}/{session.id}/session.json"
 
 
 def _session_from_data(data: dict, file_path: Path | None = None) -> Session:
@@ -108,13 +120,15 @@ def new_session(
     """Create a new Session with a UTC ISO-8601 timestamp ID."""
     now = datetime.now(timezone.utc)
     ms = now.microsecond // 1000
-    session_id = now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{ms:03d}Z"
+    # Use a filesystem-safe version of ISO-8601 (no colons, no dashes)
+    session_id = now.strftime("%Y%m%dT%H%M%S.") + f"{ms:03d}Z"
     ts = now.timestamp()
     return Session(
         id=session_id,
         short_name=_sanitize_short_name(short_name),
         name=name,
         description=description,
+        summary=summary,
         tags=list(tags) if tags else [],
         created_at=ts,
         updated_at=ts,
