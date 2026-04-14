@@ -53,13 +53,18 @@ def _sanitize_short_name(short_name: str) -> str:
 
 
 def _session_filename(session: Session) -> str:
-    """Return filename for a session (colons replaced so it's filesystem-safe)."""
+    """Return relative path for a session (YYYY/MM/DD/TIMESTAMP/session.json)."""
+    try:
+        # session.id is "2026-04-14T21:35:09.950Z"
+        # Replace Z with +00:00 for fromisoformat
+        dt = datetime.fromisoformat(session.id.replace("Z", "+00:00"))
+    except Exception:
+        # Fallback if parsing fails
+        dt = datetime.now(timezone.utc)
+
     safe_id = session.id.replace(":", "-")
-    if session.short_name:
-        sn = _sanitize_short_name(session.short_name)
-        if sn:
-            return f"{safe_id}_{sn}.json"
-    return f"{safe_id}.json"
+    # The user wants YYYY/MM/DD/TIMESTAMP/session.json
+    return f"{dt.strftime('%Y/%m/%d')}/{safe_id}/session.json"
 
 
 def _session_from_data(data: dict, file_path: Path | None = None) -> Session:
@@ -119,7 +124,6 @@ def new_session(
 def save_session(session: Session, messages: list[dict]) -> None:
     """Persist session and messages to disk."""
     sdir = _get_session_dir()
-    sdir.mkdir(parents=True, exist_ok=True)
 
     session.updated_at = time.time()
     data = _session_to_data(session, messages)
@@ -134,6 +138,8 @@ def save_session(session: Session, messages: list[dict]) -> None:
     else:
         session._file_path = sdir / _session_filename(session)
 
+    # Ensure parent directory exists
+    session._file_path.parent.mkdir(parents=True, exist_ok=True)
     session._file_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
@@ -143,24 +149,21 @@ def load_session(id_or_name: str) -> tuple[Session | None, list[dict]]:
     Returns (session, messages).  If not found returns (None, []).
     """
     sdir = _get_session_dir()
-    sdir.mkdir(parents=True, exist_ok=True)
 
     # 1. Try legacy plain-name file (e.g. "default.json")
     legacy = sdir / f"{Path(id_or_name).name}.json"
     if legacy.exists():
         try:
             data = json.loads(legacy.read_text(encoding="utf-8"))
-            # If the file already has a proper "id" field it was already migrated.
             if not data.get("id"):
-                # Upgrade in-place: assign a legacy-style id from saved_at or name.
                 data["id"] = data.get("name", id_or_name)
             session = _session_from_data(data, file_path=legacy)
             return session, data.get("messages", [])
         except Exception:
             pass
 
-    # 2. Search all session files for a matching id or short_name.
-    for p in sorted(sdir.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
+    # 2. Search all session files (recursively) for a matching id or short_name.
+    for p in sorted(sdir.rglob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
             if data.get("id") == id_or_name or data.get("short_name") == id_or_name:
@@ -175,9 +178,9 @@ def load_session(id_or_name: str) -> tuple[Session | None, list[dict]]:
 def list_sessions() -> list[dict]:
     """Return summary dicts for all sessions, newest first."""
     sdir = _get_session_dir()
-    sdir.mkdir(parents=True, exist_ok=True)
     sessions = []
-    for p in sorted(sdir.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
+    # Use rglob to find all .json files in subdirectories
+    for p in sorted(sdir.rglob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
             sessions.append({
