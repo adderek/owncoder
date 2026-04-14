@@ -52,6 +52,14 @@ def _log_llm_request(messages: list, tools, config: "Config") -> None:
 
 def _build_system_prompt(config: "Config", project_name: str = "", indexed_count: int = 0) -> str:
     template = SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
+
+    # Load preamble
+    preamble_path = Path(config.tools.preamble_path)
+    if not preamble_path.exists():
+        preamble_path.parent.mkdir(parents=True, exist_ok=True)
+        preamble_path.write_text("direct answers, no preamble", encoding="utf-8")
+    preamble = preamble_path.read_text(encoding="utf-8").strip()
+
     import subprocess
     try:
         branch = subprocess.check_output(
@@ -62,12 +70,17 @@ def _build_system_prompt(config: "Config", project_name: str = "", indexed_count
         ).strip()
     except Exception:
         branch = "unknown"
-    return template.format(
+
+    prompt = template.format(
         project_name=project_name or Path(config.tools.working_dir).resolve().name,
         working_dir=config.tools.working_dir,
         git_branch=branch,
         indexed_count=indexed_count,
     )
+
+    if preamble:
+        prompt = f"{prompt}\n\n{preamble}"
+    return prompt
 
 
 def _tool_result_message(tool_call_id: str, content: str) -> dict:

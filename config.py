@@ -54,6 +54,7 @@ class ToolsConfig:
     shell_timeout: int = 30
     working_dir: str = "."
     agent_dir: str = ".agent"
+    preamble_path: str = ".agent/agent.preamble"
 
 
 @dataclass
