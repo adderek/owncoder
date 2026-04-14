@@ -82,6 +82,38 @@ def _build_textual_app(agent: "Agent", session=None):
     class SysView(RichLog):
         """System log — commands, session info, help output."""
 
+    class QView(RichLog):
+        """View for user questions."""
+        def update_view(self, messages: list["Message"]) -> None:
+            self.clear()
+            for msg in messages:
+                if msg.role == "user":
+                    summary = getattr(msg, "summary", None)
+                    if not summary:
+                        summary = msg.content[:100] + "..." if len(msg.content) > 100 else msg.content
+                    self.write(f"[bold blue]Q:[/bold blue] {summary}\n")
+
+    class AView(RichLog):
+        """View for agent answers."""
+        def update_view(self, messages: list["Message"]) -> None:
+            self.clear()
+            for msg in messages:
+                if msg.role == "assistant":
+                    summary = getattr(msg, "summary", None)
+                    if not summary:
+                        summary = msg.content[:100] + "..." if len(msg.content) > 100 else msg.content
+                    self.write(f"[bold green]A:[/bold green] {summary}\n")
+
+    class SparseView(RichLog):
+        """View for condensed dialogue."""
+        def update_view(self, messages: list["Message"]) -> None:
+            self.clear()
+            for msg in messages:
+                role = "User" if msg.role == "user" else "Agent"
+                color = "blue" if msg.role == "user" else "green"
+                content = msg.content[:150] + "..." if len(msg.content) > 150 else msg.content
+                self.write(f"[{color}]{role}:[/{color}] {content}\n")
+
     class ContextPanel(Static):
         def set_context(self, text: str) -> None:
             self.update(text)
