@@ -488,6 +488,7 @@ async def run_turn(
     client: "AsyncOpenAI",
     on_token: callable | None = None,
     on_tool_call: callable | None = None,
+    on_tool_result: callable | None = None,
     on_usage: callable | None = None,
     on_progress: callable | None = None,
     _depth: int = 0,
@@ -631,6 +632,18 @@ async def run_turn(
             results = await asyncio.gather(*[execute_tool(tc, config) for tc in tool_calls])
             for tc, result in zip(tool_calls, results):
                 messages.append(_tool_result_message(tc.id, result))
+                if on_tool_result is not None:
+                    ok = True
+                    try:
+                        parsed = json.loads(result)
+                        if isinstance(parsed, dict) and "error" in parsed:
+                            ok = False
+                    except Exception:
+                        pass
+                    try:
+                        on_tool_result(tc.function.name, ok)
+                    except Exception:
+                        logger.exception("on_tool_result callback failed")
             # Check compaction threshold
             token_est = _count_tokens_approx(messages)
             threshold = int(config.llm.ctx_window * config.llm.compaction_threshold)
@@ -851,6 +864,7 @@ class Agent:
         self,
         user_input: str,
         on_tool_call: callable | None = None,
+        on_tool_result: callable | None = None,
         on_token: callable | None = None,
         on_user_message: callable | None = None,
         on_progress: callable | None = None,
@@ -886,6 +900,7 @@ class Agent:
             self._client,
             on_token=on_token,
             on_tool_call=_tracking_on_tool_call,
+            on_tool_result=on_tool_result,
             on_usage=self._record_usage,
             on_progress=on_progress,
         )

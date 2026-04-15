@@ -356,6 +356,12 @@ def _build_textual_app(agent: "Agent", session=None):
             self.name = name
             self.args = args
 
+    class ToolResultEvent(Message):
+        def __init__(self, name: str, ok: bool) -> None:
+            super().__init__()
+            self.name = name
+            self.ok = ok
+
     class TokenStreamEvent(Message):
         def __init__(self, token: str) -> None:
             super().__init__()
@@ -955,6 +961,7 @@ def _build_textual_app(agent: "Agent", session=None):
             self._switch_to_chat()
             self._write_chat(f"[bold {t.user_color}]You:[/bold {t.user_color}] {user_text}")
             self._last_tool_calls = []
+            self._tool_stats: dict[str, dict[str, int]] = {}
             self._current_tool = None
             self._tokens_before = self._agent.token_estimate()
             self._streaming_active = False
@@ -980,7 +987,11 @@ def _build_textual_app(agent: "Agent", session=None):
             def on_tool(name: str, args: str) -> None:
                 self._last_tool_calls.append(name)
                 self._current_tool = name
+                self._tool_stats.setdefault(name, {"ok": 0, "err": 0})
                 self.post_message(ToolCallEvent(name, args))
+
+            def on_tool_result(name: str, ok: bool) -> None:
+                self.post_message(ToolResultEvent(name, ok))
 
             def on_user_message() -> None:
                 if self._session is not None:
@@ -995,6 +1006,7 @@ def _build_textual_app(agent: "Agent", session=None):
             result = await self._agent.chat(
                 user_text,
                 on_tool_call=on_tool,
+                on_tool_result=on_tool_result,
                 on_user_message=on_user_message,
                 on_token=on_token,
                 on_progress=on_progress,
@@ -1018,6 +1030,29 @@ def _build_textual_app(agent: "Agent", session=None):
             self.query_one("#context-panel", ContextPanel).set_context(
                 f"[{t.tool_color}]⚙ {_escape(event.name)}[/{t.tool_color}]"
             )
+
+        def on_tool_result_event(self, event: ToolResultEvent) -> None:
+            stats = self._tool_stats.setdefault(event.name, {"ok": 0, "err": 0})
+            if event.ok:
+                stats["ok"] += 1
+            else:
+                stats["err"] += 1
+
+        def _render_tool_summary(self) -> str:
+            if not self._last_tool_calls:
+                return ""
+            seen = list(dict.fromkeys(self._last_tool_calls))
+            parts = []
+            for name in seen:
+                s = self._tool_stats.get(name, {"ok": 0, "err": 0})
+                counts = []
+                if s["ok"]:
+                    counts.append(f"[{t.success}]{s['ok']}[/{t.success}]")
+                if s["err"]:
+                    counts.append(f"[{t.error}]{s['err']}[/{t.error}]")
+                suffix = f" {' '.join(counts)}" if counts else ""
+                parts.append(f"{_escape(name)}{suffix}")
+            return f"[{t.tool_color}]⚙[/{t.tool_color}] " + ", ".join(parts)
 
         def on_iteration_progress_event(self, event: IterationProgressEvent) -> None:
             self._iter_done = event.done
@@ -1071,10 +1106,7 @@ def _build_textual_app(agent: "Agent", session=None):
 
             tokens_after = self._agent.token_estimate()
             delta = tokens_after - self._tokens_before
-            tools_line = (
-                f"[{t.tool_color}]⚙ {', '.join(self._last_tool_calls[-3:])}[/{t.tool_color}]"
-                if self._last_tool_calls else ""
-            )
+            tools_line = self._render_tool_summary()
             token_line = (
                 f"[{t.text_dim}]sent ≈{self._tokens_before:,}  "
                 f"[{t.active}]+{delta:,}[/{t.active}] new  "
@@ -1106,8 +1138,7 @@ def _build_textual_app(agent: "Agent", session=None):
 
             # Write folded tool-call summary (collapsed single line)
             if self._last_tool_calls:
-                seen = list(dict.fromkeys(self._last_tool_calls))  # deduplicate, preserve order
-                tool_part = f"[{t.tool_color}]⚙ {_escape(', '.join(seen))}[/{t.tool_color}]"
+                tool_part = self._render_tool_summary()
                 if self._modified_files:
                     files_part = f"[{t.success}]{_escape('  '.join(self._modified_files))}[/{t.success}]"
                     self._write_chat(f"  {tool_part}  ·  {files_part}")
