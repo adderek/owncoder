@@ -364,7 +364,8 @@ def _build_schema() -> dict:
             "Always read_file first, then quote the anchor EXACTLY (whitespace matters). "
             "Anchor must match exactly once; use range_hint to disambiguate. "
             "Fails loudly on any mismatch — no silent changes. "
-            "Use write_file only to create a new file or fully overwrite one."
+            "Use write_file only to create a new file or fully overwrite one. "
+            "Example: chunks=[{'path': 'foo.py', 'anchor': 'def bar():', 'replacement': 'def bar(x):'}]"
         ),
         "parameters": {
             "type": "object",
@@ -389,6 +390,8 @@ def edit_file(chunks: list[dict], match: str | None = None, on_chunk_fail: str |
     if not isinstance(chunks, list) or not chunks:
         return {"error": "bad_input", "errors": [{"chunk_index": -1, "kind": "bad_input",
                                                   "detail": "chunks must be a non-empty list"}]}
+
+    attempted_paths = list(set(ch.get("path") for ch in chunks if isinstance(ch, dict) and "path" in ch))
 
     # Gate model-supplied overrides by config
     match_override = match if ec.match == "model" else None
@@ -432,7 +435,9 @@ def edit_file(chunks: list[dict], match: str | None = None, on_chunk_fail: str |
     # Decide commit
     if errors and fail_mode == "abort":
         _log_edit("edit_file", "<multi>", "atomic_rollback",
-                  chunk_count=len(chunks), error_kinds=[e["kind"] for e in errors])
+                  chunk_count=len(chunks),
+                  paths=attempted_paths,
+                  error_kinds=[e["kind"] for e in errors])
         return {"error": "atomic_rollback", "errors": errors}
 
     # Apply: per-file, descending by start offset
@@ -470,7 +475,9 @@ def edit_file(chunks: list[dict], match: str | None = None, on_chunk_fail: str |
 
     outcome = "ok" if not errors else "skip_partial"
     _log_edit("edit_file", "<multi>", outcome,
-              chunk_count=len(chunks), applied=len(applied),
+              chunk_count=len(chunks),
+              paths=attempted_paths,
+              applied=len(applied),
               error_kinds=[e["kind"] for e in errors] or None)
 
     result: dict = {"ok": True, "applied": applied}
