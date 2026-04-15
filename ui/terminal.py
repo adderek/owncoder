@@ -21,6 +21,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/apply",       [],        "write last code block to file", False),
     ("/clear",       [],        "clear the chat screen", False),
     ("/compact",     [],        "summarize old messages to free context", False),
+    ("/continue",    ["/c"],    "resume after iteration cap or truncation", False),
     ("/exec",        [],        "run a shell command", True),
     ("/export",      [],        "export conversation as markdown", False),
     ("/help",        ["/?"],    "show this help", False),
@@ -360,6 +361,12 @@ def _build_textual_app(agent: "Agent", session=None):
             super().__init__()
             self.token = token
 
+    class IterationProgressEvent(Message):
+        def __init__(self, done: int, limit: int) -> None:
+            super().__init__()
+            self.done = done
+            self.limit = limit
+
     _PLACEHOLDER_Q = (
         "[bold]Q — User questions[/bold]\n\n"
         "[dim]Placeholder.[/dim] Will show the conversation rephrased as a single\n"
@@ -504,6 +511,7 @@ def _build_textual_app(agent: "Agent", session=None):
             Binding("ctrl+q", "quit", "Quit"),
             Binding("ctrl+d", "quit", "Quit", show=False),
             Binding("f1", "show_help", "Help"),
+            Binding("ctrl+r", "continue_turn", "Continue"),
             Binding("ctrl+tab", "focus_next", "Switch focus", show=False),
         ]
 
@@ -518,6 +526,8 @@ def _build_textual_app(agent: "Agent", session=None):
             self._stream_buffer: str = ""
             self._modified_files: list[str] = []
             self._loading_timer = None
+            self._iter_done: int = 0
+            self._iter_limit: int = 0
             if session is not None:
                 agent.set_session_id(session.id)
 
@@ -637,6 +647,12 @@ def _build_textual_app(agent: "Agent", session=None):
         def action_show_help(self) -> None:
             self._write_sys(_make_help_text(t))
 
+        def action_continue_turn(self) -> None:
+            input_widget = self.query_one("#input-bar", PromptInput)
+            if input_widget.disabled:
+                return
+            self._begin_chat("continue")
+
         # ── git refresh ──────────────────────────────────────────────────────
 
         async def _refresh_git(self) -> None:
@@ -672,6 +688,9 @@ def _build_textual_app(agent: "Agent", session=None):
                 except Exception as e:
                     self._write_sys(f"[{t.error}]Compact failed: {e}[/{t.error}]")
                 self.query_one("#token-bar", TokenBar).update_tokens(self._agent.token_estimate())
+
+            elif cmd in ("/continue", "/c"):
+                self._begin_chat("continue")
 
             elif cmd == "/clear":
                 self.query_one("#chat-log", ConversationView).clear()
@@ -881,6 +900,10 @@ def _build_textual_app(agent: "Agent", session=None):
                 await self._run_slash(parts[0].lower(), parts[1] if len(parts) > 1 else "")
                 return
 
+            if user_text.lower() == "continue":
+                await self._run_slash("/continue", "")
+                return
+
             input_widget = self.query_one("#input-bar", PromptInput)
             input_widget.add_to_history(user_text)
             self._begin_chat(user_text)
@@ -920,6 +943,9 @@ def _build_textual_app(agent: "Agent", session=None):
                 est = self._agent.token_estimate()
                 rcvd = max(0, est - self._tokens_before)
                 text = f"in: [bold]{self._tokens_before:,}[/bold]  out: +{rcvd:,}"
+                if self._iter_limit:
+                    left = max(0, self._iter_limit - self._iter_done)
+                    text += f"  iter {self._iter_done}/{self._iter_limit} ({left} left)"
                 self.query_one("#loading-tokens", Static).update(text)
             except Exception:
                 pass
@@ -934,6 +960,8 @@ def _build_textual_app(agent: "Agent", session=None):
             self._streaming_active = False
             self._stream_buffer = ""
             self._modified_files = []
+            self._iter_done = 0
+            self._iter_limit = 0
 
             self.query_one("#input-bar", PromptInput).disabled = True
             self.query_one("#loading-row").add_class("active")
@@ -961,8 +989,15 @@ def _build_textual_app(agent: "Agent", session=None):
             def on_token(token: str) -> None:
                 self.post_message(TokenStreamEvent(token))
 
+            def on_progress(done: int, limit: int) -> None:
+                self.post_message(IterationProgressEvent(done, limit))
+
             result = await self._agent.chat(
-                user_text, on_tool_call=on_tool, on_user_message=on_user_message, on_token=on_token
+                user_text,
+                on_tool_call=on_tool,
+                on_user_message=on_user_message,
+                on_token=on_token,
+                on_progress=on_progress,
             )
             if self._session is not None:
                 save_session(self._session, self._agent.messages)
@@ -983,6 +1018,11 @@ def _build_textual_app(agent: "Agent", session=None):
             self.query_one("#context-panel", ContextPanel).set_context(
                 f"[{t.tool_color}]⚙ {_escape(event.name)}[/{t.tool_color}]"
             )
+
+        def on_iteration_progress_event(self, event: IterationProgressEvent) -> None:
+            self._iter_done = event.done
+            self._iter_limit = event.limit
+            self._update_loading_tokens()
 
         def on_token_stream_event(self, event: TokenStreamEvent) -> None:
             from rich.text import Text
@@ -1097,6 +1137,7 @@ def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
 
   [{c}]/help[/{c}]               show this message
   [{c}]/compact[/{c}]            summarise old messages to free context space
+  [{c}]/continue[/{c}] (or [{c}]continue[/{c}], Ctrl+R)  resume after iteration cap / truncation
   [{c}]/tokens[/{c}]             show token usage breakdown
   [{c}]/clear[/{c}]              clear the screen
   [{c}]/reset[/{c}]              drop conversation history (keep system prompt)

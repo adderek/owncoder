@@ -17,6 +17,7 @@ class LLMConfig:
     auto_detect_ctx: bool = True   # query server for actual context size on startup
     compaction_threshold: float = 0.75
     max_output_tokens: int = 4096
+    max_iterations: int = 10   # cap on tool-call rounds per user turn
 
 
 @dataclass
@@ -141,6 +142,7 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_LLM_MODEL": ("llm", "model"),
         "AGENT_LLM_CTX_WINDOW": ("llm", "ctx_window"),
         "AGENT_LLM_MAX_OUTPUT_TOKENS": ("llm", "max_output_tokens"),
+        "AGENT_LLM_MAX_ITERATIONS": ("llm", "max_iterations"),
         "AGENT_LLM_AUTO_DETECT_CTX": ("llm", "auto_detect_ctx"),
         "AGENT_EMBEDDINGS_BASE_URL": ("embeddings", "base_url"),
         "AGENT_EMBEDDINGS_MODEL": ("embeddings", "model"),

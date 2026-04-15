@@ -489,12 +489,20 @@ async def run_turn(
     on_token: callable | None = None,
     on_tool_call: callable | None = None,
     on_usage: callable | None = None,
+    on_progress: callable | None = None,
     _depth: int = 0,
 ) -> tuple[str, list[dict]]:
     tools = get_schemas()
     nudge_count = 0
     MAX_NUDGES = 3
     content_parts: list[str] = []  # accumulate across length-truncated continuations
+    iter_count = 0
+    max_iter = max(1, int(getattr(config.llm, "max_iterations", 10)))
+    if on_progress is not None:
+        try:
+            on_progress(0, max_iter)
+        except Exception:
+            pass
 
     while True:
         # ── Pre-flight: estimate tokens and compact proactively ────────────
@@ -628,6 +636,21 @@ async def run_turn(
             threshold = int(config.llm.ctx_window * config.llm.compaction_threshold)
             if token_est > threshold:
                 messages = await compact(messages, config, client)
+            iter_count += 1
+            if on_progress is not None:
+                try:
+                    on_progress(iter_count, max_iter)
+                except Exception:
+                    pass
+            if iter_count >= max_iter:
+                logger.warning(
+                    "run_turn: reached max_iterations=%d, stopping tool loop", max_iter
+                )
+                note = (
+                    f"[iteration limit {max_iter} reached — type 'continue' to keep going]"
+                )
+                messages = messages + [{"role": "assistant", "content": note}]
+                return "".join(content_parts + [note]), messages
             continue  # next iteration: send tool results back to model
 
         content = msg.content or ""
@@ -830,6 +853,7 @@ class Agent:
         on_tool_call: callable | None = None,
         on_token: callable | None = None,
         on_user_message: callable | None = None,
+        on_progress: callable | None = None,
     ) -> str:
         self._turn_id += 1
         turn_id = self._turn_id
@@ -863,6 +887,7 @@ class Agent:
             on_token=on_token,
             on_tool_call=_tracking_on_tool_call,
             on_usage=self._record_usage,
+            on_progress=on_progress,
         )
 
         # Fire-and-forget: capture Q/A to disk and optionally summarize.
