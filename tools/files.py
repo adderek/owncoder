@@ -106,7 +106,7 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
 
 
 @register("write_file", {
-    "description": "Write content to a file. Creates parent dirs if needed. Prefer patch_file for modifying existing files.",
+    "description": "Write content to a file. Creates parent dirs if needed. Use only for new files — prefer edit_file for modifying existing files.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -157,17 +157,6 @@ def write_file(path: str, content: str) -> dict:
     return {"ok": path, "diff": diff_summary}
 
 
-@register("patch_file", {
-    "description": "DEPRECATED — prefer replace_text or replace_symbol. Apply a unified diff patch to an existing file.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "path": {"type": "string", "description": "File path to patch"},
-            "unified_diff": {"type": "string", "description": "Unified diff string to apply"},
-        },
-        "required": ["path", "unified_diff"],
-    },
-})
 def patch_file(path: str, unified_diff: str) -> dict:
     fpath = _resolve(path)
 
@@ -235,26 +224,6 @@ def _context_for(text: str, start: int, end: int, ctx_lines: int = 3) -> dict:
     }
 
 
-@register("replace_text", {
-    "description": (
-        "Replace a block of text in a file. Whitespace-tolerant: matches even if indentation/"
-        "newlines differ slightly. On non-unique match, returns all candidate locations with "
-        "context so you can disambiguate by passing match_index. Prefer this over patch_file."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "path": {"type": "string", "description": "File path to modify"},
-            "search_block": {"type": "string", "description": "Text currently in the file to replace. Whitespace-tolerant."},
-            "replace_block": {"type": "string", "description": "New text to insert."},
-            "match_index": {
-                "type": "integer",
-                "description": "If search_block matches multiple locations, pick this 0-based index. Omit to require a unique match.",
-            },
-        },
-        "required": ["path", "search_block", "replace_block"],
-    },
-})
 def replace_text(path: str, search_block: str, replace_block: str, match_index: int | None = None) -> dict:
     fpath = _resolve(path)
 
@@ -356,7 +325,7 @@ def replace_symbol(path: str, symbol: str, new_source: str) -> dict:
     try:
         tree = ast.parse(original)
     except SyntaxError as e:
-        return {"error": f"File has a syntax error; fix it first or use replace_text. ({e})"}
+        return {"error": f"File has a syntax error; fix it first or use edit_file. ({e})"}
 
     parts = symbol.split(".")
     node = None

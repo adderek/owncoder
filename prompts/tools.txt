@@ -9,11 +9,14 @@ read_file(path, start_line=None, end_line=None)
   Returns content with line numbers prepended.
 
 write_file(path, content)
-  Write a new file. Use only for new files.
+  Write a new file. Use ONLY for new files — never to modify existing files.
 
-patch_file(path, unified_diff)
-  Apply a unified diff to modify an existing file.
-  Preferred over write_file for all modifications.
+edit_file(chunks)
+  Modify an existing file by replacing anchored regions.
+  Pattern: read_file first → quote exact anchor → edit_file.
+  Each chunk: {"path": "...", "anchor": "<exact text in file>", "replacement": "<new text>"}.
+  Add range_hint: [start_line, end_line] to disambiguate duplicate anchors.
+  Fails loudly on any mismatch — no silent changes.
 
 list_files(path=".", pattern="**/*")
   List files in a directory, respecting .gitignore.

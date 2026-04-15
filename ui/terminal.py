@@ -1017,13 +1017,19 @@ def _build_textual_app(agent: "Agent", session=None):
 
         def on_tool_call_event(self, event: ToolCallEvent) -> None:
             import json
-            # Track modified files for write_file / patch_file
-            if event.name in ("write_file", "patch_file"):
+            # Track modified files for write_file / patch_file / edit_file
+            if event.name in ("write_file", "patch_file", "edit_file"):
                 try:
                     args = json.loads(event.args) if isinstance(event.args, str) else event.args
-                    path = args.get("path", "")
-                    if path and path not in self._modified_files:
-                        self._modified_files.append(path)
+                    if event.name == "edit_file":
+                        for ch in (args.get("chunks") or []):
+                            p = ch.get("path", "") if isinstance(ch, dict) else ""
+                            if p and p not in self._modified_files:
+                                self._modified_files.append(p)
+                    else:
+                        path = args.get("path", "")
+                        if path and path not in self._modified_files:
+                            self._modified_files.append(path)
                 except Exception:
                     pass
             # Update context panel with current tool (visible while working)

@@ -880,12 +880,18 @@ class Agent:
 
         def _tracking_on_tool_call(name: str, args: str) -> None:
             _turn_tool_calls.append(name)
-            if name in ("write_file", "patch_file"):
+            if name in ("write_file", "patch_file", "edit_file"):
                 try:
                     parsed = json.loads(args) if isinstance(args, str) else args
-                    path = parsed.get("path", "")
-                    if path and path not in _turn_modified_files:
-                        _turn_modified_files.append(path)
+                    if name == "edit_file":
+                        for ch in (parsed.get("chunks") or []):
+                            p = ch.get("path", "") if isinstance(ch, dict) else ""
+                            if p and p not in _turn_modified_files:
+                                _turn_modified_files.append(p)
+                    else:
+                        path = parsed.get("path", "")
+                        if path and path not in _turn_modified_files:
+                            _turn_modified_files.append(path)
                 except Exception:
                     pass
             if original_on_tool_call is not None:
