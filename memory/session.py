@@ -79,6 +79,22 @@ def _session_filename(session: Session) -> str:
     return f"{dt.strftime('%Y/%m/%d')}/{session.id}/session.json"
 
 
+def get_session_subpath(session_id: str) -> Path:
+    """Return the YYYY/MM/DD/session_id subpath for a given session_id."""
+    try:
+        if "-" not in session_id:
+            # Format: 20260414T222821.610Z
+            clean_id = session_id.replace("Z", "")
+            dt = datetime.strptime(clean_id, "%Y%m%dT%H%M%S.%f").replace(tzinfo=timezone.utc)
+        else:
+            # Old format: 2026-04-14T222821.610Z
+            dt = datetime.fromisoformat(session_id.replace("Z", "+00:00"))
+        return Path(dt.strftime('%Y/%m/%d')) / session_id
+    except Exception:
+        return Path(session_id)
+
+
+
 def _session_from_data(data: dict, file_path: Path | None = None) -> Session:
     s = Session(
         id=data.get("id", ""),

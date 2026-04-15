@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
-from agent.memory.session import _get_session_dir
+from agent.memory.session import _get_session_dir, get_session_subpath
 
 
 class QALogger:
@@ -14,7 +14,7 @@ class QALogger:
 
     def __init__(self, session_id: str):
         self.session_id = session_id
-        self.session_dir = _get_session_dir() / session_id
+        self.session_dir = _get_session_dir() / get_session_subpath(session_id)
 
     def _get_q_dir(self) -> Path:
         return self.session_dir / "Q"
