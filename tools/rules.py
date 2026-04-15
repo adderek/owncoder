@@ -83,6 +83,16 @@ class ReadonlyMatcher:
 
 
 @dataclass
+class EditConfig:
+    """Policy for the `edit_file` tool (from .agent.config [edit])."""
+    match: str = "exact"             # "exact" | "loose" | "model"
+    max_chunk_lines: int = 200
+    max_file_fraction: float = 0.5
+    line_delta_tolerance: int = 2
+    on_chunk_fail: str = "abort"     # "abort" | "skip" | "model"
+
+
+@dataclass
 class RulesConfig:
     """Behavioral rules from .agent.config (TOML)."""
     # [languages]
@@ -104,6 +114,8 @@ class RulesConfig:
     max_files_per_change: int = 0   # 0 = unlimited
     max_patch_lines: int = 0        # 0 = unlimited
     dry_run: bool = False
+    # [edit] — edit_file tool policy
+    edit: EditConfig = field(default_factory=EditConfig)
 
 
 class CommandAllowlist:
@@ -500,6 +512,14 @@ def _load_config_file(path: Path) -> RulesConfig:
     cfg.max_files_per_change = safety.get("max_files_per_change", cfg.max_files_per_change)
     cfg.max_patch_lines = safety.get("max_patch_lines", cfg.max_patch_lines)
     cfg.dry_run = safety.get("dry_run", cfg.dry_run)
+
+    edit = data.get("edit", {})
+    if edit:
+        cfg.edit.match = edit.get("match", cfg.edit.match)
+        cfg.edit.max_chunk_lines = edit.get("max_chunk_lines", cfg.edit.max_chunk_lines)
+        cfg.edit.max_file_fraction = edit.get("max_file_fraction", cfg.edit.max_file_fraction)
+        cfg.edit.line_delta_tolerance = edit.get("line_delta_tolerance", cfg.edit.line_delta_tolerance)
+        cfg.edit.on_chunk_fail = edit.get("on_chunk_fail", cfg.edit.on_chunk_fail)
 
     return cfg
 

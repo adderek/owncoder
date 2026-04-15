@@ -27,12 +27,15 @@ def get_schemas() -> list[dict]:
 
 def load_all_tools(config=None, store=None, embedder=None, asm_store=None) -> None:
     global _tools_loaded
-    from agent.tools import files, shell, git, search, analyze_asm
+    from agent.tools import files, shell, git, search, analyze_asm, edit_file  # noqa: F401
     from agent.tools.rules import load_rules
 
     # Load rule files (.agent.ignore, .agent.ro, .agent.config, etc.)
     working_dir = config.tools.working_dir if config else "."
     load_rules(working_dir)
+
+    # edit_file schema depends on [edit] config → register after load_rules.
+    edit_file._register_edit_file()
 
     # Always update config/store/embedder so a second call refreshes dependencies.
     files.setup(config)
