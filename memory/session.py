@@ -154,7 +154,7 @@ def save_session(session: Session, messages: list[dict]) -> None:
 
     # Ensure parent directory exists
     session._file_path.parent.mkdir(parents=True, exist_ok=True)
-    session._file_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    session._file_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def load_session(id_or_name: str) -> tuple[Session | None, list[dict]]:

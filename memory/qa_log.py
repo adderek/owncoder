@@ -60,7 +60,7 @@ class QALogger:
 
     def _write_json(self, directory: Path, filename: str, data: Dict[str, Any]) -> None:
         directory.mkdir(parents=True, exist_ok=True)
-        directory.joinpath(filename).write_text(json.dumps(data, indent=2), encoding="utf-8")
+        directory.joinpath(filename).write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
     async def read_history(self) -> AsyncIterator[Tuple[int, Dict[str, Any], Dict[str, Any]]]:
         """
