@@ -99,6 +99,7 @@ class UIConfig:
     q_summaries: bool = False
     syntax_highlight: bool = True
     show_token_count: bool = True
+    submit_on_enter: bool = True  # True: Enter submits, Shift/Ctrl/Alt+Enter or Ctrl+J newline. False: inverted.
     theme: ThemeConfig = field(default_factory=ThemeConfig)
 
 

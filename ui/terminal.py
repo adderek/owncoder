@@ -21,7 +21,6 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/apply",       [],        "write last code block to file", False),
     ("/clear",       [],        "clear the chat screen", False),
     ("/compact",     [],        "summarize old messages to free context", False),
-    ("/continue",    ["/c"],    "resume after iteration cap or truncation", False),
     ("/exec",        [],        "run a shell command", True),
     ("/export",      [],        "export conversation as markdown", False),
     ("/help",        ["/?"],    "show this help", False),
@@ -56,12 +55,10 @@ def _build_textual_app(agent: "Agent", session=None):
         Footer, RichLog, Static, TextArea, LoadingIndicator,
         TabbedContent, TabPane,
     )
-    from textual.containers import Horizontal
     from textual.binding import Binding
     from textual.message import Message
     from textual.worker import Worker, WorkerState
     from textual import work
-    from rich.markup import escape as _escape
     from rich.markdown import Markdown
 
     class TokenBar(Static):
@@ -82,38 +79,6 @@ def _build_textual_app(agent: "Agent", session=None):
 
     class SysView(RichLog):
         """System log — commands, session info, help output."""
-
-    class QView(RichLog):
-        """View for user questions."""
-        def update_view(self, messages: list["Message"]) -> None:
-            self.clear()
-            for msg in messages:
-                if msg.role == "user":
-                    summary = getattr(msg, "summary", None)
-                    if not summary:
-                        summary = msg.content[:100] + "..." if len(msg.content) > 100 else msg.content
-                    self.write(f"[bold blue]Q:[/bold blue] {summary}\n")
-
-    class AView(RichLog):
-        """View for agent answers."""
-        def update_view(self, messages: list["Message"]) -> None:
-            self.clear()
-            for msg in messages:
-                if msg.role == "assistant":
-                    summary = getattr(msg, "summary", None)
-                    if not summary:
-                        summary = msg.content[:100] + "..." if len(msg.content) > 100 else msg.content
-                    self.write(f"[bold green]A:[/bold green] {summary}\n")
-
-    class SparseView(RichLog):
-        """View for condensed dialogue."""
-        def update_view(self, messages: list["Message"]) -> None:
-            self.clear()
-            for msg in messages:
-                role = "User" if msg.role == "user" else "Agent"
-                color = "blue" if msg.role == "user" else "green"
-                content = msg.content[:150] + "..." if len(msg.content) > 150 else msg.content
-                self.write(f"[{color}]{role}:[/{color}] {content}\n")
 
     class ContextPanel(Static):
         def set_context(self, text: str) -> None:
@@ -190,8 +155,9 @@ def _build_textual_app(agent: "Agent", session=None):
                 self.matches = matches
                 self.selected_idx = selected_idx
 
-        def __init__(self, **kwargs):
+        def __init__(self, submit_on_enter: bool = True, **kwargs):
             super().__init__(**kwargs)
+            self._submit_on_enter: bool = submit_on_enter
             self._history: list[str] = []
             self._mode: str = "normal"   # "normal" | "browsing" | "editing"
             self._history_idx: int | None = None
@@ -308,13 +274,31 @@ def _build_textual_app(agent: "Agent", session=None):
                         self._saved_text = self.text
                         self._enter_browsing(len(self._history) - 1)
                     return
-                if event.key == "enter":
-                    event.prevent_default()
-                    text = self.text.strip()
-                    if text:
-                        self._clear_completions()
-                        self.post_message(PromptInput.Submitted(self, text))
-                        self.clear()
+                # Enter family: plain "enter" vs modified (shift/ctrl/alt+enter, ctrl+j)
+                # are configurably mapped to submit vs newline.
+                is_plain_enter = event.key == "enter"
+                is_mod_enter = event.key in (
+                    "shift+enter", "ctrl+enter", "alt+enter", "ctrl+j",
+                )
+                if is_plain_enter or is_mod_enter:
+                    submit = (
+                        is_plain_enter if self._submit_on_enter else is_mod_enter
+                    )
+                    if submit:
+                        event.prevent_default()
+                        text = self.text.strip()
+                        if text:
+                            self._clear_completions()
+                            self.post_message(PromptInput.Submitted(self, text))
+                            self.clear()
+                        return
+                    # Otherwise: insert a newline. Plain "enter" on TextArea inserts
+                    # a newline by default; modified variants need explicit insertion
+                    # because terminals don't route them through TextArea's bindings.
+                    if is_mod_enter:
+                        event.prevent_default()
+                        self.insert("\n")
+                    return
 
             elif self._mode == "browsing":
                 event.prevent_default()
@@ -351,27 +335,14 @@ def _build_textual_app(agent: "Agent", session=None):
                         self.post_message(self.HintChanged(""))
 
     class ToolCallEvent(Message):
-        def __init__(self, name: str, args: str = "") -> None:
+        def __init__(self, name: str) -> None:
             super().__init__()
             self.name = name
-            self.args = args
-
-    class ToolResultEvent(Message):
-        def __init__(self, name: str, ok: bool) -> None:
-            super().__init__()
-            self.name = name
-            self.ok = ok
 
     class TokenStreamEvent(Message):
         def __init__(self, token: str) -> None:
             super().__init__()
             self.token = token
-
-    class IterationProgressEvent(Message):
-        def __init__(self, done: int, limit: int) -> None:
-            super().__init__()
-            self.done = done
-            self.limit = limit
 
     _PLACEHOLDER_Q = (
         "[bold]Q — User questions[/bold]\n\n"
@@ -481,24 +452,13 @@ def _build_textual_app(agent: "Agent", session=None):
             height: 1;
             color: {t.text_dim};
         }}
-        #loading-row {{
+        LoadingIndicator {{
             display: none;
             height: 1;
+            background: {t.active};
         }}
-        #loading-row.active {{
+        LoadingIndicator.active {{
             display: block;
-        }}
-        LoadingIndicator {{
-            width: auto;
-            height: 1;
-            background: {t.active};
-        }}
-        #loading-tokens {{
-            height: 1;
-            width: 1fr;
-            background: {t.active};
-            color: white;
-            padding: 0 1;
         }}
         #stream-view {{
             height: auto;
@@ -517,7 +477,6 @@ def _build_textual_app(agent: "Agent", session=None):
             Binding("ctrl+q", "quit", "Quit"),
             Binding("ctrl+d", "quit", "Quit", show=False),
             Binding("f1", "show_help", "Help"),
-            Binding("ctrl+r", "continue_turn", "Continue"),
             Binding("ctrl+tab", "focus_next", "Switch focus", show=False),
         ]
 
@@ -530,12 +489,6 @@ def _build_textual_app(agent: "Agent", session=None):
             self._tokens_before: int = 0
             self._streaming_active: bool = False
             self._stream_buffer: str = ""
-            self._modified_files: list[str] = []
-            self._loading_timer = None
-            self._iter_done: int = 0
-            self._iter_limit: int = 0
-            if session is not None:
-                agent.set_session_id(session.id)
 
         def compose(self) -> ComposeResult:
             cfg = self._agent.config
@@ -560,12 +513,13 @@ def _build_textual_app(agent: "Agent", session=None):
                     yield Static(_PLACEHOLDER_SPARSE, id="placeholder-sparse", classes="placeholder-pane", markup=True)
                 with TabPane("sys", id="tab-sys"):
                     yield SysView(id="sys-log", markup=True, highlight=True)
-            with Horizontal(id="loading-row"):
-                yield LoadingIndicator(id="loading-indicator")
-                yield Static("", id="loading-tokens", markup=True)
+            yield LoadingIndicator(id="loading-indicator")
             yield ContextPanel("", id="context-panel")
             yield GitStatusBar("git: loading...", id="git-status")
-            yield PromptInput(id="input-bar")
+            yield PromptInput(
+                submit_on_enter=self._agent.config.ui.submit_on_enter,
+                id="input-bar",
+            )
             yield CompletionBar("", id="completion-bar", markup=True)
             yield HintBar("", id="hint-bar", markup=True)
             yield Footer()
@@ -653,12 +607,6 @@ def _build_textual_app(agent: "Agent", session=None):
         def action_show_help(self) -> None:
             self._write_sys(_make_help_text(t))
 
-        def action_continue_turn(self) -> None:
-            input_widget = self.query_one("#input-bar", PromptInput)
-            if input_widget.disabled:
-                return
-            self._begin_chat("continue")
-
         # ── git refresh ──────────────────────────────────────────────────────
 
         async def _refresh_git(self) -> None:
@@ -694,9 +642,6 @@ def _build_textual_app(agent: "Agent", session=None):
                 except Exception as e:
                     self._write_sys(f"[{t.error}]Compact failed: {e}[/{t.error}]")
                 self.query_one("#token-bar", TokenBar).update_tokens(self._agent.token_estimate())
-
-            elif cmd in ("/continue", "/c"):
-                self._begin_chat("continue")
 
             elif cmd == "/clear":
                 self.query_one("#chat-log", ConversationView).clear()
@@ -906,10 +851,6 @@ def _build_textual_app(agent: "Agent", session=None):
                 await self._run_slash(parts[0].lower(), parts[1] if len(parts) > 1 else "")
                 return
 
-            if user_text.lower() == "continue":
-                await self._run_slash("/continue", "")
-                return
-
             input_widget = self.query_one("#input-bar", PromptInput)
             input_widget.add_to_history(user_text)
             self._begin_chat(user_text)
@@ -943,39 +884,18 @@ def _build_textual_app(agent: "Agent", session=None):
 
             self._begin_chat(user_text)
 
-        def _update_loading_tokens(self) -> None:
-            """Periodic callback to refresh token counts on the loading bar."""
-            try:
-                est = self._agent.token_estimate()
-                rcvd = max(0, est - self._tokens_before)
-                text = f"in: [bold]{self._tokens_before:,}[/bold]  out: +{rcvd:,}"
-                if self._iter_limit:
-                    left = max(0, self._iter_limit - self._iter_done)
-                    text += f"  iter {self._iter_done}/{self._iter_limit} ({left} left)"
-                self.query_one("#loading-tokens", Static).update(text)
-            except Exception:
-                pass
-
         def _begin_chat(self, user_text: str) -> None:
             # Switch to chat tab so the user sees the exchange.
             self._switch_to_chat()
             self._write_chat(f"[bold {t.user_color}]You:[/bold {t.user_color}] {user_text}")
             self._last_tool_calls = []
-            self._tool_stats: dict[str, dict[str, int]] = {}
             self._current_tool = None
             self._tokens_before = self._agent.token_estimate()
             self._streaming_active = False
             self._stream_buffer = ""
-            self._modified_files = []
-            self._iter_done = 0
-            self._iter_limit = 0
 
             self.query_one("#input-bar", PromptInput).disabled = True
-            self.query_one("#loading-row").add_class("active")
-            self.query_one("#loading-tokens", Static).update(f"in: [bold]{self._tokens_before:,}[/bold]")
-            if self._loading_timer is not None:
-                self._loading_timer.stop()
-            self._loading_timer = self.set_interval(0.3, self._update_loading_tokens)
+            self.query_one("#loading-indicator", LoadingIndicator).add_class("active")
             self.query_one("#context-panel", ContextPanel).set_context("[dim]thinking…[/dim]")
 
             self._start_chat(user_text)
@@ -987,11 +907,7 @@ def _build_textual_app(agent: "Agent", session=None):
             def on_tool(name: str, args: str) -> None:
                 self._last_tool_calls.append(name)
                 self._current_tool = name
-                self._tool_stats.setdefault(name, {"ok": 0, "err": 0})
-                self.post_message(ToolCallEvent(name, args))
-
-            def on_tool_result(name: str, ok: bool) -> None:
-                self.post_message(ToolResultEvent(name, ok))
+                self.post_message(ToolCallEvent(name))
 
             def on_user_message() -> None:
                 if self._session is not None:
@@ -1000,67 +916,21 @@ def _build_textual_app(agent: "Agent", session=None):
             def on_token(token: str) -> None:
                 self.post_message(TokenStreamEvent(token))
 
-            def on_progress(done: int, limit: int) -> None:
-                self.post_message(IterationProgressEvent(done, limit))
-
             result = await self._agent.chat(
-                user_text,
-                on_tool_call=on_tool,
-                on_tool_result=on_tool_result,
-                on_user_message=on_user_message,
-                on_token=on_token,
-                on_progress=on_progress,
+                user_text, on_tool_call=on_tool, on_user_message=on_user_message, on_token=on_token
             )
             if self._session is not None:
                 save_session(self._session, self._agent.messages)
             return result
 
         def on_tool_call_event(self, event: ToolCallEvent) -> None:
-            import json
-            # Track modified files for write_file / patch_file
-            if event.name in ("write_file", "patch_file"):
-                try:
-                    args = json.loads(event.args) if isinstance(event.args, str) else event.args
-                    path = args.get("path", "")
-                    if path and path not in self._modified_files:
-                        self._modified_files.append(path)
-                except Exception:
-                    pass
-            # Update context panel with current tool (visible while working)
+            self._write_chat(f"[{t.tool_color}]  ⚙ {event.name}[/{t.tool_color}]")
             self.query_one("#context-panel", ContextPanel).set_context(
-                f"[{t.tool_color}]⚙ {_escape(event.name)}[/{t.tool_color}]"
+                f"[{t.tool_color}]⚙ {event.name}[/{t.tool_color}]"
             )
 
-        def on_tool_result_event(self, event: ToolResultEvent) -> None:
-            stats = self._tool_stats.setdefault(event.name, {"ok": 0, "err": 0})
-            if event.ok:
-                stats["ok"] += 1
-            else:
-                stats["err"] += 1
-
-        def _render_tool_summary(self) -> str:
-            if not self._last_tool_calls:
-                return ""
-            seen = list(dict.fromkeys(self._last_tool_calls))
-            parts = []
-            for name in seen:
-                s = self._tool_stats.get(name, {"ok": 0, "err": 0})
-                counts = []
-                if s["ok"]:
-                    counts.append(f"[{t.success}]{s['ok']}[/{t.success}]")
-                if s["err"]:
-                    counts.append(f"[{t.error}]{s['err']}[/{t.error}]")
-                suffix = f" {' '.join(counts)}" if counts else ""
-                parts.append(f"{_escape(name)}{suffix}")
-            return f"[{t.tool_color}]⚙[/{t.tool_color}] " + ", ".join(parts)
-
-        def on_iteration_progress_event(self, event: IterationProgressEvent) -> None:
-            self._iter_done = event.done
-            self._iter_limit = event.limit
-            self._update_loading_tokens()
-
         def on_token_stream_event(self, event: TokenStreamEvent) -> None:
-            from rich.text import Text
+            from rich.markup import escape
             self._stream_buffer += event.token
             stream_view = self.query_one("#stream-view", Static)
             if not self._streaming_active:
@@ -1068,11 +938,9 @@ def _build_textual_app(agent: "Agent", session=None):
                 stream_view.add_class("active")
             # Show tail of accumulated text to avoid unbounded growth in the widget
             tail = self._stream_buffer[-800:] if len(self._stream_buffer) > 800 else self._stream_buffer
-            content = Text.assemble(
-                ("Agent:", f"bold {t.agent_color}"),
-                (f" {tail}▌",),
+            stream_view.update(
+                f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] {escape(tail)}▌"
             )
-            stream_view.update(content)
 
         def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
             if event.worker.name != "chat":
@@ -1080,50 +948,32 @@ def _build_textual_app(agent: "Agent", session=None):
             if event.state not in (WorkerState.SUCCESS, WorkerState.ERROR, WorkerState.CANCELLED):
                 return
 
-            # Stop timer and hide loading row
-            if self._loading_timer is not None:
-                self._loading_timer.stop()
-                self._loading_timer = None
-            self.query_one("#loading-row").remove_class("active")
-
+            self.query_one("#loading-indicator", LoadingIndicator).remove_class("active")
             input_widget = self.query_one("#input-bar", PromptInput)
             input_widget.disabled = False
             input_widget.focus()
 
             if event.state == WorkerState.SUCCESS:
                 response = event.worker.result
-                if not response:
-                    logger.warning("chat worker returned empty response")
-                    response = f"[{t.text_dim}](done)[/{t.text_dim}]"
             elif event.state == WorkerState.ERROR:
                 err = event.worker.error
                 tb = "".join(traceback.format_exception(type(err), err, err.__traceback__)) if err else ""
                 logger.error("chat worker error: %s\n%s", err, tb)
                 response = f"[{t.error}]Error: {err}[/{t.error}]"
             else:
-                logger.warning("chat worker cancelled")
                 response = None
 
             tokens_after = self._agent.token_estimate()
             delta = tokens_after - self._tokens_before
-            tools_line = self._render_tool_summary()
+            tools_line = (
+                f"[{t.tool_color}]⚙ {', '.join(self._last_tool_calls[-3:])}[/{t.tool_color}]"
+                if self._last_tool_calls else ""
+            )
             token_line = (
                 f"[{t.text_dim}]sent ≈{self._tokens_before:,}  "
                 f"[{t.active}]+{delta:,}[/{t.active}] new  "
                 f"total {tokens_after:,}[/{t.text_dim}]"
             )
-            s = getattr(self._agent, "stats", None)
-            if s and s.get("calls", 0) > 0:
-                extras = [f"↑{s['input_tokens']:,}", f"↓{s['output_tokens']:,}"]
-                if s.get("in_tps"):
-                    extras.append(f"{s['in_tps']:.0f} in-tok/s")
-                if s.get("out_tps"):
-                    extras.append(f"{s['out_tps']:.1f} out-tok/s")
-                if s.get("reasoning_tokens"):
-                    extras.append(f"think {s['reasoning_tokens']:,}")
-                if s.get("tool_tokens"):
-                    extras.append(f"tool {s['tool_tokens']:,}")
-                token_line += f"\n[{t.text_dim}]{'  '.join(extras)}[/{t.text_dim}]"
             self.query_one("#context-panel", ContextPanel).set_context(
                 f"{tools_line}\n{token_line}" if tools_line else token_line
             )
@@ -1135,18 +985,6 @@ def _build_textual_app(agent: "Agent", session=None):
                 stream_view.update("")
                 self._streaming_active = False
                 self._stream_buffer = ""
-
-            # Write folded tool-call summary (collapsed single line)
-            if self._last_tool_calls:
-                tool_part = self._render_tool_summary()
-                if self._modified_files:
-                    files_part = f"[{t.success}]{_escape('  '.join(self._modified_files))}[/{t.success}]"
-                    self._write_chat(f"  {tool_part}  ·  {files_part}")
-                else:
-                    self._write_chat(f"  {tool_part}")
-            elif self._modified_files:
-                files_part = f"[{t.success}]{_escape('  '.join(self._modified_files))}[/{t.success}]"
-                self._write_chat(f"  {files_part}")
 
             if response:
                 self._write_chat(
@@ -1168,7 +1006,6 @@ def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
 
   [{c}]/help[/{c}]               show this message
   [{c}]/compact[/{c}]            summarise old messages to free context space
-  [{c}]/continue[/{c}] (or [{c}]continue[/{c}], Ctrl+R)  resume after iteration cap / truncation
   [{c}]/tokens[/{c}]             show token usage breakdown
   [{c}]/clear[/{c}]              clear the screen
   [{c}]/reset[/{c}]              drop conversation history (keep system prompt)
@@ -1224,23 +1061,6 @@ def _spinner_status_fields(agent, status: str, elapsed: float) -> list[str]:
 
         msg_count = max(0, len(agent.messages) - 1)  # exclude system prompt
         fields.append(f"{msg_count} msg")
-
-        # Usage stats: cumulative I/O counts, per-second rates, and breakdown
-        # of output tokens into think/tool. Populated via Agent._record_usage.
-        s = getattr(agent, "stats", None)
-        if s and s.get("calls", 0) > 0:
-            def _k(n: int) -> str:
-                return f"{n/1000:.1f}k" if n >= 1000 else str(n)
-            fields.append(f"↑{_k(s['input_tokens'])}")
-            fields.append(f"↓{_k(s['output_tokens'])}")
-            if s.get("in_tps"):
-                fields.append(f"{s['in_tps']:.0f}↑t/s")
-            if s.get("out_tps"):
-                fields.append(f"{s['out_tps']:.1f}↓t/s")
-            if s.get("reasoning_tokens"):
-                fields.append(f"think {_k(s['reasoning_tokens'])}")
-            if s.get("tool_tokens"):
-                fields.append(f"tool {_k(s['tool_tokens'])}")
 
     fields.append(status)
 
@@ -1318,9 +1138,6 @@ async def simple_loop(agent: "Agent", session=None):
     cfg = agent.config
     t = cfg.ui.theme
     console = Console()
-
-    if session is not None:
-        agent.set_session_id(session.id)
 
     prompt_esc = _hex_to_ansi(t.prompt)
     console.print(f"[bold {t.agent_color}]local-code-agent[/bold {t.agent_color}]  [dim]{cfg.llm.model}  {cfg.llm.ctx_window} ctx[/dim]")
@@ -1595,23 +1412,6 @@ async def simple_loop(agent: "Agent", session=None):
             console.print(f"[{t.text_dim}]Done. ({', '.join(tool_results)})[/{t.text_dim}]")
         else:
             console.print(f"[{t.warning}]No response from model.[/{t.warning}]")
-
-        # Post-turn usage summary (persists after the spinner clears).
-        s = getattr(agent, "stats", None)
-        if s and s.get("calls", 0) > 0:
-            parts = [
-                f"↑{s['input_tokens']}",
-                f"↓{s['output_tokens']}",
-            ]
-            if s.get("in_tps"):
-                parts.append(f"{s['in_tps']:.0f} in-tok/s")
-            if s.get("out_tps"):
-                parts.append(f"{s['out_tps']:.1f} out-tok/s")
-            if s.get("reasoning_tokens"):
-                parts.append(f"think {s['reasoning_tokens']}")
-            if s.get("tool_tokens"):
-                parts.append(f"tool {s['tool_tokens']}")
-            console.print(f"[{t.text_dim}]{'  '.join(parts)}[/{t.text_dim}]")
 
         if cfg.ui.show_token_count:
             console.print(f"\n{_token_bar(agent.token_estimate(), cfg.llm.ctx_window)}\n")
