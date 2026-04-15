@@ -102,6 +102,18 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
     selected = lines[sl:el]
 
     numbered = "\n".join(f"{sl + i + 1}:{line}" for i, line in enumerate(selected))
+
+    if fpath.suffix == ".py":
+        try:
+            import ast
+            ast.parse(text)
+        except SyntaxError as e:
+            if path in _undo_stack:
+                return {
+                    "warning": f"File has syntax error: {e}. It was recently modified. Use undo_file to revert.",
+                    "content": numbered,
+                }
+
     return {"content": numbered}
 
 
@@ -154,6 +166,14 @@ def write_file(path: str, content: str) -> dict:
         diff_summary = f"(new file, {len(content.splitlines())} lines)"
 
     fpath.write_text(content, encoding="utf-8")
+
+    if not is_new and fpath.suffix == ".py":
+        try:
+            import ast
+            ast.parse(content)
+        except SyntaxError as e:
+            return {"error": f"File written but has syntax error: {e}. Use undo_file to revert.", "path": path}
+
     return {"ok": path, "diff": diff_summary}
 
 
@@ -412,8 +432,18 @@ def _apply_unified_diff(original: str, patch: str) -> str:
             os.unlink(backup)
 
 
+@register("undo_file", {
+    "description": "Revert a file to its previous state before the last write/edit operation.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "File path to revert"},
+        },
+        "required": ["path"],
+    },
+})
 def undo_file(path: str) -> dict:
-    """Restore the last pre-write snapshot of a file (not a tool — called by UI /undo)."""
+    """Restore the last pre-write snapshot of a file."""
     if path not in _undo_stack:
         return {"error": f"No undo snapshot for: {path}"}
     try:
