@@ -1040,6 +1040,18 @@ def _build_textual_app(agent: "Agent", session=None):
                 f"[{t.active}]+{delta:,}[/{t.active}] new  "
                 f"total {tokens_after:,}[/{t.text_dim}]"
             )
+            s = getattr(self._agent, "stats", None)
+            if s and s.get("calls", 0) > 0:
+                extras = [f"↑{s['input_tokens']:,}", f"↓{s['output_tokens']:,}"]
+                if s.get("in_tps"):
+                    extras.append(f"{s['in_tps']:.0f} in-tok/s")
+                if s.get("out_tps"):
+                    extras.append(f"{s['out_tps']:.1f} out-tok/s")
+                if s.get("reasoning_tokens"):
+                    extras.append(f"think {s['reasoning_tokens']:,}")
+                if s.get("tool_tokens"):
+                    extras.append(f"tool {s['tool_tokens']:,}")
+                token_line += f"\n[{t.text_dim}]{'  '.join(extras)}[/{t.text_dim}]"
             self.query_one("#context-panel", ContextPanel).set_context(
                 f"{tools_line}\n{token_line}" if tools_line else token_line
             )
@@ -1140,6 +1152,23 @@ def _spinner_status_fields(agent, status: str, elapsed: float) -> list[str]:
 
         msg_count = max(0, len(agent.messages) - 1)  # exclude system prompt
         fields.append(f"{msg_count} msg")
+
+        # Usage stats: cumulative I/O counts, per-second rates, and breakdown
+        # of output tokens into think/tool. Populated via Agent._record_usage.
+        s = getattr(agent, "stats", None)
+        if s and s.get("calls", 0) > 0:
+            def _k(n: int) -> str:
+                return f"{n/1000:.1f}k" if n >= 1000 else str(n)
+            fields.append(f"↑{_k(s['input_tokens'])}")
+            fields.append(f"↓{_k(s['output_tokens'])}")
+            if s.get("in_tps"):
+                fields.append(f"{s['in_tps']:.0f}↑t/s")
+            if s.get("out_tps"):
+                fields.append(f"{s['out_tps']:.1f}↓t/s")
+            if s.get("reasoning_tokens"):
+                fields.append(f"think {_k(s['reasoning_tokens'])}")
+            if s.get("tool_tokens"):
+                fields.append(f"tool {_k(s['tool_tokens'])}")
 
     fields.append(status)
 
@@ -1494,6 +1523,23 @@ async def simple_loop(agent: "Agent", session=None):
             console.print(f"[{t.text_dim}]Done. ({', '.join(tool_results)})[/{t.text_dim}]")
         else:
             console.print(f"[{t.warning}]No response from model.[/{t.warning}]")
+
+        # Post-turn usage summary (persists after the spinner clears).
+        s = getattr(agent, "stats", None)
+        if s and s.get("calls", 0) > 0:
+            parts = [
+                f"↑{s['input_tokens']}",
+                f"↓{s['output_tokens']}",
+            ]
+            if s.get("in_tps"):
+                parts.append(f"{s['in_tps']:.0f} in-tok/s")
+            if s.get("out_tps"):
+                parts.append(f"{s['out_tps']:.1f} out-tok/s")
+            if s.get("reasoning_tokens"):
+                parts.append(f"think {s['reasoning_tokens']}")
+            if s.get("tool_tokens"):
+                parts.append(f"tool {s['tool_tokens']}")
+            console.print(f"[{t.text_dim}]{'  '.join(parts)}[/{t.text_dim}]")
 
         if cfg.ui.show_token_count:
             console.print(f"\n{_token_bar(agent.token_estimate(), cfg.llm.ctx_window)}\n")

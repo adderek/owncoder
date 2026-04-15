@@ -218,23 +218,41 @@ def _strip_tool_blocks(text: str) -> str:
     return text.strip()
 
 
-async def _stream_response(client, config, api_messages, tools, on_token):
+async def _stream_response(client, config, api_messages, tools, on_token, on_usage=None):
     """Stream a completion and accumulate content + tool calls. Returns (finish_reason, content, tool_calls)."""
+    from agent._tokens import count_tokens_approx
     content_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    tool_arg_chars = 0
     # tool_call accumulators keyed by index
     tc_acc: dict[int, dict] = {}
     finish_reason = "stop"
 
     _log_llm_request(api_messages, tools, config)
+    t_start = time.monotonic()
+    t_first_token: float | None = None
+    server_usage: dict | None = None
+
     stream = await client.chat.completions.create(
         model=config.llm.model,
         messages=api_messages,
         tools=tools if tools else None,
         max_tokens=config.llm.max_output_tokens,
         stream=True,
+        stream_options={"include_usage": True},
     )
 
     async for chunk in stream:
+        # Final usage chunk (when stream_options.include_usage is honored) has
+        # no choices but carries a usage field.
+        u = getattr(chunk, "usage", None)
+        if u is not None:
+            server_usage = {
+                "prompt_tokens": getattr(u, "prompt_tokens", 0) or 0,
+                "completion_tokens": getattr(u, "completion_tokens", 0) or 0,
+                "total_tokens": getattr(u, "total_tokens", 0) or 0,
+            }
+
         choice = chunk.choices[0] if chunk.choices else None
         if choice is None:
             continue
@@ -243,11 +261,24 @@ async def _stream_response(client, config, api_messages, tools, on_token):
             finish_reason = choice.finish_reason
 
         delta = choice.delta
+        # Some backends (llama.cpp with reasoning models, DeepSeek) emit
+        # delta.reasoning_content separate from delta.content.
+        rc = getattr(delta, "reasoning_content", None)
+        if rc:
+            if t_first_token is None:
+                t_first_token = time.monotonic()
+            reasoning_parts.append(rc)
         if delta.content:
+            if t_first_token is None:
+                t_first_token = time.monotonic()
             content_parts.append(delta.content)
             on_token(delta.content)
         # Accumulate streaming tool call fragments
         for tc_delta in (delta.tool_calls or []):
+            if t_first_token is None:
+                t_first_token = time.monotonic()
+            if tc_delta.function and tc_delta.function.arguments:
+                tool_arg_chars += len(tc_delta.function.arguments)
             idx = tc_delta.index
             if idx not in tc_acc:
                 tc_acc[idx] = {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
@@ -274,6 +305,35 @@ async def _stream_response(client, config, api_messages, tools, on_token):
             tool_calls[-1].id = raw["id"] or tool_calls[-1].id
     else:
         tool_calls = None
+
+    t_end = time.monotonic()
+    if on_usage is not None:
+        full_reasoning = "".join(reasoning_parts)
+        content_tokens = count_tokens_approx(full_content) if full_content else 0
+        reasoning_tokens = count_tokens_approx(full_reasoning) if full_reasoning else 0
+        tool_tokens = tool_arg_chars // 4  # rough — arg text is JSON, close to 4 chars/token
+        output_tokens = (
+            server_usage["completion_tokens"]
+            if server_usage and server_usage["completion_tokens"]
+            else content_tokens + reasoning_tokens + tool_tokens
+        )
+        input_tokens = (
+            server_usage["prompt_tokens"]
+            if server_usage and server_usage["prompt_tokens"]
+            else _count_tokens_approx(api_messages)
+        )
+        stream_seconds = max(1e-6, t_end - t_start)
+        gen_seconds = max(1e-6, t_end - (t_first_token or t_start))
+        on_usage({
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "content_tokens": content_tokens,
+            "reasoning_tokens": reasoning_tokens,
+            "tool_tokens": tool_tokens,
+            "stream_seconds": stream_seconds,
+            "gen_seconds": gen_seconds,
+            "ttft": (t_first_token - t_start) if t_first_token else None,
+        })
 
     return finish_reason, full_content, tool_calls
 
@@ -428,6 +488,7 @@ async def run_turn(
     client: "AsyncOpenAI",
     on_token: callable | None = None,
     on_tool_call: callable | None = None,
+    on_usage: callable | None = None,
     _depth: int = 0,
 ) -> tuple[str, list[dict]]:
     tools = get_schemas()
@@ -462,7 +523,7 @@ async def run_turn(
         try:
             if on_token is not None:
                 finish_reason, full_content, raw_tool_calls = await _stream_response(
-                    client, config, api_messages, tools, on_token
+                    client, config, api_messages, tools, on_token, on_usage=on_usage
                 )
                 # Reconstruct a message-like namespace for uniform handling below
                 class _Msg:
@@ -477,14 +538,30 @@ async def run_turn(
                 choice.finish_reason = finish_reason
             else:
                 _log_llm_request(api_messages, tools, config)
+                t_start = time.monotonic()
                 response = await client.chat.completions.create(
                     model=config.llm.model,
                     messages=api_messages,
                     tools=tools if tools else None,
                     max_tokens=config.llm.max_output_tokens,
                 )
+                t_end = time.monotonic()
                 choice = response.choices[0]
                 msg = choice.message
+                if on_usage is not None:
+                    u = getattr(response, "usage", None)
+                    input_tokens = getattr(u, "prompt_tokens", 0) if u else _count_tokens_approx(api_messages)
+                    output_tokens = getattr(u, "completion_tokens", 0) if u else 0
+                    on_usage({
+                        "input_tokens": input_tokens or 0,
+                        "output_tokens": output_tokens or 0,
+                        "content_tokens": 0,
+                        "reasoning_tokens": 0,
+                        "tool_tokens": 0,
+                        "stream_seconds": max(1e-6, t_end - t_start),
+                        "gen_seconds": max(1e-6, t_end - t_start),
+                        "ttft": None,
+                    })
         except BadRequestError as e:
             err_body = e.body or {}
             if isinstance(err_body, dict) and err_body.get("error", {}).get("type") == "exceed_context_size_error":
@@ -695,6 +772,18 @@ class Agent:
         )
         self._qa_logger = None
         self._turn_id: int = 0
+        # Cumulative + last-call usage stats. Displayed in the spinner bar.
+        self.stats: dict = {
+            "input_tokens": 0,          # cumulative prompt tokens across turn
+            "output_tokens": 0,         # cumulative completion tokens
+            "content_tokens": 0,
+            "reasoning_tokens": 0,      # "think" tokens
+            "tool_tokens": 0,           # tool-call argument tokens
+            "calls": 0,
+            "in_tps": 0.0,              # last call input tokens / second (prefill)
+            "out_tps": 0.0,             # last call output tokens / second (generation)
+            "last_gen_seconds": 0.0,
+        }
 
         load_all_tools(config=config, store=store, embedder=embedder, asm_store=asm_store)
 
@@ -716,6 +805,24 @@ class Agent:
 
     def token_estimate(self) -> int:
         return _count_tokens_approx(self.messages)
+
+    def _record_usage(self, u: dict) -> None:
+        s = self.stats
+        s["input_tokens"] += u.get("input_tokens", 0)
+        s["output_tokens"] += u.get("output_tokens", 0)
+        s["content_tokens"] += u.get("content_tokens", 0)
+        s["reasoning_tokens"] += u.get("reasoning_tokens", 0)
+        s["tool_tokens"] += u.get("tool_tokens", 0)
+        s["calls"] += 1
+        gen = u.get("gen_seconds") or 0.0
+        stream = u.get("stream_seconds") or 0.0
+        # Prefill rate: input tokens processed before first output token (ttft).
+        ttft = u.get("ttft")
+        if ttft and ttft > 0 and u.get("input_tokens"):
+            s["in_tps"] = u["input_tokens"] / ttft
+        if gen > 0:
+            s["out_tps"] = u.get("output_tokens", 0) / gen
+            s["last_gen_seconds"] = gen
 
     async def chat(
         self,
@@ -755,6 +862,7 @@ class Agent:
             self._client,
             on_token=on_token,
             on_tool_call=_tracking_on_tool_call,
+            on_usage=self._record_usage,
         )
 
         # Fire-and-forget: capture Q/A to disk and optionally summarize.
