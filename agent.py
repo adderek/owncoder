@@ -83,6 +83,43 @@ def _build_system_prompt(config: "Config", project_name: str = "", indexed_count
     return prompt
 
 
+THINK_LEVELS = ("off", "low", "normal", "high", "max")
+
+_THINK_HINTS = {
+    "off":    "Answer directly. Do NOT produce any <think> block or chain-of-thought. /no_think",
+    "low":    "Think briefly only if necessary; keep any reasoning minimal.",
+    "normal": "",
+    "high":   "Think step-by-step before answering. Consider alternatives and edge cases. <think>",
+    "max":    "Think very carefully. Explore multiple approaches, verify assumptions and edge cases, then answer. <think>",
+}
+
+_REASONING_EFFORT = {
+    "off": "none", "low": "low", "normal": "medium", "high": "high", "max": "high",
+}
+
+
+def _build_call_kwargs(config: "Config") -> dict:
+    """Per-call kwargs for chat.completions.create — honours temperature and think level."""
+    kw: dict = {
+        "model": config.llm.model,
+        "max_tokens": config.llm.max_output_tokens,
+        "temperature": float(getattr(config.llm, "temperature", 0.7)),
+    }
+    level = (getattr(config.llm, "think_level", "normal") or "normal").lower()
+    if level in _REASONING_EFFORT and level != "normal":
+        kw["extra_body"] = {"reasoning_effort": _REASONING_EFFORT[level]}
+    return kw
+
+
+def _inject_think_hint(api_messages: list[dict], config: "Config") -> list[dict]:
+    """Append a transient system message carrying the think-level directive."""
+    level = (getattr(config.llm, "think_level", "normal") or "normal").lower()
+    hint = _THINK_HINTS.get(level, "")
+    if not hint:
+        return api_messages
+    return api_messages + [{"role": "system", "content": f"[think_level={level}] {hint}"}]
+
+
 def _tool_result_message(tool_call_id: str, content: str) -> dict:
     return {
         "role": "tool",
@@ -228,18 +265,18 @@ async def _stream_response(client, config, api_messages, tools, on_token, on_usa
     tc_acc: dict[int, dict] = {}
     finish_reason = "stop"
 
+    api_messages = _inject_think_hint(api_messages, config)
     _log_llm_request(api_messages, tools, config)
     t_start = time.monotonic()
     t_first_token: float | None = None
     server_usage: dict | None = None
 
     stream = await client.chat.completions.create(
-        model=config.llm.model,
         messages=api_messages,
         tools=tools if tools else None,
-        max_tokens=config.llm.max_output_tokens,
         stream=True,
         stream_options={"include_usage": True},
+        **_build_call_kwargs(config),
     )
 
     async for chunk in stream:
@@ -546,13 +583,13 @@ async def run_turn(
                 choice.message = msg
                 choice.finish_reason = finish_reason
             else:
-                _log_llm_request(api_messages, tools, config)
+                api_messages_sent = _inject_think_hint(api_messages, config)
+                _log_llm_request(api_messages_sent, tools, config)
                 t_start = time.monotonic()
                 response = await client.chat.completions.create(
-                    model=config.llm.model,
-                    messages=api_messages,
+                    messages=api_messages_sent,
                     tools=tools if tools else None,
-                    max_tokens=config.llm.max_output_tokens,
+                    **_build_call_kwargs(config),
                 )
                 t_end = time.monotonic()
                 choice = response.choices[0]
@@ -798,6 +835,13 @@ class Agent:
         from agent.tools import load_all_tools
 
         self.config = config
+        # Snapshot of LLM knobs at startup so slash commands can reset to "default".
+        self._llm_defaults: dict = {
+            "max_output_tokens": config.llm.max_output_tokens,
+            "ctx_window": config.llm.ctx_window,
+            "temperature": config.llm.temperature,
+            "think_level": config.llm.think_level,
+        }
         self.store = store
         self.embedder = embedder
         self.asm_store = asm_store

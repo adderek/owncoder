@@ -18,6 +18,10 @@ class LLMConfig:
     compaction_threshold: float = 0.75
     max_output_tokens: int = 4096
     max_iterations: int = 10   # cap on tool-call rounds per user turn
+    temperature: float = 0.7
+    # Thinking effort: one of off, low, normal, high, max.  Injects a transient
+    # system hint each turn and (when supported) forwards `reasoning_effort`.
+    think_level: str = "normal"
 
 
 @dataclass
@@ -145,6 +149,8 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_LLM_CTX_WINDOW": ("llm", "ctx_window"),
         "AGENT_LLM_MAX_OUTPUT_TOKENS": ("llm", "max_output_tokens"),
         "AGENT_LLM_MAX_ITERATIONS": ("llm", "max_iterations"),
+        "AGENT_LLM_TEMPERATURE": ("llm", "temperature"),
+        "AGENT_LLM_THINK_LEVEL": ("llm", "think_level"),
         "AGENT_LLM_AUTO_DETECT_CTX": ("llm", "auto_detect_ctx"),
         "AGENT_EMBEDDINGS_BASE_URL": ("embeddings", "base_url"),
         "AGENT_EMBEDDINGS_MODEL": ("embeddings", "model"),

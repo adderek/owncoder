@@ -29,10 +29,95 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/reset",       [],        "drop conversation history", False),
     ("/save",        [],        "save session under a name", False),
     ("/sessions",    [],        "list saved sessions", False),
+    ("/temperature", ["/temp"], "set sampling temperature (0.0–2.0, - or default to reset)", True),
+    ("/think",       [],        "set thinking level  off|low|normal|high|max", True),
+    ("/max_tokens",  [],        "set max tokens   [out <n> | in <n> | <n> | default]", True),
     ("/tokens",      [],        "show token usage", False),
     ("/tools",       [],        "list available tools", False),
     ("/undo",        [],        "restore last file snapshot", False),
 ]
+
+
+def _apply_think(agent, arg: str) -> tuple[bool, str]:
+    """Returns (ok, message)."""
+    from agent.agent import THINK_LEVELS
+    v = arg.strip().lower()
+    if not v:
+        cur = agent.config.llm.think_level
+        return True, f"think_level = {cur}  (valid: {', '.join(THINK_LEVELS)}; use '-' or 'default' to reset)"
+    if v in ("-", "default"):
+        agent.config.llm.think_level = agent._llm_defaults["think_level"]
+        return True, f"think_level reset to {agent.config.llm.think_level}"
+    if v not in THINK_LEVELS:
+        return False, f"Invalid level '{v}'. Allowed: {', '.join(THINK_LEVELS)}"
+    agent.config.llm.think_level = v
+    return True, f"think_level = {v}"
+
+
+def _apply_temperature(agent, arg: str) -> tuple[bool, str]:
+    v = arg.strip().lower()
+    if not v:
+        return True, (
+            f"temperature = {agent.config.llm.temperature}  "
+            f"(float 0.0–2.0; '-' or 'default' to reset to {agent._llm_defaults['temperature']})"
+        )
+    if v in ("-", "default"):
+        agent.config.llm.temperature = agent._llm_defaults["temperature"]
+        return True, f"temperature reset to {agent.config.llm.temperature}"
+    try:
+        f = float(v)
+    except ValueError:
+        return False, f"Invalid number '{v}'. Usage: /temperature <0.0–2.0>"
+    if not (0.0 <= f <= 2.0):
+        return False, f"Out of range: {f}. Must be 0.0–2.0."
+    agent.config.llm.temperature = f
+    return True, f"temperature = {f}"
+
+
+def _apply_max_tokens(agent, arg: str) -> tuple[bool, str]:
+    parts = arg.strip().split()
+    if not parts:
+        return True, (
+            f"max output tokens = {agent.config.llm.max_output_tokens}  "
+            f"(default {agent._llm_defaults['max_output_tokens']})\n"
+            f"input ctx_window    = {agent.config.llm.ctx_window}  "
+            f"(default {agent._llm_defaults['ctx_window']})\n"
+            f"Usage: /max_tokens <n>           set output tokens\n"
+            f"       /max_tokens out <n>       set output tokens\n"
+            f"       /max_tokens in <n>        set input ctx_window\n"
+            f"       /max_tokens default       reset both"
+        )
+    head = parts[0].lower()
+    if head in ("-", "default"):
+        agent.config.llm.max_output_tokens = agent._llm_defaults["max_output_tokens"]
+        agent.config.llm.ctx_window = agent._llm_defaults["ctx_window"]
+        return True, (
+            f"reset: out={agent.config.llm.max_output_tokens} "
+            f"in={agent.config.llm.ctx_window}"
+        )
+    target = "out"
+    num_str = head
+    if head in ("in", "out"):
+        if len(parts) < 2:
+            return False, f"Usage: /max_tokens {head} <n>"
+        target = head
+        num_str = parts[1]
+    if num_str in ("-", "default"):
+        key = "max_output_tokens" if target == "out" else "ctx_window"
+        attr = "max_output_tokens" if target == "out" else "ctx_window"
+        setattr(agent.config.llm, attr, agent._llm_defaults[key])
+        return True, f"{target} reset to {getattr(agent.config.llm, attr)}"
+    try:
+        n = int(num_str)
+    except ValueError:
+        return False, f"Invalid number '{num_str}'. Expected an integer."
+    if n <= 0:
+        return False, f"Must be positive, got {n}."
+    if target == "out":
+        agent.config.llm.max_output_tokens = n
+        return True, f"max output tokens = {n}"
+    agent.config.llm.ctx_window = n
+    return True, f"input ctx_window = {n}"
 
 
 def _match_commands(prefix: str) -> list[tuple[str, str, bool]]:
@@ -833,6 +918,24 @@ def _build_textual_app(agent: "Agent", session=None):
             elif cmd == "/analyze-asm":
                 await self._run_analyze_asm(arg)
 
+            elif cmd == "/think":
+                ok, msg = _apply_think(self._agent, arg)
+                color = t.success if ok else t.warning
+                for line in msg.splitlines():
+                    self._write_sys(f"[{color}]{line}[/{color}]")
+
+            elif cmd in ("/temperature", "/temp"):
+                ok, msg = _apply_temperature(self._agent, arg)
+                color = t.success if ok else t.warning
+                for line in msg.splitlines():
+                    self._write_sys(f"[{color}]{line}[/{color}]")
+
+            elif cmd == "/max_tokens":
+                ok, msg = _apply_max_tokens(self._agent, arg)
+                color = t.success if ok else t.warning
+                for line in msg.splitlines():
+                    self._write_sys(f"[{color}]{line}[/{color}]")
+
             else:
                 self._write_sys(f"[{t.warning}]Unknown command '{cmd}'. Type /help.[/{t.warning}]")
 
@@ -1188,6 +1291,9 @@ def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
   [{c}]/export [file][/{c}]      export conversation as markdown
   [{c}]/analyze-asm <file>[/{c}]  LLM-driven assembly analysis and summarization
                        options: --resume  --force  --levels N
+  [{c}]/think [level][/{c}]       thinking effort: off|low|normal|high|max ('-' resets)
+  [{c}]/temperature [v][/{c}]     sampling temperature 0.0–2.0 (alias [{c}]/temp[/{c}]; '-' resets)
+  [{c}]/max_tokens [args][/{c}]   set tokens: <n> | out <n> | in <n> | default
 
 [dim]Ctrl+D or Ctrl+C to quit[/dim]
 """
@@ -1532,6 +1638,18 @@ async def simple_loop(agent: "Agent", session=None):
                         console.print("[yellow]Interrupted.[/yellow]")
                     except Exception as e:
                         console.print(f"[red]analyze-asm error: {e}[/red]")
+
+            elif cmd == "/think":
+                ok, msg = _apply_think(agent, arg)
+                console.print(f"[{'green' if ok else 'yellow'}]{msg}[/]")
+
+            elif cmd in ("/temperature", "/temp"):
+                ok, msg = _apply_temperature(agent, arg)
+                console.print(f"[{'green' if ok else 'yellow'}]{msg}[/]")
+
+            elif cmd == "/max_tokens":
+                ok, msg = _apply_max_tokens(agent, arg)
+                console.print(f"[{'green' if ok else 'yellow'}]{msg}[/]")
 
             else:
                 console.print(f"[yellow]Unknown command '{cmd}'. Type /help for a list.[/yellow]")
