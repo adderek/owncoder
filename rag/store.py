@@ -180,6 +180,72 @@ class VectorStore:
         conn.execute(f"DELETE FROM chunks WHERE id IN ({placeholders})", ids)
         conn.commit()
 
+    def list_paths(self) -> list[str]:
+        rows = self._get_conn().execute(
+            "SELECT DISTINCT path FROM chunks ORDER BY path"
+        ).fetchall()
+        return [r["path"] for r in rows]
+
+    def rows_for_paths(self, paths: list[str]) -> list[dict]:
+        """Return chunk rows for the given paths, including raw embedding blobs
+        from vec_chunks (as bytes) when present. Used by the archive pipeline."""
+        if not paths:
+            return []
+        conn = self._get_conn()
+        placeholders = ",".join("?" * len(paths))
+        rows = conn.execute(
+            f"SELECT * FROM chunks WHERE path IN ({placeholders})", paths
+        ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            emb_blob = None
+            if self._vec_dims is not None:
+                emb_row = conn.execute(
+                    "SELECT embedding FROM vec_chunks WHERE chunk_id = ?",
+                    (d["id"],),
+                ).fetchone()
+                if emb_row is not None:
+                    emb_blob = bytes(emb_row["embedding"])
+            d["embedding_blob"] = emb_blob
+            d["embedding_dims"] = self._vec_dims if emb_blob else None
+            result.append(d)
+        return result
+
+    def insert_raw(self, row: dict) -> None:
+        """Insert a row (as returned by rows_for_paths) back into the main store,
+        preserving its embedding blob. Used for archive restore."""
+        conn = self._get_conn()
+        existing = conn.execute(
+            "SELECT rowid FROM chunks WHERE id = ?", (row["id"],)
+        ).fetchone()
+        if existing:
+            conn.execute("DELETE FROM chunks_fts WHERE rowid = ?", (existing["rowid"],))
+        conn.execute("""
+            INSERT OR REPLACE INTO chunks
+            (id, path, language, node_type, name, start_line, end_line, content, mtime, git_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            row["id"], row["path"], row.get("language"), row.get("node_type"),
+            row.get("name"), row.get("start_line"), row.get("end_line"),
+            row["content"], row.get("mtime"), row.get("git_hash"),
+        ))
+        new_row = conn.execute("SELECT rowid FROM chunks WHERE id = ?", (row["id"],)).fetchone()
+        conn.execute(
+            "INSERT INTO chunks_fts(rowid, content, name, path) VALUES (?, ?, ?, ?)",
+            (new_row["rowid"], row["content"], row.get("name") or "", row["path"]),
+        )
+        emb_blob = row.get("embedding_blob")
+        dims = row.get("embedding_dims")
+        if emb_blob and dims:
+            self._ensure_vec_table(dims)
+            conn.execute("DELETE FROM vec_chunks WHERE chunk_id = ?", (row["id"],))
+            conn.execute(
+                "INSERT INTO vec_chunks(chunk_id, embedding) VALUES (?, ?)",
+                (row["id"], emb_blob),
+            )
+        conn.commit()
+
     def get_mtime(self, path: str) -> float | None:
         row = self._get_conn().execute(
             "SELECT mtime FROM chunks WHERE path = ? LIMIT 1", (path,)

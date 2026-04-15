@@ -207,8 +207,13 @@ def _watch_and_reindex(config, console, languages=None, exclude=None):
     observer.join()
 
 
+def _open_archive(config):
+    from agent.rag.archive import ArchiveStore
+    return ArchiveStore(config.rag.archive_db_path)
+
+
 def cmd_index_update(args, config):
-    from agent.rag.indexer import index_directory
+    from agent.rag.indexer import index_directory, prune_index
     from agent.rag.store import VectorStore
     from agent.rag.embedder import Embedder
     from rich.console import Console
@@ -229,35 +234,119 @@ def cmd_index_update(args, config):
 
     store = VectorStore(config.rag)
     embedder = Embedder(config.embeddings)
+    archive = _open_archive(config)
 
     if changed is not None and not changed:
         console.print("No changed files detected. Index is up to date.")
-        store.close()
-        return
+    else:
+        stats = index_directory(
+            root=config.tools.working_dir,
+            store=store,
+            embedder=embedder,
+            cfg=config.rag,
+        )
+        console.print(f"Updated: {stats['indexed']} files re-indexed, {stats['skipped']} unchanged.")
 
-    stats = index_directory(
-        root=config.tools.working_dir,
-        store=store,
-        embedder=embedder,
-        cfg=config.rag,
-    )
+    pruned = prune_index(config.tools.working_dir, store, archive, reason="stale")
+    if pruned["archived"]:
+        console.print(f"Archived {pruned['archived']} chunks from {len(pruned['paths'])} file(s):")
+        for p in pruned["paths"]:
+            console.print(f"  [dim]- {p}[/dim]")
+
+    purged = archive.purge_expired(config.rag.archive_ttl_days)
+    if purged:
+        console.print(f"Purged {purged} expired archived chunks (ttl={config.rag.archive_ttl_days}d).")
+
     store.close()
-    console.print(f"Updated: {stats['indexed']} files re-indexed, {stats['skipped']} unchanged.")
+    archive.close()
+
+
+def cmd_index_prune(args, config):
+    from agent.rag.indexer import prune_index
+    from agent.rag.store import VectorStore
+    from rich.console import Console
+
+    console = Console()
+    store = VectorStore(config.rag)
+    archive = _open_archive(config)
+
+    pruned = prune_index(config.tools.working_dir, store, archive, reason="prune")
+    if pruned["archived"]:
+        console.print(f"Archived {pruned['archived']} chunks from {len(pruned['paths'])} file(s):")
+        for p in pruned["paths"]:
+            console.print(f"  [dim]- {p}[/dim]")
+    else:
+        console.print("Index is clean — nothing to archive.")
+
+    ttl = getattr(args, "archive_ttl", None)
+    if ttl is None:
+        ttl = config.rag.archive_ttl_days
+    purged = archive.purge_expired(ttl)
+    if purged:
+        console.print(f"Purged {purged} expired archived chunks (ttl={ttl}d).")
+
+    store.close()
+    archive.close()
+
+
+def cmd_index_restore(args, config):
+    from agent.rag.indexer import restore_paths
+    from agent.rag.store import VectorStore
+    from rich.console import Console
+
+    console = Console()
+    store = VectorStore(config.rag)
+    archive = _open_archive(config)
+    res = restore_paths(store, archive, [args.restore])
+    if res["restored"]:
+        console.print(f"Restored {res['restored']} chunks for:")
+        for p in res["paths"]:
+            console.print(f"  [green]+ {p}[/green]")
+    else:
+        console.print(f"No archived chunks found for path: {args.restore}")
+    store.close()
+    archive.close()
+
+
+def cmd_index_purge_archive(args, config):
+    from rich.console import Console
+    console = Console()
+    archive = _open_archive(config)
+    ttl = getattr(args, "archive_ttl", None)
+    if ttl is None:
+        ttl = config.rag.archive_ttl_days
+    purged = archive.purge_expired(ttl)
+    console.print(f"Purged {purged} expired archived chunks (ttl={ttl}d).")
+    archive.close()
 
 
 def cmd_index_stats(args, config):
     from agent.rag.store import VectorStore
     from rich.console import Console
+    import datetime as _dt
 
     store = VectorStore(config.rag)
     stats = store.stats()
     store.close()
+
+    archive = _open_archive(config)
+    astats = archive.stats()
+    archive.close()
 
     console = Console()
     console.print(f"[bold]Index stats:[/bold]")
     console.print(f"  Files:  {stats['files']}")
     console.print(f"  Chunks: {stats['chunks']}")
     console.print(f"  DB:     {config.rag.db_path}")
+    console.print(f"[bold]Archive stats:[/bold]")
+    console.print(f"  Files:  {astats['files']}")
+    console.print(f"  Chunks: {astats['chunks']}")
+    console.print(f"  DB:     {config.rag.archive_db_path}")
+    console.print(f"  TTL:    {config.rag.archive_ttl_days} days" + (" (disabled)" if config.rag.archive_ttl_days <= 0 else ""))
+    oldest = astats.get("oldest_archived_at")
+    if oldest:
+        ts = _dt.datetime.fromtimestamp(oldest).isoformat(timespec="seconds")
+        console.print(f"  Oldest: {ts}")
 
 
 _UI_MODES = {
@@ -644,8 +733,12 @@ def main():
 
     # index
     idx_p = sub.add_parser("index", help="Manage index")
-    idx_p.add_argument("--update", action="store_true", help="Re-index changed files")
+    idx_p.add_argument("--update", action="store_true", help="Re-index changed files (also prunes stale & purges expired archive)")
     idx_p.add_argument("--stats", action="store_true", help="Show index statistics")
+    idx_p.add_argument("--prune", action="store_true", help="Archive chunks for files that are missing or now match .agent.ignore")
+    idx_p.add_argument("--restore", type=str, metavar="PATH", help="Restore a previously archived path back into the live index")
+    idx_p.add_argument("--purge-archive", action="store_true", help="Permanently delete archive rows older than archive_ttl_days")
+    idx_p.add_argument("--archive-ttl", type=int, metavar="DAYS", help="Override archive_ttl_days for this run (0 = disable expiration)")
 
     # chat
     chat_p = sub.add_parser("chat", help="Start interactive session")
@@ -698,6 +791,12 @@ def main():
                 cmd_index_update(args, config)
             elif args.stats:
                 cmd_index_stats(args, config)
+            elif args.prune:
+                cmd_index_prune(args, config)
+            elif args.restore:
+                cmd_index_restore(args, config)
+            elif getattr(args, "purge_archive", False):
+                cmd_index_purge_archive(args, config)
             else:
                 parser.parse_args(["index", "--help"])
         elif args.command == "chat":

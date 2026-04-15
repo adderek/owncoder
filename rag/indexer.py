@@ -383,6 +383,54 @@ def chunk_file(path: str, cfg: "RAGConfig") -> list[dict]:
     return chunks
 
 
+def prune_index(
+    root: str,
+    store: "VectorStore",
+    archive_store,
+    reason: str = "stale",
+) -> dict:
+    """Detect indexed paths that no longer exist on disk or now match
+    `.agent.ignore`, move their rows into the archive, and delete them from
+    the main index. Returns {archived, paths}."""
+    root_path = Path(root).resolve()
+    from agent.tools.rules import get_rules
+    rules = get_rules()
+
+    indexed = store.list_paths()
+    stale: list[str] = []
+    for stored in indexed:
+        fpath = Path(stored)
+        if not fpath.is_absolute():
+            fpath = root_path / stored
+        # Relative path used for .agent.ignore matching
+        try:
+            rel = str(fpath.resolve().relative_to(root_path))
+        except ValueError:
+            rel = stored
+        missing = not fpath.exists()
+        ignored = rules.ignore.matches(rel) if not rules.ignore.empty else False
+        if missing or ignored:
+            stale.append(stored)
+
+    if not stale:
+        return {"archived": 0, "paths": []}
+
+    rows = store.rows_for_paths(stale)
+    archived = archive_store.ingest(rows, reason=reason)
+    for rel in stale:
+        store.delete_by_path(rel)
+    return {"archived": archived, "paths": stale}
+
+
+def restore_paths(store: "VectorStore", archive_store, paths: list[str]) -> dict:
+    """Move rows for the given paths from archive back into the main index."""
+    rows = archive_store.pop_paths(paths)
+    for r in rows:
+        store.insert_raw(r)
+    restored_paths = sorted({r["path"] for r in rows})
+    return {"restored": len(rows), "paths": restored_paths}
+
+
 def index_directory(
     root: str,
     store: "VectorStore",

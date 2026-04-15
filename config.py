@@ -31,6 +31,8 @@ class EmbeddingsConfig:
 @dataclass
 class RAGConfig:
     db_path: str = ".agent/index.db"
+    archive_db_path: str = ".agent/index-archive.db"
+    archive_ttl_days: int = 30   # 0 disables expiration (archive kept forever)
     chunk_min_tokens: int = 20
     chunk_max_tokens: int = 400
     top_k: int = 8
@@ -149,6 +151,8 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_EMBEDDINGS_DIMENSIONS": ("embeddings", "dimensions"),
         "AGENT_EMBEDDINGS_MAX_TOKENS": ("embeddings", "max_tokens"),
         "AGENT_RAG_DB_PATH": ("rag", "db_path"),
+        "AGENT_RAG_ARCHIVE_DB_PATH": ("rag", "archive_db_path"),
+        "AGENT_RAG_ARCHIVE_TTL_DAYS": ("rag", "archive_ttl_days"),
         "AGENT_RAG_TOP_K": ("rag", "top_k"),
         "AGENT_TOOLS_ALLOW_SHELL": ("tools", "allow_shell"),
         "AGENT_TOOLS_SHELL_TIMEOUT": ("tools", "shell_timeout"),
