@@ -66,3 +66,18 @@ When I am sure that master is stable:
 git -C /home/adderek/src/owncoder/agent merge master
 git -C /home/adderek/src/owncoder-stable/agent pull
 ```
+
+or
+
+```
+git -C /home/adderek/src/owncoder/agent checkout stable
+git -C /home/adderek/src/owncoder/agent merge master
+git -C /home/adderek/src/owncoder/agent checkout master
+```
+
+or
+
+```
+git -C /home/adderek/src/owncoder-stable/agent fetch /home/adderek/src/owncoder/agent master
+git -C /home/adderek/src/owncoder-stable/agent merge FETCH_HEAD
+```
