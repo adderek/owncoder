@@ -619,6 +619,7 @@ def _build_textual_app(agent: "Agent", session=None):
             self._loading_timer = None
             self._iter_done: int = 0
             self._iter_limit: int = 0
+            self._quit_requested: bool = False
             if session is not None:
                 agent.set_session_id(session.id)
 
@@ -733,6 +734,42 @@ def _build_textual_app(agent: "Agent", session=None):
                 get_interrupt_flag().set()
             except Exception:
                 pass
+            # Second press (while graceful shutdown is already in flight) →
+            # cancel pending summary tasks and exit immediately.
+            if self._quit_requested:
+                try:
+                    self._agent.cancel_background()
+                except Exception:
+                    pass
+                self.exit()
+                return
+            # First press: if nothing is running in the background, exit now;
+            # otherwise wait for the post-turn summary before tearing down.
+            pending = 0
+            try:
+                pending = self._agent.pending_background_count()
+            except Exception:
+                pending = 0
+            if pending == 0:
+                self.exit()
+                return
+            self._quit_requested = True
+            try:
+                self.query_one("#context-panel", ContextPanel).set_context(
+                    f"[{t.warning}]Finishing {pending} summary task(s)… "
+                    f"press Ctrl+Q again to force exit.[/{t.warning}]"
+                )
+                self.query_one("#input-bar", PromptInput).disabled = True
+            except Exception:
+                pass
+            self._graceful_exit_worker()
+
+        @work(exclusive=True, name="graceful_exit")
+        async def _graceful_exit_worker(self) -> None:
+            try:
+                await self._agent.wait_background(timeout=30.0)
+            except Exception:
+                logger.exception("graceful_exit: wait_background error (ignored)")
             self.exit()
 
         def action_show_help(self) -> None:
@@ -1442,7 +1479,17 @@ async def simple_loop(agent: "Agent", session=None):
         try:
             user_input = input(f"{prompt_esc}>\033[0m ").strip()
         except (EOFError, KeyboardInterrupt):
-            console.print(f"\n[{t.text_dim}]Bye.[/{t.text_dim}]")
+            pending = agent.pending_background_count()
+            if pending:
+                console.print(
+                    f"\n[{t.warning}]Finishing {pending} summary task(s)… "
+                    f"Ctrl+C again to force exit.[/{t.warning}]"
+                )
+                try:
+                    await agent.wait_background(timeout=30.0)
+                except KeyboardInterrupt:
+                    agent.cancel_background()
+            console.print(f"[{t.text_dim}]Bye.[/{t.text_dim}]")
             break
 
         if not user_input:

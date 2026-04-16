@@ -864,6 +864,10 @@ class Agent:
             "out_tps": 0.0,             # last call output tokens / second (generation)
             "last_gen_seconds": 0.0,
         }
+        # Background post-turn tasks (Q/A capture + summarization). Tracked so
+        # callers can wait for them on graceful shutdown (single Ctrl+Q) or
+        # cancel them on force exit (double Ctrl+Q).
+        self._pending_bg_tasks: set[asyncio.Task] = set()
 
         load_all_tools(config=config, store=store, embedder=embedder, asm_store=asm_store)
 
@@ -882,6 +886,32 @@ class Agent:
         """Wire up a QALogger for this session. Call once the session is known."""
         from agent.memory.qa_log import QALogger
         self._qa_logger = QALogger(session_id)
+
+    def pending_background_count(self) -> int:
+        return sum(1 for t in self._pending_bg_tasks if not t.done())
+
+    async def wait_background(self, timeout: float | None = None) -> int:
+        """Await outstanding post-turn tasks. Returns count still pending after timeout."""
+        tasks = [t for t in list(self._pending_bg_tasks) if not t.done()]
+        if not tasks:
+            return 0
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(asyncio.gather(*tasks, return_exceptions=True)),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            pass
+        return sum(1 for t in tasks if not t.done())
+
+    def cancel_background(self) -> int:
+        """Cancel all outstanding post-turn tasks. Returns count cancelled."""
+        n = 0
+        for t in list(self._pending_bg_tasks):
+            if not t.done():
+                t.cancel()
+                n += 1
+        return n
 
     def token_estimate(self) -> int:
         return _count_tokens_approx(self.messages)
@@ -955,9 +985,11 @@ class Agent:
             on_progress=on_progress,
         )
 
-        # Fire-and-forget: capture Q/A to disk and optionally summarize.
+        # Background: capture Q/A to disk and optionally summarize. Tracked so
+        # graceful shutdown can await them instead of killing the summary LLM
+        # mid-stream (which produced noisy CancelledError tracebacks).
         if self._qa_logger is not None:
-            asyncio.create_task(
+            task = asyncio.create_task(
                 _post_turn_capture_and_summarize(
                     self._qa_logger,
                     self.config,
@@ -968,5 +1000,7 @@ class Agent:
                     list(_turn_modified_files),
                 )
             )
+            self._pending_bg_tasks.add(task)
+            task.add_done_callback(self._pending_bg_tasks.discard)
 
         return response

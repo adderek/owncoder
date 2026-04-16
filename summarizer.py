@@ -103,5 +103,8 @@ async def summarize_turn_background(
             summary_q[:60] if summary_q else "",
             summary_a[:60] if summary_a else "",
         )
-    except BaseException:
+    except asyncio.CancelledError:
+        logger.debug("summarize_turn_background: cancelled")
+        raise
+    except Exception:
         logger.exception("summarize_turn_background: unexpected error (ignored)")
