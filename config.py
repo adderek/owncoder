@@ -62,6 +62,7 @@ class ToolsConfig:
     working_dir: str = "."
     agent_dir: str = ".agent"
     preamble_path: str = ".agent/agent.preamble"
+    search_parents: bool = True
 
 
 @dataclass

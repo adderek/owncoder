@@ -379,6 +379,18 @@ def _is_first_run() -> bool:
     return not any(p.exists() for p in paths)
 
 
+def _find_project_root(start_dir: Path, search_parents: bool) -> Path | None:
+    """Search for a directory containing a .agent subdirectory."""
+    curr = start_dir.resolve()
+    while True:
+        if (curr / ".agent").is_dir():
+            return curr
+        if not search_parents or curr == curr.parent:
+            break
+        curr = curr.parent
+    return None
+
+
 def cmd_chat(args, config):
     from agent.rag.store import VectorStore
     from agent.rag.embedder import Embedder
@@ -774,10 +786,32 @@ def main():
 
     args = parser.parse_args()
 
-    from agent.config import load_config, check_reachability
+    from agent.config import load_config, check_reachability, Config, ToolsConfig
     from agent.memory.session import configure as configure_sessions
-    config_path = Path(args.config) if args.config else None
-    config = load_config(config_path)
+
+    # 1. Find project root (only if not running 'init')
+    project_root = None
+    if args.command != "init":
+        temp_tools = ToolsConfig()
+        project_root = _find_project_root(Path.cwd(), temp_tools.search_parents)
+        if project_root is None:
+            print("Error: Current directory (and parents) is not a valid agent project.")
+            print("Please run 'agent init' in the desired project directory.")
+            sys.exit(1)
+
+    # 2. Load config
+    if args.config:
+        config = load_config(Path(args.config))
+    elif project_root and (project_root / "agent.toml").exists():
+        config = load_config(project_root / "agent.toml")
+    else:
+        config = load_config(None)
+
+    # 3. If we found a project root, ensure working_dir is set to it
+    if project_root:
+        config.tools.working_dir = str(project_root)
+
+    # 4. Continue with rest of setup
     configure_sessions(config.tools.working_dir, config.tools.agent_dir)
     log_dir = Path(config.tools.working_dir) / config.tools.agent_dir
     _setup_logging(str(log_dir), config.logs)
