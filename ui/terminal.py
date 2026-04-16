@@ -1099,7 +1099,7 @@ def _build_textual_app(agent: "Agent", session=None):
         def _begin_chat(self, user_text: str) -> None:
             # Switch to chat tab so the user sees the exchange.
             self._switch_to_chat()
-            self._write_chat(f"[bold {t.user_color}]You:[/bold {t.user_color}] {user_text}")
+            self._write_chat(f"[bold {t.user_color}]You:[/bold {t.user_color}] {_escape(user_text)}")
             self._last_tool_calls = []
             self._tool_stats: dict[str, dict[str, int]] = {}
             self._current_tool = None
@@ -1296,7 +1296,7 @@ def _build_textual_app(agent: "Agent", session=None):
 
             if response:
                 self._write_chat(
-                    f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] {response}"
+                    f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] {_escape(response)}"
                 )
 
             self.query_one("#token-bar", TokenBar).update_tokens(self._agent.token_estimate())
