@@ -14,6 +14,28 @@ if TYPE_CHECKING:
 _config = None
 _transcript: list[dict] = []
 
+# Per-stream cap for shell output (chars). Prevents a single `find /` or `ls -R`
+# from blowing the model's context. The agent-layer cap is a catch-all, but by
+# the time it fires the JSON is truncated mid-string and the model gets
+# unparseable garbage — so truncate per-stream here with a clear marker.
+_SHELL_OUTPUT_CAP = 16_000
+
+
+def _truncate_stream(s: str, cap: int = _SHELL_OUTPUT_CAP) -> tuple[str, bool]:
+    """Return (possibly-truncated text, was_truncated). Keeps head + tail so
+    the model sees both the command's start and its final lines (errors/exit
+    messages usually live at the tail)."""
+    if s is None or len(s) <= cap:
+        return s or "", False
+    head = cap // 2
+    tail = cap - head
+    return (
+        s[:head]
+        + f"\n\n[... truncated {len(s) - cap} chars; showing first {head} + last {tail} ...]\n\n"
+        + s[-tail:],
+        True,
+    )
+
 _DANGEROUS_PATTERNS = [
     "rm -rf", "rm -fr",
     "sudo ",
@@ -115,23 +137,33 @@ def run_command(cmd: str, cwd: str | None = None, timeout: int | None = None) ->
             env={**os.environ},
         )
         duration_ms = int((time.monotonic() - start) * 1000)
-        result = {
-            "stdout": proc.stdout,
-            "stderr": proc.stderr,
-            "returncode": proc.returncode,
-            "duration_ms": duration_ms,
-            "cmd": cmd,
-        }
+        raw_stdout, raw_stderr = proc.stdout, proc.stderr
+        returncode = proc.returncode
+        err_msg = None
     except subprocess.TimeoutExpired as e:
         duration_ms = int((time.monotonic() - start) * 1000)
-        result = {
-            "error": f"Command timed out after {effective_timeout}s",
-            "stdout": (e.stdout or b"").decode("utf-8", errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or ""),
-            "stderr": (e.stderr or b"").decode("utf-8", errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or ""),
-            "returncode": -1,
-            "duration_ms": duration_ms,
-            "cmd": cmd,
+        raw_stdout = (e.stdout or b"").decode("utf-8", errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+        raw_stderr = (e.stderr or b"").decode("utf-8", errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
+        returncode = -1
+        err_msg = f"Command timed out after {effective_timeout}s"
+
+    stdout, stdout_trunc = _truncate_stream(raw_stdout)
+    stderr, stderr_trunc = _truncate_stream(raw_stderr)
+    result: dict = {
+        "stdout": stdout,
+        "stderr": stderr,
+        "returncode": returncode,
+        "duration_ms": duration_ms,
+        "cmd": cmd,
+    }
+    if stdout_trunc or stderr_trunc:
+        result["truncated"] = {
+            "stdout_chars": len(raw_stdout) if stdout_trunc else 0,
+            "stderr_chars": len(raw_stderr) if stderr_trunc else 0,
+            "hint": "Output was large; narrow the command (grep, head, awk) to get focused results.",
         }
+    if err_msg:
+        result["error"] = err_msg
 
     _transcript.append(result)
     return result

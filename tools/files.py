@@ -477,18 +477,28 @@ def _build_gitignore_spec(base: Path):
 
 
 @register("list_files", {
-    "description": "List files in a directory, respecting .gitignore. Returns relative paths with size and mtime.",
+    "description": (
+        "List files in a directory, respecting .gitignore. Returns relative paths with size. "
+        "Capped at max_results (default 500) to keep responses small — narrow with `pattern` "
+        "(e.g. 'agent/**/*.py') if you need more."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "Directory to list (default: working dir)", "default": "."},
             "pattern": {"type": "string", "description": "Glob pattern", "default": "**/*"},
             "ignore_patterns": {"type": "array", "items": {"type": "string"}, "description": "Patterns to ignore"},
+            "max_results": {"type": "integer", "description": "Max entries to return (default 500). On overflow, a directory-grouped summary is returned instead of paths."},
         },
         "required": [],
     },
 })
-def list_files(path: str = ".", pattern: str = "**/*", ignore_patterns: list[str] | None = None) -> dict:
+def list_files(
+    path: str = ".",
+    pattern: str = "**/*",
+    ignore_patterns: list[str] | None = None,
+    max_results: int = 500,
+) -> dict:
     import fnmatch
     base = _resolve(path)
     if not base.is_dir():
@@ -499,8 +509,12 @@ def list_files(path: str = ".", pattern: str = "**/*", ignore_patterns: list[str
 
     gitignore_spec = _build_gitignore_spec(base)
 
+    cap = max(1, int(max_results))
     rules = get_rules()
-    results = []
+    results: list[dict] = []
+    dir_counts: dict[str, int] = {}
+    total_kept = 0
+
     for fpath in sorted(base.glob(pattern)):
         if not fpath.is_file():
             continue
@@ -523,8 +537,31 @@ def list_files(path: str = ".", pattern: str = "**/*", ignore_patterns: list[str
         if not skip and rules.ignore.matches(rel):
             skip = True
 
-        if not skip:
+        if skip:
+            continue
+
+        total_kept += 1
+        top = parts[0] if len(parts) > 1 else "."
+        dir_counts[top] = dir_counts.get(top, 0) + 1
+        if len(results) < cap:
             stat = fpath.stat()
             results.append({"path": rel, "size": stat.st_size})
+
+    if total_kept > cap:
+        summary = sorted(
+            ({"dir": d, "count": n} for d, n in dir_counts.items()),
+            key=lambda x: -x["count"],
+        )
+        return {
+            "truncated": True,
+            "total": total_kept,
+            "returned": 0,
+            "by_top_dir": summary,
+            "hint": (
+                f"{total_kept} files matched (cap={cap}). "
+                "Re-call with a narrower `pattern` (e.g. 'src/**/*.py') or a deeper `path`, "
+                "or raise `max_results` if you really need everything."
+            ),
+        }
 
     return {"files": results, "count": len(results)}
