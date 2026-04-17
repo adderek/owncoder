@@ -109,3 +109,30 @@ class QALogger:
             # The requirement says "yield tuples of (turn_id, q_data, a_data)"
             # If one is missing, we still yield it as None or empty dict to be resilient.
             yield tid, q_data or {}, a_data or {}
+
+
+def read_history_sync(session_id: str) -> List[Tuple[int, Dict[str, Any], Dict[str, Any]]]:
+    """Synchronous variant of QALogger.read_history for use on UI mount."""
+    logger = QALogger(session_id)
+    q_dir = logger._get_q_dir()
+    a_dir = logger._get_a_dir()
+    history: Dict[int, Dict[str, Any]] = {}
+    if q_dir.exists():
+        for q_file in q_dir.glob("Q-*.json"):
+            try:
+                data = json.loads(q_file.read_text(encoding="utf-8"))
+                tid = data.get("turn_id")
+                if tid is not None:
+                    history.setdefault(tid, {"q": None, "a": None})["q"] = data
+            except Exception:
+                continue
+    if a_dir.exists():
+        for a_file in a_dir.glob("A-*.json"):
+            try:
+                data = json.loads(a_file.read_text(encoding="utf-8"))
+                tid = data.get("turn_id")
+                if tid is not None:
+                    history.setdefault(tid, {"q": None, "a": None})["a"] = data
+            except Exception:
+                continue
+    return [(tid, history[tid]["q"] or {}, history[tid]["a"] or {}) for tid in sorted(history)]

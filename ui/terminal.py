@@ -168,37 +168,62 @@ def _build_textual_app(agent: "Agent", session=None):
     class SysView(RichLog):
         """System log — commands, session info, help output."""
 
+    def _one_line(text: str, limit: int = 120) -> str:
+        text = (text or "").strip().replace("\n", " ")
+        if len(text) > limit:
+            text = text[: limit - 1] + "…"
+        return text
+
     class QView(RichLog):
-        """View for user questions."""
-        def update_view(self, messages: list["Message"]) -> None:
+        """View for user questions: one line per turn."""
+        def load_history(self, entries: "list[tuple[int, dict, dict]]") -> None:
             self.clear()
-            for msg in messages:
-                if msg.role == "user":
-                    summary = getattr(msg, "summary", None)
-                    if not summary:
-                        summary = msg.content[:100] + "..." if len(msg.content) > 100 else msg.content
-                    self.write(f"[bold blue]Q:[/bold blue] {summary}\n")
+            for tid, q, _a in entries:
+                self._write_entry(tid, q)
+
+        def add_turn(self, turn_id: int, q_data: dict, _a_data: dict) -> None:
+            self._write_entry(turn_id, q_data)
+
+        def _write_entry(self, turn_id: int, q: dict) -> None:
+            if not q:
+                return
+            text = q.get("summary_q") or q.get("content") or ""
+            self.write(f"[{t.text_dim}]{turn_id:>3}[/{t.text_dim}] [bold {t.user_color}]Q:[/bold {t.user_color}] {_escape(_one_line(text))}")
 
     class AView(RichLog):
-        """View for agent answers."""
-        def update_view(self, messages: list["Message"]) -> None:
+        """View for agent answers: one line per turn."""
+        def load_history(self, entries: "list[tuple[int, dict, dict]]") -> None:
             self.clear()
-            for msg in messages:
-                if msg.role == "assistant":
-                    summary = getattr(msg, "summary", None)
-                    if not summary:
-                        summary = msg.content[:100] + "..." if len(msg.content) > 100 else msg.content
-                    self.write(f"[bold green]A:[/bold green] {summary}\n")
+            for tid, _q, a in entries:
+                self._write_entry(tid, a)
+
+        def add_turn(self, turn_id: int, _q_data: dict, a_data: dict) -> None:
+            self._write_entry(turn_id, a_data)
+
+        def _write_entry(self, turn_id: int, a: dict) -> None:
+            if not a:
+                return
+            text = a.get("summary_a") or a.get("content") or ""
+            self.write(f"[{t.text_dim}]{turn_id:>3}[/{t.text_dim}] [bold {t.agent_color}]A:[/bold {t.agent_color}] {_escape(_one_line(text))}")
 
     class SparseView(RichLog):
-        """View for condensed dialogue."""
-        def update_view(self, messages: list["Message"]) -> None:
+        """Condensed dialogue: Q and A interleaved by turn_id."""
+        def load_history(self, entries: "list[tuple[int, dict, dict]]") -> None:
             self.clear()
-            for msg in messages:
-                role = "User" if msg.role == "user" else "Agent"
-                color = "blue" if msg.role == "user" else "green"
-                content = msg.content[:150] + "..." if len(msg.content) > 150 else msg.content
-                self.write(f"[{color}]{role}:[/{color}] {content}\n")
+            for tid, q, a in entries:
+                self._write_entry(tid, q, a)
+
+        def add_turn(self, turn_id: int, q_data: dict, a_data: dict) -> None:
+            self._write_entry(turn_id, q_data, a_data)
+
+        def _write_entry(self, turn_id: int, q: dict, a: dict) -> None:
+            tag = f"[{t.text_dim}]{turn_id:>3}[/{t.text_dim}]"
+            q_text = (q or {}).get("summary_q") or (q or {}).get("content") or ""
+            a_text = (a or {}).get("summary_a") or (a or {}).get("content") or ""
+            if q_text:
+                self.write(f"{tag} [bold {t.user_color}][User][/bold {t.user_color}] {_escape(_one_line(q_text, 160))}")
+            if a_text:
+                self.write(f"    [bold {t.agent_color}][Agent][/bold {t.agent_color}] {_escape(_one_line(a_text, 160))}")
 
     class ContextPanel(Static):
         def set_context(self, text: str) -> None:
@@ -515,6 +540,14 @@ def _build_textual_app(agent: "Agent", session=None):
         #sys-log:focus {{
             border: solid {t.active};
         }}
+        #q-log, #a-log, #sparse-log {{
+            height: 1fr;
+            border: solid {t.border};
+            padding: 0 1;
+        }}
+        #q-log:focus, #a-log:focus, #sparse-log:focus {{
+            border: solid {t.active};
+        }}
         .placeholder-pane {{
             height: 1fr;
             border: solid {t.border};
@@ -639,11 +672,11 @@ def _build_textual_app(agent: "Agent", session=None):
                     yield ConversationView(id="chat-log", markup=True, highlight=True)
                     yield Static("", id="stream-view", markup=True)
                 with TabPane("Q", id="tab-q"):
-                    yield Static(_PLACEHOLDER_Q, id="placeholder-q", classes="placeholder-pane", markup=True)
+                    yield QView(id="q-log", markup=True, highlight=False)
                 with TabPane("A", id="tab-a"):
-                    yield Static(_PLACEHOLDER_A, id="placeholder-a", classes="placeholder-pane", markup=True)
+                    yield AView(id="a-log", markup=True, highlight=False)
                 with TabPane("sparse", id="tab-sparse"):
-                    yield Static(_PLACEHOLDER_SPARSE, id="placeholder-sparse", classes="placeholder-pane", markup=True)
+                    yield SparseView(id="sparse-log", markup=True, highlight=False)
                 with TabPane("sys", id="tab-sys"):
                     yield SysView(id="sys-log", markup=True, highlight=True)
             with Horizontal(id="loading-row"):
@@ -683,6 +716,7 @@ def _build_textual_app(agent: "Agent", session=None):
             # Restore prior dialogue if session was loaded before the UI started
             if self._agent.messages:
                 self._restore_chat_history(self._agent.messages)
+            self._reload_qa_views()
 
         # ── helpers ──────────────────────────────────────────────────────────
 
@@ -725,6 +759,40 @@ def _build_textual_app(agent: "Agent", session=None):
                         chat_log.write(
                             f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] {content}"
                         )
+
+        def _reload_qa_views(self) -> None:
+            """Populate Q/A/sparse views from on-disk history for the current session."""
+            if not self._session:
+                return
+            try:
+                from agent.memory.qa_log import read_history_sync
+                entries = read_history_sync(self._session.id)
+            except Exception:
+                logger.exception("_reload_qa_views: read_history_sync failed (ignored)")
+                return
+            try:
+                self.query_one("#q-log", QView).load_history(entries)
+                self.query_one("#a-log", AView).load_history(entries)
+                self.query_one("#sparse-log", SparseView).load_history(entries)
+            except Exception:
+                logger.exception("_reload_qa_views: view update failed (ignored)")
+
+        def _append_qa_turn(self, user_text: str, response: str) -> None:
+            """Append the just-completed turn to the Q/A/sparse views."""
+            try:
+                turn_id = getattr(self._agent, "_turn_id", 0)
+                q_data = {"turn_id": turn_id, "content": user_text}
+                a_data = {
+                    "turn_id": turn_id,
+                    "content": response or "",
+                    "tool_calls": list(self._last_tool_calls),
+                    "modified_files": list(self._modified_files),
+                }
+                self.query_one("#q-log", QView).add_turn(turn_id, q_data, a_data)
+                self.query_one("#a-log", AView).add_turn(turn_id, q_data, a_data)
+                self.query_one("#sparse-log", SparseView).add_turn(turn_id, q_data, a_data)
+            except Exception:
+                logger.exception("_append_qa_turn: failed (ignored)")
 
         # ── actions ──────────────────────────────────────────────────────────
 
@@ -1109,6 +1177,7 @@ def _build_textual_app(agent: "Agent", session=None):
             self._modified_files = []
             self._iter_done = 0
             self._iter_limit = 0
+            self._current_user_text = user_text
 
             self.query_one("#input-bar", PromptInput).disabled = True
             self.query_one("#loading-row").add_class("active")
@@ -1298,6 +1367,9 @@ def _build_textual_app(agent: "Agent", session=None):
                 self._write_chat(
                     f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] {_escape(response)}"
                 )
+
+            if event.state == WorkerState.SUCCESS:
+                self._append_qa_turn(getattr(self, "_current_user_text", ""), response or "")
 
             self.query_one("#token-bar", TokenBar).update_tokens(self._agent.token_estimate())
             self.call_later(self._refresh_git)
