@@ -706,6 +706,14 @@ def cmd_commit(args, config):
         lines = [l for l in lines if not l.startswith("```")]
         message = "\n".join(lines).strip()
 
+    if not message:
+        console.print(
+            "[red]Model returned an empty commit message "
+            "(no content in stream — likely all output went to reasoning_content "
+            "or max_tokens was exhausted during thinking). Aborting.[/red]"
+        )
+        return
+
     console.print(Panel(message, title="Proposed commit message", border_style="cyan"))
 
     choice = Prompt.ask("Commit with this message?", choices=["y", "n", "e"], default="y")
@@ -724,6 +732,9 @@ def cmd_commit(args, config):
         subprocess.run([editor, tmp])
         message = Path(tmp).read_text().strip()
         Path(tmp).unlink(missing_ok=True)
+        if not message:
+            console.print("[red]Empty commit message. Aborting.[/red]")
+            return
         console.print(Panel(message, title="Edited commit message", border_style="cyan"))
         confirm = Prompt.ask("Commit?", choices=["y", "n"], default="y")
         if confirm == "n":

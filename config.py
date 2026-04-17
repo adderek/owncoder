@@ -110,6 +110,20 @@ class UIConfig:
 
 
 @dataclass
+class LoopGuardConfig:
+    """Deterministic loop detector for the tool-call dispatch loop.
+
+    Hashes each (tool_name, normalized_args) and stops the turn if the same
+    signature appears `repeat_threshold` times within the last `window` calls.
+    A callback (passed to Agent.chat) gets first refusal — if it returns truthy
+    the turn continues and that signature is silenced for the rest of the turn.
+    """
+    enabled: bool = True
+    window: int = 10
+    repeat_threshold: int = 3
+
+
+@dataclass
 class LogsConfig:
     """Logging configuration.
 
@@ -140,6 +154,7 @@ class Config:
     ui: UIConfig = field(default_factory=UIConfig)
     asm: AsmAnalysisConfig = field(default_factory=AsmAnalysisConfig)
     logs: LogsConfig = field(default_factory=LogsConfig)
+    loop_guard: LoopGuardConfig = field(default_factory=LoopGuardConfig)
 
 
 def _apply_env_overrides(config: Config) -> None:
@@ -153,6 +168,9 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_LLM_TEMPERATURE": ("llm", "temperature"),
         "AGENT_LLM_THINK_LEVEL": ("llm", "think_level"),
         "AGENT_LLM_AUTO_DETECT_CTX": ("llm", "auto_detect_ctx"),
+        "AGENT_LOOP_GUARD_ENABLED": ("loop_guard", "enabled"),
+        "AGENT_LOOP_GUARD_WINDOW": ("loop_guard", "window"),
+        "AGENT_LOOP_GUARD_THRESHOLD": ("loop_guard", "repeat_threshold"),
         "AGENT_EMBEDDINGS_BASE_URL": ("embeddings", "base_url"),
         "AGENT_EMBEDDINGS_MODEL": ("embeddings", "model"),
         "AGENT_EMBEDDINGS_DIMENSIONS": ("embeddings", "dimensions"),
@@ -218,6 +236,7 @@ def _merge(config: Config, data: dict) -> None:
         ("ui", config.ui),
         ("asm_analysis", config.asm),
         ("logs", config.logs),
+        ("loop_guard", config.loop_guard),
     ):
         section_data = data.get(section_name, {})
         _merge_obj(obj, section_data)

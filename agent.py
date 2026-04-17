@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -549,6 +550,42 @@ def _truncate_large_messages(messages: list[dict], token_budget: int) -> list[di
     return result
 
 
+class LoopDetector:
+    """Per-turn ring buffer of tool-call signatures.
+
+    Stops the turn when the same (tool_name, args) appears `threshold` times
+    within the last `window` calls. Signatures the user explicitly chose to
+    continue past are silenced for the rest of the turn.
+    """
+
+    def __init__(self, window: int, threshold: int) -> None:
+        self.window = max(1, window)
+        self.threshold = max(2, threshold)
+        self._buf: list[str] = []
+        self._suppressed: set[str] = set()
+
+    @staticmethod
+    def signature(name: str, args_json: str) -> str:
+        try:
+            args = json.loads(args_json or "{}")
+        except json.JSONDecodeError:
+            args = {"_raw": args_json}
+        canonical = json.dumps(args, sort_keys=True, default=str)
+        return f"{name}:{hashlib.sha256(canonical.encode('utf-8', errors='replace')).hexdigest()[:12]}"
+
+    def observe(self, sig: str) -> int:
+        self._buf.append(sig)
+        if len(self._buf) > self.window:
+            del self._buf[: len(self._buf) - self.window]
+        return self._buf.count(sig)
+
+    def triggered(self, sig: str, count: int) -> bool:
+        return count >= self.threshold and sig not in self._suppressed
+
+    def acknowledge(self, sig: str) -> None:
+        self._suppressed.add(sig)
+
+
 async def run_turn(
     messages: list[dict],
     config: "Config",
@@ -558,6 +595,7 @@ async def run_turn(
     on_tool_result: callable | None = None,
     on_usage: callable | None = None,
     on_progress: callable | None = None,
+    on_loop_detected: callable | None = None,
     _depth: int = 0,
 ) -> tuple[str, list[dict]]:
     tools = get_schemas()
@@ -566,6 +604,13 @@ async def run_turn(
     content_parts: list[str] = []  # accumulate across length-truncated continuations
     iter_count = 0
     max_iter = max(1, int(getattr(config.llm, "max_iterations", 10)))
+    loop_cfg = getattr(config, "loop_guard", None)
+    loop_detector: LoopDetector | None = None
+    if loop_cfg is not None and getattr(loop_cfg, "enabled", True):
+        loop_detector = LoopDetector(
+            window=int(getattr(loop_cfg, "window", 10)),
+            threshold=int(getattr(loop_cfg, "repeat_threshold", 3)),
+        )
     if on_progress is not None:
         try:
             on_progress(0, max_iter)
@@ -681,6 +726,39 @@ async def run_turn(
                 tool_calls = [_FakeToolCall(c["name"], c["arguments"]) for c in raw]
 
         if tool_calls:
+            # ── Loop guard ────────────────────────────────────────────────
+            # Cheap deterministic check: if the model is dispatching the same
+            # tool+args repeatedly, stop and let the user (or, eventually, an
+            # overseeing model) decide whether to continue.
+            if loop_detector is not None:
+                triggered: list[tuple[str, str, int]] = []
+                for tc in tool_calls:
+                    sig = LoopDetector.signature(tc.function.name, tc.function.arguments)
+                    cnt = loop_detector.observe(sig)
+                    if loop_detector.triggered(sig, cnt):
+                        triggered.append((tc.function.name, sig, cnt))
+                if triggered:
+                    summary = ", ".join(f"{n}×{c}" for n, _, c in triggered)
+                    logger.warning("loop_guard: repeated tool calls detected: %s", summary)
+                    decision = False
+                    if on_loop_detected is not None:
+                        try:
+                            res = on_loop_detected(summary, max(c for _, _, c in triggered))
+                            if asyncio.iscoroutine(res):
+                                res = await res
+                            decision = bool(res)
+                        except Exception:
+                            logger.exception("on_loop_detected callback failed; stopping")
+                    if decision:
+                        for _, sig, _ in triggered:
+                            loop_detector.acknowledge(sig)
+                    else:
+                        note = (
+                            f"[loop guard: stopped after repeated tool calls "
+                            f"({summary}). Reply 'continue' to override or redirect.]"
+                        )
+                        messages = messages + [{"role": "assistant", "content": note}]
+                        return "".join(content_parts + [note]), messages
             clean_content = _strip_tool_blocks(msg.content or "") if msg.content else None
             messages = messages + [{
                 "role": "assistant",
@@ -988,6 +1066,7 @@ class Agent:
         on_token: callable | None = None,
         on_user_message: callable | None = None,
         on_progress: callable | None = None,
+        on_loop_detected: callable | None = None,
     ) -> str:
         self._turn_id += 1
         turn_id = self._turn_id
@@ -1029,6 +1108,7 @@ class Agent:
             on_tool_result=on_tool_result,
             on_usage=self._record_usage,
             on_progress=on_progress,
+            on_loop_detected=on_loop_detected,
         )
 
         # Background: capture Q/A to disk and optionally summarize. Tracked so

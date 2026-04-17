@@ -1879,12 +1879,30 @@ async def simple_loop(agent: "Agent", session=None):
                 from agent.memory.session import save_session
                 save_session(session, agent.messages)
 
+        async def _on_loop_detected(summary: str, count: int) -> bool:
+            # Pause spinner output, ask user, resume.
+            _spinner_stop.set()
+            sys.stdout.write("\r\033[K")
+            sys.stdout.flush()
+            console.print(
+                f"[{t.warning}]⚠ loop guard: repeated tool calls ({summary}).[/{t.warning}]"
+            )
+            loop = asyncio.get_running_loop()
+            try:
+                answer = await loop.run_in_executor(
+                    None, lambda: input("  Continue anyway? [y/N] ").strip().lower()
+                )
+            except (EOFError, KeyboardInterrupt):
+                answer = ""
+            return answer in ("y", "yes")
+
         try:
             response = await agent.chat(
                 user_input,
                 on_tool_call=on_tool,
                 on_token=on_token,
                 on_user_message=_on_user_message,
+                on_loop_detected=_on_loop_detected,
             )
         except Exception as e:
             logger.error("chat error: %s\n%s", e, traceback.format_exc())
