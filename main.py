@@ -565,7 +565,6 @@ def cmd_sessions(args, config):
 def cmd_commit(args, config):
     import subprocess
     import asyncio
-    from agent.agent import Agent
     from rich.console import Console
     from rich.panel import Panel
     from rich.prompt import Prompt
@@ -608,30 +607,98 @@ def cmd_commit(args, config):
     status = _git("status", "--short")
     recent_log = _git("log", "--oneline", "-10")
 
-    # Build prompt for the LLM
-    prompt = f"""You are preparing a git commit message for the repository at: {path}
+    # Cap diff size — models hallucinate badly on very large diffs
+    DIFF_CAP = 12000
+    diff_chars = len(staged_diff)
+    diff_text = staged_diff
+    truncated = False
+    if diff_chars > DIFF_CAP:
+        diff_text = staged_diff[:DIFF_CAP] + "\n[... diff truncated ...]"
+        truncated = True
 
-Recent commits (for style reference):
-{recent_log or '(no prior commits)'}
+    system_prompt = (
+        "You write git commit messages. Output ONLY the commit message: "
+        "no preamble, no explanation, no markdown fences, no quotes. "
+        "First line: imperative-mood summary, <=72 chars. "
+        "Optional body after a blank line, wrapped at 72 chars."
+    )
+    user_prompt = (
+        f"Recent commits (style reference):\n{recent_log or '(none)'}\n\n"
+        f"Git status:\n{status}\n\n"
+        f"Staged diff:\n{diff_text}\n\n"
+        "Write the commit message."
+    )
 
-Git status:
-{status}
+    from rich.live import Live
+    from rich.spinner import Spinner
+    from rich.text import Text
+    import time as _time
+    from openai import AsyncOpenAI
 
-Staged diff:
-{staged_diff}
+    console.print(
+        f"[dim]Generating commit message for {path} "
+        f"(staged diff: {diff_chars:,} chars"
+        f"{', truncated to ' + str(DIFF_CAP) if truncated else ''})…[/dim]"
+    )
 
-Write a concise, imperative-mood commit message for the staged changes above.
-Output ONLY the commit message — no explanation, no markdown, no quotes.
-First line: short summary (≤72 chars). Optionally follow with a blank line and a short body."""
-
-    console.print(f"[dim]Generating commit message for {path}…[/dim]")
-
-    agent = Agent(config)
+    state = {"tokens": 0, "buf": "", "start": _time.monotonic()}
 
     async def _generate() -> str:
-        return await agent.chat(prompt)
+        client = AsyncOpenAI(
+            base_url=config.llm.base_url,
+            api_key=config.llm.api_key,
+        )
+        # Reasoning-capable models (e.g. Gemma-4) emit a thinking trace before
+        # the final answer. Budget enough tokens for thinking + answer and
+        # hint that minimal reasoning is fine. Capture `reasoning_content`
+        # only for progress display, never as the commit message.
+        stream = await client.chat.completions.create(
+            model=config.llm.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.2,
+            max_tokens=4096,
+            stream=True,
+            extra_body={"reasoning_effort": "low"},
+        )
+        parts: list[str] = []
+        async for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            content = getattr(delta, "content", None)
+            reasoning = getattr(delta, "reasoning_content", None)
+            if content:
+                state["tokens"] += 1
+                state["buf"] += content
+                parts.append(content)
+            elif reasoning:
+                # Show thinking in the spinner preview so the user sees life
+                state["tokens"] += 1
+                state["buf"] = ("…thinking: " + reasoning)[-120:]
+        return "".join(parts)
 
-    message = asyncio.run(_generate()).strip()
+    async def _run_with_status() -> str:
+        task = asyncio.create_task(_generate())
+        spinner = Spinner("dots", text="starting…")
+        with Live(spinner, console=console, refresh_per_second=8, transient=True):
+            while not task.done():
+                elapsed = _time.monotonic() - state["start"]
+                preview = state["buf"].replace("\n", " ")[-60:]
+                spinner.update(text=Text.from_markup(
+                    f"[cyan]generating[/cyan] · {elapsed:5.1f}s · "
+                    f"{state['tokens']} tok · [dim]{preview}[/dim]"
+                ))
+                await asyncio.sleep(0.15)
+        return await task
+
+    message = asyncio.run(_run_with_status()).strip()
+    elapsed = _time.monotonic() - state["start"]
+    console.print(
+        f"[dim]done in {elapsed:.1f}s · {state['tokens']} tokens[/dim]"
+    )
 
     # Strip any accidental markdown fences
     if message.startswith("```"):

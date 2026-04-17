@@ -111,6 +111,36 @@ def _build_call_kwargs(config: "Config") -> dict:
     return kw
 
 
+def _merge_trailing_assistants(api_messages: list[dict]) -> list[dict]:
+    """Collapse consecutive plain assistant messages at the tail into one.
+
+    Some OpenAI-compatible servers (e.g. llama-server) reject a message list
+    whose last two items are both assistant messages. This can happen when
+    the model returns finish_reason="length" across multiple auto-continue
+    iterations. We merge them here rather than rejecting.
+    Messages carrying tool_calls are left alone.
+    """
+    if len(api_messages) < 2:
+        return api_messages
+    out = list(api_messages)
+    while len(out) >= 2:
+        a, b = out[-2], out[-1]
+        if (
+            a.get("role") == "assistant"
+            and b.get("role") == "assistant"
+            and not a.get("tool_calls")
+            and not b.get("tool_calls")
+        ):
+            merged = {
+                "role": "assistant",
+                "content": (a.get("content") or "") + (b.get("content") or ""),
+            }
+            out = out[:-2] + [merged]
+        else:
+            break
+    return out
+
+
 def _inject_think_hint(api_messages: list[dict], config: "Config") -> list[dict]:
     """Append a transient system message carrying the think-level directive."""
     level = (getattr(config.llm, "think_level", "normal") or "normal").lower()
@@ -564,6 +594,8 @@ async def run_turn(
 
         # Strip internal-only keys before sending to API
         api_messages = [{k: v for k, v in m.items() if not k.startswith("_")} for m in messages]
+        # Guard against servers that reject consecutive trailing assistant messages
+        api_messages = _merge_trailing_assistants(api_messages)
 
         # Use streaming when a token callback is provided; non-streaming otherwise.
         try:
@@ -738,7 +770,21 @@ async def run_turn(
         if finish_reason == "length" and content.strip():
             logger.info("run_turn: finish_reason=length, auto-continuing")
             content_parts.append(content)
-            messages = messages + [{"role": "assistant", "content": content}]
+            # Merge with a prior trailing assistant message (from a previous
+            # auto-continue) instead of stacking consecutive assistants, which
+            # some OpenAI-compatible servers reject.
+            if (
+                messages
+                and messages[-1].get("role") == "assistant"
+                and not messages[-1].get("tool_calls")
+            ):
+                prev = messages[-1]
+                messages = messages[:-1] + [{
+                    "role": "assistant",
+                    "content": (prev.get("content") or "") + content,
+                }]
+            else:
+                messages = messages + [{"role": "assistant", "content": content}]
             continue
 
         if not content.strip():
