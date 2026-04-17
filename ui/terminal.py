@@ -1375,11 +1375,13 @@ def _build_textual_app(agent: "Agent", session=None):
             input_widget.disabled = False
             input_widget.focus()
 
+            empty_response = False
             if event.state == WorkerState.SUCCESS:
                 response = event.worker.result
                 if not response:
                     logger.warning("chat worker returned empty response")
-                    response = f"[{t.text_dim}](done)[/{t.text_dim}]"
+                    response = "(done)"
+                    empty_response = True
             elif event.state == WorkerState.ERROR:
                 err = event.worker.error
                 tb = "".join(traceback.format_exception(type(err), err, err.__traceback__)) if err else ""
@@ -1434,8 +1436,11 @@ def _build_textual_app(agent: "Agent", session=None):
                 self._write_chat(f"  {files_part}")
 
             if response:
+                body = _escape(response)
+                if empty_response:
+                    body = f"[{t.text_dim}]{body}[/{t.text_dim}]"
                 self._write_chat(
-                    f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] {_escape(response)}"
+                    f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] {body}"
                 )
 
             if event.state == WorkerState.SUCCESS:
