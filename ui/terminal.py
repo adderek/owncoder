@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
 # (primary_name, aliases, short_description, takes_arg)
 _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
+    ("/a",           [],        "switch to A (agent answers) tab", False),
     ("/analyze-asm", ["/asm"],  "analyze assembly file  --resume --force --levels N", True),
     ("/apply",       [],        "write last code block to file", False),
     ("/clear",       [],        "clear the chat screen", False),
@@ -26,9 +27,11 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/export",      [],        "export conversation as markdown", False),
     ("/help",        ["/?"],    "show this help", False),
     ("/load",        [],        "load a saved session", True),
+    ("/q",           [],        "switch to Q (user questions) tab", False),
     ("/reset",       [],        "drop conversation history", False),
     ("/save",        [],        "save session under a name", False),
     ("/sessions",    [],        "list saved sessions", False),
+    ("/sparse",      [],        "switch to sparse (condensed dialogue) tab", False),
     ("/temperature", ["/temp"], "set sampling temperature (0.0–2.0, - or default to reset)", True),
     ("/think",       [],        "set thinking level  off|low|normal|high|max", True),
     ("/max_tokens",  [],        "set max tokens   [out <n> | in <n> | <n> | default]", True),
@@ -174,55 +177,96 @@ def _build_textual_app(agent: "Agent", session=None):
             text = text[: limit - 1] + "…"
         return text
 
-    class QView(RichLog):
+    class JumpToTurn(Message):
+        """Posted when a user clicks an entry in Q/A/Sparse views."""
+        def __init__(self, ordinal: int) -> None:
+            super().__init__()
+            self.ordinal = ordinal
+
+    class _QALineTrackingMixin:
+        """Mixin providing click-to-jump behavior shared by Q/A/Sparse views."""
+        def _reset_line_map(self) -> None:
+            self._line_ordinals: list[int] = []
+            self._entry_count: int = 0
+
+        def _track_line(self, ordinal: int) -> None:
+            if not hasattr(self, "_line_ordinals"):
+                self._line_ordinals = []
+            self._line_ordinals.append(ordinal)
+
+        def on_click(self, event) -> None:
+            ordinals = getattr(self, "_line_ordinals", [])
+            if not ordinals:
+                return
+            line_idx = int(self.scroll_offset.y) + int(event.y)
+            if 0 <= line_idx < len(ordinals):
+                self.post_message(JumpToTurn(ordinals[line_idx]))
+
+    class QView(_QALineTrackingMixin, RichLog):
         """View for user questions: one line per turn."""
         def load_history(self, entries: "list[tuple[int, dict, dict]]") -> None:
             self.clear()
-            for tid, q, _a in entries:
-                self._write_entry(tid, q)
+            self._reset_line_map()
+            for ordinal, (tid, q, _a) in enumerate(entries):
+                self._write_entry(ordinal, tid, q)
+            self._entry_count = len(entries)
 
         def add_turn(self, turn_id: int, q_data: dict, _a_data: dict) -> None:
-            self._write_entry(turn_id, q_data)
+            ordinal = getattr(self, "_entry_count", 0)
+            self._entry_count = ordinal + 1
+            self._write_entry(ordinal, turn_id, q_data)
 
-        def _write_entry(self, turn_id: int, q: dict) -> None:
+        def _write_entry(self, ordinal: int, turn_id: int, q: dict) -> None:
             if not q:
                 return
             text = q.get("summary_q") or q.get("content") or ""
+            self._track_line(ordinal)
             self.write(f"[{t.text_dim}]{turn_id:>3}[/{t.text_dim}] [bold {t.user_color}]Q:[/bold {t.user_color}] {_escape(_one_line(text))}")
 
-    class AView(RichLog):
+    class AView(_QALineTrackingMixin, RichLog):
         """View for agent answers: one line per turn."""
         def load_history(self, entries: "list[tuple[int, dict, dict]]") -> None:
             self.clear()
-            for tid, _q, a in entries:
-                self._write_entry(tid, a)
+            self._reset_line_map()
+            for ordinal, (tid, _q, a) in enumerate(entries):
+                self._write_entry(ordinal, tid, a)
+            self._entry_count = len(entries)
 
         def add_turn(self, turn_id: int, _q_data: dict, a_data: dict) -> None:
-            self._write_entry(turn_id, a_data)
+            ordinal = getattr(self, "_entry_count", 0)
+            self._entry_count = ordinal + 1
+            self._write_entry(ordinal, turn_id, a_data)
 
-        def _write_entry(self, turn_id: int, a: dict) -> None:
+        def _write_entry(self, ordinal: int, turn_id: int, a: dict) -> None:
             if not a:
                 return
             text = a.get("summary_a") or a.get("content") or ""
+            self._track_line(ordinal)
             self.write(f"[{t.text_dim}]{turn_id:>3}[/{t.text_dim}] [bold {t.agent_color}]A:[/bold {t.agent_color}] {_escape(_one_line(text))}")
 
-    class SparseView(RichLog):
+    class SparseView(_QALineTrackingMixin, RichLog):
         """Condensed dialogue: Q and A interleaved by turn_id."""
         def load_history(self, entries: "list[tuple[int, dict, dict]]") -> None:
             self.clear()
-            for tid, q, a in entries:
-                self._write_entry(tid, q, a)
+            self._reset_line_map()
+            for ordinal, (tid, q, a) in enumerate(entries):
+                self._write_entry(ordinal, tid, q, a)
+            self._entry_count = len(entries)
 
         def add_turn(self, turn_id: int, q_data: dict, a_data: dict) -> None:
-            self._write_entry(turn_id, q_data, a_data)
+            ordinal = getattr(self, "_entry_count", 0)
+            self._entry_count = ordinal + 1
+            self._write_entry(ordinal, turn_id, q_data, a_data)
 
-        def _write_entry(self, turn_id: int, q: dict, a: dict) -> None:
+        def _write_entry(self, ordinal: int, turn_id: int, q: dict, a: dict) -> None:
             tag = f"[{t.text_dim}]{turn_id:>3}[/{t.text_dim}]"
             q_text = (q or {}).get("summary_q") or (q or {}).get("content") or ""
             a_text = (a or {}).get("summary_a") or (a or {}).get("content") or ""
             if q_text:
+                self._track_line(ordinal)
                 self.write(f"{tag} [bold {t.user_color}][User][/bold {t.user_color}] {_escape(_one_line(q_text, 160))}")
             if a_text:
+                self._track_line(ordinal)
                 self.write(f"    [bold {t.agent_color}][Agent][/bold {t.agent_color}] {_escape(_one_line(a_text, 160))}")
 
     class ContextPanel(Static):
@@ -653,6 +697,7 @@ def _build_textual_app(agent: "Agent", session=None):
             self._iter_done: int = 0
             self._iter_limit: int = 0
             self._quit_requested: bool = False
+            self._chat_user_lines: list[int] = []
             if session is not None:
                 agent.set_session_id(session.id)
 
@@ -736,6 +781,7 @@ def _build_textual_app(agent: "Agent", session=None):
             import json as _json
             chat_log = self.query_one("#chat-log", ConversationView)
             chat_log.clear()
+            self._chat_user_lines = []
             for m in messages:
                 role = m.get("role", "")
                 if role == "system":
@@ -745,6 +791,7 @@ def _build_textual_app(agent: "Agent", session=None):
                     content = _json.dumps(content)
                 tool_calls = m.get("tool_calls") or []
                 if role == "user":
+                    self._chat_user_lines.append(len(chat_log.lines))
                     chat_log.write(
                         f"[bold {t.user_color}]You:[/bold {t.user_color}] {content}"
                     )
@@ -870,6 +917,15 @@ def _build_textual_app(agent: "Agent", session=None):
             from openai import AsyncOpenAI
             if cmd == "/help":
                 self._write_sys(_make_help_text(t))
+
+            elif cmd == "/q":
+                self.query_one(TabbedContent).active = "tab-q"
+
+            elif cmd == "/a":
+                self.query_one(TabbedContent).active = "tab-a"
+
+            elif cmd == "/sparse":
+                self.query_one(TabbedContent).active = "tab-sparse"
 
             elif cmd == "/compact":
                 from agent.memory.compactor import compact
@@ -1167,6 +1223,8 @@ def _build_textual_app(agent: "Agent", session=None):
         def _begin_chat(self, user_text: str) -> None:
             # Switch to chat tab so the user sees the exchange.
             self._switch_to_chat()
+            chat_log = self.query_one("#chat-log", ConversationView)
+            self._chat_user_lines.append(len(chat_log.lines))
             self._write_chat(f"[bold {t.user_color}]You:[/bold {t.user_color}] {_escape(user_text)}")
             self._last_tool_calls = []
             self._tool_stats: dict[str, dict[str, int]] = {}
@@ -1223,6 +1281,18 @@ def _build_textual_app(agent: "Agent", session=None):
             if self._session is not None:
                 save_session(self._session, self._agent.messages)
             return result
+
+        def on_jump_to_turn(self, event: JumpToTurn) -> None:
+            anchors = self._chat_user_lines
+            if not (0 <= event.ordinal < len(anchors)):
+                return
+            self._switch_to_chat()
+            chat_log = self.query_one("#chat-log", ConversationView)
+            y = anchors[event.ordinal]
+            try:
+                chat_log.scroll_to(y=y, animate=True)
+            except Exception:
+                logger.exception("jump_to_turn: scroll failed (ignored)")
 
         def on_tool_call_event(self, event: ToolCallEvent) -> None:
             import json
@@ -1398,6 +1468,7 @@ def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
   [{c}]/apply [file][/{c}]       write last code block to file (bypass tool calling)
   [{c}]/undo [file][/{c}]        restore last pre-write snapshot of a file
   [{c}]/export [file][/{c}]      export conversation as markdown
+  [{c}]/q[/{c}] · [{c}]/a[/{c}] · [{c}]/sparse[/{c}]    switch to Q / A / sparse tab  (click a line → jump to turn)
   [{c}]/analyze-asm <file>[/{c}]  LLM-driven assembly analysis and summarization
                        options: --resume  --force  --levels N
   [{c}]/think [level][/{c}]       thinking effort: off|low|normal|high|max ('-' resets)
