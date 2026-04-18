@@ -17,37 +17,51 @@ if TYPE_CHECKING:
 
 # (primary_name, aliases, short_description, takes_arg)
 _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
-    ("/a",           [],        "switch to A (agent answers) tab", False),
-    ("/analyze-asm", ["/asm"],  "analyze assembly file  --resume --force --levels N", True),
-    ("/apply",       [],        "write last code block to file", False),
-    ("/clear",       [],        "clear the chat screen", False),
-    ("/compact",     [],        "summarize old messages to free context", False),
-    ("/continue",    ["/c"],    "resume after iteration cap or truncation", False),
-    ("/exec",        [],        "run a shell command", True),
-    ("/export",      [],        "export conversation as markdown", False),
-    ("/help",        ["/?"],    "show this help", False),
-    ("/load",        [],        "load a saved session", True),
-    ("/q",           [],        "switch to Q (user questions) tab", False),
-    ("/reset",       [],        "drop conversation history", False),
-    ("/save",        [],        "save session under a name", False),
-    ("/sessions",    [],        "list saved sessions", False),
-    ("/sparse",      [],        "switch to sparse (condensed dialogue) tab", False),
-    ("/temperature", ["/temp"], "set sampling temperature (0.0–2.0, - or default to reset)", True),
-    ("/think",       [],        "set thinking level  off|low|normal|high|max", True),
-    ("/max_tokens",  [],        "set max tokens   [out <n> | in <n> | <n> | default]", True),
-    ("/tokens",      [],        "show token usage", False),
-    ("/tools",       [],        "list available tools", False),
-    ("/undo",        [],        "restore last file snapshot", False),
+    ("/a", [], "switch to A (agent answers) tab", False),
+    (
+        "/analyze-asm",
+        ["/asm"],
+        "analyze assembly file  --resume --force --levels N",
+        True,
+    ),
+    ("/apply", [], "write last code block to file", False),
+    ("/clear", [], "clear the chat screen", False),
+    ("/compact", [], "summarize old messages to free context", False),
+    ("/continue", ["/c"], "resume after iteration cap or truncation", False),
+    ("/exec", [], "run a shell command", True),
+    ("/export", [], "export conversation as markdown", False),
+    ("/help", ["/?"], "show this help", False),
+    ("/load", [], "load a saved session", True),
+    ("/q", [], "switch to Q (user questions) tab", False),
+    ("/reset", [], "drop conversation history", False),
+    ("/save", [], "save session under a name", False),
+    ("/sessions", [], "list saved sessions", False),
+    ("/sparse", [], "switch to sparse (condensed dialogue) tab", False),
+    (
+        "/temperature",
+        ["/temp"],
+        "set sampling temperature (0.0–2.0, - or default to reset)",
+        True,
+    ),
+    ("/think", [], "set thinking level  off|low|normal|high|max", True),
+    ("/max_tokens", [], "set max tokens   [out <n> | in <n> | <n> | default]", True),
+    ("/wrap", [], "toggle line wrapping", False),
+    ("/tools", [], "list available tools", False),
+    ("/undo", [], "restore last file snapshot", False),
 ]
 
 
 def _apply_think(agent, arg: str) -> tuple[bool, str]:
     """Returns (ok, message)."""
     from agent.agent import THINK_LEVELS
+
     v = arg.strip().lower()
     if not v:
         cur = agent.config.llm.think_level
-        return True, f"think_level = {cur}  (valid: {', '.join(THINK_LEVELS)}; use '-' or 'default' to reset)"
+        return (
+            True,
+            f"think_level = {cur}  (valid: {', '.join(THINK_LEVELS)}; use '-' or 'default' to reset)",
+        )
     if v in ("-", "default"):
         agent.config.llm.think_level = agent._llm_defaults["think_level"]
         return True, f"think_level reset to {agent.config.llm.think_level}"
@@ -136,13 +150,19 @@ def _match_commands(prefix: str) -> list[tuple[str, str, bool]]:
 
 # ── Textual UI ──────────────────────────────────────────────────────────────
 
+
 def _build_textual_app(agent: "Agent", session=None):
     t = agent.config.ui.theme  # shorthand used throughout
 
     from textual.app import App, ComposeResult
     from textual.widgets import (
-        Footer, RichLog, Static, TextArea, LoadingIndicator,
-        TabbedContent, TabPane,
+        Footer,
+        RichLog,
+        Static,
+        TextArea,
+        LoadingIndicator,
+        TabbedContent,
+        TabPane,
     )
     from textual.containers import Horizontal
     from textual.binding import Binding
@@ -171,20 +191,24 @@ def _build_textual_app(agent: "Agent", session=None):
     class SysView(RichLog):
         """System log — commands, session info, help output."""
 
-    def _one_line(text: str, limit: int = 120) -> str:
-        text = (text or "").strip().replace("\n", " ")
-        if len(text) > limit:
-            text = text[: limit - 1] + "…"
+    def _one_line(text: str, limit: int = 120, wrap: bool = False) -> str:
+        text = (text or "").strip()
+        if not wrap:
+            text = text.replace("\n", " ")
+            if len(text) > limit:
+                text = text[: limit - 1] + "…"
         return text
 
     class JumpToTurn(Message):
         """Posted when a user clicks an entry in Q/A/Sparse views."""
+
         def __init__(self, ordinal: int) -> None:
             super().__init__()
             self.ordinal = ordinal
 
     class _QALineTrackingMixin:
         """Mixin providing click-to-jump behavior shared by Q/A/Sparse views."""
+
         def _reset_line_map(self) -> None:
             self._line_ordinals: list[int] = []
             self._entry_count: int = 0
@@ -204,6 +228,7 @@ def _build_textual_app(agent: "Agent", session=None):
 
     class QView(_QALineTrackingMixin, RichLog):
         """View for user questions: one line per turn."""
+
         def load_history(self, entries: "list[tuple[int, dict, dict]]") -> None:
             self.clear()
             self._reset_line_map()
@@ -221,10 +246,13 @@ def _build_textual_app(agent: "Agent", session=None):
                 return
             text = q.get("summary_q") or q.get("content") or ""
             self._track_line(ordinal)
-            self.write(f"[{t.text_dim}]{turn_id:>3}[/{t.text_dim}] [bold {t.user_color}]Q:[/bold {t.user_color}] {_escape(_one_line(text))}")
+            self.write(
+                f"[{t.text_dim}]{turn_id:>3}[/{t.text_dim}] [bold {t.user_color}]Q:[/bold {t.user_color}] {_escape(_one_line(text, wrap=self.app._wrap_enabled))}"
+            )
 
     class AView(_QALineTrackingMixin, RichLog):
         """View for agent answers: one line per turn."""
+
         def load_history(self, entries: "list[tuple[int, dict, dict]]") -> None:
             self.clear()
             self._reset_line_map()
@@ -242,10 +270,13 @@ def _build_textual_app(agent: "Agent", session=None):
                 return
             text = a.get("summary_a") or a.get("content") or ""
             self._track_line(ordinal)
-            self.write(f"[{t.text_dim}]{turn_id:>3}[/{t.text_dim}] [bold {t.agent_color}]A:[/bold {t.agent_color}] {_escape(_one_line(text))}")
+            self.write(
+                f"[{t.text_dim}]{turn_id:>3}[/{t.text_dim}] [bold {t.agent_color}]A:[/bold {t.agent_color}] {_escape(_one_line(text, wrap=self.app._wrap_enabled))}"
+            )
 
     class SparseView(_QALineTrackingMixin, RichLog):
         """Condensed dialogue: Q and A interleaved by turn_id."""
+
         def load_history(self, entries: "list[tuple[int, dict, dict]]") -> None:
             self.clear()
             self._reset_line_map()
@@ -264,10 +295,14 @@ def _build_textual_app(agent: "Agent", session=None):
             a_text = (a or {}).get("summary_a") or (a or {}).get("content") or ""
             if q_text:
                 self._track_line(ordinal)
-                self.write(f"{tag} [bold {t.user_color}][User][/bold {t.user_color}] {_escape(_one_line(q_text, 160))}")
+                self.write(
+                    f"{tag} [bold {t.user_color}][User][/bold {t.user_color}] {_escape(_one_line(q_text, wrap=self.app._wrap_enabled))}"
+                )
             if a_text:
                 self._track_line(ordinal)
-                self.write(f"    [bold {t.agent_color}][Agent][/bold {t.agent_color}] {_escape(_one_line(a_text, 160))}")
+                self.write(
+                    f"    [bold {t.agent_color}][Agent][/bold {t.agent_color}] {_escape(_one_line(a_text, wrap=self.app._wrap_enabled))}"
+                )
 
     class ContextPanel(Static):
         def set_context(self, text: str) -> None:
@@ -295,7 +330,7 @@ def _build_textual_app(agent: "Agent", session=None):
                 self.remove_class("visible")
                 return
             lines = []
-            for i, (cmd, desc, _) in enumerate(matches[:self.MAX_VISIBLE]):
+            for i, (cmd, desc, _) in enumerate(matches[: self.MAX_VISIBLE]):
                 marker = "▸" if i == selected_idx else " "
                 if i == selected_idx:
                     cmd_part = f"[bold {t.cmd_color}]{cmd}[/bold {t.cmd_color}]"
@@ -323,7 +358,10 @@ def _build_textual_app(agent: "Agent", session=None):
 
         class HistorySubmitted(Message):
             """User confirmed editing a past message. remove_count interactions will be rolled back."""
-            def __init__(self, area: "PromptInput", value: str, remove_count: int) -> None:
+
+            def __init__(
+                self, area: "PromptInput", value: str, remove_count: int
+            ) -> None:
                 super().__init__()
                 self.area = area
                 self.value = value
@@ -347,12 +385,12 @@ def _build_textual_app(agent: "Agent", session=None):
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
             self._history: list[str] = []
-            self._mode: str = "normal"   # "normal" | "browsing" | "editing"
+            self._mode: str = "normal"  # "normal" | "browsing" | "editing"
             self._history_idx: int | None = None
             self._edit_source_idx: int | None = None
             self._saved_text: str = ""
             self._comp_matches: list[tuple[str, str, bool]] = []
-            self._comp_idx: int = -1          # -1 = no item highlighted
+            self._comp_idx: int = -1  # -1 = no item highlighted
             self._comp_suppress_update: bool = False
 
         def add_to_history(self, text: str) -> None:
@@ -370,9 +408,11 @@ def _build_textual_app(agent: "Agent", session=None):
             self.move_cursor(self.document.end)
             rc = self._remove_count_for(idx)
             rc_str = f"  [dim](removes {rc} interaction{'s' if rc != 1 else ''})[/dim]"
-            self.post_message(self.HintChanged(
-                f"[bold]↑↓[/bold] navigate  [bold]ENTER[/bold]=edit&retry  [bold]ESC[/bold]=cancel{rc_str}"
-            ))
+            self.post_message(
+                self.HintChanged(
+                    f"[bold]↑↓[/bold] navigate  [bold]ENTER[/bold]=edit&retry  [bold]ESC[/bold]=cancel{rc_str}"
+                )
+            )
 
         def _exit_browsing(self) -> None:
             self._mode = "normal"
@@ -387,9 +427,11 @@ def _build_textual_app(agent: "Agent", session=None):
             self._edit_source_idx = self._history_idx
             rc = self._remove_count_for(self._edit_source_idx)
             rc_str = f"  [dim](removes {rc} interaction{'s' if rc != 1 else ''})[/dim]"
-            self.post_message(self.HintChanged(
-                f"[bold]ENTER[/bold]=retry  [bold]ESC[/bold]=cancel{rc_str}"
-            ))
+            self.post_message(
+                self.HintChanged(
+                    f"[bold]ENTER[/bold]=retry  [bold]ESC[/bold]=cancel{rc_str}"
+                )
+            )
 
         # ── completion helpers ────────────────────────────────────────────────
 
@@ -698,6 +740,21 @@ def _build_textual_app(agent: "Agent", session=None):
             self._iter_limit: int = 0
             self._quit_requested: bool = False
             self._chat_user_lines: list[int] = []
+            self._sys_messages: list[str] = []
+
+            chat_wrap_cfg = self._agent.config.ui.chat_wrap
+            if chat_wrap_cfg == "wrap":
+                self._wrap_enabled = True
+            elif chat_wrap_cfg == "nowrap":
+                self._wrap_enabled = False
+            elif chat_wrap_cfg == "last used":
+                from agent.ui.prefs import load_prefs
+
+                prefs = load_prefs()
+                self._wrap_enabled = prefs.get("chat_wrap") == "wrap"
+            else:
+                self._wrap_enabled = False
+
             if session is not None:
                 agent.set_session_id(session.id)
 
@@ -740,12 +797,15 @@ def _build_textual_app(agent: "Agent", session=None):
             # Register a thread-safe progress callback for analyze_asm
             try:
                 from agent.tools.analyze_asm import set_ui_progress_cb
+
                 app_ref = self
+
                 def _asm_ui_cb(msg: str) -> None:
                     app_ref.call_from_thread(
                         app_ref.query_one("#context-panel", ContextPanel).set_context,
                         f"[{t.tool_color}]{msg}[/{t.tool_color}]",
                     )
+
                 set_ui_progress_cb(_asm_ui_cb)
             except Exception:
                 pass
@@ -754,10 +814,15 @@ def _build_textual_app(agent: "Agent", session=None):
             if self._session:
                 sys_log.write(
                     f"[{t.text_dim}]session  {self._session.id}[/{t.text_dim}]"
-                    + (f"  [{t.cmd_color}]{self._session.short_name}[/{t.cmd_color}]"
-                       if self._session.short_name else "")
+                    + (
+                        f"  [{t.cmd_color}]{self._session.short_name}[/{t.cmd_color}]"
+                        if self._session.short_name
+                        else ""
+                    )
                 )
-            sys_log.write(f"[{t.text_dim}]Type /help for commands  ·  F1 opens this tab[/{t.text_dim}]")
+            sys_log.write(
+                f"[{t.text_dim}]Type /help for commands  ·  F1 opens this tab[/{t.text_dim}]"
+            )
             # Restore prior dialogue if session was loaded before the UI started
             if self._agent.messages:
                 self._restore_chat_history(self._agent.messages)
@@ -767,6 +832,7 @@ def _build_textual_app(agent: "Agent", session=None):
 
         def _write_sys(self, text: str) -> None:
             """Write to the sys log and switch to that tab."""
+            self._sys_messages.append(text)
             self.query_one("#sys-log", SysView).write(text)
             self.query_one(TabbedContent).active = "tab-sys"
 
@@ -779,6 +845,7 @@ def _build_textual_app(agent: "Agent", session=None):
         def _restore_chat_history(self, messages: list) -> None:
             """Replay session messages into the chat log (clears first)."""
             import json as _json
+
             chat_log = self.query_one("#chat-log", ConversationView)
             chat_log.clear()
             self._chat_user_lines = []
@@ -793,7 +860,7 @@ def _build_textual_app(agent: "Agent", session=None):
                 if role == "user":
                     self._chat_user_lines.append(len(chat_log.lines))
                     chat_log.write(
-                        f"[bold {t.user_color}]You:[/bold {t.user_color}] {content}"
+                        f"[bold {t.user_color}]You:[/bold {t.user_color}] {_escape(_one_line(content, wrap=self._wrap_enabled))}"
                     )
                 elif role == "assistant":
                     for tc in tool_calls:
@@ -803,9 +870,20 @@ def _build_textual_app(agent: "Agent", session=None):
                                 f"[{t.tool_color}]  ⚙ {name}[/{t.tool_color}]"
                             )
                     if content:
-                        chat_log.write(
-                            f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] {content}"
-                        )
+                        if self._wrap_enabled:
+                            chat_log.write(
+                                f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] {content.strip()}"
+                            )
+                        else:
+                            chat_log.write(
+                                f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] {_escape(_one_line(content, wrap=False))}"
+                            )
+
+        def _reload_sys_view(self) -> None:
+            sys_log = self.query_one("#sys-log", SysView)
+            sys_log.clear()
+            for msg in self._sys_messages:
+                sys_log.write(msg)
 
         def _reload_qa_views(self) -> None:
             """Populate Q/A/sparse views from on-disk history for the current session."""
@@ -813,6 +891,7 @@ def _build_textual_app(agent: "Agent", session=None):
                 return
             try:
                 from agent.memory.qa_log import read_history_sync
+
                 entries = read_history_sync(self._session.id)
             except Exception:
                 logger.exception("_reload_qa_views: read_history_sync failed (ignored)")
@@ -837,7 +916,9 @@ def _build_textual_app(agent: "Agent", session=None):
                 }
                 self.query_one("#q-log", QView).add_turn(turn_id, q_data, a_data)
                 self.query_one("#a-log", AView).add_turn(turn_id, q_data, a_data)
-                self.query_one("#sparse-log", SparseView).add_turn(turn_id, q_data, a_data)
+                self.query_one("#sparse-log", SparseView).add_turn(
+                    turn_id, q_data, a_data
+                )
             except Exception:
                 logger.exception("_append_qa_turn: failed (ignored)")
 
@@ -846,6 +927,7 @@ def _build_textual_app(agent: "Agent", session=None):
         def action_quit(self) -> None:
             try:
                 from agent.tools.analyze_asm import get_interrupt_flag
+
                 get_interrupt_flag().set()
             except Exception:
                 pass
@@ -900,6 +982,7 @@ def _build_textual_app(agent: "Agent", session=None):
 
         async def _refresh_git(self) -> None:
             from agent.tools.git import git_status
+
             try:
                 loop = asyncio.get_event_loop()
                 s = await loop.run_in_executor(None, git_status)
@@ -915,6 +998,7 @@ def _build_textual_app(agent: "Agent", session=None):
 
         async def _run_slash(self, cmd: str, arg: str) -> None:
             from openai import AsyncOpenAI
+
             if cmd == "/help":
                 self._write_sys(_make_help_text(t))
 
@@ -929,17 +1013,24 @@ def _build_textual_app(agent: "Agent", session=None):
 
             elif cmd == "/compact":
                 from agent.memory.compactor import compact
+
                 cfg = self._agent.config
                 client = AsyncOpenAI(base_url=cfg.llm.base_url, api_key=cfg.llm.api_key)
                 before = self._agent.token_estimate()
                 self._write_sys(f"[{t.text_dim}]Compacting…[/{t.text_dim}]")
                 try:
-                    self._agent.messages = await compact(self._agent.messages, cfg, client)
+                    self._agent.messages = await compact(
+                        self._agent.messages, cfg, client
+                    )
                     after = self._agent.token_estimate()
-                    self._write_sys(f"[{t.success}]Compacted.[/{t.success}] {before} → {after} tokens")
+                    self._write_sys(
+                        f"[{t.success}]Compacted.[/{t.success}] {before} → {after} tokens"
+                    )
                 except Exception as e:
                     self._write_sys(f"[{t.error}]Compact failed: {e}[/{t.error}]")
-                self.query_one("#token-bar", TokenBar).update_tokens(self._agent.token_estimate())
+                self.query_one("#token-bar", TokenBar).update_tokens(
+                    self._agent.token_estimate()
+                )
 
             elif cmd in ("/continue", "/c"):
                 self._begin_chat("continue")
@@ -957,29 +1048,42 @@ def _build_textual_app(agent: "Agent", session=None):
                 )
 
             elif cmd == "/reset":
-                system = next((m for m in self._agent.messages if m.get("role") == "system"), None)
+                system = next(
+                    (m for m in self._agent.messages if m.get("role") == "system"), None
+                )
                 self._agent.messages = [system] if system else []
-                self._write_sys(f"[{t.text_dim}]Conversation history cleared.[/{t.text_dim}]")
+                self._write_sys(
+                    f"[{t.text_dim}]Conversation history cleared.[/{t.text_dim}]"
+                )
 
             elif cmd == "/tools":
                 from agent.tools import get_schemas
+
                 names = [s["function"]["name"] for s in get_schemas()]
                 self._write_sys("Tools: " + "  ".join(names))
 
             elif cmd == "/save":
                 from agent.memory.session import save_session
+
                 save_session(self._session, self._agent.messages)
                 label = self._session.short_name or self._session.id
-                self._write_sys(f"[{t.text_dim}]Saved session '{label}'.[/{t.text_dim}]")
+                self._write_sys(
+                    f"[{t.text_dim}]Saved session '{label}'.[/{t.text_dim}]"
+                )
 
             elif cmd == "/load":
                 if not arg.strip():
-                    self._write_sys(f"[{t.warning}]Usage: /load <session-id-or-short-name>[/{t.warning}]")
+                    self._write_sys(
+                        f"[{t.warning}]Usage: /load <session-id-or-short-name>[/{t.warning}]"
+                    )
                 else:
                     from agent.memory.session import load_session
+
                     loaded_session, loaded_msgs = load_session(arg.strip())
                     if loaded_session is None:
-                        self._write_sys(f"[{t.warning}]Session '{arg.strip()}' not found.[/{t.warning}]")
+                        self._write_sys(
+                            f"[{t.warning}]Session '{arg.strip()}' not found.[/{t.warning}]"
+                        )
                     else:
                         loaded_msgs = [
                             {k: v for k, v in m.items() if not k.startswith("_")}
@@ -1001,14 +1105,25 @@ def _build_textual_app(agent: "Agent", session=None):
             elif cmd == "/sessions":
                 from agent.memory.session import list_sessions
                 import datetime
+
                 sessions = list_sessions()
                 if not sessions:
                     self._write_sys(f"[{t.text_dim}]No sessions found.[/{t.text_dim}]")
                 for s in sessions:
                     ts_val = s.get("updated_at") or s.get("created_at")
-                    ts = datetime.datetime.fromtimestamp(ts_val).strftime("%Y-%m-%d %H:%M") if ts_val else "?"
+                    ts = (
+                        datetime.datetime.fromtimestamp(ts_val).strftime(
+                            "%Y-%m-%d %H:%M"
+                        )
+                        if ts_val
+                        else "?"
+                    )
                     label = s.get("short_name") or s["id"]
-                    name_extra = f"  [{t.text_dim}]{s['name']}[/{t.text_dim}]" if s.get("name") else ""
+                    name_extra = (
+                        f"  [{t.text_dim}]{s['name']}[/{t.text_dim}]"
+                        if s.get("name")
+                        else ""
+                    )
                     self._write_sys(
                         f"  [{t.cmd_color}]{label}[/{t.cmd_color}]{name_extra}"
                         f"  {s['message_count']} msgs  [{t.text_dim}]{ts}[/{t.text_dim}]"
@@ -1016,6 +1131,7 @@ def _build_textual_app(agent: "Agent", session=None):
 
             elif cmd == "/undo":
                 from agent.tools.files import undo_file, undo_candidates
+
                 target = arg.strip()
                 if not target:
                     candidates = undo_candidates()
@@ -1032,15 +1148,20 @@ def _build_textual_app(agent: "Agent", session=None):
 
             elif cmd == "/exec":
                 if not arg.strip():
-                    self._write_sys(f"[{t.warning}]Usage: /exec <command>[/{t.warning}]")
+                    self._write_sys(
+                        f"[{t.warning}]Usage: /exec <command>[/{t.warning}]"
+                    )
                 else:
                     from agent.tools.shell import run_command
+
                     self._write_sys(f"[{t.text_dim}]$ {arg.strip()}[/{t.text_dim}]")
                     result = run_command(arg.strip())
                     if result.get("stdout"):
                         self._write_sys(result["stdout"].rstrip())
                     if result.get("stderr"):
-                        self._write_sys(f"[{t.warning}]{result['stderr'].rstrip()}[/{t.warning}]")
+                        self._write_sys(
+                            f"[{t.warning}]{result['stderr'].rstrip()}[/{t.warning}]"
+                        )
                     rc = result.get("returncode", 0)
                     if rc != 0:
                         self._write_sys(f"[{t.error}]exit code {rc}[/{t.error}]")
@@ -1049,6 +1170,7 @@ def _build_textual_app(agent: "Agent", session=None):
 
             elif cmd == "/export":
                 import json as _json
+
                 lines = []
                 for m in self._agent.messages:
                     role = m.get("role", "?")
@@ -1063,13 +1185,19 @@ def _build_textual_app(agent: "Agent", session=None):
                     elif role == "assistant":
                         if tool_calls:
                             names = ", ".join(
-                                tc["function"]["name"] for tc in tool_calls if isinstance(tc, dict)
+                                tc["function"]["name"]
+                                for tc in tool_calls
+                                if isinstance(tc, dict)
                             )
                             lines.append(f"**Agent** *(tools: {names})*: {content}\n")
                         else:
                             lines.append(f"**Agent:** {content}\n")
                 md_text = "\n---\n".join(lines)
-                label = (self._session.short_name or self._session.id) if self._session else "session"
+                label = (
+                    (self._session.short_name or self._session.id)
+                    if self._session
+                    else "session"
+                )
                 target = arg.strip() or f"{label}.md"
                 Path(target).write_text(md_text, encoding="utf-8")
                 self._write_sys(
@@ -1091,17 +1219,27 @@ def _build_textual_app(agent: "Agent", session=None):
                 for line in msg.splitlines():
                     self._write_sys(f"[{color}]{line}[/{color}]")
 
-            elif cmd == "/max_tokens":
-                ok, msg = _apply_max_tokens(self._agent, arg)
-                color = t.success if ok else t.warning
-                for line in msg.splitlines():
-                    self._write_sys(f"[{color}]{line}[/{color}]")
+            elif cmd == "/wrap":
+                from agent.ui.prefs import save_prefs
+
+                self._wrap_enabled = not self._wrap_enabled
+                state = "enabled" if self._wrap_enabled else "disabled"
+                save_prefs({"chat_wrap": "wrap" if self._wrap_enabled else "nowrap"})
+                self._write_sys(f"[{t.success}]Line wrapping {state}.[/{t.success}]")
+                # Refresh views to apply the new wrapping setting
+                self.query_one("#chat-log", ConversationView).clear()
+                if self._agent.messages:
+                    self._restore_chat_history(self._agent.messages)
+                self._reload_qa_views()
 
             else:
-                self._write_sys(f"[{t.warning}]Unknown command '{cmd}'. Type /help.[/{t.warning}]")
+                self._write_sys(
+                    f"[{t.warning}]Unknown command '{cmd}'. Type /help.[/{t.warning}]"
+                )
 
         async def _run_analyze_asm(self, arg: str) -> None:
             from agent.tools.analyze_asm import analyze_asm, get_interrupt_flag
+
             parts = arg.split()
             if not parts:
                 self._write_sys(
@@ -1122,7 +1260,9 @@ def _build_textual_app(agent: "Agent", session=None):
 
             interrupt = get_interrupt_flag()
             interrupt.clear()
-            self._write_sys(f"[{t.text_dim}]Analyzing {path}…  ESC to interrupt[/{t.text_dim}]")
+            self._write_sys(
+                f"[{t.text_dim}]Analyzing {path}…  ESC to interrupt[/{t.text_dim}]"
+            )
 
             def _do_analyze():
                 kwargs = {"path": path, "resume": resume, "force": force}
@@ -1140,7 +1280,9 @@ def _build_textual_app(agent: "Agent", session=None):
             if "error" in result:
                 self._write_sys(f"[{t.error}]{result['error']}[/{t.error}]")
             else:
-                self._write_sys(f"[{t.success}]{result.get('message', str(result))}[/{t.success}]")
+                self._write_sys(
+                    f"[{t.success}]{result.get('message', str(result))}[/{t.success}]"
+                )
 
         # ── input handling ───────────────────────────────────────────────────
 
@@ -1167,7 +1309,9 @@ def _build_textual_app(agent: "Agent", session=None):
 
             if user_text.startswith("/"):
                 parts = user_text.split(None, 1)
-                await self._run_slash(parts[0].lower(), parts[1] if len(parts) > 1 else "")
+                await self._run_slash(
+                    parts[0].lower(), parts[1] if len(parts) > 1 else ""
+                )
                 return
 
             if user_text.lower() == "continue":
@@ -1178,7 +1322,9 @@ def _build_textual_app(agent: "Agent", session=None):
             input_widget.add_to_history(user_text)
             self._begin_chat(user_text)
 
-        async def on_prompt_input_history_submitted(self, event: PromptInput.HistorySubmitted) -> None:
+        async def on_prompt_input_history_submitted(
+            self, event: PromptInput.HistorySubmitted
+        ) -> None:
             user_text = event.value.strip()
             if not user_text:
                 return
@@ -1186,23 +1332,29 @@ def _build_textual_app(agent: "Agent", session=None):
             # Roll back agent messages: remove the last remove_count user turns
             if event.remove_count > 0:
                 user_positions = [
-                    i for i, m in enumerate(self._agent.messages)
+                    i
+                    for i, m in enumerate(self._agent.messages)
                     if m.get("role") == "user"
                 ]
                 if event.remove_count >= len(user_positions):
                     system = next(
-                        (m for m in self._agent.messages if m.get("role") == "system"), None
+                        (m for m in self._agent.messages if m.get("role") == "system"),
+                        None,
                     )
                     self._agent.messages = [system] if system else []
                 else:
                     cut = user_positions[-event.remove_count]
                     self._agent.messages = self._agent.messages[:cut]
-                self.query_one("#token-bar", TokenBar).update_tokens(self._agent.token_estimate())
+                self.query_one("#token-bar", TokenBar).update_tokens(
+                    self._agent.token_estimate()
+                )
 
             # Truncate history to the edit point and add the new version
             input_widget = self.query_one("#input-bar", PromptInput)
             if event.area._edit_source_idx is not None:
-                input_widget._history = input_widget._history[:event.area._edit_source_idx]
+                input_widget._history = input_widget._history[
+                    : event.area._edit_source_idx
+                ]
             input_widget.add_to_history(user_text)
 
             self._begin_chat(user_text)
@@ -1225,7 +1377,9 @@ def _build_textual_app(agent: "Agent", session=None):
             self._switch_to_chat()
             chat_log = self.query_one("#chat-log", ConversationView)
             self._chat_user_lines.append(len(chat_log.lines))
-            self._write_chat(f"[bold {t.user_color}]You:[/bold {t.user_color}] {_escape(user_text)}")
+            self._write_chat(
+                f"[bold {t.user_color}]You:[/bold {t.user_color}] {_escape(user_text)}"
+            )
             self._last_tool_calls = []
             self._tool_stats: dict[str, dict[str, int]] = {}
             self._current_tool = None
@@ -1239,11 +1393,15 @@ def _build_textual_app(agent: "Agent", session=None):
 
             self.query_one("#input-bar", PromptInput).disabled = True
             self.query_one("#loading-row").add_class("active")
-            self.query_one("#loading-tokens", Static).update(f"in: [bold]{self._tokens_before:,}[/bold]")
+            self.query_one("#loading-tokens", Static).update(
+                f"in: [bold]{self._tokens_before:,}[/bold]"
+            )
             if self._loading_timer is not None:
                 self._loading_timer.stop()
             self._loading_timer = self.set_interval(0.3, self._update_loading_tokens)
-            self.query_one("#context-panel", ContextPanel).set_context("[dim]thinking…[/dim]")
+            self.query_one("#context-panel", ContextPanel).set_context(
+                "[dim]thinking…[/dim]"
+            )
 
             self._start_chat(user_text)
 
@@ -1296,12 +1454,17 @@ def _build_textual_app(agent: "Agent", session=None):
 
         def on_tool_call_event(self, event: ToolCallEvent) -> None:
             import json
+
             # Track modified files for write_file / patch_file / edit_file
             if event.name in ("write_file", "patch_file", "edit_file"):
                 try:
-                    args = json.loads(event.args) if isinstance(event.args, str) else event.args
+                    args = (
+                        json.loads(event.args)
+                        if isinstance(event.args, str)
+                        else event.args
+                    )
                     if event.name == "edit_file":
-                        for ch in (args.get("chunks") or []):
+                        for ch in args.get("chunks") or []:
                             p = ch.get("path", "") if isinstance(ch, dict) else ""
                             if p and p not in self._modified_files:
                                 self._modified_files.append(p)
@@ -1346,13 +1509,18 @@ def _build_textual_app(agent: "Agent", session=None):
 
         def on_token_stream_event(self, event: TokenStreamEvent) -> None:
             from rich.text import Text
+
             self._stream_buffer += event.token
             stream_view = self.query_one("#stream-view", Static)
             if not self._streaming_active:
                 self._streaming_active = True
                 stream_view.add_class("active")
             # Show tail of accumulated text to avoid unbounded growth in the widget
-            tail = self._stream_buffer[-800:] if len(self._stream_buffer) > 800 else self._stream_buffer
+            tail = (
+                self._stream_buffer[-800:]
+                if len(self._stream_buffer) > 800
+                else self._stream_buffer
+            )
             content = Text.assemble(
                 ("Agent:", f"bold {t.agent_color}"),
                 (f" {tail}▌",),
@@ -1362,7 +1530,11 @@ def _build_textual_app(agent: "Agent", session=None):
         def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
             if event.worker.name != "chat":
                 return
-            if event.state not in (WorkerState.SUCCESS, WorkerState.ERROR, WorkerState.CANCELLED):
+            if event.state not in (
+                WorkerState.SUCCESS,
+                WorkerState.ERROR,
+                WorkerState.CANCELLED,
+            ):
                 return
 
             # Stop timer and hide loading row
@@ -1384,7 +1556,13 @@ def _build_textual_app(agent: "Agent", session=None):
                     empty_response = True
             elif event.state == WorkerState.ERROR:
                 err = event.worker.error
-                tb = "".join(traceback.format_exception(type(err), err, err.__traceback__)) if err else ""
+                tb = (
+                    "".join(
+                        traceback.format_exception(type(err), err, err.__traceback__)
+                    )
+                    if err
+                    else ""
+                )
                 logger.error("chat worker error: %s\n%s", err, tb)
                 response = f"[{t.error}]Error: {err}[/{t.error}]"
             else:
@@ -1444,15 +1622,20 @@ def _build_textual_app(agent: "Agent", session=None):
                 )
 
             if event.state == WorkerState.SUCCESS:
-                self._append_qa_turn(getattr(self, "_current_user_text", ""), response or "")
+                self._append_qa_turn(
+                    getattr(self, "_current_user_text", ""), response or ""
+                )
 
-            self.query_one("#token-bar", TokenBar).update_tokens(self._agent.token_estimate())
+            self.query_one("#token-bar", TokenBar).update_tokens(
+                self._agent.token_estimate()
+            )
             self.call_later(self._refresh_git)
 
     return CodeAgentApp(agent, session=session)
 
 
 # ── Simple (Claude Code-style) ───────────────────────────────────────────────
+
 
 def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
     c = theme.cmd_color
@@ -1515,8 +1698,8 @@ def _spinner_status_fields(agent, status: str, elapsed: float) -> list[str]:
         if ctx:
             pct = int(used / ctx * 100)
             fields.append(f"ctx {pct}%")
-            k_used = f"{used/1000:.1f}k" if used >= 1000 else str(used)
-            k_ctx = f"{ctx//1000}k" if ctx >= 1000 else str(ctx)
+            k_used = f"{used / 1000:.1f}k" if used >= 1000 else str(used)
+            k_ctx = f"{ctx // 1000}k" if ctx >= 1000 else str(ctx)
             fields.append(f"{k_used}/{k_ctx}")
 
         msg_count = max(0, len(agent.messages) - 1)  # exclude system prompt
@@ -1526,8 +1709,10 @@ def _spinner_status_fields(agent, status: str, elapsed: float) -> list[str]:
         # of output tokens into think/tool. Populated via Agent._record_usage.
         s = getattr(agent, "stats", None)
         if s and s.get("calls", 0) > 0:
+
             def _k(n: int) -> str:
-                return f"{n/1000:.1f}k" if n >= 1000 else str(n)
+                return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+
             fields.append(f"↑{_k(s['input_tokens'])}")
             fields.append(f"↓{_k(s['output_tokens'])}")
             if s.get("in_tps"):
@@ -1563,11 +1748,12 @@ async def _run_spinner(status_ref: list[str], stop: asyncio.Event, agent=None) -
     import sys
     import shutil
     import time as _time
+
     frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
     # Animation prefix is at most 2 chars ("⠋ "), leaving the rest for status fields.
     # Max animation width = 5 chars; we use 2, giving 3 chars of padding for future use.
     ANIM_WIDTH = 2  # frame char + space
-    SEP = "  "      # separator between fields
+    SEP = "  "  # separator between fields
     i = 0
     t0 = _time.monotonic()
     while not stop.is_set():
@@ -1620,8 +1806,12 @@ async def simple_loop(agent: "Agent", session=None):
         agent.set_session_id(session.id)
 
     prompt_esc = _hex_to_ansi(t.prompt)
-    console.print(f"[bold {t.agent_color}]local-code-agent[/bold {t.agent_color}]  [dim]{cfg.llm.model}  {cfg.llm.ctx_window} ctx[/dim]")
-    console.print(f"[{t.text_dim}]/help /compact /tokens /reset /tools /exec /apply /save /sessions  ·  Ctrl+D to quit[/{t.text_dim}]\n")
+    console.print(
+        f"[bold {t.agent_color}]local-code-agent[/bold {t.agent_color}]  [dim]{cfg.llm.model}  {cfg.llm.ctx_window} ctx[/dim]"
+    )
+    console.print(
+        f"[{t.text_dim}]/help /compact /tokens /reset /tools /exec /apply /save /sessions  ·  Ctrl+D to quit[/{t.text_dim}]\n"
+    )
 
     while True:
         try:
@@ -1660,14 +1850,17 @@ async def simple_loop(agent: "Agent", session=None):
             elif cmd == "/compact":
                 from openai import AsyncOpenAI
                 from agent.memory.compactor import compact
+
                 client = AsyncOpenAI(base_url=cfg.llm.base_url, api_key=cfg.llm.api_key)
                 before = agent.token_estimate()
                 console.print("[dim]Compacting…[/dim]")
                 try:
                     agent.messages = await compact(agent.messages, cfg, client)
                     after = agent.token_estimate()
-                    console.print(f"[green]Compacted.[/green] {before} → {after} tokens  "
-                                  f"({len(agent.messages)} messages)")
+                    console.print(
+                        f"[green]Compacted.[/green] {before} → {after} tokens  "
+                        f"({len(agent.messages)} messages)"
+                    )
                 except Exception as e:
                     console.print(f"[red]Compact failed: {e}[/red]")
 
@@ -1675,12 +1868,15 @@ async def simple_loop(agent: "Agent", session=None):
                 console.clear()
 
             elif cmd == "/reset":
-                system = next((m for m in agent.messages if m.get("role") == "system"), None)
+                system = next(
+                    (m for m in agent.messages if m.get("role") == "system"), None
+                )
                 agent.messages = [system] if system else []
                 console.print("[dim]Conversation history cleared.[/dim]")
 
             elif cmd == "/save":
                 from agent.memory.session import save_session
+
                 if session is not None:
                     save_session(session, agent.messages)
                     label = session.short_name or session.id
@@ -1690,46 +1886,75 @@ async def simple_loop(agent: "Agent", session=None):
 
             elif cmd == "/load":
                 if not arg.strip():
-                    console.print("[yellow]Usage: /load <session-id-or-short-name>[/yellow]")
+                    console.print(
+                        "[yellow]Usage: /load <session-id-or-short-name>[/yellow]"
+                    )
                 else:
                     from agent.memory.session import load_session
+
                     loaded_session, loaded_msgs = load_session(arg.strip())
                     if loaded_session is None:
-                        console.print(f"[yellow]Session '{arg.strip()}' not found.[/yellow]")
+                        console.print(
+                            f"[yellow]Session '{arg.strip()}' not found.[/yellow]"
+                        )
                     else:
-                        loaded_msgs = [{k: v for k, v in m.items() if not k.startswith("_")} for m in loaded_msgs]
+                        loaded_msgs = [
+                            {k: v for k, v in m.items() if not k.startswith("_")}
+                            for m in loaded_msgs
+                        ]
                         agent.messages = loaded_msgs
                         session = loaded_session
                         label = session.short_name or session.id
-                        console.print(f"[dim]Loaded session '{label}' ({len(loaded_msgs)} messages).[/dim]")
+                        console.print(
+                            f"[dim]Loaded session '{label}' ({len(loaded_msgs)} messages).[/dim]"
+                        )
 
             elif cmd == "/sessions":
                 from agent.memory.session import list_sessions
                 import datetime
+
                 for s in list_sessions():
                     ts_val = s.get("updated_at") or s.get("created_at")
-                    ts = datetime.datetime.fromtimestamp(ts_val).strftime("%Y-%m-%d %H:%M") if ts_val else "?"
+                    ts = (
+                        datetime.datetime.fromtimestamp(ts_val).strftime(
+                            "%Y-%m-%d %H:%M"
+                        )
+                        if ts_val
+                        else "?"
+                    )
                     label = s.get("short_name") or s["id"]
-                    name_part = f"  [dim]{s.get('name', '')}[/dim]" if s.get("name") else ""
-                    console.print(f"  [cyan]{label}[/cyan]{name_part}  {s['message_count']} msgs  [dim]{ts}[/dim]")
+                    name_part = (
+                        f"  [dim]{s.get('name', '')}[/dim]" if s.get("name") else ""
+                    )
+                    console.print(
+                        f"  [cyan]{label}[/cyan]{name_part}  {s['message_count']} msgs  [dim]{ts}[/dim]"
+                    )
 
             elif cmd == "/tools":
                 from agent.tools import get_schemas
+
                 for schema in get_schemas():
                     fn = schema["function"]
-                    console.print(f"  [cyan]{fn['name']}[/cyan]  [dim]{fn.get('description','')[:60]}[/dim]")
+                    console.print(
+                        f"  [cyan]{fn['name']}[/cyan]  [dim]{fn.get('description', '')[:60]}[/dim]"
+                    )
 
             elif cmd == "/apply":
                 from agent.agent import extract_last_code_block
                 from agent.tools.files import write_file
+
                 result = extract_last_code_block(agent.messages)
                 if not result:
-                    console.print("[yellow]No code block found in recent messages.[/yellow]")
+                    console.print(
+                        "[yellow]No code block found in recent messages.[/yellow]"
+                    )
                 else:
                     fname, code = result
                     target = arg.strip() or fname
                     console.print(f"[dim]Writing to {target}:[/dim]")
-                    console.print(f"[dim]{code[:200]}{'…' if len(code) > 200 else ''}[/dim]")
+                    console.print(
+                        f"[dim]{code[:200]}{'…' if len(code) > 200 else ''}[/dim]"
+                    )
                     confirm = input("Apply? [Y/n]: ").strip().lower()
                     if confirm in ("", "y", "yes"):
                         r = write_file(target, code)
@@ -1740,6 +1965,7 @@ async def simple_loop(agent: "Agent", session=None):
 
             elif cmd == "/undo":
                 from agent.tools.files import undo_file, undo_candidates
+
                 target = arg.strip()
                 if not target:
                     candidates = undo_candidates()
@@ -1760,6 +1986,7 @@ async def simple_loop(agent: "Agent", session=None):
                     console.print("[yellow]Usage: /exec <command>[/yellow]")
                 else:
                     from agent.tools.shell import run_command
+
                     console.print(f"[dim]$ {arg.strip()}[/dim]")
                     result = run_command(arg.strip())
                     if result.get("stdout"):
@@ -1774,6 +2001,7 @@ async def simple_loop(agent: "Agent", session=None):
 
             elif cmd == "/export":
                 import json as _json
+
                 lines = []
                 for m in agent.messages:
                     role = m.get("role", "?")
@@ -1787,22 +2015,31 @@ async def simple_loop(agent: "Agent", session=None):
                         lines.append(f"**You:** {content}\n")
                     elif role == "assistant":
                         if tool_calls:
-                            names = ", ".join(tc["function"]["name"] for tc in tool_calls if isinstance(tc, dict))
+                            names = ", ".join(
+                                tc["function"]["name"]
+                                for tc in tool_calls
+                                if isinstance(tc, dict)
+                            )
                             lines.append(f"**Agent** *(tools: {names})*: {content}\n")
                         else:
                             lines.append(f"**Agent:** {content}\n")
                     # skip tool result messages (role == "tool")
                 md_text = "\n---\n".join(lines)
-                _session_label = (session.short_name or session.id) if session else "session"
+                _session_label = (
+                    (session.short_name or session.id) if session else "session"
+                )
                 target = arg.strip() or f"{_session_label}.md"
                 Path(target).write_text(md_text, encoding="utf-8")
                 console.print(f"[dim]Exported to {target} ({len(lines)} turns).[/dim]")
 
             elif cmd == "/analyze-asm":
                 from agent.tools.analyze_asm import analyze_asm, get_interrupt_flag
+
                 parts = arg.split()
                 if not parts:
-                    console.print("[yellow]Usage: /analyze-asm <file> [--resume] [--force] [--levels N][/yellow]")
+                    console.print(
+                        "[yellow]Usage: /analyze-asm <file> [--resume] [--force] [--levels N][/yellow]"
+                    )
                 else:
                     path_arg = parts[0]
                     resume = "--resume" in parts
@@ -1817,17 +2054,27 @@ async def simple_loop(agent: "Agent", session=None):
                                 pass
                     interrupt = get_interrupt_flag()
                     interrupt.clear()
-                    console.print(f"[dim]Analyzing {path_arg}… (Ctrl+C to interrupt)[/dim]")
+                    console.print(
+                        f"[dim]Analyzing {path_arg}… (Ctrl+C to interrupt)[/dim]"
+                    )
                     try:
-                        kwargs = {"path": path_arg, "resume": resume, "force": force_flag}
+                        kwargs = {
+                            "path": path_arg,
+                            "resume": resume,
+                            "force": force_flag,
+                        }
                         if max_lvls is not None:
                             kwargs["max_levels"] = max_lvls
                         loop = asyncio.get_event_loop()
-                        result = await loop.run_in_executor(None, lambda: analyze_asm(**kwargs))
+                        result = await loop.run_in_executor(
+                            None, lambda: analyze_asm(**kwargs)
+                        )
                         if "error" in result:
                             console.print(f"[red]{result['error']}[/red]")
                         else:
-                            console.print(f"[green]{result.get('message', str(result))}[/green]")
+                            console.print(
+                                f"[green]{result.get('message', str(result))}[/green]"
+                            )
                     except KeyboardInterrupt:
                         interrupt.set()
                         console.print("[yellow]Interrupted.[/yellow]")
@@ -1847,17 +2094,22 @@ async def simple_loop(agent: "Agent", session=None):
                 console.print(f"[{'green' if ok else 'yellow'}]{msg}[/]")
 
             else:
-                console.print(f"[yellow]Unknown command '{cmd}'. Type /help for a list.[/yellow]")
+                console.print(
+                    f"[yellow]Unknown command '{cmd}'. Type /help for a list.[/yellow]"
+                )
 
             continue
 
         # ── Normal message ──────────────────────────────────────────────────
         import sys
+
         tool_results: list[str] = []
         streaming_tokens: list[str] = []
         _spinner_status: list[str] = ["thinking…"]
         _spinner_stop = asyncio.Event()
-        _spinner_task = asyncio.create_task(_run_spinner(_spinner_status, _spinner_stop, agent=agent))
+        _spinner_task = asyncio.create_task(
+            _run_spinner(_spinner_status, _spinner_stop, agent=agent)
+        )
 
         def on_tool(name: str, args_str: str) -> None:
             # Stop spinner and clear its line before printing
@@ -1882,6 +2134,7 @@ async def simple_loop(agent: "Agent", session=None):
         def _on_user_message() -> None:
             if session is not None:
                 from agent.memory.session import save_session
+
                 save_session(session, agent.messages)
 
         async def _on_loop_detected(summary: str, count: int) -> bool:
@@ -1919,6 +2172,7 @@ async def simple_loop(agent: "Agent", session=None):
 
         if session is not None:
             from agent.memory.session import save_session
+
             save_session(session, agent.messages)
 
         # If streaming was active, the text is already printed; just add newline.
@@ -1929,7 +2183,9 @@ async def simple_loop(agent: "Agent", session=None):
             console.print()
             console.print(Markdown(response))
         elif tool_results:
-            console.print(f"[{t.text_dim}]Done. ({', '.join(tool_results)})[/{t.text_dim}]")
+            console.print(
+                f"[{t.text_dim}]Done. ({', '.join(tool_results)})[/{t.text_dim}]"
+            )
         else:
             console.print(f"[{t.warning}]No response from model.[/{t.warning}]")
 
@@ -1951,12 +2207,15 @@ async def simple_loop(agent: "Agent", session=None):
             console.print(f"[{t.text_dim}]{'  '.join(parts)}[/{t.text_dim}]")
 
         if cfg.ui.show_token_count:
-            console.print(f"\n{_token_bar(agent.token_estimate(), cfg.llm.ctx_window)}\n")
+            console.print(
+                f"\n{_token_bar(agent.token_estimate(), cfg.llm.ctx_window)}\n"
+            )
 
     return session
 
 
 # ── Entry point ──────────────────────────────────────────────────────────────
+
 
 def run_ui(agent: "Agent", session=None):
     cfg = agent.config
