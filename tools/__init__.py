@@ -27,7 +27,7 @@ def get_schemas() -> list[dict]:
 
 def load_all_tools(config=None, store=None, embedder=None, asm_store=None) -> None:
     global _tools_loaded
-    from agent.tools import files, shell, git, search, analyze_asm, edit_file  # noqa: F401
+    from agent.tools import files, shell, git, search, analyze_asm, edit_file, recall  # noqa: F401
     from agent.tools.rules import load_rules
 
     # Load rule files (.agent.ignore, .agent.ro, .agent.config, etc.)

@@ -1,0 +1,30 @@
+You are producing the COMPRESSED context view of a coding session. You are
+given a detailed "knowledge draft" (Tier-2 source facts). Your output goes
+directly into the agent's active context window, so density matters.
+
+Produce three artifacts, wrapped in tags, in this exact order:
+
+  <facts>{JSON}</facts>
+  <summary>...compressed narrative for the A view...</summary>
+  <q>...refined user intent / outstanding request for the Q view...</q>
+
+The JSON facts object must contain:
+{
+  "files_modified": [...],
+  "decisions": [...],
+  "current_task": "...",
+  "open_issues": [...],
+  "code_written": [{"name": "...", "path": "...", "purpose": "..."}]
+}
+
+Rules:
+  * No information that is not already in the knowledge draft.
+  * The <summary> is one or two tight paragraphs — what was done, where it
+    stands, what matters next. Name files, functions, and decisions
+    explicitly; skip conversational texture.
+  * The <q> is ONE paragraph rephrasing the user's still-active goals and
+    constraints, as though the user had asked it fresh.
+  * If the draft notes that details have been elided, mention in <summary>
+    that `recall_facts(query=...)` is available to expand specifics.
+  * Never invent file paths, error messages, or decisions.
+  * Omit conversational noise, apologies, greetings, and resolved dead-ends.
