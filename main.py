@@ -1102,6 +1102,16 @@ def main():
         raise
     except Exception as exc:
         dump_path = _write_exception_dump(exc, argv=sys.argv, config=config, log_path=log_path)
+        try:
+            from agent import failure_report as _fr
+            _fr.report_exception(
+                exc,
+                kind="unhandled_exception",
+                context={"argv": sys.argv, "command": getattr(args, "command", None)},
+                config=config,
+            )
+        except Exception:
+            pass
         msg = f"\nUnhandled exception: {type(exc).__name__}: {exc}"
         if dump_path:
             msg += f"\nDump written to: {dump_path}"

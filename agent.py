@@ -171,15 +171,36 @@ def _tool_result_char_limit(config: "Config") -> int:
 
 
 async def execute_tool(tool_call, config: "Config | None" = None) -> str:
+    from agent import failure_report as _fr
     name = tool_call.function.name
+    raw_args = tool_call.function.arguments or "{}"
+    args: dict
     try:
-        args = json.loads(tool_call.function.arguments or "{}")
-    except json.JSONDecodeError:
+        args = json.loads(raw_args)
+        if not isinstance(args, dict):
+            raise json.JSONDecodeError("arguments must be a JSON object", raw_args, 0)
+    except json.JSONDecodeError as e:
         args = {}
+        _fr.report("invalid_tool_call", {
+            "tool": name,
+            "reason": "args_json_decode_error",
+            "raw_arguments": raw_args,
+            "error": f"{type(e).__name__}: {e}",
+            "tool_call_id": getattr(tool_call, "id", None),
+        }, config=config)
     logger.debug("execute_tool: %s  args=%s", name, args)
     fn = get_tool(name)
     if fn is None:
         logger.warning("execute_tool: unknown tool %r", name)
+        _fr.report("invalid_tool_call", {
+            "tool": name,
+            "reason": "unknown_tool",
+            "arguments": args,
+            "raw_arguments": raw_args,
+            "known_tools": sorted(s["function"]["name"] for s in __import__(
+                "agent.tools", fromlist=["get_schemas"]).get_schemas()),
+            "tool_call_id": getattr(tool_call, "id", None),
+        }, config=config)
         return json.dumps({"error": f"Unknown tool: {name}"})
     # Validate required arguments before calling to give the model a clear error
     from agent.tools import get_schemas
@@ -190,6 +211,15 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
         missing = [r for r in required if r not in args]
         if missing:
             logger.warning("execute_tool: %s missing required args: %s", name, missing)
+            _fr.report("invalid_tool_call", {
+                "tool": name,
+                "reason": "missing_required_args",
+                "missing": missing,
+                "arguments": args,
+                "required": required,
+                "allowed": sorted(params.get("properties", {}).keys()),
+                "tool_call_id": getattr(tool_call, "id", None),
+            }, config=config)
             return json.dumps({
                 "error": f"Missing required argument(s): {', '.join(missing)}",
                 "tool": name,
@@ -200,6 +230,14 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
             unknown = [k for k in args if k not in allowed]
             if unknown:
                 logger.warning("execute_tool: %s unknown args: %s", name, unknown)
+                _fr.report("invalid_tool_call", {
+                    "tool": name,
+                    "reason": "unknown_args",
+                    "unknown": unknown,
+                    "arguments": args,
+                    "allowed": sorted(allowed),
+                    "tool_call_id": getattr(tool_call, "id", None),
+                }, config=config)
                 return json.dumps({
                     "error": f"Unknown argument(s): {', '.join(unknown)}",
                     "tool": name,
@@ -240,6 +278,11 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
             "execute_tool: %s raised %s: %s\n%s",
             name, type(e).__name__, e, traceback.format_exc(),
         )
+        _fr.report_exception(e, kind="tool_exception", context={
+            "tool": name,
+            "arguments": args,
+            "tool_call_id": getattr(tool_call, "id", None),
+        }, config=config)
         return json.dumps({"error": str(e), "tool": name, "error_type": type(e).__name__})
 
 
@@ -1221,6 +1264,9 @@ class Agent:
         from agent.memory.session import get_session_full_dir
         from agent.memory.side_log import SideLogWriter
         from agent.tools import recall as recall_tool
+        from agent import failure_report as _fr
+        _fr.set_session(session_id)
+        _fr.set_config(self.config)
         self._qa_logger = QALogger(session_id)
         self._facts_store = FactsStore(session_id)
         try:
