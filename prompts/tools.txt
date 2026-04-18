@@ -11,12 +11,32 @@ read_file(path, start_line=None, end_line=None)
 write_file(path, content)
   Write a new file. Use ONLY for new files — never to modify existing files.
 
-edit_file(chunks)
-  Modify an existing file by replacing anchored regions.
+edit_file(chunks, match=None, on_chunk_fail=None)
+  Modify an existing file by replacing anchored regions. ONLY these three kwargs
+  exist. Do NOT pass selection_type, mode, operation, type, action, diff, patch,
+  edits, or any other field — they will raise TypeError.
   Pattern: read_file first → quote exact anchor → edit_file.
-  Each chunk: {"path": "...", "anchor": "<exact text in file>", "replacement": "<new text>"}.
-  Add range_hint: [start_line, end_line] to disambiguate duplicate anchors.
+  Each chunk is a dict with exactly these keys:
+    - path (str, required): file path relative to repo root.
+    - anchor (str, required): exact substring currently in the file. Copy it
+      verbatim from read_file output, including whitespace and newlines.
+    - replacement (str, required): the new text that replaces the anchor. To
+      delete, use "". To insert, include the anchor inside the replacement.
+    - range_hint ([int, int], optional): [start_line, end_line] to disambiguate
+      duplicate anchors.
+  match (optional str): "exact" (default) or "lstrip" for leading-whitespace-
+    tolerant matching.
+  on_chunk_fail (optional str): "abort" (default, atomic) or "skip".
+  Replace is the ONLY operation — there is no insert/delete mode. To insert,
+  anchor on surrounding text and include it in the replacement.
   Fails loudly on any mismatch — no silent changes.
+
+  Example — add a field to a dataclass:
+    edit_file(chunks=[{
+      "path": "agent/config.py",
+      "anchor": "    show_token_count: bool = True",
+      "replacement": "    show_token_count: bool = True\n    wrap_lines: bool = True"
+    }])
 
 list_files(path=".", pattern="**/*")
   List files in a directory, respecting .gitignore.
