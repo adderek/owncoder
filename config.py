@@ -112,6 +112,7 @@ class UIConfig:
     q_summaries: bool = False
     syntax_highlight: bool = True
     show_token_count: bool = True
+    chat_wrap: str = "last used"  # 'wrap', 'nowrap', or 'last used'
     theme: ThemeConfig = field(default_factory=ThemeConfig)
 
 
@@ -127,6 +128,14 @@ class LoopGuardConfig:
     enabled: bool = True
     window: int = 10
     repeat_threshold: int = 3
+    # Per-tool overrides of repeat_threshold, e.g. {"list_files": 6, "read_file": 5}.
+    # Exploratory read-only tools get bumped so the guard doesn't fire during
+    # normal project discovery; mutating tools still trip at repeat_threshold.
+    per_tool_threshold: dict = field(default_factory=lambda: {
+        "list_files": 6,
+        "read_file": 5,
+        "search_code": 5,
+    })
 
 
 @dataclass

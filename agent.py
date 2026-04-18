@@ -701,9 +701,17 @@ class LoopDetector:
     continue past are silenced for the rest of the turn.
     """
 
-    def __init__(self, window: int, threshold: int) -> None:
+    def __init__(
+        self,
+        window: int,
+        threshold: int,
+        per_tool_threshold: dict | None = None,
+    ) -> None:
         self.window = max(1, window)
         self.threshold = max(2, threshold)
+        self.per_tool_threshold = {
+            k: max(2, int(v)) for k, v in (per_tool_threshold or {}).items()
+        }
         self._buf: list[str] = []
         self._suppressed: set[str] = set()
 
@@ -716,6 +724,10 @@ class LoopDetector:
         canonical = json.dumps(args, sort_keys=True, default=str)
         return f"{name}:{hashlib.sha256(canonical.encode('utf-8', errors='replace')).hexdigest()[:12]}"
 
+    def _threshold_for(self, sig: str) -> int:
+        name = sig.split(":", 1)[0]
+        return self.per_tool_threshold.get(name, self.threshold)
+
     def observe(self, sig: str) -> int:
         self._buf.append(sig)
         if len(self._buf) > self.window:
@@ -723,7 +735,7 @@ class LoopDetector:
         return self._buf.count(sig)
 
     def triggered(self, sig: str, count: int) -> bool:
-        return count >= self.threshold and sig not in self._suppressed
+        return count >= self._threshold_for(sig) and sig not in self._suppressed
 
     def acknowledge(self, sig: str) -> None:
         self._suppressed.add(sig)
@@ -756,6 +768,7 @@ async def run_turn(
         loop_detector = LoopDetector(
             window=int(getattr(loop_cfg, "window", 10)),
             threshold=int(getattr(loop_cfg, "repeat_threshold", 3)),
+            per_tool_threshold=getattr(loop_cfg, "per_tool_threshold", None),
         )
     if on_progress is not None:
         try:
