@@ -185,7 +185,8 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
     from agent.tools import get_schemas
     _schemas_map = {s["function"]["name"]: s["function"] for s in get_schemas()}
     if name in _schemas_map:
-        required = _schemas_map[name].get("parameters", {}).get("required", [])
+        params = _schemas_map[name].get("parameters", {})
+        required = params.get("required", [])
         missing = [r for r in required if r not in args]
         if missing:
             logger.warning("execute_tool: %s missing required args: %s", name, missing)
@@ -194,6 +195,17 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
                 "tool": name,
                 "hint": f"Call {name} again and include: {', '.join(missing)}",
             })
+        allowed = set(params.get("properties", {}).keys())
+        if allowed:
+            unknown = [k for k in args if k not in allowed]
+            if unknown:
+                logger.warning("execute_tool: %s unknown args: %s", name, unknown)
+                return json.dumps({
+                    "error": f"Unknown argument(s): {', '.join(unknown)}",
+                    "tool": name,
+                    "allowed": sorted(allowed),
+                    "hint": f"Remove {', '.join(unknown)} and retry. {name} accepts only: {', '.join(sorted(allowed))}.",
+                })
     # Check approval rules before executing
     from agent.tools.rules import get_rules
     rules = get_rules()
