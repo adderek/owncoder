@@ -23,6 +23,11 @@ class LLMConfig:
     # Thinking effort: one of off, low, normal, high, max.  Injects a transient
     # system hint each turn and (when supported) forwards `reasoning_effort`.
     think_level: str = "normal"
+    # Narration-fallback: when the model describes a write instead of calling
+    # the tool, should we try to extract a code block + filename from its text
+    # and write the file ourselves?  Disable for well-behaved models — the
+    # fallback has a long history of mis-targeting illustrative snippets.
+    narration_fallback: bool = True
 
 
 @dataclass
@@ -169,6 +174,7 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_LLM_TEMPERATURE": ("llm", "temperature"),
         "AGENT_LLM_THINK_LEVEL": ("llm", "think_level"),
         "AGENT_LLM_AUTO_DETECT_CTX": ("llm", "auto_detect_ctx"),
+        "AGENT_LLM_NARRATION_FALLBACK": ("llm", "narration_fallback"),
         "AGENT_LOOP_GUARD_ENABLED": ("loop_guard", "enabled"),
         "AGENT_LOOP_GUARD_WINDOW": ("loop_guard", "window"),
         "AGENT_LOOP_GUARD_THRESHOLD": ("loop_guard", "repeat_threshold"),

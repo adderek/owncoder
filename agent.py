@@ -287,7 +287,10 @@ def _strip_tool_blocks(text: str) -> str:
 
 
 async def _stream_response(client, config, api_messages, tools, on_token, on_usage=None):
-    """Stream a completion and accumulate content + tool calls. Returns (finish_reason, content, tool_calls)."""
+    """Stream a completion and accumulate content + tool calls.
+
+    Returns ``(finish_reason, content, tool_calls, reasoning)``.
+    """
     from agent._tokens import count_tokens_approx
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
@@ -375,8 +378,8 @@ async def _stream_response(client, config, api_messages, tools, on_token, on_usa
         tool_calls = None
 
     t_end = time.monotonic()
+    full_reasoning = "".join(reasoning_parts)
     if on_usage is not None:
-        full_reasoning = "".join(reasoning_parts)
         content_tokens = count_tokens_approx(full_content) if full_content else 0
         reasoning_tokens = count_tokens_approx(full_reasoning) if full_reasoning else 0
         tool_tokens = tool_arg_chars // 4  # rough — arg text is JSON, close to 4 chars/token
@@ -403,7 +406,7 @@ async def _stream_response(client, config, api_messages, tools, on_token, on_usa
             "ttft": (t_first_token - t_start) if t_first_token else None,
         })
 
-    return finish_reason, full_content, tool_calls
+    return finish_reason, full_content, tool_calls, full_reasoning
 
 
 def _is_narrating_tool_use(text: str) -> bool:
@@ -414,11 +417,28 @@ def _is_narrating_tool_use(text: str) -> bool:
 _EXTRACT_SHRINK_RATIO = 0.25  # extracted code must be ≥25% of existing file size
 
 
-def _apply_code_from_history(messages: list[dict], on_tool_call) -> str | None:
+def _apply_code_from_history(
+    messages: list[dict],
+    on_tool_call,
+    side_log=None,
+    turn_id: int | None = None,
+) -> tuple[str, dict | None] | None:
+    """Narration-fallback extractor.
+
+    Returns ``(human_message, summary_msg)`` or ``None`` when nothing to apply.
+    ``summary_msg`` is a ``[tools: write_file (extracted) → ...]`` system
+    message (with ``_tool_refs`` when ``side_log`` is given) — appending it
+    keeps the fallback fully traceable in session.json, which it historically
+    was not (see the Dusty/agents.js incident).
+    """
     result = extract_last_code_block(messages)
     if not result:
         return None
     filename, code = result
+
+    outcome: str
+    human: str
+    err: str | None = None
 
     # Shrink guard: illustrative snippets in analysis/review responses are much
     # smaller than the file they reference. Overwriting a 500-line module with
@@ -426,20 +446,28 @@ def _apply_code_from_history(messages: list[dict], on_tool_call) -> str | None:
     # than the extracted block; let creates/full rewrites through.
     from pathlib import Path as _Path
     p = _Path(filename)
+    existing_len = 0
     if p.exists() and p.is_file():
         try:
             existing = p.read_text(encoding="utf-8")
-            if len(code) < len(existing) * _EXTRACT_SHRINK_RATIO:
+            existing_len = len(existing)
+            if len(code) < existing_len * _EXTRACT_SHRINK_RATIO:
                 logger.warning(
                     "[extract] refused overwrite of %s: extracted %d chars would "
                     "shrink existing %d chars (<%.0f%%)",
-                    filename, len(code), len(existing), _EXTRACT_SHRINK_RATIO * 100,
+                    filename, len(code), existing_len, _EXTRACT_SHRINK_RATIO * 100,
                 )
-                return (
+                outcome = "refused_shrink"
+                human = (
                     f"Refused to overwrite `{filename}` from an extracted snippet "
-                    f"({len(code)} chars) — file has {len(existing)} chars. "
+                    f"({len(code)} chars) — file has {existing_len} chars. "
                     f"Call edit_file or write_file explicitly if this is intended."
                 )
+                summary = _build_extracted_summary(
+                    filename, code, outcome, err=None, existing_len=existing_len,
+                    side_log=side_log, turn_id=turn_id,
+                )
+                return human, summary
         except Exception:
             pass
 
@@ -448,8 +476,58 @@ def _apply_code_from_history(messages: list[dict], on_tool_call) -> str | None:
         on_tool_call("write_file (extracted)", filename)
     r = write_file(filename, code)
     if "error" in r:
-        return f"Failed to apply: {r['error']}"
-    return f"Applied changes to `{filename}`."
+        outcome = "error"
+        err = str(r["error"])
+        human = f"Failed to apply: {r['error']}"
+    else:
+        outcome = "ok"
+        human = f"Applied changes to `{filename}`."
+
+    summary = _build_extracted_summary(
+        filename, code, outcome, err=err, existing_len=existing_len,
+        side_log=side_log, turn_id=turn_id,
+    )
+    return human, summary
+
+
+def _build_extracted_summary(
+    filename: str,
+    code: str,
+    outcome: str,
+    err: str | None,
+    existing_len: int,
+    side_log,
+    turn_id: int | None,
+) -> dict:
+    """Build a `[tools: write_file (extracted) → ...]` summary message.
+
+    Persists full detail to ``tool_calls.jsonl`` via ``side_log`` when given.
+    """
+    if outcome == "ok":
+        arrow = "ok"
+    elif outcome == "refused_shrink":
+        arrow = f"refused (would shrink {existing_len}→{len(code)} chars)"
+    else:
+        arrow = f"ERROR: {err}"
+
+    summary_text = f"[tools: write_file (extracted)(path={filename!r}) → {arrow}]"
+    summary_msg: dict = {"role": "system", "content": summary_text}
+
+    if side_log is not None:
+        try:
+            seq = side_log.append("tool_calls.jsonl", {
+                "turn": turn_id,
+                "tool_call_id": None,
+                "tool": "write_file (extracted)",
+                "arguments": {"path": filename, "content": code},
+                "result": {"outcome": outcome, "existing_len": existing_len, "error": err},
+                "source": "narration_fallback",
+            })
+            summary_msg["_tool_refs"] = [seq]
+        except Exception as e:
+            logger.warning("side_log append failed (extracted fallback): %s", e)
+
+    return summary_msg
 
 
 _NARRATION_PHRASES = [
@@ -699,9 +777,10 @@ async def run_turn(
         api_messages = _merge_trailing_assistants(api_messages)
 
         # Use streaming when a token callback is provided; non-streaming otherwise.
+        turn_reasoning: str = ""
         try:
             if on_token is not None:
-                finish_reason, full_content, raw_tool_calls = await _stream_response(
+                finish_reason, full_content, raw_tool_calls, turn_reasoning = await _stream_response(
                     client, config, api_messages, tools, on_token, on_usage=on_usage
                 )
                 # Reconstruct a message-like namespace for uniform handling below
@@ -727,6 +806,7 @@ async def run_turn(
                 t_end = time.monotonic()
                 choice = response.choices[0]
                 msg = choice.message
+                turn_reasoning = getattr(msg, "reasoning_content", None) or ""
                 if on_usage is not None:
                     u = getattr(response, "usage", None)
                     input_tokens = getattr(u, "prompt_tokens", 0) if u else _count_tokens_approx(api_messages)
@@ -770,6 +850,27 @@ async def run_turn(
             raise
 
         finish_reason = getattr(choice, "finish_reason", None)
+
+        # Persist reasoning/thinking to reasoning.jsonl (if any). The ref is
+        # attached to the next assistant message we emit from this call. Only
+        # the first emitted assistant message carries it; stamp_reasoning()
+        # consumes the ref so auto-continue merges don't re-reference it.
+        _pending_reasoning_ref: list[int | None] = [None]
+        if turn_reasoning and side_log is not None:
+            try:
+                _pending_reasoning_ref[0] = side_log.append("reasoning.jsonl", {
+                    "turn": turn_index,
+                    "content": turn_reasoning,
+                })
+            except Exception as e:
+                logger.warning("side_log append failed (reasoning): %s", e)
+
+        def stamp_reasoning(m: dict) -> dict:
+            ref = _pending_reasoning_ref[0]
+            if ref is None:
+                return m
+            _pending_reasoning_ref[0] = None
+            return {**m, "_reasoning_ref": ref}
 
         # Structured tool calls (llama-server with --jinja, or cloud APIs)
         # Some providers return finish_reason="stop" even when tool_calls are present
@@ -816,7 +917,7 @@ async def run_turn(
                         messages = messages + [{"role": "assistant", "content": note}]
                         return "".join(content_parts + [note]), messages
             clean_content = _strip_tool_blocks(msg.content or "") if msg.content else None
-            messages = messages + [{
+            messages = messages + [stamp_reasoning({
                 "role": "assistant",
                 "content": clean_content,
                 "tool_calls": [
@@ -827,7 +928,7 @@ async def run_turn(
                     }
                     for tc in tool_calls
                 ],
-            }]
+            })]
             # Notify about all tool calls first (in order), then execute concurrently
             for tc in tool_calls:
                 if on_tool_call:
@@ -878,14 +979,20 @@ async def run_turn(
         # extraction when the model is responding normally.
         already_nudged = nudge_count > 0
 
-        if _is_narrating_tool_use(content) and not already_nudged and nudge_count < MAX_NUDGES:
+        fallback_enabled = bool(getattr(config.llm, "narration_fallback", True))
+
+        if fallback_enabled and _is_narrating_tool_use(content) and not already_nudged and nudge_count < MAX_NUDGES:
             # Model described what it will do instead of doing it.
             # Try to extract and apply code directly from this response first.
-            messages_with_current = messages + [{"role": "assistant", "content": content}]
-            applied = _apply_code_from_history(messages_with_current, on_tool_call)
+            messages_with_current = messages + [stamp_reasoning({"role": "assistant", "content": content})]
+            applied = _apply_code_from_history(
+                messages_with_current, on_tool_call,
+                side_log=side_log, turn_id=turn_index,
+            )
             if applied:
-                messages = messages_with_current + [{"role": "assistant", "content": applied}]
-                return f"{content}\n\n{applied}", messages
+                human, summary = applied
+                messages = messages_with_current + [summary, {"role": "assistant", "content": human}]
+                return f"{content}\n\n{human}", messages
             # Extraction failed — fall back to nudging the model once
             if on_tool_call:
                 on_tool_call("⟳ nudge", "")
@@ -895,12 +1002,16 @@ async def run_turn(
             nudge_count += 1
             continue  # retry with nudge
 
-        if already_nudged and (not content.strip() or _is_narrating_tool_use(content)):
+        if fallback_enabled and already_nudged and (not content.strip() or _is_narrating_tool_use(content)):
             # Nudge also failed — last resort extraction
-            applied = _apply_code_from_history(messages, on_tool_call)
+            applied = _apply_code_from_history(
+                messages, on_tool_call,
+                side_log=side_log, turn_id=turn_index,
+            )
             if applied:
-                messages = messages + [{"role": "assistant", "content": applied}]
-                return applied, messages
+                human, summary = applied
+                messages = messages + [summary, {"role": "assistant", "content": human}]
+                return human, messages
 
         # Auto-continue if the model was cut off by max_tokens
         if finish_reason == "length" and content.strip():
@@ -915,18 +1026,20 @@ async def run_turn(
                 and not messages[-1].get("tool_calls")
             ):
                 prev = messages[-1]
-                messages = messages[:-1] + [{
+                merged = {
+                    **prev,
                     "role": "assistant",
                     "content": (prev.get("content") or "") + content,
-                }]
+                }
+                messages = messages[:-1] + [stamp_reasoning(merged)]
             else:
-                messages = messages + [{"role": "assistant", "content": content}]
+                messages = messages + [stamp_reasoning({"role": "assistant", "content": content})]
             continue
 
         if not content.strip():
             logger.warning("run_turn: model returned empty/blank response (finish_reason=%r)", finish_reason)
         content_parts.append(content)
-        messages = messages + [{"role": "assistant", "content": content}]
+        messages = messages + [stamp_reasoning({"role": "assistant", "content": content})]
         messages = _collapse_tool_rounds(messages, side_log=side_log, turn_id=turn_index)
 
         return "".join(content_parts), messages

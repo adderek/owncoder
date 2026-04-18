@@ -525,6 +525,10 @@ def cmd_sessions(args, config):
 
     console = Console()
 
+    if getattr(args, "split", None):
+        _split_sessions(args.split, console, dry_run=bool(getattr(args, "dry_run", False)))
+        return
+
     if args.load:
         session, messages = load_session(args.load)
         if session is None:
@@ -560,6 +564,158 @@ def cmd_sessions(args, config):
         )
 
     console.print(table)
+
+
+def _split_sessions(target: str, console, dry_run: bool = False) -> None:
+    """Retro-extract verbose tool-call blobs from existing session.json files.
+
+    Walks each selected session directory, reads ``session.json``, moves the
+    `[tools: …]` summaries' preceding full tool_call/tool-result pairs into
+    ``tool_calls.jsonl`` (if they are still present inline), and rewrites
+    ``session.json`` with ``_tool_refs`` on the summary messages. Sessions
+    whose messages are already collapsed get ``tool_calls.jsonl`` reconstructed
+    from the compact summaries alone (best-effort; no detail recovery possible).
+
+    Pass ``target="all"`` to split every session.
+    """
+    import json
+    from agent.memory.session import list_sessions, _get_session_dir, get_session_full_dir
+    from agent.memory.side_log import SideLogWriter
+
+    if target == "all":
+        ids = [s["id"] for s in list_sessions()]
+    else:
+        ids = [target]
+
+    for sid in ids:
+        try:
+            sdir = get_session_full_dir(sid)
+        except Exception as e:
+            console.print(f"[{sid}] cannot resolve dir: {e}")
+            continue
+
+        session_json = sdir / "session.json"
+        if not session_json.exists():
+            # Try a legacy flat layout (older session files sit directly under _get_session_dir)
+            flat = _get_session_dir() / f"{sid}.json"
+            if flat.exists():
+                session_json = flat
+                sdir = flat.parent
+            else:
+                console.print(f"[{sid}] session.json not found at {session_json}")
+                continue
+
+        try:
+            data = json.loads(session_json.read_text(encoding="utf-8"))
+        except Exception as e:
+            console.print(f"[{sid}] parse error: {e}")
+            continue
+
+        messages = data.get("messages", [])
+        if not isinstance(messages, list):
+            console.print(f"[{sid}] unexpected messages type")
+            continue
+
+        writer = SideLogWriter(sdir)
+        new_messages: list[dict] = []
+        reasoning_refs_added = 0
+        tool_rows_added = 0
+        i = 0
+        while i < len(messages):
+            m = messages[i]
+            # Case A: collapsed form — a [tools: ...] system message without refs.
+            if (
+                m.get("role") == "system"
+                and isinstance(m.get("content"), str)
+                and m["content"].startswith("[tools:")
+                and "_tool_refs" not in m
+            ):
+                if not dry_run:
+                    seq = writer.append("tool_calls.jsonl", {
+                        "turn": None,
+                        "tool_call_id": None,
+                        "tool": "unknown (retro-split)",
+                        "arguments": {},
+                        "result": m["content"],
+                        "source": "retro_split_from_summary",
+                    })
+                    new_messages.append({**m, "_tool_refs": [seq]})
+                else:
+                    new_messages.append(m)
+                tool_rows_added += 1
+                i += 1
+                continue
+
+            # Case B: raw form — assistant with tool_calls + following role=tool messages.
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                j = i + 1
+                results: list[dict] = []
+                while j < len(messages) and messages[j].get("role") == "tool":
+                    results.append(messages[j])
+                    j += 1
+                refs: list[int] = []
+                parts: list[str] = []
+                for tc in m["tool_calls"]:
+                    if not isinstance(tc, dict):
+                        continue
+                    name = tc.get("function", {}).get("name", "?")
+                    args_raw = tc.get("function", {}).get("arguments", "{}")
+                    try:
+                        args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+                    except Exception:
+                        args = args_raw
+                    raw_result = ""
+                    for r in results:
+                        if r.get("tool_call_id") == tc.get("id"):
+                            raw_result = r.get("content", "")
+                            break
+                    if not dry_run:
+                        seq = writer.append("tool_calls.jsonl", {
+                            "turn": None,
+                            "tool_call_id": tc.get("id"),
+                            "tool": name,
+                            "arguments": args,
+                            "result": raw_result,
+                            "source": "retro_split",
+                        })
+                        refs.append(seq)
+                    tool_rows_added += 1
+                    # Compact summary text (matches _collapse_tool_rounds formatting).
+                    try:
+                        arg_str = ", ".join(f"{k}={repr(v)[:40]}" for k, v in list(args.items())[:2]) if isinstance(args, dict) else str(args)[:60]
+                    except Exception:
+                        arg_str = ""
+                    parts.append(f"{name}({arg_str}) → (split)")
+
+                if m.get("content") and str(m["content"]).strip():
+                    new_messages.append({"role": "assistant", "content": m["content"]})
+                summary_msg: dict = {"role": "system", "content": "[tools: " + " | ".join(parts) + "]"}
+                if refs:
+                    summary_msg["_tool_refs"] = refs
+                new_messages.append(summary_msg)
+                i = j
+                continue
+
+            new_messages.append(m)
+            i += 1
+
+        if dry_run:
+            console.print(
+                f"[{sid}] dry-run: would write {tool_rows_added} tool_calls.jsonl rows, "
+                f"{reasoning_refs_added} reasoning rows"
+            )
+            continue
+
+        # Back up old session.json, then rewrite.
+        backup = session_json.with_suffix(".json.bak")
+        if not backup.exists():
+            backup.write_text(session_json.read_text(encoding="utf-8"), encoding="utf-8")
+        data["messages"] = new_messages
+        session_json.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        console.print(
+            f"[{sid}] split {tool_rows_added} tool rows → {sdir / 'tool_calls.jsonl'} "
+            f"(backup at {backup.name})"
+        )
 
 
 def cmd_commit(args, config):
@@ -847,6 +1003,16 @@ def main():
     sess_p = sub.add_parser("sessions", help="Manage sessions")
     sess_p.add_argument("--list", action="store_true", help="List sessions")
     sess_p.add_argument("--load", type=str, help="Show session details")
+    sess_p.add_argument(
+        "--split", type=str, metavar="ID",
+        help="Retro-extract verbose tool-call/reasoning blobs into sibling "
+             "tool_calls.jsonl / reasoning.jsonl. Leaves a backup as "
+             "session.json.bak. Pass session id (or 'all').",
+    )
+    sess_p.add_argument(
+        "--dry-run", action="store_true",
+        help="Show what --split would do without modifying files.",
+    )
 
     # commit
     commit_p = sub.add_parser("commit", help="Generate and apply a commit message for a subrepo")
