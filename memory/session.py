@@ -94,6 +94,14 @@ def get_session_subpath(session_id: str) -> Path:
         return Path(session_id)
 
 
+def get_session_full_dir(session_id: str) -> Path:
+    """Return the absolute directory that holds ``session.json`` for this id.
+
+    Side-log files (tool_calls.jsonl, …) live alongside session.json there.
+    """
+    return _get_session_dir() / get_session_subpath(session_id)
+
+
 
 def _session_from_data(data: dict, file_path: Path | None = None) -> Session:
     s = Session(

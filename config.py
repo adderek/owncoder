@@ -16,6 +16,7 @@ class LLMConfig:
     ctx_window: int = 16384
     auto_detect_ctx: bool = True   # query server for actual context size on startup
     compaction_threshold: float = 0.75
+    compaction_message_threshold: int = 15
     max_output_tokens: int = 4096
     max_iterations: int = 10   # cap on tool-call rounds per user turn
     temperature: float = 0.7
