@@ -569,6 +569,17 @@ def _build_textual_app(agent: "Agent", session=None):
             self.done = done
             self.limit = limit
 
+    class PhaseEvent(Message):
+        def __init__(self, label: str, detail: str = "") -> None:
+            super().__init__()
+            self.label = label
+            self.detail = detail
+
+    class ReasoningTokenEvent(Message):
+        def __init__(self, token: str) -> None:
+            super().__init__()
+            self.token = token
+
     _PLACEHOLDER_Q = (
         "[bold]Q — User questions[/bold]\n\n"
         "[dim]Placeholder.[/dim] Will show the conversation rephrased as a single\n"
@@ -1428,6 +1439,12 @@ def _build_textual_app(agent: "Agent", session=None):
             def on_progress(done: int, limit: int) -> None:
                 self.post_message(IterationProgressEvent(done, limit))
 
+            def on_phase(label: str, detail: str = "") -> None:
+                self.post_message(PhaseEvent(label, detail))
+
+            def on_reasoning(tok: str) -> None:
+                self.post_message(ReasoningTokenEvent(tok))
+
             result = await self._agent.chat(
                 user_text,
                 on_tool_call=on_tool,
@@ -1435,6 +1452,8 @@ def _build_textual_app(agent: "Agent", session=None):
                 on_user_message=on_user_message,
                 on_token=on_token,
                 on_progress=on_progress,
+                on_phase=on_phase,
+                on_reasoning=on_reasoning,
             )
             if self._session is not None:
                 save_session(self._session, self._agent.messages)
@@ -1475,9 +1494,23 @@ def _build_textual_app(agent: "Agent", session=None):
                 except Exception:
                     pass
             # Update context panel with current tool (visible while working)
-            self.query_one("#context-panel", ContextPanel).set_context(
-                f"[{t.tool_color}]⚙ {_escape(event.name)}[/{t.tool_color}]"
-            )
+            preview = ""
+            try:
+                args = (
+                    json.loads(event.args)
+                    if isinstance(event.args, str) and event.args
+                    else (event.args or {})
+                )
+                if isinstance(args, dict):
+                    preview = ", ".join(
+                        f"{k}={repr(v)[:40]}" for k, v in list(args.items())[:2]
+                    )
+            except Exception:
+                pass
+            label = f"[{t.tool_color}]⚙ {_escape(event.name)}[/{t.tool_color}]"
+            if preview:
+                label += f" [dim]({_escape(preview)})[/dim]"
+            self.query_one("#context-panel", ContextPanel).set_context(label)
 
         def on_tool_result_event(self, event: ToolResultEvent) -> None:
             stats = self._tool_stats.setdefault(event.name, {"ok": 0, "err": 0})
@@ -1506,6 +1539,31 @@ def _build_textual_app(agent: "Agent", session=None):
             self._iter_done = event.done
             self._iter_limit = event.limit
             self._update_loading_tokens()
+
+        def on_phase_event(self, event: PhaseEvent) -> None:
+            detail = f": {_escape(event.detail)}" if event.detail else ""
+            self.query_one("#context-panel", ContextPanel).set_context(
+                f"[dim]• {_escape(event.label)}{detail}[/dim]"
+            )
+
+        def on_reasoning_token_event(self, event: ReasoningTokenEvent) -> None:
+            from rich.text import Text
+
+            self._stream_buffer += event.token
+            stream_view = self.query_one("#stream-view", Static)
+            if not self._streaming_active:
+                self._streaming_active = True
+                stream_view.add_class("active")
+            tail = (
+                self._stream_buffer[-800:]
+                if len(self._stream_buffer) > 800
+                else self._stream_buffer
+            )
+            content = Text.assemble(
+                ("thinking:", "dim italic"),
+                (f" {tail}▌", "dim italic"),
+            )
+            stream_view.update(content)
 
         def on_token_stream_event(self, event: TokenStreamEvent) -> None:
             from rich.text import Text
@@ -2103,26 +2161,89 @@ async def simple_loop(agent: "Agent", session=None):
         # ── Normal message ──────────────────────────────────────────────────
         import sys
 
+        import os as _os
+        import json as _json
+
+        verbose = _os.environ.get("AGENT_VERBOSE", "").lower() in ("1", "true", "yes")
+
         tool_results: list[str] = []
         streaming_tokens: list[str] = []
+        reasoning_active: list[bool] = [False]
         _spinner_status: list[str] = ["thinking…"]
         _spinner_stop = asyncio.Event()
         _spinner_task = asyncio.create_task(
             _run_spinner(_spinner_status, _spinner_stop, agent=agent)
         )
 
-        def on_tool(name: str, args_str: str) -> None:
-            # Stop spinner and clear its line before printing
+        def _clear_spinner() -> None:
             _spinner_stop.set()
             sys.stdout.write("\r\033[K")
             sys.stdout.flush()
+
+        def _args_preview(args_str: str) -> str:
+            try:
+                args = _json.loads(args_str) if isinstance(args_str, str) else (args_str or {})
+                if not isinstance(args, dict):
+                    return ""
+                return ", ".join(
+                    f"{k}={repr(v)[:40]}" for k, v in list(args.items())[:2]
+                )
+            except Exception:
+                return ""
+
+        def on_tool(name: str, args_str: str) -> None:
+            _clear_spinner()
             if streaming_tokens:
                 console.print()
                 streaming_tokens.clear()
-            console.print(f"  [{t.tool_color}]⚙ {name}[/{t.tool_color}]")
+            if reasoning_active[0]:
+                console.print()
+                reasoning_active[0] = False
+            preview = _args_preview(args_str)
+            suffix = f"[{t.text_dim}]({preview})[/{t.text_dim}]" if preview else ""
+            console.print(f"  [{t.tool_color}]⚙ {name}[/{t.tool_color}] {suffix}")
             tool_results.append(name)
 
+        def on_tool_result(name: str, ok: bool) -> None:
+            mark = f"[{t.success}]✓[/{t.success}]" if ok else f"[{t.error}]✗[/{t.error}]"
+            console.print(f"    {mark} [{t.text_dim}]{name}[/{t.text_dim}]")
+
+        def on_progress(done: int, limit: int) -> None:
+            _spinner_status[0] = f"iter {done}/{limit}…"
+
+        def on_phase(label: str, detail: str = "") -> None:
+            _clear_spinner()
+            if streaming_tokens:
+                console.print()
+                streaming_tokens.clear()
+            if reasoning_active[0]:
+                console.print()
+                reasoning_active[0] = False
+            msg = f"  [{t.text_dim}]• {label}"
+            if detail:
+                msg += f": {detail}"
+            msg += f"[/{t.text_dim}]"
+            console.print(msg)
+            _spinner_status[0] = f"{label}…"
+
+        def on_reasoning(tok: str) -> None:
+            if not verbose:
+                return
+            if not reasoning_active[0]:
+                _clear_spinner()
+                if streaming_tokens:
+                    console.print()
+                    streaming_tokens.clear()
+                sys.stdout.write(f"\033[2m  ◦ ")
+                reasoning_active[0] = True
+            sys.stdout.write(tok)
+            sys.stdout.flush()
+
         def on_token(token: str) -> None:
+            if reasoning_active[0]:
+                sys.stdout.write("\033[0m\n")
+                sys.stdout.flush()
+                reasoning_active[0] = False
             if not streaming_tokens:
                 # First token — stop spinner and clear its line
                 _spinner_stop.set()
@@ -2158,9 +2279,13 @@ async def simple_loop(agent: "Agent", session=None):
             response = await agent.chat(
                 user_input,
                 on_tool_call=on_tool,
+                on_tool_result=on_tool_result,
                 on_token=on_token,
                 on_user_message=_on_user_message,
                 on_loop_detected=_on_loop_detected,
+                on_progress=on_progress,
+                on_phase=on_phase,
+                on_reasoning=on_reasoning,
             )
         except Exception as e:
             logger.error("chat error: %s\n%s", e, traceback.format_exc())

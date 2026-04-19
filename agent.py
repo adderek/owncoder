@@ -341,7 +341,7 @@ def _strip_tool_blocks(text: str) -> str:
     return text.strip()
 
 
-async def _stream_response(client, config, api_messages, tools, on_token, on_usage=None):
+async def _stream_response(client, config, api_messages, tools, on_token, on_usage=None, on_reasoning=None):
     """Stream a completion and accumulate content + tool calls.
 
     Returns ``(finish_reason, content, tool_calls, reasoning)``.
@@ -394,6 +394,11 @@ async def _stream_response(client, config, api_messages, tools, on_token, on_usa
             if t_first_token is None:
                 t_first_token = time.monotonic()
             reasoning_parts.append(rc)
+            if on_reasoning is not None:
+                try:
+                    on_reasoning(rc)
+                except Exception:
+                    logger.exception("on_reasoning callback failed")
         if delta.content:
             if t_first_token is None:
                 t_first_token = time.monotonic()
@@ -794,11 +799,20 @@ async def run_turn(
     on_usage: callable | None = None,
     on_progress: callable | None = None,
     on_loop_detected: callable | None = None,
+    on_phase: callable | None = None,
+    on_reasoning: callable | None = None,
     facts_store=None,
     turn_index: int | None = None,
     side_log=None,
     _depth: int = 0,
 ) -> tuple[str, list[dict]]:
+    def _phase(label: str, detail: str = "") -> None:
+        if on_phase is None:
+            return
+        try:
+            on_phase(label, detail)
+        except Exception:
+            logger.exception("on_phase callback failed")
     tools = get_schemas()
     nudge_count = 0
     MAX_NUDGES = 3
@@ -829,10 +843,13 @@ async def run_turn(
                 "Pre-flight: estimated %d tokens exceeds budget %d, compacting...",
                 token_est, budget,
             )
+            _phase("compact", f"{token_est}→budget {budget}")
             messages = await compact(messages, config, client, facts_store=facts_store, turn_index=turn_index)
             token_est = _count_tokens_approx(messages)
+            _phase("compact_done", f"{token_est} tokens")
             if token_est > budget:
                 # Aggressive fallback: truncate large tool results in-place
+                _phase("truncate", f"to fit {budget}")
                 messages = _truncate_large_messages(messages, budget)
                 logger.warning(
                     "Post-truncation: %d tokens (budget %d)",
@@ -848,8 +865,10 @@ async def run_turn(
         turn_reasoning: str = ""
         try:
             if on_token is not None:
+                _phase("generating", f"iter {iter_count + 1}/{max_iter}")
                 finish_reason, full_content, raw_tool_calls, turn_reasoning = await _stream_response(
-                    client, config, api_messages, tools, on_token, on_usage=on_usage
+                    client, config, api_messages, tools, on_token,
+                    on_usage=on_usage, on_reasoning=on_reasoning,
                 )
                 # Reconstruct a message-like namespace for uniform handling below
                 class _Msg:
@@ -903,6 +922,7 @@ async def run_turn(
                     config.llm.ctx_window = server_ctx
                 logger.warning("Context size exceeded (%s), compacting and retrying...",
                                err_detail.get("message", ""))
+                _phase("compact", "context exceeded, retrying")
                 old_count = _count_tokens_approx(messages)
                 messages = await compact(messages, config, client, facts_store=facts_store, turn_index=turn_index)
                 if _count_tokens_approx(messages) >= old_count:
@@ -965,6 +985,7 @@ async def run_turn(
                 if triggered:
                     summary = ", ".join(f"{n}×{c}" for n, _, c in triggered)
                     logger.warning("loop_guard: repeated tool calls detected: %s", summary)
+                    _phase("loop_guard", summary)
                     decision = False
                     if on_loop_detected is not None:
                         try:
@@ -1022,7 +1043,9 @@ async def run_turn(
             msg_threshold = config.llm.compaction_message_threshold
 
             if token_est > token_threshold or len(messages) > msg_threshold:
+                _phase("compact", f"post-tool at {token_est} tokens")
                 messages = await compact(messages, config, client, facts_store=facts_store, turn_index=turn_index)
+                _phase("compact_done", f"{_count_tokens_approx(messages)} tokens")
             iter_count += 1
             if on_progress is not None:
                 try:
@@ -1062,6 +1085,7 @@ async def run_turn(
                 messages = messages_with_current + [summary, {"role": "assistant", "content": human}]
                 return f"{content}\n\n{human}", messages
             # Extraction failed — fall back to nudging the model once
+            _phase("nudge", "model narrated; re-prompting")
             if on_tool_call:
                 on_tool_call("⟳ nudge", "")
             messages = messages_with_current
@@ -1084,6 +1108,7 @@ async def run_turn(
         # Auto-continue if the model was cut off by max_tokens
         if finish_reason == "length" and content.strip():
             logger.info("run_turn: finish_reason=length, auto-continuing")
+            _phase("auto_continue", "finish_reason=length")
             content_parts.append(content)
             # Merge with a prior trailing assistant message (from a previous
             # auto-continue) instead of stacking consecutive assistants, which
@@ -1332,6 +1357,8 @@ class Agent:
         on_user_message: callable | None = None,
         on_progress: callable | None = None,
         on_loop_detected: callable | None = None,
+        on_phase: callable | None = None,
+        on_reasoning: callable | None = None,
     ) -> str:
         self._turn_id += 1
         turn_id = self._turn_id
@@ -1374,6 +1401,8 @@ class Agent:
             on_usage=self._record_usage,
             on_progress=on_progress,
             on_loop_detected=on_loop_detected,
+            on_phase=on_phase,
+            on_reasoning=on_reasoning,
             facts_store=self._facts_store,
             turn_index=turn_id,
             side_log=self._side_log,
