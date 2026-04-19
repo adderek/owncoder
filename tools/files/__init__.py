@@ -11,6 +11,7 @@ from .core import (
     _undo_stack,
     _resolve,
     _log_edit,
+    _config,
 )
 
 __all__ = [
@@ -26,4 +27,5 @@ __all__ = [
     "_undo_stack",
     "_resolve",
     "_log_edit",
+    "_config",
 ]
