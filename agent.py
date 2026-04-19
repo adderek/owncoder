@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from agent.config import Config
 
 SYSTEM_PROMPT_PATH = Path(__file__).parent / "prompts" / "system.txt"
+GUIDELINES_DIR = Path(__file__).parent / "prompts" / "guidelines"
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -81,6 +82,12 @@ def _build_system_prompt(config: "Config", project_name: str = "", indexed_count
 
     if preamble:
         prompt = f"{prompt}\n\n{preamble}"
+
+    if GUIDELINES_DIR.is_dir():
+        for path in sorted(GUIDELINES_DIR.glob("*.txt")):
+            text = path.read_text(encoding="utf-8").strip()
+            if text:
+                prompt = f"{prompt}\n\n{text}"
     return prompt
 
 
