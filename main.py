@@ -908,6 +908,52 @@ def cmd_commit(args, config):
         console.print(f"[red]Commit failed:[/red]\n{result.stderr.strip()}")
 
 
+def cmd_prompts(args, config):
+    """`agent prompts {status|recompile|clear}` — manage compiled-prompt cache."""
+    from agent import prompt_compiler
+    action = getattr(args, "prompts_action", None) or "status"
+    if action == "status":
+        rows = prompt_compiler.status(config)
+        if not rows:
+            print("No compiled prompts cached yet.")
+            print(f"  cache dir: {Path(config.tools.working_dir) / config.compile_prompts.cache_dir}")
+            print(f"  enabled:   {prompt_compiler.is_enabled(config)}")
+            return
+        # Token columns are the truth — char columns are dropped from the
+        # display since token count is what shows up on the wire.
+        print(
+            f"{'name':30}{'model':18}{'status':10}{'why':16}"
+            f"{'calls':>6}{'err%':>6}{'tok in':>8}{'tok out':>9}{'save%':>7}{'saved Σ':>10}"
+        )
+        total_saved = 0
+        for r in rows:
+            save_pct = r["savings_ratio"] * 100 if r["savings_ratio"] else 0
+            total_saved += r["tokens_saved_total"]
+            print(
+                f"{r['name'][:29]:30}"
+                f"{r['model'][:17]:18}"
+                f"{r['status']:10}"
+                f"{(r['disabled_reason'] or '-')[:15]:16}"
+                f"{r['calls']:>6}"
+                f"{int(r['error_rate']*100):>5}%"
+                f"{r['original_tokens']:>8}"
+                f"{r['compiled_tokens']:>9}"
+                f"{save_pct:>6.0f}%"
+                f"{r['tokens_saved_total']:>10}"
+            )
+        print(f"\nLifetime tokens saved across all variants: {total_saved}")
+        return
+    if action == "recompile":
+        n = prompt_compiler.recompile(config, name=getattr(args, "name", None))
+        print(f"Marked {n} entries pending. They will recompile on next agent run.")
+        return
+    if action == "clear":
+        n = prompt_compiler.clear(config, name=getattr(args, "name", None))
+        print(f"Removed {n} cached entries.")
+        return
+    print(f"Unknown prompts action: {action}")
+
+
 def cmd_debug_context(args, config):
     from agent.memory.session import load_session
     from agent.memory.compactor import _count_tokens_approx
@@ -1023,6 +1069,15 @@ def main():
     exec_p = sub.add_parser("exec", help="Execute a system command in the project directory")
     exec_p.add_argument("prompt", type=str, help="Command to execute")
 
+    # prompts (compiled-prompt cache)
+    pr_p = sub.add_parser("prompts", help="Manage compiled-prompt cache")
+    pr_sub = pr_p.add_subparsers(dest="prompts_action")
+    pr_sub.add_parser("status", help="Show cache entries with stats")
+    pr_rec = pr_sub.add_parser("recompile", help="Mark entries pending so the next run recompiles them")
+    pr_rec.add_argument("name", nargs="?", help="Prompt name (e.g. system.txt). Omit for all.")
+    pr_clr = pr_sub.add_parser("clear", help="Delete cached compiled variants")
+    pr_clr.add_argument("name", nargs="?", help="Prompt name. Omit for all.")
+
     # debug
     dbg_p = sub.add_parser("debug", help="Debug utilities")
     dbg_p.add_argument("--context", action="store_true", help="Show full context of current session")
@@ -1090,6 +1145,8 @@ def main():
                 config.llm.model = args.model
             check_reachability(config)
             cmd_commit(args, config)
+        elif args.command == "prompts":
+            cmd_prompts(args, config)
         elif args.command == "debug":
             cmd_debug_context(args, config)
         # exec command handler

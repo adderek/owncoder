@@ -206,8 +206,9 @@ async def _analyze_transcript(
     )
     user_text = _fit_to_budget("\n\n".join(user_parts), input_budget)
 
+    from agent import prompt_compiler
     messages = [
-        {"role": "system", "content": ANALYZE_PROMPT},
+        {"role": "system", "content": prompt_compiler.load("analyze.txt", ANALYZE_PROMPT, config)},
         {"role": "user", "content": user_text},
     ]
     try:
@@ -239,8 +240,9 @@ async def _synthesize_summary(
 ) -> tuple[dict, str, str]:
     """Compress the knowledge draft into (facts, summary, q_view)."""
     # Strict budget — this is what lands in context.
+    from agent import prompt_compiler
     messages = [
-        {"role": "system", "content": SYNTHESIZE_PROMPT},
+        {"role": "system", "content": prompt_compiler.load("synthesize.txt", SYNTHESIZE_PROMPT, config)},
         {
             "role": "user",
             "content": "Knowledge draft to compress:\n\n"

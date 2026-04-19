@@ -117,6 +117,32 @@ class UIConfig:
 
 
 @dataclass
+class CompilePromptsConfig:
+    """Per-(model, api) compression of static prompt files.
+
+    On cache miss the original text is used and a background compile is
+    queued; subsequent runs pick up the compiled variant. When tool-call
+    error rate for a compiled variant exceeds `error_rate_threshold` over
+    at least `min_samples` calls, the variant is marked suspect, falls
+    back to original, and is queued for one more recompile (up to
+    `max_recompile_attempts` total). After that it is permanently disabled
+    for that (prompt, model, api) tuple.
+    """
+    enabled: bool = True
+    exclude: list = field(default_factory=list)        # prompt filenames to never compile
+    auto_recompile: bool = True
+    max_recompile_attempts: int = 3
+    error_rate_threshold: float = 0.2
+    min_samples: int = 5
+    # Reject a compiled variant whose token count isn't at least this fraction
+    # smaller than the original. Below this, meaning-drift risk outweighs the
+    # negligible token win — we keep the original and mark the entry disabled
+    # so we don't keep retrying on every run.
+    min_savings_ratio: float = 0.10
+    cache_dir: str = ".agent/compiled_prompts"
+
+
+@dataclass
 class LoopGuardConfig:
     """Deterministic loop detector for the tool-call dispatch loop.
 
@@ -170,6 +196,7 @@ class Config:
     asm: AsmAnalysisConfig = field(default_factory=AsmAnalysisConfig)
     logs: LogsConfig = field(default_factory=LogsConfig)
     loop_guard: LoopGuardConfig = field(default_factory=LoopGuardConfig)
+    compile_prompts: CompilePromptsConfig = field(default_factory=CompilePromptsConfig)
 
 
 def _apply_env_overrides(config: Config) -> None:
@@ -207,6 +234,11 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_ASM_GROUP_SIZE": ("asm", "group_size"),
         "AGENT_ASM_MAX_LEVELS": ("asm", "max_levels"),
         "AGENT_ASM_BATCH_SIZE": ("asm", "batch_size"),
+        "AGENT_COMPILE_PROMPTS": ("compile_prompts", "enabled"),
+        "AGENT_COMPILE_PROMPTS_AUTO_RECOMPILE": ("compile_prompts", "auto_recompile"),
+        "AGENT_COMPILE_PROMPTS_THRESHOLD": ("compile_prompts", "error_rate_threshold"),
+        "AGENT_COMPILE_PROMPTS_MIN_SAMPLES": ("compile_prompts", "min_samples"),
+        "AGENT_COMPILE_PROMPTS_CACHE_DIR": ("compile_prompts", "cache_dir"),
     }
     for env_key, (section, attr) in env_map.items():
         val = os.environ.get(env_key)
@@ -253,6 +285,7 @@ def _merge(config: Config, data: dict) -> None:
         ("asm_analysis", config.asm),
         ("logs", config.logs),
         ("loop_guard", config.loop_guard),
+        ("compile_prompts", config.compile_prompts),
     ):
         section_data = data.get(section_name, {})
         _merge_obj(obj, section_data)

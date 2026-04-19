@@ -53,7 +53,9 @@ def _log_llm_request(messages: list, tools, config: "Config") -> None:
                 h, len(dynamic), last_roles)
 
 def _build_system_prompt(config: "Config", project_name: str = "", indexed_count: int = 0) -> str:
+    from agent import prompt_compiler
     template = SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
+    template = prompt_compiler.load("system.txt", template, config)
 
     # Load preamble
     preamble_path = Path(config.tools.preamble_path)
@@ -84,9 +86,11 @@ def _build_system_prompt(config: "Config", project_name: str = "", indexed_count
         prompt = f"{prompt}\n\n{preamble}"
 
     if GUIDELINES_DIR.is_dir():
+        from agent import prompt_compiler
         for path in sorted(GUIDELINES_DIR.glob("*.txt")):
             text = path.read_text(encoding="utf-8").strip()
             if text:
+                text = prompt_compiler.load(f"guidelines/{path.name}", text, config)
                 prompt = f"{prompt}\n\n{text}"
     return prompt
 
@@ -1030,16 +1034,21 @@ async def run_turn(
                 if on_tool_call:
                     on_tool_call(tc.function.name, tc.function.arguments)
             results = await asyncio.gather(*[execute_tool(tc, config) for tc in tool_calls])
+            from agent import prompt_compiler
             for tc, result in zip(tool_calls, results):
                 messages.append(_tool_result_message(tc.id, result))
+                ok = True
+                try:
+                    parsed = json.loads(result)
+                    if isinstance(parsed, dict) and "error" in parsed:
+                        ok = False
+                except Exception:
+                    pass
+                try:
+                    prompt_compiler.record_call(ok, config)
+                except Exception:
+                    logger.exception("prompt_compiler.record_call failed")
                 if on_tool_result is not None:
-                    ok = True
-                    try:
-                        parsed = json.loads(result)
-                        if isinstance(parsed, dict) and "error" in parsed:
-                            ok = False
-                    except Exception:
-                        pass
                     try:
                         on_tool_result(tc.function.name, ok)
                     except Exception:
