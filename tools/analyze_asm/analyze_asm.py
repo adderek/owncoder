@@ -45,34 +45,37 @@ def get_interrupt_flag() -> threading.Event:
     return _interrupt_flag
 
 
-@register("analyze_asm", {
-    "description": (
-        "Analyze an assembly file with LLM-driven logical splitting and hierarchical "
-        "summarization. Stores descriptions at multiple abstraction levels for semantic search."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "path": {
-                "type": "string",
-                "description": "Path to the assembly file to analyze",
+@register(
+    "analyze_asm",
+    {
+        "description": (
+            "Analyze an assembly file with LLM-driven logical splitting and hierarchical "
+            "summarization. Stores descriptions at multiple abstraction levels for semantic search."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the assembly file to analyze",
+                },
+                "resume": {
+                    "type": "boolean",
+                    "description": "Resume interrupted analysis (skip already-described units)",
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": "Re-analyze everything regardless of checksums",
+                },
+                "max_levels": {
+                    "type": "integer",
+                    "description": "Override max hierarchy levels for this run",
+                },
             },
-            "resume": {
-                "type": "boolean",
-                "description": "Resume interrupted analysis (skip already-described units)",
-            },
-            "force": {
-                "type": "boolean",
-                "description": "Re-analyze everything regardless of checksums",
-            },
-            "max_levels": {
-                "type": "integer",
-                "description": "Override max hierarchy levels for this run",
-            },
+            "required": ["path"],
         },
-        "required": ["path"],
     },
-})
+)
 def analyze_asm(
     path: str,
     resume: bool = False,
@@ -103,6 +106,7 @@ def analyze_asm(
     if max_levels is not None:
         # Temporarily override max_levels without mutating config
         from dataclasses import replace
+
         cfg = replace(cfg, max_levels=max_levels)
 
     llm_client = OpenAI(
@@ -160,7 +164,9 @@ def analyze_asm(
             except Exception:
                 pass
 
-    splitter = AsmLogicalSplitter(llm_client, cfg, _config.llm, progress_cb=_progress_cb)
+    splitter = AsmLogicalSplitter(
+        llm_client, cfg, _config.llm, progress_cb=_progress_cb
+    )
     describer = AsmDescriber(llm_client, cfg, _config.llm)
 
     _interrupt_flag.clear()
@@ -179,7 +185,9 @@ def analyze_asm(
     print(file=sys.stderr)  # final newline after last \r progress line
 
     if result.get("cached"):
-        result["message"] = f"Already fully analyzed ({result.get('chunks', 0)} chunks, file unchanged)."
+        result["message"] = (
+            f"Already fully analyzed ({result.get('chunks', 0)} chunks, file unchanged)."
+        )
     elif result.get("interrupted"):
         result["message"] = (
             f"Interrupted after {result.get('described', 0)} chunks described. "

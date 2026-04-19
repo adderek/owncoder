@@ -26,7 +26,13 @@ def _log_edit(tool: str, path: str, outcome: str, **extra) -> None:
         if not agent_dir.is_absolute():
             agent_dir = _working_dir() / agent_dir
         agent_dir.mkdir(parents=True, exist_ok=True)
-        rec = {"ts": time.time(), "tool": tool, "path": path, "outcome": outcome, **extra}
+        rec = {
+            "ts": time.time(),
+            "tool": tool,
+            "path": path,
+            "outcome": outcome,
+            **extra,
+        }
         with (agent_dir / "edit_stats.jsonl").open("a", encoding="utf-8") as f:
             f.write(json.dumps(rec) + "\n")
     except Exception:
@@ -55,19 +61,30 @@ def _resolve(path: str) -> Path:
     return resolved
 
 
-@register("read_file", {
-    "description": "Read file contents, optionally limited to a line range. Always use start_line/end_line for large files.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "path": {"type": "string", "description": "File path to read"},
-            "start_line": {"type": "integer", "description": "First line to read (1-indexed)"},
-            "end_line": {"type": "integer", "description": "Last line to read (inclusive)"},
+@register(
+    "read_file",
+    {
+        "description": "Read file contents, optionally limited to a line range. Always use start_line/end_line for large files.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path to read"},
+                "start_line": {
+                    "type": "integer",
+                    "description": "First line to read (1-indexed)",
+                },
+                "end_line": {
+                    "type": "integer",
+                    "description": "Last line to read (inclusive)",
+                },
+            },
+            "required": ["path"],
         },
-        "required": ["path"],
     },
-})
-def read_file(path: str, start_line: int | None = None, end_line: int | None = None) -> dict:
+)
+def read_file(
+    path: str, start_line: int | None = None, end_line: int | None = None
+) -> dict:
     fpath = _resolve(path)
 
     # Rule check: .agent.ignore — pretend file doesn't exist
@@ -106,6 +123,7 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
     if fpath.suffix == ".py":
         try:
             import ast
+
             ast.parse(text)
         except SyntaxError as e:
             if path in _undo_stack:
@@ -117,19 +135,23 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
     return {"content": numbered}
 
 
-@register("write_file", {
-    "description": "Write content to a file. Creates parent dirs if needed. Use only for new files — prefer edit_file for modifying existing files.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "path": {"type": "string", "description": "File path to write"},
-            "content": {"type": "string", "description": "New file content"},
+@register(
+    "write_file",
+    {
+        "description": "Write content to a file. Creates parent dirs if needed. Use only for new files — prefer edit_file for modifying existing files.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path to write"},
+                "content": {"type": "string", "description": "New file content"},
+            },
+            "required": ["path", "content"],
         },
-        "required": ["path", "content"],
     },
-})
+)
 def write_file(path: str, content: str) -> dict:
     import difflib
+
     fpath = _resolve(path)
 
     # Rule checks: .agent.ignore, .agent.ro, language allowlist, max files
@@ -145,20 +167,25 @@ def write_file(path: str, content: str) -> dict:
     if rules.config.dry_run:
         return {"dry_run": True, "path": path, "would_write": f"{len(content)} bytes"}
     if is_new and rules.config.confirm_create:
-        return {"error": f"Creating new files requires confirmation: {path}", "requires_confirm": True}
+        return {
+            "error": f"Creating new files requires confirmation: {path}",
+            "requires_confirm": True,
+        }
 
     fpath.parent.mkdir(parents=True, exist_ok=True)
 
     if fpath.exists():
         original = fpath.read_text(encoding="utf-8", errors="replace")
         _undo_stack[path] = original
-        diff_lines = list(difflib.unified_diff(
-            original.splitlines(keepends=True),
-            content.splitlines(keepends=True),
-            fromfile=f"a/{path}",
-            tofile=f"b/{path}",
-            n=3,
-        ))
+        diff_lines = list(
+            difflib.unified_diff(
+                original.splitlines(keepends=True),
+                content.splitlines(keepends=True),
+                fromfile=f"a/{path}",
+                tofile=f"b/{path}",
+                n=3,
+            )
+        )
         diff_summary = "".join(diff_lines[:60])
         if len(diff_lines) > 60:
             diff_summary += f"\n... ({len(diff_lines) - 60} more diff lines)"
@@ -170,9 +197,13 @@ def write_file(path: str, content: str) -> dict:
     if not is_new and fpath.suffix == ".py":
         try:
             import ast
+
             ast.parse(content)
         except SyntaxError as e:
-            return {"error": f"File written but has syntax error: {e}. Use undo_file to revert.", "path": path}
+            return {
+                "error": f"File written but has syntax error: {e}. Use undo_file to revert.",
+                "path": path,
+            }
 
     return {"ok": path, "diff": diff_summary}
 
@@ -190,7 +221,11 @@ def patch_file(path: str, unified_diff: str) -> dict:
     if not lines_ok:
         return {"error": lines_msg}
     if rules.config.dry_run:
-        return {"dry_run": True, "path": path, "would_patch": f"{unified_diff.count(chr(10))+1} lines"}
+        return {
+            "dry_run": True,
+            "path": path,
+            "would_patch": f"{unified_diff.count(chr(10)) + 1} lines",
+        }
 
     if not fpath.exists():
         return {"error": f"File not found: {path}"}
@@ -244,7 +279,9 @@ def _context_for(text: str, start: int, end: int, ctx_lines: int = 3) -> dict:
     }
 
 
-def replace_text(path: str, search_block: str, replace_block: str, match_index: int | None = None) -> dict:
+def replace_text(
+    path: str, search_block: str, replace_block: str, match_index: int | None = None
+) -> dict:
     fpath = _resolve(path)
 
     rules = get_rules()
@@ -274,7 +311,9 @@ def replace_text(path: str, search_block: str, replace_block: str, match_index: 
 
     if not spans:
         _log_edit("replace_text", path, "no_match")
-        return {"error": "search_block not found (tried exact and whitespace-tolerant match). Re-read the file and try again."}
+        return {
+            "error": "search_block not found (tried exact and whitespace-tolerant match). Re-read the file and try again."
+        }
 
     if len(spans) > 1 and match_index is None:
         candidates = [
@@ -290,7 +329,7 @@ def replace_text(path: str, search_block: str, replace_block: str, match_index: 
 
     pick = match_index if match_index is not None else 0
     if pick < 0 or pick >= len(spans):
-        return {"error": f"match_index {pick} out of range (0..{len(spans)-1})"}
+        return {"error": f"match_index {pick} out of range (0..{len(spans) - 1})"}
 
     s, e = spans[pick]
     new_content = original[:s] + replace_block + original[e:]
@@ -300,7 +339,12 @@ def replace_text(path: str, search_block: str, replace_block: str, match_index: 
         return {"error": size_msg}
 
     if rules.config.dry_run:
-        return {"dry_run": True, "path": path, "would_replace": f"{e - s} chars -> {len(replace_block)} chars", "match_mode": match_mode}
+        return {
+            "dry_run": True,
+            "path": path,
+            "would_replace": f"{e - s} chars -> {len(replace_block)} chars",
+            "match_mode": match_mode,
+        }
 
     _undo_stack[path] = original
     fpath.write_text(new_content, encoding="utf-8")
@@ -308,22 +352,31 @@ def replace_text(path: str, search_block: str, replace_block: str, match_index: 
     return {"ok": path, "match_mode": match_mode}
 
 
-@register("replace_symbol", {
-    "description": (
-        "Replace the full source of a top-level or nested Python function/class by name. "
-        "Immune to whitespace drift and duplicate text elsewhere in the file. "
-        "Use dotted names for nested symbols (e.g. 'MyClass.method'). Python files only."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "path": {"type": "string", "description": "Python file path"},
-            "symbol": {"type": "string", "description": "Symbol name, dotted for nesting (e.g. 'Foo.bar')"},
-            "new_source": {"type": "string", "description": "Full replacement source for the symbol, including def/class line. Will be re-indented to match the original."},
+@register(
+    "replace_symbol",
+    {
+        "description": (
+            "Replace the full source of a top-level or nested Python function/class by name. "
+            "Immune to whitespace drift and duplicate text elsewhere in the file. "
+            "Use dotted names for nested symbols (e.g. 'MyClass.method'). Python files only."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Python file path"},
+                "symbol": {
+                    "type": "string",
+                    "description": "Symbol name, dotted for nesting (e.g. 'Foo.bar')",
+                },
+                "new_source": {
+                    "type": "string",
+                    "description": "Full replacement source for the symbol, including def/class line. Will be re-indented to match the original.",
+                },
+            },
+            "required": ["path", "symbol", "new_source"],
         },
-        "required": ["path", "symbol", "new_source"],
     },
-})
+)
 def replace_symbol(path: str, symbol: str, new_source: str) -> dict:
     import ast
     import textwrap
@@ -345,7 +398,9 @@ def replace_symbol(path: str, symbol: str, new_source: str) -> dict:
     try:
         tree = ast.parse(original)
     except SyntaxError as e:
-        return {"error": f"File has a syntax error; fix it first or use edit_file. ({e})"}
+        return {
+            "error": f"File has a syntax error; fix it first or use edit_file. ({e})"
+        }
 
     parts = symbol.split(".")
     node = None
@@ -353,21 +408,28 @@ def replace_symbol(path: str, symbol: str, new_source: str) -> dict:
     for i, part in enumerate(parts):
         found = None
         for child in parent_body:
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and child.name == part:
+            if (
+                isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                and child.name == part
+            ):
                 found = child
                 break
         if found is None:
-            return {"error": f"Symbol not found: {'.'.join(parts[:i+1])}"}
+            return {"error": f"Symbol not found: {'.'.join(parts[: i + 1])}"}
         node = found
         if i < len(parts) - 1:
             if not isinstance(node, ast.ClassDef):
-                return {"error": f"{'.'.join(parts[:i+1])} is not a class; cannot descend into it."}
+                return {
+                    "error": f"{'.'.join(parts[: i + 1])} is not a class; cannot descend into it."
+                }
             parent_body = node.body
 
     assert node is not None
     lines = original.splitlines(keepends=True)
     # Include preceding decorators in the replaced span.
-    start_line = min([d.lineno for d in getattr(node, "decorator_list", [])] + [node.lineno]) - 1
+    start_line = (
+        min([d.lineno for d in getattr(node, "decorator_list", [])] + [node.lineno]) - 1
+    )
     end_line = node.end_lineno  # 1-indexed, exclusive when used as slice end
     orig_block = "".join(lines[start_line:end_line])
 
@@ -375,21 +437,31 @@ def replace_symbol(path: str, symbol: str, new_source: str) -> dict:
     indent = indent_match.group(0) if indent_match else ""
 
     new_body = textwrap.dedent(new_source).rstrip("\n")
-    new_indented = "\n".join((indent + ln if ln else ln) for ln in new_body.split("\n")) + "\n"
+    new_indented = (
+        "\n".join((indent + ln if ln else ln) for ln in new_body.split("\n")) + "\n"
+    )
 
     # Re-parse the whole file after substitution to catch obviously broken replacements.
     candidate = "".join(lines[:start_line]) + new_indented + "".join(lines[end_line:])
     try:
         ast.parse(candidate)
     except SyntaxError as e:
-        return {"error": f"Replacement would break the file's syntax: {e}. Check indentation and completeness of new_source."}
+        return {
+            "error": f"Replacement would break the file's syntax: {e}. Check indentation and completeness of new_source."
+        }
 
     size_ok, size_msg = rules.check_write_size(candidate)
     if not size_ok:
         return {"error": size_msg}
 
     if rules.config.dry_run:
-        return {"dry_run": True, "path": path, "symbol": symbol, "old_lines": end_line - start_line, "new_lines": new_indented.count("\n")}
+        return {
+            "dry_run": True,
+            "path": path,
+            "symbol": symbol,
+            "old_lines": end_line - start_line,
+            "new_lines": new_indented.count("\n"),
+        }
 
     _undo_stack[path] = original
     fpath.write_text(candidate, encoding="utf-8")
@@ -399,25 +471,30 @@ def replace_symbol(path: str, symbol: str, new_source: str) -> dict:
 
 def _apply_unified_diff(original: str, patch: str) -> str:
     import subprocess
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".orig", delete=False, encoding="utf-8") as f:
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".orig", delete=False, encoding="utf-8"
+    ) as f:
         f.write(original)
         orig_path = f.name
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".patch", delete=False, encoding="utf-8") as f:
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".patch", delete=False, encoding="utf-8"
+    ) as f:
         f.write(patch)
         patch_path = f.name
 
     try:
         result = subprocess.run(
             ["patch", "--dry-run", orig_path, patch_path],
-            capture_output=True, text=True
+            capture_output=True,
+            text=True,
         )
         if result.returncode != 0:
             # Extract conflicting context
             raise RuntimeError(result.stderr.strip() or "patch dry-run failed")
 
         result = subprocess.run(
-            ["patch", orig_path, patch_path],
-            capture_output=True, text=True
+            ["patch", orig_path, patch_path], capture_output=True, text=True
         )
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip())
@@ -432,16 +509,19 @@ def _apply_unified_diff(original: str, patch: str) -> str:
             os.unlink(backup)
 
 
-@register("undo_file", {
-    "description": "Revert a file to its previous state before the last write/edit operation.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "path": {"type": "string", "description": "File path to revert"},
+@register(
+    "undo_file",
+    {
+        "description": "Revert a file to its previous state before the last write/edit operation.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path to revert"},
+            },
+            "required": ["path"],
         },
-        "required": ["path"],
     },
-})
+)
 def undo_file(path: str) -> dict:
     """Restore the last pre-write snapshot of a file."""
     if path not in _undo_stack:
@@ -476,23 +556,41 @@ def _build_gitignore_spec(base: Path):
     return pathspec.PathSpec.from_lines("gitwildmatch", lines)
 
 
-@register("list_files", {
-    "description": (
-        "List files in a directory, respecting .gitignore. Returns relative paths with size. "
-        "Capped at max_results (default 500) to keep responses small — narrow with `pattern` "
-        "(e.g. 'agent/**/*.py') if you need more."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "path": {"type": "string", "description": "Directory to list (default: working dir)", "default": "."},
-            "pattern": {"type": "string", "description": "Glob pattern", "default": "**/*"},
-            "ignore_patterns": {"type": "array", "items": {"type": "string"}, "description": "Patterns to ignore"},
-            "max_results": {"type": "integer", "description": "Max entries to return (default 500). On overflow, a directory-grouped summary is returned instead of paths."},
+@register(
+    "list_files",
+    {
+        "description": (
+            "List files in a directory, respecting .gitignore. Returns relative paths with size. "
+            "Capped at max_results (default 500) to keep responses small — narrow with `pattern` "
+            "(e.g. 'src/**/*.py') if you need more."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Directory to list (default: working dir)",
+                    "default": ".",
+                },
+                "pattern": {
+                    "type": "string",
+                    "description": "Glob pattern",
+                    "default": "**/*",
+                },
+                "ignore_patterns": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Patterns to ignore",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Max entries to return (default 500). On overflow, a directory-grouped summary is returned instead of paths.",
+                },
+            },
+            "required": [],
         },
-        "required": [],
     },
-})
+)
 def list_files(
     path: str = ".",
     pattern: str = "**/*",
@@ -500,11 +598,20 @@ def list_files(
     max_results: int = 500,
 ) -> dict:
     import fnmatch
+
     base = _resolve(path)
     if not base.is_dir():
         return {"error": f"Not a directory: {path}"}
 
-    default_ignore = {".git", "__pycache__", "node_modules", "*.pyc", "build", "dist", ".agent"}
+    default_ignore = {
+        ".git",
+        "__pycache__",
+        "node_modules",
+        "*.pyc",
+        "build",
+        "dist",
+        ".agent",
+    }
     all_ignore = default_ignore | set(ignore_patterns or [])
 
     gitignore_spec = _build_gitignore_spec(base)

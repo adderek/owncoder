@@ -1,23 +1,3 @@
-"""edit_file — anchored-chunk edit tool.
-
-The only edit tool exposed to the LLM. Pattern the model must learn:
-    read_file → quote exact anchor → edit_file
-
-See PHASE 0 spec in `edit_file.md` and the docstring of `_build_schema` for
-the input shape. Core rules:
-
-- Exact byte match by default; loose (whitespace-collapsing) fallback only
-  when `edit.match` opts in. Anchor must match exactly once.
-- `range_hint` is 1-indexed inclusive; anchor must lie entirely inside it.
-- Hard caps `max_chunk_lines` and `max_file_fraction` make whole-file replace
-  structurally impossible.
-- Atomic by default: validate all chunks, then splice bottom-up per file.
-  On any failure write nothing.
-- Stable error taxonomy: file_not_found, readonly, anchor_not_found,
-  anchor_ambiguous, anchor_sha_mismatch, range_hint_invalid,
-  delta_exceeds_tolerance, chunk_too_large, fraction_exceeded,
-  chunks_overlap, atomic_rollback.
-"""
 from __future__ import annotations
 
 import hashlib
@@ -43,7 +23,9 @@ def _count_lines(s: str) -> int:
     return n if s.endswith("\n") else n + 1
 
 
-def _find_exact(hay: str, needle: str, lo: int = 0, hi: int | None = None) -> list[tuple[int, int]]:
+def _find_exact(
+    hay: str, needle: str, lo: int = 0, hi: int | None = None
+) -> list[tuple[int, int]]:
     if not needle:
         return []
     hi = len(hay) if hi is None else hi
@@ -60,6 +42,7 @@ def _find_exact(hay: str, needle: str, lo: int = 0, hi: int | None = None) -> li
 def _find_loose_v2(hay: str, needle: str, lo: int, hi: int) -> list[tuple[int, int]]:
     """Whitespace-collapsing fallback. Returns spans in the original text."""
     import re
+
     stripped = needle.strip("\n")
     if not stripped:
         return []
@@ -113,11 +96,11 @@ def _candidate(text: str, start: int, end: int, idx: int) -> dict:
 @dataclass
 class _ValidatedChunk:
     chunk_index: int
-    path: str               # original path as passed (for reporting)
-    fpath: Path             # resolved
-    original: str           # file contents at validation time
-    start: int              # match byte offset (inclusive)
-    end: int                # match byte offset (exclusive)
+    path: str  # original path as passed (for reporting)
+    fpath: Path  # resolved
+    original: str  # file contents at validation time
+    start: int  # match byte offset (inclusive)
+    end: int  # match byte offset (exclusive)
     replacement: str
     removed_lines: int
     added_lines: int
@@ -146,7 +129,11 @@ def _validate_chunk(
     anchor = chunk["anchor"]
     replacement = chunk["replacement"]
 
-    if not isinstance(path, str) or not isinstance(anchor, str) or not isinstance(replacement, str):
+    if (
+        not isinstance(path, str)
+        or not isinstance(anchor, str)
+        or not isinstance(replacement, str)
+    ):
         return None, err("bad_input", "path/anchor/replacement must be strings")
     if not anchor:
         return None, err("bad_input", "anchor must be non-empty")
@@ -160,7 +147,10 @@ def _validate_chunk(
     rules = get_rules()
     # relative path for rule checks
     try:
-        from agent.tools.files import _working_dir  # lazy import to avoid cycle at module load
+        from agent.tools.files import (
+            _working_dir,
+        )  # lazy import to avoid cycle at module load
+
         rel = str(fpath.relative_to(_working_dir()))
     except Exception:
         rel = path
@@ -191,7 +181,9 @@ def _validate_chunk(
         return None, err(
             "chunk_too_large",
             f"anchor={anchor_lines} replacement={repl_lines} lines exceeds max_chunk_lines={cap}",
-            anchor_lines=anchor_lines, replacement_lines=repl_lines, limit=cap,
+            anchor_lines=anchor_lines,
+            replacement_lines=repl_lines,
+            limit=cap,
         )
     frac = edit_cfg.max_file_fraction
     if frac > 0 and total_lines >= 20:
@@ -199,7 +191,9 @@ def _validate_chunk(
             return None, err(
                 "fraction_exceeded",
                 f"anchor spans {anchor_lines}/{total_lines} lines (> {frac:.0%}); refusing whole-file replace",
-                anchor_lines=anchor_lines, total_lines=total_lines, limit=frac,
+                anchor_lines=anchor_lines,
+                total_lines=total_lines,
+                limit=frac,
             )
 
     # anchor_sha256 integrity
@@ -210,7 +204,8 @@ def _validate_chunk(
             return None, err(
                 "anchor_sha_mismatch",
                 "anchor_sha256 does not match the anchor you provided; re-read the file",
-                expected=sha, actual=actual,
+                expected=sha,
+                actual=actual,
             )
 
     # Delta expectation checks
@@ -224,7 +219,9 @@ def _validate_chunk(
             return None, err(
                 "delta_exceeds_tolerance",
                 f"expect_removed={exp} but anchor has {anchor_lines} lines (tolerance ±{tol})",
-                expected=exp, actual=anchor_lines, tolerance=tol,
+                expected=exp,
+                actual=anchor_lines,
+                tolerance=tol,
             )
     if "expect_added" in chunk and chunk["expect_added"] is not None:
         try:
@@ -235,15 +232,20 @@ def _validate_chunk(
             return None, err(
                 "delta_exceeds_tolerance",
                 f"expect_added={exp} but replacement has {repl_lines} lines (tolerance ±{tol})",
-                expected=exp, actual=repl_lines, tolerance=tol,
+                expected=exp,
+                actual=repl_lines,
+                tolerance=tol,
             )
 
     # range_hint
     lo, hi = 0, len(original)
     if chunk.get("range_hint") is not None:
         rh = chunk["range_hint"]
-        if (not isinstance(rh, (list, tuple)) or len(rh) != 2
-                or not all(isinstance(x, int) for x in rh)):
+        if (
+            not isinstance(rh, (list, tuple))
+            or len(rh) != 2
+            or not all(isinstance(x, int) for x in rh)
+        ):
             return None, err("range_hint_invalid", "range_hint must be [int, int]")
         sl, el = rh
         if sl < 1 or el < sl or el > max(total_lines, 1):
@@ -272,7 +274,10 @@ def _validate_chunk(
             % (" + loose fallback" if mode == "loose" else ""),
         )
     if len(spans) > 1:
-        cands = [_candidate(original, s, e, i) for i, (s, e) in enumerate(spans[:_MAX_CANDIDATES])]
+        cands = [
+            _candidate(original, s, e, i)
+            for i, (s, e) in enumerate(spans[:_MAX_CANDIDATES])
+        ]
         return None, err(
             "anchor_ambiguous",
             f"anchor matched {len(spans)} locations; add range_hint or extend anchor for uniqueness",
@@ -310,12 +315,13 @@ def _build_schema() -> dict:
         },
         "replacement": {
             "type": "string",
-            "description": "New text to insert in place of the anchor. Use \"\" to delete.",
+            "description": 'New text to insert in place of the anchor. Use "" to delete.',
         },
         "range_hint": {
             "type": "array",
             "items": {"type": "integer"},
-            "minItems": 2, "maxItems": 2,
+            "minItems": 2,
+            "maxItems": 2,
             "description": "Optional [start_line, end_line], 1-indexed inclusive. Anchor must lie entirely inside.",
         },
         "anchor_sha256": {
@@ -381,17 +387,29 @@ def _register_edit_file() -> None:
     register("edit_file", schema)(edit_file)
 
 
-def edit_file(chunks: list[dict], match: str | None = None, on_chunk_fail: str | None = None) -> dict:
+def edit_file(
+    chunks: list[dict], match: str | None = None, on_chunk_fail: str | None = None
+) -> dict:
     from agent.tools.files import _resolve, _log_edit, _undo_stack
 
     rules = get_rules()
     ec = rules.config.edit
 
     if not isinstance(chunks, list) or not chunks:
-        return {"error": "bad_input", "errors": [{"chunk_index": -1, "kind": "bad_input",
-                                                  "detail": "chunks must be a non-empty list"}]}
+        return {
+            "error": "bad_input",
+            "errors": [
+                {
+                    "chunk_index": -1,
+                    "kind": "bad_input",
+                    "detail": "chunks must be a non-empty list",
+                }
+            ],
+        }
 
-    attempted_paths = list(set(ch.get("path") for ch in chunks if isinstance(ch, dict) and "path" in ch))
+    attempted_paths = list(
+        set(ch.get("path") for ch in chunks if isinstance(ch, dict) and "path" in ch)
+    )
 
     # Gate model-supplied overrides by config
     match_override = match if ec.match == "model" else None
@@ -406,7 +424,13 @@ def edit_file(chunks: list[dict], match: str | None = None, on_chunk_fail: str |
 
     for i, ch in enumerate(chunks):
         if not isinstance(ch, dict):
-            errors.append({"chunk_index": i, "kind": "bad_input", "detail": "chunk must be an object"})
+            errors.append(
+                {
+                    "chunk_index": i,
+                    "kind": "bad_input",
+                    "detail": "chunk must be an object",
+                }
+            )
             continue
         v, e = _validate_chunk(i, ch, file_cache, _resolve, ec, match_override)
         if e is not None:
@@ -422,22 +446,28 @@ def edit_file(chunks: list[dict], match: str | None = None, on_chunk_fail: str |
         vs_sorted = sorted(vs, key=lambda c: c.start)
         for a, b in zip(vs_sorted, vs_sorted[1:]):
             if b.start < a.end:
-                errors.append({
-                    "chunk_index": b.chunk_index,
-                    "kind": "chunks_overlap",
-                    "detail": f"chunk {b.chunk_index} overlaps chunk {a.chunk_index} in {path}",
-                    "overlaps_with": a.chunk_index,
-                })
+                errors.append(
+                    {
+                        "chunk_index": b.chunk_index,
+                        "kind": "chunks_overlap",
+                        "detail": f"chunk {b.chunk_index} overlaps chunk {a.chunk_index} in {path}",
+                        "overlaps_with": a.chunk_index,
+                    }
+                )
                 # Demote both from validated set
                 if b in validated:
                     validated.remove(b)
 
     # Decide commit
     if errors and fail_mode == "abort":
-        _log_edit("edit_file", "<multi>", "atomic_rollback",
-                  chunk_count=len(chunks),
-                  paths=attempted_paths,
-                  error_kinds=[e["kind"] for e in errors])
+        _log_edit(
+            "edit_file",
+            "<multi>",
+            "atomic_rollback",
+            chunk_count=len(chunks),
+            paths=attempted_paths,
+            error_kinds=[e["kind"] for e in errors],
+        )
         return {"error": "atomic_rollback", "errors": errors}
 
     # Apply: per-file, descending by start offset
@@ -452,19 +482,27 @@ def edit_file(chunks: list[dict], match: str | None = None, on_chunk_fail: str |
         content = vs_sorted[0].original
         _undo_stack[path] = content
         for v in vs_sorted:
-            content = content[:v.start] + v.replacement + content[v.end:]
-            applied.append({
-                "path": path,
-                "chunk_index": v.chunk_index,
-                "removed_lines": v.removed_lines,
-                "added_lines": v.added_lines,
-            })
+            content = content[: v.start] + v.replacement + content[v.end :]
+            applied.append(
+                {
+                    "path": path,
+                    "chunk_index": v.chunk_index,
+                    "removed_lines": v.removed_lines,
+                    "added_lines": v.added_lines,
+                }
+            )
         # One write size check on the final content
         size_ok, size_msg = rules.check_write_size(content)
         if not size_ok:
             # Roll back in-memory: skip this file
-            errors.append({"chunk_index": vs[0].chunk_index, "kind": "write_size_exceeded",
-                           "detail": size_msg or "write size limit exceeded", "path": path})
+            errors.append(
+                {
+                    "chunk_index": vs[0].chunk_index,
+                    "kind": "write_size_exceeded",
+                    "detail": size_msg or "write size limit exceeded",
+                    "path": path,
+                }
+            )
             # Remove applied entries for this file
             applied = [a for a in applied if a["path"] != path]
             del _undo_stack[path]
@@ -474,11 +512,15 @@ def edit_file(chunks: list[dict], match: str | None = None, on_chunk_fail: str |
         fpath.write_text(content, encoding="utf-8")
 
     outcome = "ok" if not errors else "skip_partial"
-    _log_edit("edit_file", "<multi>", outcome,
-              chunk_count=len(chunks),
-              paths=attempted_paths,
-              applied=len(applied),
-              error_kinds=[e["kind"] for e in errors] or None)
+    _log_edit(
+        "edit_file",
+        "<multi>",
+        outcome,
+        chunk_count=len(chunks),
+        paths=attempted_paths,
+        applied=len(applied),
+        error_kinds=[e["kind"] for e in errors] or None,
+    )
 
     result: dict = {"ok": True, "applied": applied}
     if errors:
@@ -487,7 +529,3 @@ def edit_file(chunks: list[dict], match: str | None = None, on_chunk_fail: str |
     if rules.config.dry_run:
         result["dry_run"] = True
     return result
-
-
-# Registration is performed from `load_all_tools` after rules are loaded,
-# so the schema reflects the effective `[edit]` config.

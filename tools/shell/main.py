@@ -15,8 +15,7 @@ _config = None
 _transcript: list[dict] = []
 
 # Per-stream cap for shell output (chars). Prevents a single `find /` or `ls -R`
-# from blowing the model's context. The agent-layer cap is a catch-all, but by
-# the time it fires the JSON is truncated mid-string and the model gets
+# from blowing the model's context. The agent-layer cap is a catch-all, but by the time it fires the JSON is truncated mid-string and the model gets
 # unparseable garbage — so truncate per-stream here with a clear marker.
 _SHELL_OUTPUT_CAP = 16_000
 
@@ -36,17 +35,30 @@ def _truncate_stream(s: str, cap: int = _SHELL_OUTPUT_CAP) -> tuple[str, bool]:
         True,
     )
 
+
 _DANGEROUS_PATTERNS = [
-    "rm -rf", "rm -fr",
+    "rm -rf",
+    "rm -fr",
     "sudo ",
-    "curl | bash", "curl|bash", "wget | bash", "wget|bash",
-    "bash <(", "sh <(",
-    "> /dev/", ">/dev/",
+    "curl | bash",
+    "curl|bash",
+    "wget | bash",
+    "wget|bash",
+    "bash <(",
+    "sh <(",
+    "> /dev/",
+    ">/dev/",
     "dd if=",
-    "mkfs", "fdisk", "parted",
-    "chmod -R 777", "chmod 777 /",
-    ":(){:|:&};",   # fork bomb
-    "shutdown", "reboot", "halt", "poweroff",
+    "mkfs",
+    "fdisk",
+    "parted",
+    "chmod -R 777",
+    "chmod 777 /",
+    ":(){:|:&};",  # fork bomb
+    "shutdown",
+    "reboot",
+    "halt",
+    "poweroff",
     "iptables -F",
 ]
 
@@ -68,21 +80,32 @@ def _check_dangerous(cmd: str) -> str | None:
     return None
 
 
-@register("run_command", {
-    "description": "Run a shell command with timeout. Returns stdout, stderr, returncode, and duration_ms.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "cmd": {"type": "string", "description": "Shell command to execute"},
-            "cwd": {"type": "string", "description": "Working directory (default: config working_dir)"},
-            "timeout": {"type": "integer", "description": "Timeout in seconds (default: 30)"},
+@register(
+    "run_command",
+    {
+        "description": "Run a shell command with timeout. Returns stdout, stderr, returncode, and duration_ms.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "cmd": {"type": "string", "description": "Shell command to execute"},
+                "cwd": {
+                    "type": "string",
+                    "description": "Working directory (default: config working_dir)",
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Timeout in seconds (default: 30)",
+                },
+            },
+            "required": ["cmd"],
         },
-        "required": ["cmd"],
     },
-})
+)
 def run_command(cmd: str, cwd: str | None = None, timeout: int | None = None) -> dict:
     if _config and not _config.tools.allow_shell:
-        raise ToolDisabledError("Shell commands are disabled in config (tools.allow_shell = false)")
+        raise ToolDisabledError(
+            "Shell commands are disabled in config (tools.allow_shell = false)"
+        )
 
     danger = _check_dangerous(cmd)
     if danger:
@@ -142,8 +165,16 @@ def run_command(cmd: str, cwd: str | None = None, timeout: int | None = None) ->
         err_msg = None
     except subprocess.TimeoutExpired as e:
         duration_ms = int((time.monotonic() - start) * 1000)
-        raw_stdout = (e.stdout or b"").decode("utf-8", errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
-        raw_stderr = (e.stderr or b"").decode("utf-8", errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
+        raw_stdout = (
+            (e.stdout or b"").decode("utf-8", errors="replace")
+            if isinstance(e.stdout, bytes)
+            else (e.stdout or "")
+        )
+        raw_stderr = (
+            (e.stderr or b"").decode("utf-8", errors="replace")
+            if isinstance(e.stderr, bytes)
+            else (e.stderr or "")
+        )
         returncode = -1
         err_msg = f"Command timed out after {effective_timeout}s"
 

@@ -7,6 +7,7 @@ elided from the summary — an exact filename, an earlier decision, an error
 it handled three rounds ago — it can call this tool to fetch them without
 having to re-explore the codebase.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -23,40 +24,43 @@ def setup(facts_store) -> None:
     _facts_store = facts_store
 
 
-@register("recall_facts", {
-    "description": (
-        "Retrieve detailed facts from earlier in this session that have been "
-        "compressed out of the active context. The current context shows a "
-        "[SESSION SUMMARY] block; when that summary lacks a specific detail "
-        "(filename, decision, error, signature) you need to answer accurately, "
-        "call this tool. Returns excerpts from the detailed Tier-2 knowledge "
-        "drafts saved after each compaction round."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": (
-                    "Keywords describing the missing detail — e.g. a filename, "
-                    "function name, error message, or decision topic."
-                ),
+@register(
+    "recall_facts",
+    {
+        "description": (
+            "Retrieve detailed facts from earlier in this session that have been "
+            "compressed out of the active context. The current context shows a "
+            "[SESSION SUMMARY] block; when that summary lacks a specific detail "
+            "(filename, decision, error, signature) you need to answer accurately, "
+            "call this tool. Returns excerpts from the detailed Tier-2 knowledge "
+            "drafts saved after each compaction round."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Keywords describing the missing detail — e.g. a filename, "
+                        "function name, error message, or decision topic."
+                    ),
+                },
+                "round_id": {
+                    "type": "integer",
+                    "description": (
+                        "Optional: restrict the search to a single round id "
+                        "(see round numbers shown in the [SESSION SUMMARY] header)."
+                    ),
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Max matching excerpts to return. Default 3.",
+                },
             },
-            "round_id": {
-                "type": "integer",
-                "description": (
-                    "Optional: restrict the search to a single round id "
-                    "(see round numbers shown in the [SESSION SUMMARY] header)."
-                ),
-            },
-            "max_results": {
-                "type": "integer",
-                "description": "Max matching excerpts to return. Default 3.",
-            },
+            "required": ["query"],
         },
-        "required": ["query"],
     },
-})
+)
 def recall_facts(
     query: str,
     round_id: int | None = None,

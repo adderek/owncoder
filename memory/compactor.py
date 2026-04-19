@@ -343,6 +343,7 @@ async def compact(
     transcript_text = _render_transcript(to_compact)
 
     prev_round = facts_store.latest_round() if facts_store is not None else None
+    round_id = prev_round.round_id if prev_round is not None else None
     from_turn = (prev_round.to_turn + 1) if prev_round else 0
     to_turn = turn_index if turn_index is not None else (from_turn + len(to_compact))
 
@@ -357,27 +358,25 @@ async def compact(
             knowledge_draft, config, client
         )
     except CompactionError as e:
-        logger.warning(
-            "compact: stage 2 failed, falling back to original messages: %s", e
-        )
-        return _truncate_tool_results_in(messages, max_chars=2000)
+        logger.warning("compact: stage 2 failed, falling back to error summary: %s", e)
+        error_msg = {"role": "assistant", "content": f"[SESSION SUMMARY ERROR: {e}]"}
+        result = []
+        if system_msg:
+            result.append(system_msg)
+        result.append(error_msg)
+        result.extend(_truncate_tool_results_in(verbatim, max_chars=2000))
+        return result
 
-    # Persist Tier 2
-    round_id: int | None = None
     if facts_store is not None:
-        try:
-            r = facts_store.new_round(
-                from_turn=from_turn,
-                to_turn=to_turn,
-                knowledge_draft=knowledge_draft,
-                summary=summary,
-                q_view=q_view,
-                facts=facts,
-                prev=prev_round,
-            )
-            round_id = r.round_id
-        except Exception:
-            logger.exception("compact: failed to persist facts round")
+        facts_store.new_round(
+            from_turn=from_turn,
+            to_turn=to_turn,
+            knowledge_draft=knowledge_draft,
+            summary=summary,
+            q_view=q_view,
+            facts=facts,
+            prev=prev_round,
+        )
 
     # Build the compacted system-summary message
     header = "[SESSION SUMMARY"
