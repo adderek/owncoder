@@ -14,6 +14,7 @@ Both stages are model calls, but the Stage-1 draft is persisted to disk via
 `FactsStore` so the agent can recall elided specifics through the
 `recall_facts` tool without having to reconstruct them from nothing.
 """
+
 from __future__ import annotations
 
 import json
@@ -22,15 +23,20 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
     from agent.config import Config
     from agent.memory.facts_store import FactsStore, FactsRound
 
 
-logger = logging.getLogger(__name__)
+class CompactionError(Exception):
+    """Raised when stage-2 synthesis cannot produce usable output."""
+
 
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
+
 
 # Back-compat: existing tests import COMPACTION_PROMPT. Keep the name but
 # point it at the new Stage-2 prompt, since that's the one whose output
@@ -41,6 +47,7 @@ def _read_prompt(name: str) -> str:
     if p.exists():
         return p.read_text(encoding="utf-8")
     return ""
+
 
 ANALYZE_PROMPT = _read_prompt("analyze.txt") or (
     "Expand the transcript into a detailed knowledge draft. Preserve every "
@@ -58,8 +65,10 @@ COMPACTION_PROMPT = SYNTHESIZE_PROMPT
 
 # ── token accounting ────────────────────────────────────────────────────────
 
+
 def _count_tokens_approx(messages: list[dict]) -> int:
     from agent._tokens import count_tokens_approx
+
     total = 0
     for m in messages:
         content = m.get("content") or ""
@@ -91,7 +100,7 @@ def _parse_compaction_output(text: str) -> tuple[dict, str]:
             facts = json.loads(facts_m.group(1).strip())
         except json.JSONDecodeError:
             pass
-    summary = summary_m.group(1).strip() if summary_m else text[:2000]
+    summary = summary_m.group(1).strip() if summary_m else ""
     return facts, summary
 
 
@@ -105,15 +114,20 @@ def _parse_synthesis_output(text: str) -> tuple[dict, str, str]:
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 
-def _truncate_tool_results_in(messages: list[dict], max_chars: int = 2000) -> list[dict]:
+
+def _truncate_tool_results_in(
+    messages: list[dict], max_chars: int = 2000
+) -> list[dict]:
     """Truncate oversized tool-result messages within a message list."""
     result = []
     for m in messages:
         if m.get("role") == "tool" and len(m.get("content", "")) > max_chars:
-            result.append({
-                **m,
-                "content": m["content"][:max_chars] + "\n[... truncated ...]",
-            })
+            result.append(
+                {
+                    **m,
+                    "content": m["content"][:max_chars] + "\n[... truncated ...]",
+                }
+            )
         else:
             result.append(m)
     return result
@@ -126,7 +140,8 @@ def _msg_text(m: dict) -> str:
     if m.get("tool_calls"):
         calls = [
             f"{tc['function']['name']}({tc['function'].get('arguments', '')})"
-            for tc in m["tool_calls"] if isinstance(tc, dict)
+            for tc in m["tool_calls"]
+            if isinstance(tc, dict)
         ]
         parts.append("[tool_calls: " + ", ".join(calls) + "]")
     if isinstance(content, str) and content:
@@ -143,6 +158,7 @@ def _render_transcript(messages: list[dict]) -> str:
 
 def _fit_to_budget(text: str, budget_tokens: int) -> str:
     from agent._tokens import count_tokens_approx
+
     tokens = count_tokens_approx(text)
     if tokens <= budget_tokens:
         return text
@@ -151,6 +167,7 @@ def _fit_to_budget(text: str, budget_tokens: int) -> str:
 
 
 # ── Stage 1: Deep Analysis ──────────────────────────────────────────────────
+
 
 async def _analyze_transcript(
     transcript_text: str,
@@ -172,16 +189,10 @@ async def _analyze_transcript(
             f"{prev_round.knowledge_draft}"
         )
         if prev_round.summary:
-            user_parts.append(
-                f"## Previous compressed summary\n{prev_round.summary}"
-            )
-        user_parts.append(
-            "## New transcript segment to fold in\n" + transcript_text
-        )
+            user_parts.append(f"## Previous compressed summary\n{prev_round.summary}")
+        user_parts.append("## New transcript segment to fold in\n" + transcript_text)
     else:
-        user_parts.append(
-            "## Transcript to analyze\n" + transcript_text
-        )
+        user_parts.append("## Transcript to analyze\n" + transcript_text)
 
     # Reserve: prompt overhead (~500) + stage-1 output (use most of
     # ctx_window minus those) for the deep draft.
@@ -216,7 +227,10 @@ async def _analyze_transcript(
         return prefix + transcript_text
 
 
-# ── Stage 2: Refined Synthesis ──────────────────────────────────────────────
+def _looks_complete(text: str) -> bool:
+    """Checks if all required tags are present and non-empty."""
+    return all(reg.search(text) is not None for reg in [_FACTS_RE, _SUMMARY_RE, _Q_RE])
+
 
 async def _synthesize_summary(
     knowledge_draft: str,
@@ -233,24 +247,43 @@ async def _synthesize_summary(
             + _fit_to_budget(knowledge_draft, int(config.llm.ctx_window * 0.6)),
         },
     ]
-    try:
+
+    async def _call(max_tokens: int) -> tuple[str, str | None]:
         response = await client.chat.completions.create(
             model=config.llm.model,
             messages=messages,
-            max_tokens=1024,
+            max_tokens=max_tokens,
         )
-        raw = (response.choices[0].message.content or "").strip()
+        choice = response.choices[0]
+        raw = (choice.message.content or "").strip()
+        finish = getattr(choice, "finish_reason", None)
+        return raw, finish
+
+    try:
+        raw, finish = await _call(2048)
     except Exception as e:
-        logger.warning("synthesize_summary: stage 2 failed: %s", e)
-        raw = (
-            f"<facts>{{}}</facts>"
-            f"<summary>Compaction error ({e}); see Tier-2 facts via recall_facts.</summary>"
-            f"<q></q>"
+        logger.warning("synthesize_summary: stage 2 first call failed: %s", e)
+        raise CompactionError(f"stage 2 call failed: {e}") from e
+
+    if finish == "length" or not _looks_complete(raw):
+        logger.info(
+            "synthesize_summary: first attempt truncated/incomplete (finish=%s); retrying",
+            finish,
         )
+        try:
+            raw, finish = await _call(4096)
+        except Exception as e:
+            logger.warning("synthesize_summary: stage 2 retry failed: %s", e)
+            raise CompactionError(f"stage 2 retry failed: {e}") from e
+
+    if not _looks_complete(raw):
+        raise CompactionError("stage 2 output incomplete after retry")
+
     return _parse_synthesis_output(raw)
 
 
 # ── Public entry point ──────────────────────────────────────────────────────
+
 
 async def compact(
     messages: list[dict],
@@ -287,8 +320,22 @@ async def compact(
         else:
             conversation.append(m)
 
-    to_compact = conversation[:-keep_last * 2] if len(conversation) > keep_last * 2 else []
-    verbatim = conversation[-keep_last * 2:] if len(conversation) >= keep_last * 2 else conversation
+    verbatim_start = max(len(conversation) - keep_last * 2, 0)
+    # Always preserve the most recent user message verbatim, even if a long
+    # tool-call burst has scrolled it out of the keep_last window. Otherwise the
+    # user's question survives only via q_view and is lost if Stage 2 fails.
+    last_user_idx = next(
+        (
+            i
+            for i in range(len(conversation) - 1, -1, -1)
+            if conversation[i].get("role") == "user"
+        ),
+        None,
+    )
+    if last_user_idx is not None and last_user_idx < verbatim_start:
+        verbatim_start = last_user_idx
+    to_compact = conversation[:verbatim_start]
+    verbatim = conversation[verbatim_start:]
 
     if not to_compact:
         return _truncate_tool_results_in(messages, max_chars=2000)
@@ -300,10 +347,20 @@ async def compact(
     to_turn = turn_index if turn_index is not None else (from_turn + len(to_compact))
 
     # Stage 1
-    knowledge_draft = await _analyze_transcript(transcript_text, prev_round, config, client)
+    knowledge_draft = await _analyze_transcript(
+        transcript_text, prev_round, config, client
+    )
 
     # Stage 2
-    facts, summary, q_view = await _synthesize_summary(knowledge_draft, config, client)
+    try:
+        facts, summary, q_view = await _synthesize_summary(
+            knowledge_draft, config, client
+        )
+    except CompactionError as e:
+        logger.warning(
+            "compact: stage 2 failed, falling back to original messages: %s", e
+        )
+        return _truncate_tool_results_in(messages, max_chars=2000)
 
     # Persist Tier 2
     round_id: int | None = None
@@ -332,9 +389,7 @@ async def compact(
         "round_id=...)` to retrieve specifics not present here.)"
     )
     compacted_content = (
-        f"{header}{hint}\n"
-        f"{json.dumps(facts, separators=(',', ':'))}\n\n"
-        f"{summary}"
+        f"{header}{hint}\n{json.dumps(facts, separators=(',', ':'))}\n\n{summary}"
     )
     if q_view:
         compacted_content += f"\n\n[OUTSTANDING USER INTENT]\n{q_view}"
