@@ -81,3 +81,6 @@ or
 git -C /home/adderek/src/owncoder-stable/agent fetch /home/adderek/src/owncoder/agent master
 git -C /home/adderek/src/owncoder-stable/agent merge FETCH_HEAD
 ```
+
+To test terminal caps:
+`python3 scripts/terminal_probe.py --out agent.toml.probe`

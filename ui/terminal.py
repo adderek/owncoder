@@ -883,8 +883,9 @@ def _build_textual_app(agent: "Agent", session=None):
                     if content:
                         if self._wrap_enabled:
                             chat_log.write(
-                                f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] {content.strip()}"
+                                f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}]"
                             )
+                            chat_log.write(Markdown(content.strip()))
                         else:
                             chat_log.write(
                                 f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] {_escape(_one_line(content, wrap=False))}"
@@ -1672,12 +1673,16 @@ def _build_textual_app(agent: "Agent", session=None):
                 self._write_chat(f"  {files_part}")
 
             if response:
-                body = _escape(response)
                 if empty_response:
-                    body = f"[{t.text_dim}]{body}[/{t.text_dim}]"
-                self._write_chat(
-                    f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] {body}"
-                )
+                    body = _escape(response)
+                    self._write_chat(
+                        f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] [{t.text_dim}]{body}[/{t.text_dim}]"
+                    )
+                else:
+                    self._write_chat(
+                        f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}]"
+                    )
+                    self._write_chat(Markdown(response))
 
             if event.state == WorkerState.SUCCESS:
                 self._append_qa_turn(
