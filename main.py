@@ -944,8 +944,16 @@ def cmd_prompts(args, config):
         print(f"\nLifetime tokens saved across all variants: {total_saved}")
         return
     if action == "recompile":
-        n = prompt_compiler.recompile(config, name=getattr(args, "name", None))
-        print(f"Marked {n} entries pending. They will recompile on next agent run.")
+        target = getattr(args, "name", None)
+        # Reset any stale state so compile_all() actually runs for these entries.
+        prompt_compiler.recompile(config, name=target)
+        print("Compiling prompts synchronously (model must be idle)...")
+        results = prompt_compiler.compile_all(config, name=target)
+        if not results:
+            print("No prompts matched.")
+            return
+        for pname, status, msg in results:
+            print(f"  {status:10} {pname:30} {msg}")
         return
     if action == "clear":
         n = prompt_compiler.clear(config, name=getattr(args, "name", None))

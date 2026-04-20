@@ -210,7 +210,6 @@ def load(name: str, original: str, config: "Config") -> str:
     model = config.llm.model
     key = _cache_key(api_base, model, original)
 
-    should_spawn = False
     with _lock:
         _ensure_loaded(config)
         entry = _index.get(key)
@@ -231,36 +230,19 @@ def load(name: str, original: str, config: "Config") -> str:
         if entry.status == "compiled" and compiled_path.exists():
             try:
                 compiled_text = compiled_path.read_text(encoding="utf-8")
-                # Bump cumulative savings counter so `prompts status` shows
-                # the lifetime token win, not just the per-call delta.
                 if entry.original_tokens and entry.compiled_tokens:
                     entry.tokens_saved_total += entry.original_tokens - entry.compiled_tokens
                     _save_index()
                 return compiled_text
             except Exception as e:
                 logger.warning("compile_prompts: failed to read %s: %s", compiled_path, e)
-                # Treat as a miss; fall through to original + recompile.
                 entry.status = "pending"
                 _save_index()
 
-        # Disabled → never recompile, always original.
-        if entry.status == "disabled":
-            return original
-
-        # Decide whether to schedule a recompile. Defer the actual spawn until
-        # we have released the lock — the real compile path takes the lock
-        # again from a worker thread, but in-process callers (notably tests
-        # that swap _spawn_compile for an inline stub) would otherwise
-        # deadlock.
-        if (
-            key not in _in_flight
-            and entry.attempts < config.compile_prompts.max_recompile_attempts
-        ):
-            _in_flight.add(key)
-            should_spawn = True
-
-    if should_spawn:
-        _spawn_compile(key, name, original, config)
+    # Miss, pending, suspect, or disabled: return original. Compile is no
+    # longer auto-spawned — llama.cpp serializes requests and a background
+    # compile stalled the foreground turn. Use `agent prompts recompile` to
+    # warm the cache explicitly when the model is idle.
     return original
 
 
@@ -352,6 +334,68 @@ def clear(config: "Config", name: str | None = None) -> int:
     return removed
 
 
+_PROMPTS_DIR = Path(__file__).parent / "prompts"
+_KNOWN_PROMPT_FILES = ("system.txt", "analyze.txt", "synthesize.txt")
+
+
+def _known_targets() -> list[tuple[str, str]]:
+    """Enumerate (logical_name, original_text) for every shippable prompt."""
+    out: list[tuple[str, str]] = []
+    for fname in _KNOWN_PROMPT_FILES:
+        p = _PROMPTS_DIR / fname
+        if p.is_file():
+            out.append((fname, p.read_text(encoding="utf-8")))
+    gd = _PROMPTS_DIR / "guidelines"
+    if gd.is_dir():
+        for p in sorted(gd.glob("*.txt")):
+            out.append((f"guidelines/{p.name}", p.read_text(encoding="utf-8")))
+    return out
+
+
+def compile_all(config: "Config", name: str | None = None) -> list[tuple[str, str, str]]:
+    """Synchronously compile known prompts. Model must be idle (llama.cpp is
+    single-slot). Returns list of (name, status, message) where status is one
+    of: ok, skip, no_savings, fail, disabled.
+    """
+    results: list[tuple[str, str, str]] = []
+    for pname, original in _known_targets():
+        if name is not None and pname != name:
+            continue
+        api_base = config.llm.base_url
+        model = config.llm.model
+        key = _cache_key(api_base, model, original)
+        with _lock:
+            _ensure_loaded(config)
+            entry = _index.get(key) if _index is not None else None
+            if entry and entry.status == "compiled" and _compiled_path(config, key).exists():
+                results.append((pname, "skip", "already compiled"))
+                continue
+            if entry is None:
+                entry = _Entry(
+                    name=pname, model=model, api_base=api_base,
+                    original_sha=hashlib.sha256(original.encode("utf-8", errors="replace")).hexdigest(),
+                    status="pending",
+                    original_chars=len(original),
+                    created_at=_now_iso(),
+                )
+                _index[key] = entry
+                _save_index()
+            if entry.status == "disabled":
+                results.append((pname, "disabled", entry.disabled_reason or "disabled"))
+                continue
+        try:
+            compiled = _do_compile(pname, original, config)
+            _store_compiled(key, original, compiled, config)
+            results.append((pname, "ok", f"{len(original)}->{len(compiled)} chars"))
+        except _NoSavings as e:
+            _disable_for(key, "no_savings", config)
+            results.append((pname, "no_savings", str(e)))
+        except Exception as e:
+            _record_compile_failure(key, config)
+            results.append((pname, "fail", str(e)))
+    return results
+
+
 def recompile(config: "Config", name: str | None = None) -> int:
     """Mark cached entries as pending so the next load() triggers a fresh compile.
 
@@ -366,6 +410,7 @@ def recompile(config: "Config", name: str | None = None) -> int:
             if name is not None and entry.name != name:
                 continue
             entry.status = "pending"
+            entry.disabled_reason = ""
             entry.attempts = 0
             entry.calls = 0
             entry.errors = 0
@@ -427,17 +472,46 @@ def _do_compile(name: str, original: str, config: "Config") -> str:
     # `{project_name}` etc. as examples, and `original` itself often contains
     # braces that .format would try to substitute.
     instruction = _COMPILE_INSTRUCTION.replace("{original}", original)
+    # Reasoning models (gemma-reasoning, qwen3, deepseek-r1, …) spend tokens
+    # on hidden reasoning_content before emitting the visible content. A tight
+    # max_tokens = len(original)//2 can be fully consumed by reasoning and
+    # leave content="". Budget generously; the goal here is "shorter than
+    # original", not "smallest possible response buffer".
+    orig_tok_estimate = max(256, len(original) // 3)
+    budget = max(2048, orig_tok_estimate * 4)
     t0 = time.monotonic()
-    resp = client.chat.completions.create(
-        model=config.llm.model,
-        messages=[{"role": "user", "content": instruction}],
-        temperature=0.1,
-        max_tokens=max(256, len(original) // 2),  # upper bound; goal is shorter output
-    )
+    resp = None
+    text = ""
+    finish = ""
+    for attempt in range(2):
+        resp = client.chat.completions.create(
+            model=config.llm.model,
+            messages=[{"role": "user", "content": instruction}],
+            temperature=0.1,
+            max_tokens=budget,
+            # Reasoning models (gemma-reasoning, qwen3, deepseek-r1 via
+            # llama-server) eat the whole token budget on hidden
+            # reasoning_content before emitting content="". We don't need
+            # chain-of-thought to rewrite a prompt; disable it when the
+            # backend supports the toggle. Unknown backends ignore extra kwargs.
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        )
+        choice = resp.choices[0]
+        text = (choice.message.content or "").strip()
+        finish = getattr(choice, "finish_reason", "") or ""
+        if text:
+            break
+        # Empty content — likely reasoning ate the budget. Retry once bigger.
+        budget *= 2
+        logger.info(
+            "compile_prompts: %s empty content (finish=%s), retrying budget=%d",
+            name, finish, budget,
+        )
     elapsed = time.monotonic() - t0
-    text = (resp.choices[0].message.content or "").strip()
     if not text:
-        raise RuntimeError("model returned empty compiled text")
+        raise RuntimeError(
+            f"model returned empty compiled text (finish_reason={finish!r}, budget={budget})"
+        )
 
     orig_tokens = count_tokens_approx(original)
     comp_tokens = count_tokens_approx(text)
