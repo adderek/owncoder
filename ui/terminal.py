@@ -347,8 +347,14 @@ def _build_textual_app(agent: "Agent", session=None):
             self.add_class("visible")
 
     class PromptInput(TextArea):
-        """Multi-line input; Enter submits, Shift+Enter inserts newline.
-        Up/Down when empty browses history; ESC cancels; Enter edits & retries."""
+        """Multi-line input.
+
+        Keys:
+          Enter                                     → submit
+          Shift+Enter / Alt+Enter / Ctrl+J          → insert newline
+          Up/Down on empty buffer                   → browse history
+          ESC                                       → cancel browse / clear completions
+        """
 
         class Submitted(Message):
             def __init__(self, area: "PromptInput", value: str) -> None:
@@ -504,6 +510,11 @@ def _build_textual_app(agent: "Agent", session=None):
                         self._saved_text = self.text
                         self._enter_browsing(len(self._history) - 1)
                     return
+                if event.key in ("shift+enter", "alt+enter", "ctrl+j", "ctrl+enter"):
+                    event.prevent_default()
+                    self._clear_completions()
+                    self.insert("\n")
+                    return
                 if event.key == "enter":
                     event.prevent_default()
                     text = self.text.strip()
@@ -534,6 +545,9 @@ def _build_textual_app(agent: "Agent", session=None):
                     self._mode = "browsing"
                     if self._edit_source_idx is not None:
                         self._enter_browsing(self._edit_source_idx)
+                elif event.key in ("shift+enter", "alt+enter", "ctrl+j", "ctrl+enter"):
+                    event.prevent_default()
+                    self.insert("\n")
                 elif event.key == "enter":
                     event.prevent_default()
                     text = self.text.strip()
