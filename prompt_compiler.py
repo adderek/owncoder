@@ -159,6 +159,40 @@ def _ensure_loaded(config: "Config") -> None:
     except Exception as e:
         logger.warning("compile_prompts: failed to read index %s: %s", path, e)
         _index = {}
+    _prune_orphans(config)
+
+
+def _prune_orphans(config: "Config") -> None:
+    """Drop rows whose (name, model, api_base) tuple no longer matches the
+    live prompt content on disk. Caller must hold _lock. Safe to call with
+    missing prompt files (those names are skipped, not pruned).
+    """
+    if _index is None or not _index:
+        return
+    try:
+        live_keys: dict[tuple[str, str, str], str] = {}
+        api_base = config.llm.base_url
+        model = config.llm.model
+        for pname, original in _known_targets():
+            live_keys[(pname, model, api_base)] = _cache_key(api_base, model, original)
+    except Exception as e:
+        logger.warning("compile_prompts: prune skipped, _known_targets failed: %s", e)
+        return
+    removed = 0
+    for key in list(_index.keys()):
+        entry = _index[key]
+        live = live_keys.get((entry.name, entry.model, entry.api_base))
+        if live is None:
+            continue
+        if live != key:
+            try:
+                _compiled_path(config, key).unlink(missing_ok=True)
+            except Exception:
+                pass
+            del _index[key]
+            removed += 1
+    if removed:
+        _save_index()
 
 
 def _save_index() -> None:
