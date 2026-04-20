@@ -815,7 +815,7 @@ def cmd_commit(args, config):
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.2,
-            max_tokens=4096,
+            max_tokens=config.token_limits.commit_message,
             stream=True,
             extra_body={"reasoning_effort": "low"},
         )

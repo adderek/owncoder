@@ -478,7 +478,8 @@ def _do_compile(name: str, original: str, config: "Config") -> str:
     # leave content="". Budget generously; the goal here is "shorter than
     # original", not "smallest possible response buffer".
     orig_tok_estimate = max(256, len(original) // 3)
-    budget = max(2048, orig_tok_estimate * 4)
+    floor = getattr(getattr(config, "token_limits", None), "prompt_compile_min", 2048)
+    budget = max(floor, orig_tok_estimate * 4)
     t0 = time.monotonic()
     resp = None
     text = ""

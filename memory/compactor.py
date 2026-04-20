@@ -197,7 +197,7 @@ async def _analyze_transcript(
     # Reserve: prompt overhead (~500) + stage-1 output (use most of
     # ctx_window minus those) for the deep draft.
     output_budget = max(
-        2048,
+        config.token_limits.compactor_analyze_min,
         int(config.llm.ctx_window * 0.35),
     )
     input_budget = max(
@@ -216,6 +216,10 @@ async def _analyze_transcript(
             model=config.llm.model,
             messages=messages,
             max_tokens=output_budget,
+            # Summarization-style tasks don't benefit from hidden reasoning,
+            # and reasoning can starve the visible output budget on reasoning
+            # models. Disable chain-of-thought for both compaction stages.
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
         )
         return (response.choices[0].message.content or "").strip()
     except Exception as e:
@@ -255,6 +259,7 @@ async def _synthesize_summary(
             model=config.llm.model,
             messages=messages,
             max_tokens=max_tokens,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
         )
         choice = response.choices[0]
         raw = (choice.message.content or "").strip()
@@ -262,7 +267,7 @@ async def _synthesize_summary(
         return raw, finish
 
     try:
-        raw, finish = await _call(2048)
+        raw, finish = await _call(config.token_limits.compactor_synthesize_initial)
     except Exception as e:
         logger.warning("synthesize_summary: stage 2 first call failed: %s", e)
         raise CompactionError(f"stage 2 call failed: {e}") from e
@@ -273,7 +278,7 @@ async def _synthesize_summary(
             finish,
         )
         try:
-            raw, finish = await _call(4096)
+            raw, finish = await _call(config.token_limits.compactor_synthesize_retry)
         except Exception as e:
             logger.warning("synthesize_summary: stage 2 retry failed: %s", e)
             raise CompactionError(f"stage 2 retry failed: {e}") from e

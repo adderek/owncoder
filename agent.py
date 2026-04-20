@@ -120,6 +120,13 @@ def _build_call_kwargs(config: "Config") -> dict:
     level = (getattr(config.llm, "think_level", "normal") or "normal").lower()
     if level in _REASONING_EFFORT and level != "normal":
         kw["extra_body"] = {"reasoning_effort": _REASONING_EFFORT[level]}
+    if level == "off":
+        # Inline /no_think hints are model-specific; also force the
+        # llama-server chat-template toggle so reasoning-capable builds
+        # (gemma-reasoning, qwen3, deepseek-r1) don't spend the output
+        # budget on hidden reasoning_content.
+        extra = kw.setdefault("extra_body", {})
+        extra.setdefault("chat_template_kwargs", {})["enable_thinking"] = False
     return kw
 
 

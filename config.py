@@ -187,6 +187,24 @@ class LogsConfig:
 
 
 @dataclass
+class TokenLimitsConfig:
+    """Per-call `max_tokens` limits for non-chat LLM paths.
+
+    The main chat loop uses `llm.max_output_tokens`. These knobs cover the
+    smaller utility calls (asm splitter/describer, commit-message generator,
+    compaction stages, prompt compiler) where a too-tight budget can be
+    entirely consumed by hidden reasoning on reasoning-capable models.
+    """
+    asm_splitter: int = 256
+    asm_describer: int = 512
+    commit_message: int = 4096
+    prompt_compile_min: int = 2048           # floor for the prompt-compiler budget
+    compactor_analyze_min: int = 2048        # floor for stage-1 analyze output
+    compactor_synthesize_initial: int = 2048 # first synthesize attempt
+    compactor_synthesize_retry: int = 4096   # retry when first was truncated/incomplete
+
+
+@dataclass
 class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
@@ -197,6 +215,7 @@ class Config:
     logs: LogsConfig = field(default_factory=LogsConfig)
     loop_guard: LoopGuardConfig = field(default_factory=LoopGuardConfig)
     compile_prompts: CompilePromptsConfig = field(default_factory=CompilePromptsConfig)
+    token_limits: TokenLimitsConfig = field(default_factory=TokenLimitsConfig)
 
 
 def _apply_env_overrides(config: Config) -> None:
@@ -239,6 +258,13 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_COMPILE_PROMPTS_THRESHOLD": ("compile_prompts", "error_rate_threshold"),
         "AGENT_COMPILE_PROMPTS_MIN_SAMPLES": ("compile_prompts", "min_samples"),
         "AGENT_COMPILE_PROMPTS_CACHE_DIR": ("compile_prompts", "cache_dir"),
+        "AGENT_TOKEN_LIMITS_ASM_SPLITTER": ("token_limits", "asm_splitter"),
+        "AGENT_TOKEN_LIMITS_ASM_DESCRIBER": ("token_limits", "asm_describer"),
+        "AGENT_TOKEN_LIMITS_COMMIT_MESSAGE": ("token_limits", "commit_message"),
+        "AGENT_TOKEN_LIMITS_PROMPT_COMPILE_MIN": ("token_limits", "prompt_compile_min"),
+        "AGENT_TOKEN_LIMITS_COMPACTOR_ANALYZE_MIN": ("token_limits", "compactor_analyze_min"),
+        "AGENT_TOKEN_LIMITS_COMPACTOR_SYNTH_INITIAL": ("token_limits", "compactor_synthesize_initial"),
+        "AGENT_TOKEN_LIMITS_COMPACTOR_SYNTH_RETRY": ("token_limits", "compactor_synthesize_retry"),
     }
     for env_key, (section, attr) in env_map.items():
         val = os.environ.get(env_key)
@@ -286,6 +312,7 @@ def _merge(config: Config, data: dict) -> None:
         ("logs", config.logs),
         ("loop_guard", config.loop_guard),
         ("compile_prompts", config.compile_prompts),
+        ("token_limits", config.token_limits),
     ):
         section_data = data.get(section_name, {})
         _merge_obj(obj, section_data)

@@ -6,7 +6,7 @@ import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from agent.config import AsmAnalysisConfig, LLMConfig
+    from agent.config import AsmAnalysisConfig, LLMConfig, TokenLimitsConfig
 
 logger = logging.getLogger(__name__)
 
@@ -66,11 +66,19 @@ def _extract_json(text: str) -> dict | None:
 
 
 class AsmDescriber:
-    def __init__(self, llm_client, cfg: "AsmAnalysisConfig", llm_cfg: "LLMConfig") -> None:
+    def __init__(
+        self,
+        llm_client,
+        cfg: "AsmAnalysisConfig",
+        llm_cfg: "LLMConfig",
+        token_limits: "TokenLimitsConfig | None" = None,
+    ) -> None:
         self._client = llm_client
         self._cfg = cfg
         self._model = cfg.describer_model or llm_cfg.model
-        self._max_tokens = llm_cfg.max_output_tokens
+        # Use token_limits.asm_describer (config-driven); fall back to 512 to
+        # preserve the historical hardcoded budget when no limits passed.
+        self._max_tokens = token_limits.asm_describer if token_limits else 512
 
     def describe_chunk(
         self, chunk: dict, prev_desc: str | None, next_desc: str | None
@@ -154,8 +162,12 @@ class AsmDescriber:
             response = self._client.chat.completions.create(
                 model=self._model,
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=512,
+                max_tokens=self._max_tokens,
                 temperature=0,
+                # Reasoning models can consume the 512-token budget entirely
+                # on hidden reasoning_content, leaving content="". This path
+                # wants a compact JSON object — disable chain-of-thought.
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
             )
             text = response.choices[0].message.content or ""
             return _extract_json(text)

@@ -165,9 +165,12 @@ def analyze_asm(
                 pass
 
     splitter = AsmLogicalSplitter(
-        llm_client, cfg, _config.llm, progress_cb=_progress_cb
+        llm_client, cfg, _config.llm, progress_cb=_progress_cb,
+        token_limits=_config.token_limits,
     )
-    describer = AsmDescriber(llm_client, cfg, _config.llm)
+    describer = AsmDescriber(
+        llm_client, cfg, _config.llm, token_limits=_config.token_limits,
+    )
 
     _interrupt_flag.clear()
 

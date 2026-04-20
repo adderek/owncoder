@@ -6,7 +6,7 @@ import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from agent.config import AsmAnalysisConfig, LLMConfig
+    from agent.config import AsmAnalysisConfig, LLMConfig, TokenLimitsConfig
 
 logger = logging.getLogger(__name__)
 
@@ -92,12 +92,15 @@ class AsmLogicalSplitter:
         cfg: "AsmAnalysisConfig",
         llm_cfg: "LLMConfig",
         progress_cb=None,
+        token_limits: "TokenLimitsConfig | None" = None,
     ) -> None:
         self._client = llm_client
         self._cfg = cfg
         self._llm_cfg = llm_cfg
         self._model = cfg.describer_model or llm_cfg.model
         self._progress_cb = progress_cb or (lambda event, data: None)
+        # Default of 256 preserves pre-config behaviour when no limits passed.
+        self._max_tokens = token_limits.asm_splitter if token_limits else 256
 
     def split(
         self,
@@ -226,8 +229,12 @@ class AsmLogicalSplitter:
                 response = self._client.chat.completions.create(
                     model=self._model,
                     messages=messages,
-                    max_tokens=256,
+                    max_tokens=self._max_tokens,
                     temperature=0,
+                    # Disable hidden reasoning: on reasoning-capable backends
+                    # it can eat the entire 256-token budget and leave content
+                    # empty. This prompt expects a short structured answer.
+                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                 )
                 text = response.choices[0].message.content or ""
                 parsed = _parse_boundary_response(text)
