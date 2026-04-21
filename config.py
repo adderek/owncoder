@@ -205,6 +205,39 @@ class TokenLimitsConfig:
 
 
 @dataclass
+class ToolCompactionConfig:
+    """Per-tool-call result compaction via a small LLM call.
+
+    When enabled, every tool schema gets an extra required `purpose` field.
+    After the tool executes, its (name, args, purpose, raw_result) is sent to
+    a small LLM that returns a compacted result preserving only what the
+    purpose needs. The compacted string is what the main model sees.
+
+    Goals: smaller per-tool result in context, fewer full-context compactions,
+    faster small compactions vs one big one later. Trade-off: one extra LLM
+    call per tool. On a single llama-server those calls serialize — the
+    concurrency_limit cap lets the user bound wall-clock impact.
+    """
+    enabled: bool = False
+    # Separate endpoint/model (optional). Empty string = reuse main llm.*.
+    base_url: str = ""
+    api_key: str = ""
+    model: str = ""
+    max_output_tokens: int = 512
+    timeout_seconds: float = 30.0
+    # Skip compaction when raw result is already this short (chars).
+    min_length_to_compact: int = 500
+    # Pass through unchanged when result is an error or truncation marker.
+    skip_on_error: bool = True
+    skip_on_truncated: bool = True
+    # Max in-flight compactions. Keep low on single llama-server.
+    concurrency_limit: int = 2
+    # Optional path to a system prompt template (format args: tool, purpose).
+    # Empty string uses built-in.
+    prompt_path: str = ""
+
+
+@dataclass
 class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
@@ -216,6 +249,7 @@ class Config:
     loop_guard: LoopGuardConfig = field(default_factory=LoopGuardConfig)
     compile_prompts: CompilePromptsConfig = field(default_factory=CompilePromptsConfig)
     token_limits: TokenLimitsConfig = field(default_factory=TokenLimitsConfig)
+    tool_compaction: ToolCompactionConfig = field(default_factory=ToolCompactionConfig)
 
 
 def _apply_env_overrides(config: Config) -> None:
@@ -265,6 +299,15 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_TOKEN_LIMITS_COMPACTOR_ANALYZE_MIN": ("token_limits", "compactor_analyze_min"),
         "AGENT_TOKEN_LIMITS_COMPACTOR_SYNTH_INITIAL": ("token_limits", "compactor_synthesize_initial"),
         "AGENT_TOKEN_LIMITS_COMPACTOR_SYNTH_RETRY": ("token_limits", "compactor_synthesize_retry"),
+        "AGENT_TOOL_COMPACTION_ENABLED": ("tool_compaction", "enabled"),
+        "AGENT_TOOL_COMPACTION_BASE_URL": ("tool_compaction", "base_url"),
+        "AGENT_TOOL_COMPACTION_API_KEY": ("tool_compaction", "api_key"),
+        "AGENT_TOOL_COMPACTION_MODEL": ("tool_compaction", "model"),
+        "AGENT_TOOL_COMPACTION_MAX_OUTPUT_TOKENS": ("tool_compaction", "max_output_tokens"),
+        "AGENT_TOOL_COMPACTION_TIMEOUT": ("tool_compaction", "timeout_seconds"),
+        "AGENT_TOOL_COMPACTION_MIN_LENGTH": ("tool_compaction", "min_length_to_compact"),
+        "AGENT_TOOL_COMPACTION_CONCURRENCY": ("tool_compaction", "concurrency_limit"),
+        "AGENT_TOOL_COMPACTION_PROMPT_PATH": ("tool_compaction", "prompt_path"),
     }
     for env_key, (section, attr) in env_map.items():
         val = os.environ.get(env_key)
@@ -313,6 +356,7 @@ def _merge(config: Config, data: dict) -> None:
         ("loop_guard", config.loop_guard),
         ("compile_prompts", config.compile_prompts),
         ("token_limits", config.token_limits),
+        ("tool_compaction", config.tool_compaction),
     ):
         section_data = data.get(section_name, {})
         _merge_obj(obj, section_data)

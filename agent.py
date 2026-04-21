@@ -206,6 +206,9 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
             "error": f"{type(e).__name__}: {e}",
             "tool_call_id": getattr(tool_call, "id", None),
         }, config=config)
+    # Strip `purpose` before validation/dispatch: tool_compaction consumes it.
+    if isinstance(args, dict):
+        args.pop("purpose", None)
     logger.debug("execute_tool: %s  args=%s", name, args)
     fn = get_tool(name)
     if fn is None:
@@ -832,6 +835,11 @@ async def run_turn(
         except Exception:
             logger.exception("on_phase callback failed")
     tools = get_schemas()
+    tc_cfg = getattr(config, "tool_compaction", None)
+    compaction_on = bool(tc_cfg and getattr(tc_cfg, "enabled", False))
+    if compaction_on:
+        from agent.tool_compactor import inject_purpose_into_schemas
+        tools = inject_purpose_into_schemas(tools)
     nudge_count = 0
     MAX_NUDGES = 3
     content_parts: list[str] = []  # accumulate across length-truncated continuations
@@ -1040,7 +1048,48 @@ async def run_turn(
             for tc in tool_calls:
                 if on_tool_call:
                     on_tool_call(tc.function.name, tc.function.arguments)
+            # Capture `purpose` per call before execute_tool strips it.
+            purposes: list[str] = []
+            parsed_args: list[dict] = []
+            for tc in tool_calls:
+                try:
+                    a = json.loads(tc.function.arguments or "{}")
+                    if not isinstance(a, dict):
+                        a = {}
+                except Exception:
+                    a = {}
+                purposes.append(str(a.get("purpose", "")) if compaction_on else "")
+                parsed_args.append(a)
             results = await asyncio.gather(*[execute_tool(tc, config) for tc in tool_calls])
+            # Post-execution compaction (optional). Runs concurrently but bounded
+            # by the compactor's semaphore so a single llama-server isn't flooded.
+            if compaction_on:
+                from agent.tool_compactor import compact_result
+
+                async def _maybe_compact(idx: int, raw: str) -> str:
+                    tc = tool_calls[idx]
+                    compacted, info = await compact_result(
+                        tc.function.name, parsed_args[idx], purposes[idx],
+                        raw, config, client,
+                    )
+                    if side_log is not None and not info.get("skipped"):
+                        try:
+                            side_log.append("tool_compactions.jsonl", {
+                                "turn": turn_index,
+                                "tool_call_id": tc.id,
+                                "tool": tc.function.name,
+                                "purpose": purposes[idx],
+                                "original_len": info["original_len"],
+                                "compacted_len": info["compacted_len"],
+                                "seconds": info["seconds"],
+                            })
+                        except Exception as e:
+                            logger.warning("side_log append failed (compaction): %s", e)
+                    return compacted
+
+                results = list(await asyncio.gather(*[
+                    _maybe_compact(i, r) for i, r in enumerate(results)
+                ]))
             from agent import prompt_compiler
             for tc, result in zip(tool_calls, results):
                 messages.append(_tool_result_message(tc.id, result))
