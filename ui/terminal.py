@@ -2042,6 +2042,7 @@ def _hex_to_ansi(hex_color: str) -> str:
 async def simple_loop(agent: "Agent", session=None):
     from rich.console import Console
     from rich.markdown import Markdown
+    from rich.markup import escape as _escape
     import readline  # enables arrow keys / history on Linux
 
     cfg = agent.config
@@ -2388,8 +2389,8 @@ async def simple_loop(agent: "Agent", session=None):
                 console.print()
                 reasoning_active[0] = False
             preview = _args_preview(args_str)
-            suffix = f"[{t.text_dim}]({preview})[/{t.text_dim}]" if preview else ""
-            console.print(f"  [{t.tool_color}]⚙ {name}[/{t.tool_color}] {suffix}")
+            suffix = f"[{t.text_dim}]({_escape(preview)})[/{t.text_dim}]" if preview else ""
+            console.print(f"  [{t.tool_color}]⚙ {_escape(name)}[/{t.tool_color}] {suffix}")
             tool_results.append(name)
 
         def on_tool_result(name: str, ok: bool) -> None:

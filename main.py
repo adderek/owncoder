@@ -788,6 +788,7 @@ def cmd_commit(args, config):
     from rich.live import Live
     from rich.spinner import Spinner
     from rich.text import Text
+    from rich.markup import escape as _markup_escape
     import time as _time
     from openai import AsyncOpenAI
 
@@ -842,7 +843,7 @@ def cmd_commit(args, config):
         with Live(spinner, console=console, refresh_per_second=8, transient=True):
             while not task.done():
                 elapsed = _time.monotonic() - state["start"]
-                preview = state["buf"].replace("\n", " ")[-60:]
+                preview = _markup_escape(state["buf"].replace("\n", " ")[-60:])
                 spinner.update(text=Text.from_markup(
                     f"[cyan]generating[/cyan] · {elapsed:5.1f}s · "
                     f"{state['tokens']} tok · [dim]{preview}[/dim]"
