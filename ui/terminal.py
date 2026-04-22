@@ -28,6 +28,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/clear", [], "clear the chat screen", False),
     ("/compact", [], "summarize old messages to free context", False),
     ("/context", ["/ctx"], "show context composition breakdown", False),
+    ("/output", ["/out"], "show model output breakdown (think/tool/reply/other)", True),
     ("/continue", ["/c"], "resume after iteration cap or truncation", False),
     ("/exec", [], "run a shell command", True),
     ("/export", [], "export conversation as markdown", False),
@@ -293,6 +294,67 @@ def _build_textual_app(agent: "Agent", session=None):
                 if n <= 0:
                     continue
                 color = _CTX_SEGMENT_COLORS.get(seg["label"], "white")
+                parts.append(f"[{color}]{'█' * n}[/{color}]")
+            if remaining > 0:
+                parts.append(f"[dim]{'░' * remaining}[/dim]")
+            self.update(f"{label} {''.join(parts)}")
+
+    _OUT_SEGMENT_COLORS: dict[str, str] = {
+        "reasoning": "magenta",
+        "tool":      "yellow",
+        "content":   "bright_white",
+        "other":     "blue",
+    }
+
+    class OutputBreakdownBar(Static):
+        """One-line segmented bar showing how model *output* tokens were spent.
+
+        Segments sum to 100% of the bar (scale = total output). Shows where
+        generation budget goes: thinking vs tool args vs user reply vs other.
+        """
+
+        def __init__(self, **kwargs):
+            super().__init__("", **kwargs)
+            self._segments: list[dict] = []
+            self._scope_label = "out"
+
+        def set_segments(self, segments: list[dict], scope_label: str = "out") -> None:
+            self._segments = list(segments)
+            self._scope_label = scope_label
+            self._redraw()
+
+        def on_resize(self, _event) -> None:
+            self._redraw()
+
+        def _redraw(self) -> None:
+            width = int(getattr(self.size, "width", 0) or 0)
+            if width < 20:
+                width = 80
+            total = sum(max(0, s.get("tokens", 0)) for s in self._segments)
+            label = f"{self._scope_label}: {total:,}"
+            bar_len = max(10, width - len(label) - 2)
+            if total <= 0:
+                self.update(f"{label} [dim]{'░' * bar_len}[/dim]")
+                return
+
+            cells = []
+            remaining = bar_len
+            for seg in self._segments:
+                tok = max(0, seg.get("tokens", 0))
+                raw = tok / total * bar_len
+                n = int(raw)
+                if tok > 0 and n == 0 and remaining > 0:
+                    n = 1
+                if n > remaining:
+                    n = remaining
+                remaining -= n
+                cells.append(n)
+
+            parts = []
+            for seg, n in zip(self._segments, cells):
+                if n <= 0:
+                    continue
+                color = _OUT_SEGMENT_COLORS.get(seg["label"], "white")
                 parts.append(f"[{color}]{'█' * n}[/{color}]")
             if remaining > 0:
                 parts.append(f"[dim]{'░' * remaining}[/dim]")
@@ -832,6 +894,10 @@ def _build_textual_app(agent: "Agent", session=None):
             height: 1;
             color: {t.text_dim};
         }}
+        OutputBreakdownBar {{
+            height: 1;
+            color: {t.text_dim};
+        }}
         #loading-row {{
             display: none;
             height: 1;
@@ -921,6 +987,7 @@ def _build_textual_app(agent: "Agent", session=None):
                 id="token-bar",
             )
             yield ContextBreakdownBar(cfg.llm.ctx_window, id="context-breakdown")
+            yield OutputBreakdownBar(id="output-breakdown")
             with TabbedContent(initial="tab-chat", id="view-tabs"):
                 with TabPane("chat", id="tab-chat"):
                     yield ConversationView(id="chat-log", markup=True, highlight=True)
@@ -958,6 +1025,14 @@ def _build_textual_app(agent: "Agent", session=None):
             try:
                 breakdown = self.query_one("#context-breakdown", ContextBreakdownBar)
                 breakdown.set_segments(self._agent.context_breakdown())
+            except Exception:
+                pass
+            try:
+                out_bar = self.query_one("#output-breakdown", OutputBreakdownBar)
+                out_bar.set_segments(
+                    self._agent.output_breakdown("session"),
+                    scope_label="out",
+                )
             except Exception:
                 pass
 
@@ -1240,6 +1315,37 @@ def _build_textual_app(agent: "Agent", session=None):
                     f"free: {max(0, ctx-total):,}"
                 )
                 self._refresh_token_bar()
+
+            elif cmd in ("/output", "/out"):
+                scope = (arg.strip().lower() or "session")
+                if scope not in ("session", "last"):
+                    self._write_sys(
+                        f"[{t.warning}]Usage: /output [session|last][/{t.warning}]"
+                    )
+                else:
+                    breakdown = self._agent.output_breakdown(scope)
+                    total = sum(s["tokens"] for s in breakdown)
+                    header = "Output breakdown — " + (
+                        "cumulative session" if scope == "session" else "last turn"
+                    )
+                    self._write_sys(f"[bold]{header}[/bold]")
+                    for seg in breakdown:
+                        tok = seg["tokens"]
+                        pct = (tok / total * 100) if total else 0
+                        color = _OUT_SEGMENT_COLORS.get(seg["label"], "white")
+                        self._write_sys(
+                            f"  [{color}]█[/{color}] {seg['label']:<10} "
+                            f"{tok:>7,}  ({pct:5.1f}%)"
+                        )
+                    self._write_sys(f"  {'total':<12} {total:>7,}")
+                    try:
+                        out_bar = self.query_one("#output-breakdown", OutputBreakdownBar)
+                        out_bar.set_segments(
+                            breakdown,
+                            scope_label="out" if scope == "session" else "turn",
+                        )
+                    except Exception:
+                        pass
 
             elif cmd == "/reset":
                 system = next(

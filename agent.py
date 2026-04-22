@@ -1346,6 +1346,12 @@ class Agent:
             "in_tps": 0.0,              # last call input tokens / second (prefill)
             "out_tps": 0.0,             # last call output tokens / second (generation)
             "last_gen_seconds": 0.0,
+            # Last call's breakdown — lets UI show most-recent turn separately
+            # from cumulative session totals.
+            "last_output_tokens": 0,
+            "last_content_tokens": 0,
+            "last_reasoning_tokens": 0,
+            "last_tool_tokens": 0,
         }
         # Background post-turn tasks (Q/A capture + summarization). Tracked so
         # callers can wait for them on graceful shutdown (single Ctrl+Q) or
@@ -1480,6 +1486,39 @@ class Agent:
             {"label": "tool_results", "tokens": tool_results},
         ]
 
+    def output_breakdown(self, scope: str = "session") -> list[dict]:
+        """Decompose model output tokens by purpose.
+
+        scope='session'  → cumulative totals across all turns
+        scope='last'     → most recent turn only
+
+        Categories:
+          - reasoning : think/reasoning_content tokens
+          - tool      : tool-call JSON argument tokens
+          - content   : assistant text emitted to user
+          - other     : server-reported output minus sum of the three above
+                        (covers tool-call names, stop tokens, formatting,
+                        and approximation drift). Clamped at 0.
+        """
+        s = self.stats
+        if scope == "last":
+            total = s.get("last_output_tokens", 0)
+            reasoning = s.get("last_reasoning_tokens", 0)
+            tool = s.get("last_tool_tokens", 0)
+            content = s.get("last_content_tokens", 0)
+        else:
+            total = s.get("output_tokens", 0)
+            reasoning = s.get("reasoning_tokens", 0)
+            tool = s.get("tool_tokens", 0)
+            content = s.get("content_tokens", 0)
+        other = max(0, total - reasoning - tool - content)
+        return [
+            {"label": "reasoning", "tokens": reasoning},
+            {"label": "tool",      "tokens": tool},
+            {"label": "content",   "tokens": content},
+            {"label": "other",     "tokens": other},
+        ]
+
     def _record_usage(self, u: dict) -> None:
         s = self.stats
         s["input_tokens"] += u.get("input_tokens", 0)
@@ -1487,6 +1526,10 @@ class Agent:
         s["content_tokens"] += u.get("content_tokens", 0)
         s["reasoning_tokens"] += u.get("reasoning_tokens", 0)
         s["tool_tokens"] += u.get("tool_tokens", 0)
+        s["last_output_tokens"] = u.get("output_tokens", 0)
+        s["last_content_tokens"] = u.get("content_tokens", 0)
+        s["last_reasoning_tokens"] = u.get("reasoning_tokens", 0)
+        s["last_tool_tokens"] = u.get("tool_tokens", 0)
         s["calls"] += 1
         gen = u.get("gen_seconds") or 0.0
         stream = u.get("stream_seconds") or 0.0
