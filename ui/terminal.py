@@ -27,6 +27,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/apply", [], "write last code block to file", False),
     ("/clear", [], "clear the chat screen", False),
     ("/compact", [], "summarize old messages to free context", False),
+    ("/context", ["/ctx"], "show context composition breakdown", False),
     ("/continue", ["/c"], "resume after iteration cap or truncation", False),
     ("/exec", [], "run a shell command", True),
     ("/export", [], "export conversation as markdown", False),
@@ -173,17 +174,129 @@ def _build_textual_app(agent: "Agent", session=None):
     from rich.markdown import Markdown
 
     class TokenBar(Static):
-        def __init__(self, ctx_window: int, **kwargs):
-            super().__init__(**kwargs)
-            self._ctx = ctx_window
+        """Full-width context-usage bar.
 
-        def update_tokens(self, used: int) -> None:
-            pct = used / self._ctx if self._ctx else 0
-            bar_len = 20
-            filled = int(pct * bar_len)
-            color = "red" if pct > 0.85 else ("yellow" if pct > 0.65 else "green")
-            bar = f"[{color}]{'█' * filled}{'░' * (bar_len - filled)}[/]"
-            self.update(f"tokens: {used}/{self._ctx} {bar}")
+        Renders current usage as filled blocks. Overlays two markers:
+          * compaction threshold (where auto-compaction fires)
+          * peak usage observed in the most recent agent round
+        """
+
+        def __init__(self, ctx_window: int, compact_frac: float = 0.75, **kwargs):
+            super().__init__("", **kwargs)
+            self._ctx = ctx_window
+            self._compact_frac = compact_frac
+            self._used = 0
+            self._peak = 0
+
+        def update_tokens(self, used: int, peak: int = 0, compact_frac: float | None = None) -> None:
+            self._used = used
+            self._peak = peak
+            if compact_frac is not None:
+                self._compact_frac = compact_frac
+            self._redraw()
+
+        def on_resize(self, _event) -> None:
+            self._redraw()
+
+        def _redraw(self) -> None:
+            ctx = max(1, self._ctx)
+            used = max(0, self._used)
+            peak = max(0, self._peak)
+            width = int(getattr(self.size, "width", 0) or 0)
+            if width < 20:
+                width = 80
+            label = f"tokens: {used:,}/{ctx:,}"
+            bar_len = max(10, width - len(label) - 2)
+            used_frac = min(1.0, used / ctx)
+            peak_frac = min(1.0, peak / ctx) if peak > 0 else 0.0
+            compact_frac = max(0.0, min(1.0, self._compact_frac))
+            used_cells = int(round(used_frac * bar_len))
+            peak_cell = int(round(peak_frac * bar_len)) if peak_frac > 0 else -1
+            compact_cell = int(round(compact_frac * bar_len))
+            if peak_cell >= bar_len:
+                peak_cell = bar_len - 1
+            if compact_cell >= bar_len:
+                compact_cell = bar_len - 1
+            fill_color = "red" if used_frac > 0.85 else ("yellow" if used_frac > 0.65 else "green")
+            parts = []
+            for i in range(bar_len):
+                if i == peak_cell and peak_cell >= 0:
+                    parts.append("[bold magenta]╋[/bold magenta]")
+                elif i == compact_cell:
+                    parts.append("[bold red]│[/bold red]")
+                elif i < used_cells:
+                    parts.append(f"[{fill_color}]█[/{fill_color}]")
+                else:
+                    parts.append("[dim]░[/dim]")
+            self.update(f"{label} {''.join(parts)}")
+
+    # Colors used for each context-composition segment. Kept distinct so the
+    # breakdown bar reads clearly at a glance.
+    _CTX_SEGMENT_COLORS: dict[str, str] = {
+        "agent_prompt": "blue",
+        "user_context": "cyan",
+        "tools_schema": "yellow",
+        "skills":       "magenta",
+        "user_input":   "green",
+        "assistant":    "bright_white",
+        "tool_results": "red",
+    }
+
+    class ContextBreakdownBar(Static):
+        """One-line segmented bar showing how the context window is filled.
+
+        Each registered content-type occupies a slice of the bar proportional
+        to its token share of the configured ctx_window. The unused tail is
+        drawn dim.
+        """
+
+        def __init__(self, ctx_window: int, **kwargs):
+            super().__init__("", **kwargs)
+            self._ctx = ctx_window
+            self._segments: list[dict] = []
+
+        def set_segments(self, segments: list[dict]) -> None:
+            self._segments = list(segments)
+            self._redraw()
+
+        def on_resize(self, _event) -> None:
+            self._redraw()
+
+        def _redraw(self) -> None:
+            ctx = max(1, self._ctx)
+            width = int(getattr(self.size, "width", 0) or 0)
+            if width < 20:
+                width = 80
+            # Leave room for a compact legend on the right.
+            total_used = sum(max(0, s.get("tokens", 0)) for s in self._segments)
+            label = f"ctx: {total_used:,}/{ctx:,}"
+            bar_len = max(10, width - len(label) - 2)
+
+            # Compute integer cell counts per segment; ensure non-zero segments
+            # get at least one cell when there's room, so tiny slices remain
+            # visible.
+            cells = []
+            remaining = bar_len
+            for seg in self._segments:
+                tok = max(0, seg.get("tokens", 0))
+                raw = tok / ctx * bar_len
+                n = int(raw)
+                if tok > 0 and n == 0 and remaining > 0:
+                    n = 1
+                if n > remaining:
+                    n = remaining
+                remaining -= n
+                cells.append(n)
+
+            parts = []
+            for seg, n in zip(self._segments, cells):
+                if n <= 0:
+                    continue
+                color = _CTX_SEGMENT_COLORS.get(seg["label"], "white")
+                parts.append(f"[{color}]{'█' * n}[/{color}]")
+            if remaining > 0:
+                parts.append(f"[dim]{'░' * remaining}[/dim]")
+            self.update(f"{label} {''.join(parts)}")
 
     class ConversationView(RichLog):
         """Live chat log — user ↔ agent turns."""
@@ -594,6 +707,11 @@ def _build_textual_app(agent: "Agent", session=None):
             super().__init__()
             self.token = token
 
+    class ContextSizeEvent(Message):
+        def __init__(self, tokens: int) -> None:
+            super().__init__()
+            self.tokens = tokens
+
     _PLACEHOLDER_Q = (
         "[bold]Q — User questions[/bold]\n\n"
         "[dim]Placeholder.[/dim] Will show the conversation rephrased as a single\n"
@@ -710,6 +828,10 @@ def _build_textual_app(agent: "Agent", session=None):
             height: 1;
             color: {t.text_dim};
         }}
+        ContextBreakdownBar {{
+            height: 1;
+            color: {t.text_dim};
+        }}
         #loading-row {{
             display: none;
             height: 1;
@@ -793,7 +915,12 @@ def _build_textual_app(agent: "Agent", session=None):
                 f"[bold]local-code-agent[/bold]  [{t.text_dim}]{cfg.llm.model}[/{t.text_dim}]{session_label}",
                 id="header-bar",
             )
-            yield TokenBar(cfg.llm.ctx_window, id="token-bar")
+            yield TokenBar(
+                cfg.llm.ctx_window,
+                compact_frac=getattr(cfg.llm, "compaction_threshold", 0.75),
+                id="token-bar",
+            )
+            yield ContextBreakdownBar(cfg.llm.ctx_window, id="context-breakdown")
             with TabbedContent(initial="tab-chat", id="view-tabs"):
                 with TabPane("chat", id="tab-chat"):
                     yield ConversationView(id="chat-log", markup=True, highlight=True)
@@ -816,9 +943,28 @@ def _build_textual_app(agent: "Agent", session=None):
             yield HintBar("", id="hint-bar", markup=True)
             yield Footer()
 
+        def _refresh_token_bar(self) -> None:
+            try:
+                bar = self.query_one("#token-bar", TokenBar)
+            except Exception:
+                return
+            bar.update_tokens(
+                self._agent.token_estimate(),
+                peak=getattr(self._agent, "round_peak_tokens", 0),
+                compact_frac=getattr(
+                    self._agent.config.llm, "compaction_threshold", 0.75
+                ),
+            )
+            try:
+                breakdown = self.query_one("#context-breakdown", ContextBreakdownBar)
+                breakdown.set_segments(self._agent.context_breakdown())
+            except Exception:
+                pass
+
         def on_mount(self) -> None:
             self.query_one("#input-bar", PromptInput).focus()
             self.call_later(self._refresh_git)
+            self.call_later(self._refresh_token_bar)
             # Register a thread-safe progress callback for analyze_asm
             try:
                 from agent.tools.analyze_asm import set_ui_progress_cb
@@ -1054,9 +1200,7 @@ def _build_textual_app(agent: "Agent", session=None):
                     )
                 except Exception as e:
                     self._write_sys(f"[{t.error}]Compact failed: {e}[/{t.error}]")
-                self.query_one("#token-bar", TokenBar).update_tokens(
-                    self._agent.token_estimate()
-                )
+                self._refresh_token_bar()
 
             elif cmd in ("/continue", "/c"):
                 self._begin_chat("continue")
@@ -1068,10 +1212,34 @@ def _build_textual_app(agent: "Agent", session=None):
             elif cmd == "/tokens":
                 used = self._agent.token_estimate()
                 cfg = self._agent.config
+                peak = getattr(self._agent, "round_peak_tokens", 0)
+                last_peak = getattr(self._agent, "last_round_peak_tokens", 0)
                 self._write_sys(
                     f"tokens: {used}/{cfg.llm.ctx_window}  "
-                    f"({len(self._agent.messages)} messages)"
+                    f"({len(self._agent.messages)} messages)  "
+                    f"peak: {peak}  prev-round peak: {last_peak}"
                 )
+
+            elif cmd in ("/context", "/ctx"):
+                cfg = self._agent.config
+                ctx = cfg.llm.ctx_window
+                breakdown = self._agent.context_breakdown()
+                total = sum(s["tokens"] for s in breakdown)
+                self._write_sys(f"[bold]Context breakdown[/bold]  (ctx_window={ctx})")
+                for seg in breakdown:
+                    tok = seg["tokens"]
+                    pct = (tok / ctx * 100) if ctx else 0
+                    color = _CTX_SEGMENT_COLORS.get(seg["label"], "white")
+                    self._write_sys(
+                        f"  [{color}]█[/{color}] {seg['label']:<14} "
+                        f"{tok:>7,}  ({pct:5.1f}%)"
+                    )
+                self._write_sys(
+                    f"  {'total':<16} {total:>7,}  "
+                    f"({(total/ctx*100 if ctx else 0):5.1f}%)  "
+                    f"free: {max(0, ctx-total):,}"
+                )
+                self._refresh_token_bar()
 
             elif cmd == "/reset":
                 system = next(
@@ -1122,9 +1290,7 @@ def _build_textual_app(agent: "Agent", session=None):
                             f"[{t.text_dim}]Loaded session '{label}' "
                             f"({len(loaded_msgs)} messages).[/{t.text_dim}]"
                         )
-                        self.query_one("#token-bar", TokenBar).update_tokens(
-                            self._agent.token_estimate()
-                        )
+                        self._refresh_token_bar()
                         self._restore_chat_history(loaded_msgs)
                         self._switch_to_chat()
 
@@ -1371,9 +1537,7 @@ def _build_textual_app(agent: "Agent", session=None):
                 else:
                     cut = user_positions[-event.remove_count]
                     self._agent.messages = self._agent.messages[:cut]
-                self.query_one("#token-bar", TokenBar).update_tokens(
-                    self._agent.token_estimate()
-                )
+                self._refresh_token_bar()
 
             # Truncate history to the edit point and add the new version
             input_widget = self.query_one("#input-bar", PromptInput)
@@ -1460,6 +1624,9 @@ def _build_textual_app(agent: "Agent", session=None):
             def on_reasoning(tok: str) -> None:
                 self.post_message(ReasoningTokenEvent(tok))
 
+            def on_context_size(n: int) -> None:
+                self.post_message(ContextSizeEvent(n))
+
             result = await self._agent.chat(
                 user_text,
                 on_tool_call=on_tool,
@@ -1469,6 +1636,7 @@ def _build_textual_app(agent: "Agent", session=None):
                 on_progress=on_progress,
                 on_phase=on_phase,
                 on_reasoning=on_reasoning,
+                on_context_size=on_context_size,
             )
             if self._session is not None:
                 save_session(self._session, self._agent.messages)
@@ -1554,6 +1722,9 @@ def _build_textual_app(agent: "Agent", session=None):
             self._iter_done = event.done
             self._iter_limit = event.limit
             self._update_loading_tokens()
+
+        def on_context_size_event(self, event: ContextSizeEvent) -> None:
+            self._refresh_token_bar()
 
         def on_phase_event(self, event: PhaseEvent) -> None:
             detail = f": {_escape(event.detail)}" if event.detail else ""
@@ -1703,9 +1874,7 @@ def _build_textual_app(agent: "Agent", session=None):
                     getattr(self, "_current_user_text", ""), response or ""
                 )
 
-            self.query_one("#token-bar", TokenBar).update_tokens(
-                self._agent.token_estimate()
-            )
+            self._refresh_token_bar()
             self.call_later(self._refresh_git)
 
     return CodeAgentApp(agent, session=session)

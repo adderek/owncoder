@@ -822,6 +822,7 @@ async def run_turn(
     on_loop_detected: callable | None = None,
     on_phase: callable | None = None,
     on_reasoning: callable | None = None,
+    on_context_size: callable | None = None,
     facts_store=None,
     turn_index: int | None = None,
     side_log=None,
@@ -834,6 +835,14 @@ async def run_turn(
             on_phase(label, detail)
         except Exception:
             logger.exception("on_phase callback failed")
+
+    def _notify_ctx(n: int) -> None:
+        if on_context_size is None:
+            return
+        try:
+            on_context_size(n)
+        except Exception:
+            logger.exception("on_context_size callback failed")
     tools = get_schemas()
     tc_cfg = getattr(config, "tool_compaction", None)
     compaction_on = bool(tc_cfg and getattr(tc_cfg, "enabled", False))
@@ -862,6 +871,7 @@ async def run_turn(
     while True:
         # ── Pre-flight: estimate tokens and compact proactively ────────────
         token_est = _count_tokens_approx(messages)
+        _notify_ctx(token_est)
         # Leave room for max_output_tokens + tool schemas (~500 tokens overhead)
         budget = config.llm.ctx_window - config.llm.max_output_tokens - 500
         if token_est > budget:
@@ -1111,6 +1121,7 @@ async def run_turn(
                         logger.exception("on_tool_result callback failed")
             # Check compaction threshold
             token_est = _count_tokens_approx(messages)
+            _notify_ctx(token_est)
             token_threshold = int(config.llm.ctx_window * config.llm.compaction_threshold)
             msg_threshold = config.llm.compaction_message_threshold
 
@@ -1341,6 +1352,11 @@ class Agent:
         # cancel them on force exit (double Ctrl+Q).
         self._pending_bg_tasks: set[asyncio.Task] = set()
 
+        # Peak context usage within the current round and the previous round.
+        # Reset at the start of each chat() call.
+        self.round_peak_tokens: int = 0
+        self.last_round_peak_tokens: int = 0
+
         load_all_tools(config=config, store=store, embedder=embedder, asm_store=asm_store)
 
         indexed_count = store.stats()["chunks"] if store else 0
@@ -1402,6 +1418,68 @@ class Agent:
     def token_estimate(self) -> int:
         return _count_tokens_approx(self.messages)
 
+    def schema_tokens(self) -> int:
+        """Approx token cost of the tool schemas sent with each request."""
+        try:
+            from agent._tokens import count_tokens_approx
+            return count_tokens_approx(json.dumps(get_schemas()))
+        except Exception:
+            return 0
+
+    def context_breakdown(self) -> list[dict]:
+        """Decompose current context into labeled segments with token counts.
+
+        Categories:
+          - agent_prompt   : first system message (agent identity/instructions)
+          - user_context   : additional system messages (.agent/context/always/user)
+          - tools_schema   : JSON schema of registered tools (sent alongside messages)
+          - skills         : loaded skills content (placeholder — 0 until implemented)
+          - user_input     : role == 'user' messages
+          - assistant      : role == 'assistant' messages (content + tool_calls)
+          - tool_results   : role == 'tool' messages
+        """
+        from agent._tokens import count_tokens_approx
+
+        agent_prompt = 0
+        user_context = 0
+        user_input = 0
+        assistant = 0
+        tool_results = 0
+        seen_system = False
+        for m in self.messages:
+            role = m.get("role")
+            content = m.get("content") or ""
+            if isinstance(content, list):
+                text = " ".join(
+                    str(p.get("text", "")) for p in content if isinstance(p, dict)
+                )
+            else:
+                text = str(content)
+            n = count_tokens_approx(text)
+            if role == "system":
+                if not seen_system:
+                    agent_prompt += n
+                    seen_system = True
+                else:
+                    user_context += n
+            elif role == "user":
+                user_input += n
+            elif role == "assistant":
+                assistant += n
+                if m.get("tool_calls"):
+                    assistant += count_tokens_approx(json.dumps(m["tool_calls"]))
+            elif role == "tool":
+                tool_results += n
+        return [
+            {"label": "agent_prompt", "tokens": agent_prompt},
+            {"label": "user_context", "tokens": user_context},
+            {"label": "tools_schema", "tokens": self.schema_tokens()},
+            {"label": "skills",       "tokens": 0},
+            {"label": "user_input",   "tokens": user_input},
+            {"label": "assistant",    "tokens": assistant},
+            {"label": "tool_results", "tokens": tool_results},
+        ]
+
     def _record_usage(self, u: dict) -> None:
         s = self.stats
         s["input_tokens"] += u.get("input_tokens", 0)
@@ -1431,9 +1509,24 @@ class Agent:
         on_loop_detected: callable | None = None,
         on_phase: callable | None = None,
         on_reasoning: callable | None = None,
+        on_context_size: callable | None = None,
     ) -> str:
         self._turn_id += 1
         turn_id = self._turn_id
+
+        # Roll round-peak: last completed round's peak is preserved for the UI
+        # until a new round overtakes it.
+        self.last_round_peak_tokens = self.round_peak_tokens
+        self.round_peak_tokens = self.token_estimate()
+
+        def _track_ctx(n: int) -> None:
+            if n > self.round_peak_tokens:
+                self.round_peak_tokens = n
+            if on_context_size is not None:
+                try:
+                    on_context_size(n)
+                except Exception:
+                    logger.exception("on_context_size callback failed")
 
         # Track tool calls and modified files for Q/A capture metadata.
         _turn_tool_calls: list[str] = []
@@ -1475,6 +1568,7 @@ class Agent:
             on_loop_detected=on_loop_detected,
             on_phase=on_phase,
             on_reasoning=on_reasoning,
+            on_context_size=_track_ctx,
             facts_store=self._facts_store,
             turn_index=turn_id,
             side_log=self._side_log,
