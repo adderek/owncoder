@@ -50,6 +50,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/wrap", [], "toggle line wrapping", False),
     ("/tools", [], "list available tools", False),
     ("/undo", [], "restore last file snapshot", False),
+    ("/legend", [], "show telemetry legend", False),
 ]
 
 
@@ -1791,8 +1792,18 @@ def _build_textual_app(agent: "Agent", session=None):
                     else (event.args or {})
                 )
                 if isinstance(args, dict):
+                    def _pval(v: object) -> str:
+                        if isinstance(v, str):
+                            return repr(v[:35])
+                        if isinstance(v, (int, float, bool)):
+                            return repr(v)
+                        if isinstance(v, (list, tuple)):
+                            return f"({len(v)} items)"
+                        if isinstance(v, dict):
+                            return f"({len(v)} keys)"
+                        return type(v).__name__
                     preview = ", ".join(
-                        f"{k}={repr(v)[:40]}" for k, v in list(args.items())[:2]
+                        f"{k}={_pval(v)}" for k, v in list(args.items())[:2]
                     )
             except Exception:
                 pass
