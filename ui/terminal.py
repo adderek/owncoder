@@ -1518,6 +1518,9 @@ def _build_textual_app(agent: "Agent", session=None):
                 for line in msg.splitlines():
                     self._write_sys(f"[{color}]{line}[/{color}]")
 
+            elif cmd == "/legend":
+                self._write_sys(_make_legend_text(t))
+
             elif cmd == "/wrap":
                 from agent.ui.prefs import save_prefs
 
@@ -2000,6 +2003,68 @@ def _build_textual_app(agent: "Agent", session=None):
 # ── Simple (Claude Code-style) ───────────────────────────────────────────────
 
 
+def _make_legend_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
+    """Describe the three telemetry bars shown above the chat view.
+
+    Uses the exact markers/colors that TokenBar, ContextBreakdownBar, and
+    OutputBreakdownBar render with, so the legend reads like a key.
+    """
+    ctx_colors = {
+        "agent_prompt": "blue",
+        "user_context": "cyan",
+        "tools_schema": "yellow",
+        "skills":       "magenta",
+        "user_input":   "green",
+        "assistant":    "bright_white",
+        "tool_results": "red",
+    }
+    ctx_descs = {
+        "agent_prompt": "system prompt (agent instructions)",
+        "user_context": "injected user context (CLAUDE.md, rules, memory)",
+        "tools_schema": "tool JSON schemas sent to the model",
+        "skills":       "skill definitions loaded this session",
+        "user_input":   "user messages",
+        "assistant":    "assistant replies + reasoning",
+        "tool_results": "tool call results fed back to the model",
+    }
+    out_colors = {
+        "reasoning": "magenta",
+        "tool":      "yellow",
+        "content":   "bright_white",
+        "other":     "blue",
+    }
+    out_descs = {
+        "reasoning": "think / chain-of-thought tokens",
+        "tool":      "tool call arguments",
+        "content":   "user-visible reply text",
+        "other":     "everything else (framing, role tags)",
+    }
+
+    lines = ["", "[bold]Telemetry legend[/bold] — bars above the chat", ""]
+
+    lines.append("[bold]tokens[/bold]  context fill (current input size vs. ctx_window)")
+    lines.append("  [green]█[/green] used  (turns [yellow]yellow[/yellow] >65%, [red]red[/red] >85%)")
+    lines.append("  [dim]░[/dim] free")
+    lines.append("  [bold red]│[/bold red] compaction threshold — auto-compact fires here")
+    lines.append("  [bold magenta]╋[/bold magenta] peak tokens in most recent agent round")
+    lines.append("")
+
+    lines.append("[bold]ctx[/bold]     context breakdown — what fills the window right now")
+    for label, desc in ctx_descs.items():
+        color = ctx_colors[label]
+        lines.append(f"  [{color}]█[/{color}] {label:<14} {desc}")
+    lines.append(f"  [dim]░[/dim] {'unused':<14} remaining ctx_window")
+    lines.append("")
+
+    lines.append("[bold]out[/bold]     output breakdown — where generated tokens go")
+    for label, desc in out_descs.items():
+        color = out_colors[label]
+        lines.append(f"  [{color}]█[/{color}] {label:<10} {desc}")
+    lines.append("  scope: cumulative session ([{c}]/output[/{c}]) or last turn ([{c}]/output last[/{c}])".format(c=theme.cmd_color))
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
     c = theme.cmd_color
     return f"""
@@ -2025,6 +2090,7 @@ def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
   [{c}]/think [level][/{c}]       thinking effort: off|low|normal|high|max ('-' resets)
   [{c}]/temperature [v][/{c}]     sampling temperature 0.0–2.0 (alias [{c}]/temp[/{c}]; '-' resets)
   [{c}]/max_tokens [args][/{c}]   set tokens: <n> | out <n> | in <n> | default
+  [{c}]/legend[/{c}]             explain markers/colors on the tokens/ctx/out bars
 
 [dim]Ctrl+D or Ctrl+C to quit[/dim]
 """
@@ -2456,6 +2522,9 @@ async def simple_loop(agent: "Agent", session=None):
             elif cmd == "/max_tokens":
                 ok, msg = _apply_max_tokens(agent, arg)
                 console.print(f"[{'green' if ok else 'yellow'}]{msg}[/]")
+
+            elif cmd == "/legend":
+                console.print(_make_legend_text(t))
 
             else:
                 console.print(
