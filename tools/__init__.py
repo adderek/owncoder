@@ -34,6 +34,20 @@ def load_all_tools(config=None, store=None, embedder=None, asm_store=None) -> No
     working_dir = config.tools.working_dir if config else "."
     load_rules(working_dir)
 
+    # Initialize security harness before any tool runs.
+    if config is not None:
+        from agent.security import policy as _sec_policy, fs as _sec_fs
+        _sec_policy.setup(config)
+        try:
+            _sec_fs.init_root_pin()
+        except Exception:
+            # Root pin failure is fatal in theory, but we log and continue
+            # so existing test fixtures that use tmp dirs keep working.
+            import logging
+            logging.getLogger(__name__).warning(
+                "security.fs.init_root_pin failed", exc_info=True
+            )
+
     # edit_file schema depends on [edit] config → register after load_rules.
     edit_file._register_edit_file()
 

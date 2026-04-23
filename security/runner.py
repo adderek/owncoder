@@ -1,0 +1,292 @@
+"""Sandboxed command runner.
+
+Prefers bubblewrap (bwrap) on Linux. Falls back to firejail when bwrap is
+absent. Both backends provide:
+
+* filesystem view bounded by the project root (read-only host system),
+* no network by default (toggleable per-call),
+* scrubbed environment,
+* resource limits (rlimit) applied in the child via a preexec hook.
+
+Host exec ("none") is allowed only when ``security.require_sandbox`` is
+False. It bypasses isolation entirely — use only on dev machines that
+can't install a backend.
+"""
+from __future__ import annotations
+
+import logging
+import os
+import resource
+import shutil
+import signal
+import subprocess
+import time
+from dataclasses import dataclass
+from pathlib import Path
+
+from . import audit, policy
+
+logger = logging.getLogger(__name__)
+
+
+class SandboxUnavailable(RuntimeError):
+    """No suitable sandbox backend is installed."""
+
+
+@dataclass
+class RunResult:
+    returncode: int
+    stdout: str
+    stderr: str
+    duration_ms: int
+    backend: str
+    timed_out: bool = False
+
+    def as_dict(self) -> dict:
+        return {
+            "returncode": self.returncode,
+            "stdout": self.stdout,
+            "stderr": self.stderr,
+            "duration_ms": self.duration_ms,
+            "backend": self.backend,
+            "timed_out": self.timed_out,
+        }
+
+
+_BACKEND: str | None = None
+
+
+def _probe_backend(name: str) -> bool:
+    """Run a trivial command through *name* to confirm it actually works here.
+
+    Bwrap/firejail can be installed yet unusable (nested sandbox, kernel
+    without unprivileged userns, AppArmor policy). Probe once per process.
+    """
+    try:
+        if name == "bwrap":
+            argv = [
+                "bwrap", "--die-with-parent", "--unshare-user",
+                "--unshare-pid", "--unshare-net",
+                "--ro-bind", "/usr", "/usr",
+                "--symlink", "usr/bin", "/bin",
+                "--", "/bin/true",
+            ]
+        elif name == "firejail":
+            argv = ["firejail", "--quiet", "--noprofile", "--net=none", "--", "/bin/true"]
+        else:
+            return True
+        r = subprocess.run(argv, capture_output=True, timeout=5)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def select_backend() -> str:
+    """Return the sandbox backend to use, honoring config preference and
+    availability. Memoized after first call.
+    """
+    global _BACKEND
+    if _BACKEND is not None:
+        return _BACKEND
+    pref = policy.get().cfg.sandbox_backend
+    if pref == "none":
+        _BACKEND = "none"
+        return _BACKEND
+    candidates = ["bwrap", "firejail"] if pref == "auto" else [pref]
+    for c in candidates:
+        if not shutil.which(c):
+            continue
+        if _probe_backend(c):
+            _BACKEND = c
+            return _BACKEND
+        logger.warning("Sandbox backend %s present but non-functional here", c)
+    if policy.get().cfg.require_sandbox:
+        raise SandboxUnavailable(
+            f"No sandbox backend available (tried {candidates}). "
+            "Install bubblewrap or firejail, or set "
+            "security.require_sandbox=false to allow host exec."
+        )
+    _BACKEND = "none"
+    logger.warning("No sandbox backend available — running commands on host!")
+    return _BACKEND
+
+
+def _rlimit_preexec():
+    cfg = policy.get().cfg
+    # Wall-clock is enforced by the parent (SIGKILL after timeout).
+    # CPU limit via rlimit; hit it and the kernel sends SIGKILL.
+    try:
+        resource.setrlimit(resource.RLIMIT_CPU, (cfg.cpu_seconds, cfg.cpu_seconds))
+    except (ValueError, OSError):
+        pass
+    try:
+        rss = cfg.rss_mb * 1024 * 1024
+        resource.setrlimit(resource.RLIMIT_AS, (rss, rss))
+    except (ValueError, OSError):
+        pass
+    try:
+        resource.setrlimit(resource.RLIMIT_NPROC, (cfg.nproc, cfg.nproc))
+    except (ValueError, OSError):
+        pass
+    try:
+        fsize = cfg.fsize_mb * 1024 * 1024
+        resource.setrlimit(resource.RLIMIT_FSIZE, (fsize, fsize))
+    except (ValueError, OSError):
+        pass
+    try:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (cfg.nofile, cfg.nofile))
+    except (ValueError, OSError):
+        pass
+    # Detach from the parent's controlling terminal so stray input doesn't
+    # reach the child and Ctrl-C at the TUI can't be hijacked.
+    try:
+        os.setsid()
+    except OSError:
+        pass
+
+
+def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool) -> list[str]:
+    pol = policy.get()
+    root = pol.root
+    a = [
+        "bwrap",
+        "--die-with-parent",
+        "--new-session",
+        "--unshare-user",
+        "--unshare-ipc",
+        "--unshare-pid",
+        "--unshare-uts",
+        "--unshare-cgroup-try",
+        "--cap-drop", "ALL",
+        "--proc", "/proc",
+        "--dev", "/dev",
+        "--tmpfs", "/tmp",
+        "--tmpfs", "/run",
+        "--ro-bind", "/usr", "/usr",
+        "--ro-bind", "/etc/alternatives", "/etc/alternatives",
+        "--ro-bind-try", "/etc/ssl", "/etc/ssl",
+        "--ro-bind-try", "/etc/ca-certificates", "/etc/ca-certificates",
+        "--ro-bind-try", "/etc/resolv.conf", "/etc/resolv.conf",
+        "--symlink", "usr/lib", "/lib",
+        "--symlink", "usr/lib64", "/lib64",
+        "--symlink", "usr/bin", "/bin",
+        "--symlink", "usr/sbin", "/sbin",
+        "--bind", str(root), str(root),
+        "--chdir", str(cwd),
+    ]
+    if not network:
+        a += ["--unshare-net"]
+    a += ["--"] + argv
+    return a
+
+
+def _firejail_argv(argv: list[str], *, cwd: Path, network: bool) -> list[str]:
+    pol = policy.get()
+    a = [
+        "firejail",
+        "--quiet",
+        "--noprofile",
+        "--private-tmp",
+        "--private-dev",
+        "--caps.drop=all",
+        "--nonewprivs",
+        "--seccomp",
+        f"--whitelist={pol.root}",
+        f"--chdir={cwd}",
+    ]
+    if not network:
+        a += ["--net=none"]
+    a += ["--"] + argv
+    return a
+
+
+def run(
+    argv: list[str],
+    *,
+    cwd: str | os.PathLike | None = None,
+    network: bool = False,
+    timeout: int | None = None,
+    stdin: bytes | str | None = None,
+) -> RunResult:
+    """Run *argv* (list, not shell string) inside the configured sandbox."""
+    if not argv:
+        raise ValueError("argv must be non-empty")
+    pol = policy.get()
+    cwd_path = Path(cwd).resolve() if cwd else pol.root
+    # Reject cwd outside the project root.
+    try:
+        cwd_path.relative_to(pol.root)
+    except ValueError:
+        if cwd_path != pol.root:
+            raise ValueError(f"cwd escapes project root: {cwd_path}")
+    backend = select_backend()
+    if backend == "bwrap":
+        wrapped = _bwrap_argv(list(argv), cwd=cwd_path, network=network)
+    elif backend == "firejail":
+        wrapped = _firejail_argv(list(argv), cwd=cwd_path, network=network)
+    else:
+        wrapped = list(argv)
+    wall = timeout or pol.cfg.wall_seconds
+    env = pol.env_for_child(dict(os.environ))
+    stdin_bytes: bytes | None
+    if isinstance(stdin, str):
+        stdin_bytes = stdin.encode("utf-8")
+    else:
+        stdin_bytes = stdin
+
+    audit.record(
+        "run.start",
+        backend=backend,
+        argv=list(argv),
+        cwd=str(cwd_path),
+        network=network,
+        wall_s=wall,
+    )
+    start = time.monotonic()
+    timed_out = False
+    try:
+        proc = subprocess.Popen(
+            wrapped,
+            cwd=cwd_path if backend == "none" else None,
+            env=env,
+            stdin=subprocess.PIPE if stdin_bytes is not None else subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            preexec_fn=_rlimit_preexec,
+            close_fds=True,
+        )
+        try:
+            out_b, err_b = proc.communicate(input=stdin_bytes, timeout=wall)
+            rc = proc.returncode
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                proc.kill()
+            out_b, err_b = proc.communicate()
+            rc = -signal.SIGKILL
+    except FileNotFoundError as e:
+        audit.record("run.error", backend=backend, argv=list(argv), error=str(e))
+        raise
+    duration_ms = int((time.monotonic() - start) * 1000)
+    stdout = (out_b or b"").decode("utf-8", errors="replace")
+    stderr = (err_b or b"").decode("utf-8", errors="replace")
+    audit.record(
+        "run.end",
+        backend=backend,
+        argv=list(argv),
+        returncode=rc,
+        duration_ms=duration_ms,
+        timed_out=timed_out,
+        stdout_blob=stdout,
+        stderr_blob=stderr,
+    )
+    return RunResult(
+        returncode=rc,
+        stdout=stdout,
+        stderr=stderr,
+        duration_ms=duration_ms,
+        backend=backend,
+        timed_out=timed_out,
+    )

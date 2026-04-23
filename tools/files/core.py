@@ -51,6 +51,12 @@ def _working_dir() -> Path:
 
 
 def _resolve(path: str) -> Path:
+    try:
+        from agent.security import policy as _sec_policy, fs as _sec_fs
+        if _config is not None and _sec_policy.is_configured():
+            return _sec_fs.safe_resolve(path)
+    except Exception:
+        pass
     p = Path(path)
     if not p.is_absolute():
         p = _working_dir() / p

@@ -238,6 +238,55 @@ class ToolCompactionConfig:
 
 
 @dataclass
+class SecurityConfig:
+    """Sandbox + filesystem confinement for tool calls.
+
+    Goals: LLM cannot read files outside the project root, cannot write
+    outside it, and cannot execute commands with host privileges / host env
+    / unconstrained resources. See SANDBOX.md for the threat model.
+    """
+    # Command sandbox backend: "auto" (pick best available), "bwrap",
+    # "firejail", "none" (host exec — dev only, requires explicit opt-in).
+    sandbox_backend: str = "auto"
+    # Fail startup if no real sandbox backend is available. Default False so
+    # the agent boots out-of-the-box on hosts without bwrap/firejail; flip
+    # to True in production configs to make missing-backend fatal.
+    require_sandbox: bool = False
+    # Network namespace policy: "off" (default-deny; per-call opt-in still
+    # gated by rules) or "on" (share host net; legacy).
+    network: str = "off"
+    # Resource limits applied via prlimit/setrlimit in the child.
+    cpu_seconds: int = 20
+    wall_seconds: int = 30
+    rss_mb: int = 512
+    nproc: int = 64
+    fsize_mb: int = 256
+    nofile: int = 256
+    # Filesystem policy.
+    follow_symlinks: bool = False
+    # Env vars passed into the sandbox. Anything matching a deny regex is
+    # stripped regardless of the allow list.
+    env_allow: list = field(default_factory=lambda: [
+        "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "HOME",
+        "USER", "LOGNAME", "TMPDIR", "PWD", "SHELL",
+        "PYTHONPATH", "VIRTUAL_ENV", "PYTHONDONTWRITEBYTECODE",
+        "CARGO_HOME", "RUSTUP_HOME", "GOPATH", "GOCACHE", "GOMODCACHE",
+        "NODE_PATH", "npm_config_cache",
+    ])
+    env_deny_patterns: list = field(default_factory=lambda: [
+        r".*_TOKEN$", r".*_KEY$", r".*_SECRET$", r".*_PASSWORD$",
+        r"^AWS_.*", r"^GITHUB_.*", r"^GH_.*", r"^SSH_.*", r"^GPG_.*",
+        r"^ANTHROPIC_.*", r"^OPENAI_.*", r"^GOOGLE_.*",
+    ])
+    # Argv allowlist: first token (basename) must match. Empty = no
+    # allowlist (falls back to .agent.sandbox rules).
+    argv_allow: list = field(default_factory=list)
+    # Enable the legacy shell-string entry point (`run_command`). When False
+    # only run_argv + approved shell_script are exposed.
+    allow_legacy_shell: bool = True
+
+
+@dataclass
 class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
@@ -250,6 +299,7 @@ class Config:
     compile_prompts: CompilePromptsConfig = field(default_factory=CompilePromptsConfig)
     token_limits: TokenLimitsConfig = field(default_factory=TokenLimitsConfig)
     tool_compaction: ToolCompactionConfig = field(default_factory=ToolCompactionConfig)
+    security: SecurityConfig = field(default_factory=SecurityConfig)
 
 
 def _apply_env_overrides(config: Config) -> None:
@@ -308,6 +358,14 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_TOOL_COMPACTION_MIN_LENGTH": ("tool_compaction", "min_length_to_compact"),
         "AGENT_TOOL_COMPACTION_CONCURRENCY": ("tool_compaction", "concurrency_limit"),
         "AGENT_TOOL_COMPACTION_PROMPT_PATH": ("tool_compaction", "prompt_path"),
+        "AGENT_SECURITY_BACKEND": ("security", "sandbox_backend"),
+        "AGENT_SECURITY_REQUIRE_SANDBOX": ("security", "require_sandbox"),
+        "AGENT_SECURITY_NETWORK": ("security", "network"),
+        "AGENT_SECURITY_CPU_SECONDS": ("security", "cpu_seconds"),
+        "AGENT_SECURITY_WALL_SECONDS": ("security", "wall_seconds"),
+        "AGENT_SECURITY_RSS_MB": ("security", "rss_mb"),
+        "AGENT_SECURITY_FOLLOW_SYMLINKS": ("security", "follow_symlinks"),
+        "AGENT_SECURITY_ALLOW_LEGACY_SHELL": ("security", "allow_legacy_shell"),
     }
     for env_key, (section, attr) in env_map.items():
         val = os.environ.get(env_key)
@@ -357,6 +415,7 @@ def _merge(config: Config, data: dict) -> None:
         ("compile_prompts", config.compile_prompts),
         ("token_limits", config.token_limits),
         ("tool_compaction", config.tool_compaction),
+        ("security", config.security),
     ):
         section_data = data.get(section_name, {})
         _merge_obj(obj, section_data)

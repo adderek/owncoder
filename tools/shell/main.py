@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import time
 from typing import TYPE_CHECKING
 
 from agent.tools import register
 from agent.tools.rules import get_rules
+from agent.security import runner as _runner, policy as _sec_policy, audit as _audit
 
 if TYPE_CHECKING:
     from agent.config import Config
@@ -66,6 +68,16 @@ _DANGEROUS_PATTERNS = [
 def setup(config) -> None:
     global _config
     _config = config
+    # Keep security policy in sync with the current working dir (matters in
+    # tests that iterate through multiple tmp_paths).
+    try:
+        from agent.security import policy as _sp, fs as _sf
+        _sp.setup(config)
+        _sf._root_dev = None
+        _sf._root_ino = None
+        _sf.init_root_pin()
+    except Exception:
+        pass
 
 
 class ToolDisabledError(Exception):
@@ -148,23 +160,52 @@ def run_command(cmd: str, cwd: str | None = None, timeout: int | None = None) ->
     if rules.config.max_timeout > 0:
         effective_timeout = min(effective_timeout, rules.config.max_timeout)
 
-    start = time.monotonic()
+    # Gate legacy shell-string path. When security harness is configured and
+    # the user hasn't opted in to legacy shell, require run_argv / shell_script.
+    if _sec_policy.is_configured() and not _sec_policy.get().cfg.allow_legacy_shell:
+        return {
+            "error": (
+                "Legacy shell string execution is disabled. "
+                "Use run_argv with an explicit argv list, or shell_script "
+                "for scripts that need shell features."
+            ),
+            "cmd": cmd,
+        }
+
+    err_msg = None
     try:
-        proc = subprocess.run(
-            cmd,
-            shell=True,
-            cwd=effective_cwd,
-            capture_output=True,
-            text=True,
-            timeout=effective_timeout,
-            env={**os.environ},
-        )
-        duration_ms = int((time.monotonic() - start) * 1000)
-        raw_stdout, raw_stderr = proc.stdout, proc.stderr
-        returncode = proc.returncode
-        err_msg = None
+        if _sec_policy.is_configured():
+            # Route through sandbox. Legacy entry still takes a shell string,
+            # so wrap it in `sh -c` inside the sandbox.
+            result = _runner.run(
+                ["sh", "-c", cmd],
+                cwd=effective_cwd,
+                network=(_sec_policy.get().cfg.network == "on"),
+                timeout=effective_timeout,
+            )
+            raw_stdout = result.stdout
+            raw_stderr = result.stderr
+            returncode = result.returncode
+            duration_ms = result.duration_ms
+            if result.timed_out:
+                err_msg = f"Command timed out after {effective_timeout}s"
+        else:
+            # Unconfigured (test fixtures). Preserve old behaviour.
+            start = time.monotonic()
+            proc = subprocess.run(
+                cmd,
+                shell=True,
+                cwd=effective_cwd,
+                capture_output=True,
+                text=True,
+                timeout=effective_timeout,
+                env={**os.environ},
+            )
+            duration_ms = int((time.monotonic() - start) * 1000)
+            raw_stdout, raw_stderr = proc.stdout, proc.stderr
+            returncode = proc.returncode
     except subprocess.TimeoutExpired as e:
-        duration_ms = int((time.monotonic() - start) * 1000)
+        duration_ms = int((time.monotonic() - start) * 1000) if 'start' in locals() else 0
         raw_stdout = (
             (e.stdout or b"").decode("utf-8", errors="replace")
             if isinstance(e.stdout, bytes)
@@ -202,3 +243,84 @@ def run_command(cmd: str, cwd: str | None = None, timeout: int | None = None) ->
 
 def get_transcript() -> list[dict]:
     return list(_transcript)
+
+
+@register(
+    "run_argv",
+    {
+        "description": (
+            "Run a command as an explicit argv list (no shell interpretation). "
+            "Preferred over run_command — safe from shell injection, still sandboxed. "
+            "Use run_command only when you genuinely need pipes or redirects."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "argv": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Argument vector, e.g. ['git','status','--short']",
+                },
+                "cwd": {"type": "string", "description": "Working directory (default: project root)"},
+                "timeout": {"type": "integer", "description": "Timeout in seconds (default: security.wall_seconds)"},
+                "network": {"type": "boolean", "description": "Allow network egress (default: false)"},
+            },
+            "required": ["argv"],
+        },
+    },
+)
+def run_argv(argv: list[str], cwd: str | None = None, timeout: int | None = None, network: bool = False) -> dict:
+    if _config and not _config.tools.allow_shell:
+        raise ToolDisabledError("Shell commands are disabled (tools.allow_shell = false)")
+    if not argv:
+        return {"error": "argv must be non-empty"}
+    rules = get_rules()
+    # Re-use existing rule checks against the joined representation.
+    joined = " ".join(shlex.quote(a) for a in argv)
+    ok, msg = rules.check_command(joined)
+    if not ok:
+        return {"error": msg, "argv": argv}
+    ro_ok, ro_msg = rules.check_shell_writes_readonly(joined)
+    if not ro_ok:
+        return {"error": ro_msg, "argv": argv}
+    net_ok, net_msg = rules.check_network_command(joined)
+    if not net_ok and network:
+        return {"error": net_msg, "argv": argv}
+    need_confirm, confirm_reason = rules.check_command_confirm(joined)
+    if need_confirm:
+        return {"error": confirm_reason, "argv": argv, "requires_confirm": True}
+    if rules.config.dry_run:
+        return {"dry_run": True, "argv": argv, "would_execute": True}
+    # Enforce argv allowlist if configured.
+    if _sec_policy.is_configured():
+        allow = _sec_policy.get().cfg.argv_allow
+        if allow and os.path.basename(argv[0]) not in allow:
+            return {"error": f"argv[0] {argv[0]!r} not in security.argv_allow", "argv": argv}
+    eff_timeout = timeout or (_config.tools.shell_timeout if _config else 30)
+    if rules.config.max_timeout > 0:
+        eff_timeout = min(eff_timeout, rules.config.max_timeout)
+    if not _sec_policy.is_configured():
+        return {"error": "security harness not initialized"}
+    try:
+        r = _runner.run(list(argv), cwd=cwd, network=network, timeout=eff_timeout)
+    except _runner.SandboxUnavailable as e:
+        return {"error": str(e), "argv": argv}
+    stdout, stdout_trunc = _truncate_stream(r.stdout)
+    stderr, stderr_trunc = _truncate_stream(r.stderr)
+    result: dict = {
+        "stdout": stdout,
+        "stderr": stderr,
+        "returncode": r.returncode,
+        "duration_ms": r.duration_ms,
+        "argv": list(argv),
+        "backend": r.backend,
+    }
+    if stdout_trunc or stderr_trunc:
+        result["truncated"] = {
+            "stdout_chars": len(r.stdout) if stdout_trunc else 0,
+            "stderr_chars": len(r.stderr) if stderr_trunc else 0,
+        }
+    if r.timed_out:
+        result["error"] = f"Command timed out after {eff_timeout}s"
+    _transcript.append(result)
+    return result
