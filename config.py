@@ -198,6 +198,8 @@ class TokenLimitsConfig:
     asm_splitter: int = 256
     asm_describer: int = 512
     commit_message: int = 4096
+    commit_chunk_chars: int = 12000          # char budget per chunk when iteratively summarizing a large staged diff
+    commit_summary_tokens: int = 1024        # max_tokens for each per-chunk summary step
     prompt_compile_min: int = 2048           # floor for the prompt-compiler budget
     compactor_analyze_min: int = 2048        # floor for stage-1 analyze output
     compactor_synthesize_initial: int = 2048 # first synthesize attempt
@@ -379,6 +381,8 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_TOKEN_LIMITS_ASM_SPLITTER": ("token_limits", "asm_splitter"),
         "AGENT_TOKEN_LIMITS_ASM_DESCRIBER": ("token_limits", "asm_describer"),
         "AGENT_TOKEN_LIMITS_COMMIT_MESSAGE": ("token_limits", "commit_message"),
+        "AGENT_TOKEN_LIMITS_COMMIT_CHUNK_CHARS": ("token_limits", "commit_chunk_chars"),
+        "AGENT_TOKEN_LIMITS_COMMIT_SUMMARY_TOKENS": ("token_limits", "commit_summary_tokens"),
         "AGENT_TOKEN_LIMITS_PROMPT_COMPILE_MIN": ("token_limits", "prompt_compile_min"),
         "AGENT_TOKEN_LIMITS_COMPACTOR_ANALYZE_MIN": ("token_limits", "compactor_analyze_min"),
         "AGENT_TOKEN_LIMITS_COMPACTOR_SYNTH_INITIAL": ("token_limits", "compactor_synthesize_initial"),
