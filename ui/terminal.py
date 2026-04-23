@@ -27,7 +27,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/apply", [], "write last code block to file", False),
     ("/clear", [], "clear the chat screen", False),
     ("/compact", [], "summarize old messages to free context", False),
-    ("/context", ["/ctx"], "show context composition breakdown", False),
+    ("/context", ["/ctx", "/legend"], "context breakdown grid + color/marker key", False),
     ("/output", ["/out"], "show model output breakdown (think/tool/reply/other)", True),
     ("/continue", ["/c"], "resume after iteration cap or truncation", False),
     ("/exec", [], "run a shell command", True),
@@ -50,7 +50,6 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/wrap", [], "toggle line wrapping", False),
     ("/tools", [], "list available tools", False),
     ("/undo", [], "restore last file snapshot", False),
-    ("/legend", [], "show telemetry legend", False),
 ]
 
 
@@ -151,6 +150,140 @@ def _match_commands(prefix: str) -> list[tuple[str, str, bool]]:
     return out
 
 
+# ── Context/telemetry color tables (shared by top bars + /context report) ───
+
+# Single source of truth. Top-bar widgets (ContextBreakdownBar,
+# OutputBreakdownBar) and the /context report both read from these — any
+# edit here propagates to the bars and the legend in lockstep.
+_CTX_SEGMENT_COLORS: dict[str, str] = {
+    "agent_prompt": "blue",
+    "user_context": "cyan",
+    "tools_schema": "yellow",
+    "skills":       "magenta",
+    "user_input":   "green",
+    "assistant":    "bright_white",
+    "tool_results": "red",
+}
+
+_CTX_SEGMENT_DESCS: dict[str, str] = {
+    "agent_prompt": "system prompt (agent instructions)",
+    "user_context": "injected user context (CLAUDE.md, rules, memory)",
+    "tools_schema": "tool JSON schemas sent to the model",
+    "skills":       "skill definitions loaded this session",
+    "user_input":   "user messages",
+    "assistant":    "assistant replies + reasoning",
+    "tool_results": "tool call results fed back to the model",
+}
+
+_OUT_SEGMENT_COLORS: dict[str, str] = {
+    "reasoning": "magenta",
+    "tool":      "yellow",
+    "content":   "bright_white",
+    "other":     "blue",
+}
+
+_OUT_SEGMENT_DESCS: dict[str, str] = {
+    "reasoning": "think / chain-of-thought tokens",
+    "tool":      "tool call arguments",
+    "content":   "user-visible reply text",
+    "other":     "everything else (framing, role tags)",
+}
+
+
+def _mini_bar(fraction: float, color: str, width: int = 20) -> str:
+    frac = max(0.0, min(1.0, fraction))
+    filled = int(round(frac * width))
+    return (
+        f"[{color}]{'█' * filled}[/{color}]"
+        f"[dim]{'░' * (width - filled)}[/dim]"
+    )
+
+
+def _render_context_report(agent, theme) -> str:
+    """Grid-style /context report. Combines breakdown + telemetry legend.
+
+    Colors come from _CTX_SEGMENT_COLORS / _OUT_SEGMENT_COLORS so they match
+    the top bars exactly.
+    """
+    cfg = agent.config
+    ctx = cfg.llm.ctx_window or 1
+    breakdown = agent.context_breakdown()
+    total = sum(max(0, s.get("tokens", 0)) for s in breakdown)
+    bar_w = 20
+
+    lines: list[str] = []
+    lines.append(f"[bold]Context breakdown[/bold]  [dim](ctx_window={ctx:,})[/dim]")
+    lines.append("")
+    header = (
+        f"  [dim]{'':1} {'segment':<14} {'description':<44}"
+        f"{'tokens':>9} {'%':>6}  bar[/dim]"
+    )
+    lines.append(header)
+
+    for seg in breakdown:
+        label = seg["label"]
+        tok = max(0, seg.get("tokens", 0))
+        pct = (tok / ctx * 100) if ctx else 0.0
+        color = _CTX_SEGMENT_COLORS.get(label, "white")
+        desc = _CTX_SEGMENT_DESCS.get(label, "")
+        bar = _mini_bar(tok / ctx if ctx else 0, color, bar_w)
+        lines.append(
+            f"  [{color}]█[/{color}] {label:<14} [dim]{desc:<44}[/dim]"
+            f"{tok:>9,} {pct:>5.1f}%  {bar}"
+        )
+
+    free = max(0, ctx - total)
+    total_pct = (total / ctx * 100) if ctx else 0.0
+    lines.append("")
+    lines.append(
+        f"  [bold]{'total':<16}[/bold] {'':<44}"
+        f"{total:>9,} {total_pct:>5.1f}%   [dim]free: {free:,}[/dim]"
+    )
+    lines.append("")
+
+    # ── Token bar key ──────────────────────────────────────────────────────
+    lines.append("[bold]tokens bar[/bold]  [dim]fill of ctx_window[/dim]")
+    lines.append(
+        "  [green]█[/green] used under 65%   "
+        "[yellow]█[/yellow] 65–85%   "
+        "[red]█[/red] over 85%   "
+        "[dim]░[/dim] free"
+    )
+    lines.append(
+        "  [bold red]│[/bold red] compaction threshold "
+        "(auto-compact fires here)   "
+        "[bold magenta]╋[/bold magenta] peak in last agent round"
+    )
+    lines.append("")
+
+    # ── Output breakdown key ───────────────────────────────────────────────
+    out_breakdown = agent.output_breakdown("session")
+    out_total = sum(max(0, s.get("tokens", 0)) for s in out_breakdown)
+    lines.append(
+        f"[bold]output breakdown[/bold]  "
+        f"[dim]session total: {out_total:,} tokens[/dim]"
+    )
+    for seg in out_breakdown:
+        label = seg["label"]
+        tok = max(0, seg.get("tokens", 0))
+        pct = (tok / out_total * 100) if out_total else 0.0
+        color = _OUT_SEGMENT_COLORS.get(label, "white")
+        desc = _OUT_SEGMENT_DESCS.get(label, "")
+        bar = _mini_bar(
+            tok / out_total if out_total else 0, color, bar_w
+        )
+        lines.append(
+            f"  [{color}]█[/{color}] {label:<14} [dim]{desc:<44}[/dim]"
+            f"{tok:>9,} {pct:>5.1f}%  {bar}"
+        )
+    c = theme.cmd_color
+    lines.append(
+        f"  [dim]scope:[/dim] session  "
+        f"[dim]— last-turn view:[/dim] [{c}]/output last[/{c}]"
+    )
+    return "\n".join(lines)
+
+
 # ── Textual UI ──────────────────────────────────────────────────────────────
 
 
@@ -232,18 +365,6 @@ def _build_textual_app(agent: "Agent", session=None):
                     parts.append("[dim]░[/dim]")
             self.update(f"{label} {''.join(parts)}")
 
-    # Colors used for each context-composition segment. Kept distinct so the
-    # breakdown bar reads clearly at a glance.
-    _CTX_SEGMENT_COLORS: dict[str, str] = {
-        "agent_prompt": "blue",
-        "user_context": "cyan",
-        "tools_schema": "yellow",
-        "skills":       "magenta",
-        "user_input":   "green",
-        "assistant":    "bright_white",
-        "tool_results": "red",
-    }
-
     class ContextBreakdownBar(Static):
         """One-line segmented bar showing how the context window is filled.
 
@@ -299,13 +420,6 @@ def _build_textual_app(agent: "Agent", session=None):
             if remaining > 0:
                 parts.append(f"[dim]{'░' * remaining}[/dim]")
             self.update(f"{label} {''.join(parts)}")
-
-    _OUT_SEGMENT_COLORS: dict[str, str] = {
-        "reasoning": "magenta",
-        "tool":      "yellow",
-        "content":   "bright_white",
-        "other":     "blue",
-    }
 
     class OutputBreakdownBar(Static):
         """One-line segmented bar showing how model *output* tokens were spent.
@@ -1296,25 +1410,8 @@ def _build_textual_app(agent: "Agent", session=None):
                     f"peak: {peak}  prev-round peak: {last_peak}"
                 )
 
-            elif cmd in ("/context", "/ctx"):
-                cfg = self._agent.config
-                ctx = cfg.llm.ctx_window
-                breakdown = self._agent.context_breakdown()
-                total = sum(s["tokens"] for s in breakdown)
-                self._write_sys(f"[bold]Context breakdown[/bold]  (ctx_window={ctx})")
-                for seg in breakdown:
-                    tok = seg["tokens"]
-                    pct = (tok / ctx * 100) if ctx else 0
-                    color = _CTX_SEGMENT_COLORS.get(seg["label"], "white")
-                    self._write_sys(
-                        f"  [{color}]█[/{color}] {seg['label']:<14} "
-                        f"{tok:>7,}  ({pct:5.1f}%)"
-                    )
-                self._write_sys(
-                    f"  {'total':<16} {total:>7,}  "
-                    f"({(total/ctx*100 if ctx else 0):5.1f}%)  "
-                    f"free: {max(0, ctx-total):,}"
-                )
+            elif cmd in ("/context", "/ctx", "/legend"):
+                self._write_sys(_render_context_report(self._agent, t))
                 self._refresh_token_bar()
 
             elif cmd in ("/output", "/out"):
@@ -1517,9 +1614,6 @@ def _build_textual_app(agent: "Agent", session=None):
                 color = t.success if ok else t.warning
                 for line in msg.splitlines():
                     self._write_sys(f"[{color}]{line}[/{color}]")
-
-            elif cmd == "/legend":
-                self._write_sys(_make_legend_text(t))
 
             elif cmd == "/wrap":
                 from agent.ui.prefs import save_prefs
@@ -2003,68 +2097,6 @@ def _build_textual_app(agent: "Agent", session=None):
 # ── Simple (Claude Code-style) ───────────────────────────────────────────────
 
 
-def _make_legend_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
-    """Describe the three telemetry bars shown above the chat view.
-
-    Uses the exact markers/colors that TokenBar, ContextBreakdownBar, and
-    OutputBreakdownBar render with, so the legend reads like a key.
-    """
-    ctx_colors = {
-        "agent_prompt": "blue",
-        "user_context": "cyan",
-        "tools_schema": "yellow",
-        "skills":       "magenta",
-        "user_input":   "green",
-        "assistant":    "bright_white",
-        "tool_results": "red",
-    }
-    ctx_descs = {
-        "agent_prompt": "system prompt (agent instructions)",
-        "user_context": "injected user context (CLAUDE.md, rules, memory)",
-        "tools_schema": "tool JSON schemas sent to the model",
-        "skills":       "skill definitions loaded this session",
-        "user_input":   "user messages",
-        "assistant":    "assistant replies + reasoning",
-        "tool_results": "tool call results fed back to the model",
-    }
-    out_colors = {
-        "reasoning": "magenta",
-        "tool":      "yellow",
-        "content":   "bright_white",
-        "other":     "blue",
-    }
-    out_descs = {
-        "reasoning": "think / chain-of-thought tokens",
-        "tool":      "tool call arguments",
-        "content":   "user-visible reply text",
-        "other":     "everything else (framing, role tags)",
-    }
-
-    lines = ["", "[bold]Telemetry legend[/bold] — bars above the chat", ""]
-
-    lines.append("[bold]tokens[/bold]  context fill (current input size vs. ctx_window)")
-    lines.append("  [green]█[/green] used  (turns [yellow]yellow[/yellow] >65%, [red]red[/red] >85%)")
-    lines.append("  [dim]░[/dim] free")
-    lines.append("  [bold red]│[/bold red] compaction threshold — auto-compact fires here")
-    lines.append("  [bold magenta]╋[/bold magenta] peak tokens in most recent agent round")
-    lines.append("")
-
-    lines.append("[bold]ctx[/bold]     context breakdown — what fills the window right now")
-    for label, desc in ctx_descs.items():
-        color = ctx_colors[label]
-        lines.append(f"  [{color}]█[/{color}] {label:<14} {desc}")
-    lines.append(f"  [dim]░[/dim] {'unused':<14} remaining ctx_window")
-    lines.append("")
-
-    lines.append("[bold]out[/bold]     output breakdown — where generated tokens go")
-    for label, desc in out_descs.items():
-        color = out_colors[label]
-        lines.append(f"  [{color}]█[/{color}] {label:<10} {desc}")
-    lines.append("  scope: cumulative session ([{c}]/output[/{c}]) or last turn ([{c}]/output last[/{c}])".format(c=theme.cmd_color))
-    lines.append("")
-    return "\n".join(lines)
-
-
 def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
     c = theme.cmd_color
     return f"""
@@ -2090,7 +2122,7 @@ def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
   [{c}]/think [level][/{c}]       thinking effort: off|low|normal|high|max ('-' resets)
   [{c}]/temperature [v][/{c}]     sampling temperature 0.0–2.0 (alias [{c}]/temp[/{c}]; '-' resets)
   [{c}]/max_tokens [args][/{c}]   set tokens: <n> | out <n> | in <n> | default
-  [{c}]/legend[/{c}]             explain markers/colors on the tokens/ctx/out bars
+  [{c}]/context[/{c}] ([{c}]/ctx[/{c}], [{c}]/legend[/{c}])  context breakdown grid + color/marker key
 
 [dim]Ctrl+D or Ctrl+C to quit[/dim]
 """
@@ -2523,8 +2555,8 @@ async def simple_loop(agent: "Agent", session=None):
                 ok, msg = _apply_max_tokens(agent, arg)
                 console.print(f"[{'green' if ok else 'yellow'}]{msg}[/]")
 
-            elif cmd == "/legend":
-                console.print(_make_legend_text(t))
+            elif cmd in ("/context", "/ctx", "/legend"):
+                console.print(_render_context_report(agent, t))
 
             else:
                 console.print(
