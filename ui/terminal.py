@@ -48,6 +48,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/think", [], "set thinking level  off|low|normal|high|max", True),
     ("/max_tokens", [], "set max tokens   [out <n> | in <n> | <n> | default]", True),
     ("/wrap", [], "toggle line wrapping", False),
+    ("/round-summary", ["/summary"], "toggle gray Q/A summary after each turn", False),
     ("/tools", [], "list available tools", False),
     ("/undo", [], "restore last file snapshot", False),
     ("/plan", [], "plan: new <goal> | show | steps | step <id> <status> | abort | pause | stash | resume", True),
@@ -1250,6 +1251,18 @@ def _build_textual_app(agent: "Agent", session=None):
             else:
                 self._wrap_enabled = False
 
+            self._round_summary_enabled = bool(
+                getattr(self._agent.config.ui, "round_summary", True)
+            )
+            try:
+                from agent.ui.prefs import load_prefs
+
+                _p = load_prefs()
+                if "round_summary" in _p:
+                    self._round_summary_enabled = bool(_p.get("round_summary"))
+            except Exception:
+                pass
+
             if session is not None:
                 agent.set_session_id(session.id)
 
@@ -1431,6 +1444,29 @@ def _build_textual_app(agent: "Agent", session=None):
                 self.query_one("#sparse-log", SparseView).load_history(entries)
             except Exception:
                 logger.exception("_reload_qa_views: view update failed (ignored)")
+
+        def _write_round_summary(self, user_text: str, response: str) -> None:
+            """Write a gray one-line Q/A summary of the just-completed round."""
+            q = _one_line((user_text or "").strip(), limit=80, wrap=False)
+            a_src = (response or "").strip()
+            a = _one_line(a_src, limit=80, wrap=False) if a_src else ""
+            tools = list(dict.fromkeys(self._last_tool_calls))
+            action_bits: list[str] = []
+            if tools:
+                action_bits.append("⚙ " + ", ".join(tools[:4]))
+            if self._modified_files:
+                action_bits.append("✎ " + " ".join(self._modified_files[:4]))
+            action = " · ".join(action_bits)
+            if action and a:
+                a_part = f"{action} — {a}"
+            else:
+                a_part = action or a or "(no reply)"
+            a_part = _one_line(a_part, limit=140, wrap=False)
+            line = (
+                f"[{t.text_dim}]↳ Q:[/{t.text_dim}] [{t.text_dim}]{_escape(q)}[/{t.text_dim}]  "
+                f"[{t.text_dim}]A:[/{t.text_dim}] [{t.text_dim}]{_escape(a_part)}[/{t.text_dim}]"
+            )
+            self._write_chat(line)
 
         def _append_qa_turn(self, user_text: str, response: str) -> None:
             """Append the just-completed turn to the Q/A/sparse views."""
@@ -1783,17 +1819,31 @@ def _build_textual_app(agent: "Agent", session=None):
                     self._write_sys(f"[{color}]{line}[/{color}]")
 
             elif cmd == "/wrap":
-                from agent.ui.prefs import save_prefs
+                from agent.ui.prefs import load_prefs, save_prefs
 
                 self._wrap_enabled = not self._wrap_enabled
                 state = "enabled" if self._wrap_enabled else "disabled"
-                save_prefs({"chat_wrap": "wrap" if self._wrap_enabled else "nowrap"})
+                _p = load_prefs()
+                _p["chat_wrap"] = "wrap" if self._wrap_enabled else "nowrap"
+                save_prefs(_p)
                 self._write_sys(f"[{t.success}]Line wrapping {state}.[/{t.success}]")
                 # Refresh views to apply the new wrapping setting
                 self.query_one("#chat-log", ConversationView).clear()
                 if self._agent.messages:
                     self._restore_chat_history(self._agent.messages)
                 self._reload_qa_views()
+
+            elif cmd in ("/round-summary", "/summary"):
+                from agent.ui.prefs import load_prefs, save_prefs
+
+                self._round_summary_enabled = not self._round_summary_enabled
+                state = "enabled" if self._round_summary_enabled else "disabled"
+                p = load_prefs()
+                p["round_summary"] = self._round_summary_enabled
+                save_prefs(p)
+                self._write_sys(
+                    f"[{t.success}]Round summary {state}.[/{t.success}]"
+                )
 
             elif cmd == "/plan":
                 ok, msg = _apply_plan(self._agent, arg)
@@ -2297,6 +2347,10 @@ def _build_textual_app(agent: "Agent", session=None):
                     self._write_chat(Markdown(response))
 
             if event.state == WorkerState.SUCCESS:
+                if self._round_summary_enabled:
+                    self._write_round_summary(
+                        getattr(self, "_current_user_text", ""), response or ""
+                    )
                 self._append_qa_turn(
                     getattr(self, "_current_user_text", ""), response or ""
                 )

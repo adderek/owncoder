@@ -113,6 +113,7 @@ class UIConfig:
     syntax_highlight: bool = True
     show_token_count: bool = True
     chat_wrap: str = "last used"  # 'wrap', 'nowrap', or 'last used'
+    round_summary: bool = True  # show gray Q/A summary line after each turn
     theme: ThemeConfig = field(default_factory=ThemeConfig)
 
 
