@@ -113,6 +113,18 @@ def load_always_context(config: "Config") -> str | None:
 # Project-level doc files, searched in working_dir. AGENT.md preferred (tool-agnostic).
 _PROJECT_DOC_NAMES = ("AGENT.md", "CLAUDE.md")
 
+# Project docs are injected every turn — keep small. Soft warn above this many chars.
+_PROJECT_DOC_SOFT_LIMIT_CHARS = 8000
+
+# Blocks wrapped in <!--agent:skip ... --> are stripped before model injection.
+# Intended for human-only notes / rationale / TODOs inside AGENT.md / CLAUDE.md.
+import re as _re
+_AGENT_SKIP_RE = _re.compile(r"<!--\s*agent:skip\b.*?-->", _re.DOTALL)
+
+
+def _strip_agent_skip(text: str) -> str:
+    return _AGENT_SKIP_RE.sub("", text)
+
 
 def load_project_doc(config: "Config") -> tuple[str | None, str | None]:
     """Load project instructions from AGENT.md or CLAUDE.md in working_dir.
@@ -146,10 +158,17 @@ def load_project_doc(config: "Config") -> tuple[str | None, str | None]:
 
     chosen_name, chosen_path = found[0]
     try:
-        text = chosen_path.read_text(encoding="utf-8").strip()
+        raw = chosen_path.read_text(encoding="utf-8")
     except OSError as e:
         return None, f"Failed to read {chosen_path}: {e}"
+    text = _strip_agent_skip(raw).strip()
     if not text:
         return None, warning
+    if len(text) > _PROJECT_DOC_SOFT_LIMIT_CHARS:
+        size_warn = (
+            f"{chosen_name} is {len(text)} chars (>{_PROJECT_DOC_SOFT_LIMIT_CHARS}); "
+            f"injected every turn — consider trimming or moving detail to docs/."
+        )
+        warning = f"{warning}\n{size_warn}" if warning else size_warn
     header = f"# Project instructions (from {chosen_name})"
     return f"{header}\n\n{text}", warning
