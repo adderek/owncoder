@@ -1,9 +1,3 @@
-"""agent.py — core turn loop + backward-compat re-exports.
-
-`run_turn` lives here (not in agent.core.turn) so that tests can monkeypatch
-`agent.agent.execute_tool` / `agent.agent.get_schemas` and have the patches
-visible to the turn loop.  Everything else is implemented in agent/core/*.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -11,60 +5,45 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
+from agent.memory.compactor import compact, _count_tokens_approx
+from agent.tools import get_schemas
 from openai import BadRequestError
 
-from agent.memory.compactor import compact, _count_tokens_approx
-from agent.tools import get_schemas  # importable here so tests can monkeypatch
-
-# Re-exports from agent/core/ — all public API stays at agent.agent.*
-from agent.core.agent import Agent
-from agent.core.loop_detector import LoopDetector
-from agent.core.tool_calls import (
-    execute_tool,  # importable here so tests can monkeypatch
-    _FakeToolCall,
-    _parse_raw_tool_calls,
-    _tool_result_message,
-    _tool_result_char_limit,
-    _extract_json_objects,
-    _TOOL_WRAP_TAGS,
-    _TAG_RE,
-    _DECODER,
-)
-from agent.core.streaming import (
-    _stream_response,
-    _strip_tool_blocks,
-    _is_narrating_tool_use,
-    _NARRATION_PHRASES,
-)
-from agent.core.history_ops import (
-    _merge_trailing_assistants,
-    _collapse_tool_rounds,
-    _truncate_large_messages,
+from .prompts import _build_call_kwargs, _inject_think_hint, _log_llm_request
+from .tool_calls import _tool_result_message, _FakeToolCall, execute_tool
+from .streaming import _stream_response, _strip_tool_blocks, _is_narrating_tool_use
+from .history_ops import (
+    _merge_trailing_assistants, _collapse_tool_rounds, _truncate_large_messages,
     _apply_code_from_history,
-    _build_extracted_summary,
-    extract_last_code_block,
-    _FILE_RE,
-    _EXTRACT_SHRINK_RATIO,
 )
-from agent.core.prompts import (
-    _build_system_prompt,
-    _inject_think_hint,
-    _build_call_kwargs,
-    _log_llm_request,
-    THINK_LEVELS,
-    _THINK_HINTS,
-    _REASONING_EFFORT,
-    SYSTEM_PROMPT_PATH,
-    GUIDELINES_DIR,
-    _PREAMBLE_CACHE,
-)
-from agent.core.turn import _post_turn_capture_and_summarize
+from .loop_detector import LoopDetector
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
     from agent.config import Config
 
 logger = logging.getLogger(__name__)
+
+
+async def _post_turn_capture_and_summarize(
+    qa_logger,
+    config: "Config",
+    turn_id: int,
+    user_input: str,
+    response: str,
+    tool_calls: list[str],
+    modified_files: list[str],
+) -> None:
+    try:
+        q_path, a_path = await asyncio.gather(
+            qa_logger.capture_q(turn_id, user_input),
+            qa_logger.capture_a(turn_id, response, tool_calls=tool_calls, modified_files=modified_files),
+        )
+        if config.ui.q_summaries:
+            from agent.summarizer import summarize_turn_background
+            await summarize_turn_background(config, q_path, a_path)
+    except Exception:
+        logger.exception("_post_turn_capture_and_summarize: error (ignored)")
 
 
 async def run_turn(
@@ -85,8 +64,6 @@ async def run_turn(
     side_log=None,
     _depth: int = 0,
 ) -> tuple[str, list[dict]]:
-    """Main turn loop. Lives here (not agent.core.turn) for test monkeypatching."""
-
     def _phase(label: str, detail: str = "") -> None:
         if on_phase is None:
             return
@@ -237,6 +214,7 @@ async def run_turn(
         tool_calls = msg.tool_calls if msg.tool_calls else None
 
         if not tool_calls and msg.content:
+            from .tool_calls import _parse_raw_tool_calls
             raw = _parse_raw_tool_calls(msg.content)
             if raw:
                 tool_calls = [_FakeToolCall(c["name"], c["arguments"]) for c in raw]

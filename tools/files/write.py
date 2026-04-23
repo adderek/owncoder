@@ -1,0 +1,70 @@
+from __future__ import annotations
+
+from agent.tools import register
+from agent.tools.rules import get_rules
+from .paths import _resolve, _working_dir, _undo_stack
+
+
+@register(
+    "write_file",
+    {
+        "description": "Write content to a file. Creates parent dirs if needed. Use only for new files — prefer edit_file for modifying existing files.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path to write"},
+                "content": {"type": "string", "description": "New file content"},
+            },
+            "required": ["path", "content"],
+        },
+    },
+)
+def write_file(path: str, content: str) -> dict:
+    import difflib
+
+    fpath = _resolve(path)
+
+    rules = get_rules()
+    rel = str(fpath.relative_to(_working_dir()))
+    is_new = not fpath.exists()
+    allowed, msg = rules.check_write(rel, is_new=is_new)
+    if not allowed:
+        return {"error": msg or f"Cannot write to: {path}"}
+    size_ok, size_msg = rules.check_write_size(content)
+    if not size_ok:
+        return {"error": size_msg}
+    if rules.config.dry_run:
+        return {"dry_run": True, "path": path, "would_write": f"{len(content)} bytes"}
+    if is_new and rules.config.confirm_create:
+        return {"error": f"Creating new files requires confirmation: {path}", "requires_confirm": True}
+
+    fpath.parent.mkdir(parents=True, exist_ok=True)
+
+    if fpath.exists():
+        original = fpath.read_text(encoding="utf-8", errors="replace")
+        _undo_stack[path] = original
+        diff_lines = list(
+            difflib.unified_diff(
+                original.splitlines(keepends=True),
+                content.splitlines(keepends=True),
+                fromfile=f"a/{path}",
+                tofile=f"b/{path}",
+                n=3,
+            )
+        )
+        diff_summary = "".join(diff_lines[:60])
+        if len(diff_lines) > 60:
+            diff_summary += f"\n... ({len(diff_lines) - 60} more diff lines)"
+    else:
+        diff_summary = f"(new file, {len(content.splitlines())} lines)"
+
+    fpath.write_text(content, encoding="utf-8")
+
+    if not is_new and fpath.suffix == ".py":
+        try:
+            import ast
+            ast.parse(content)
+        except SyntaxError as e:
+            return {"error": f"File written but has syntax error: {e}. Use undo_file to revert.", "path": path}
+
+    return {"ok": path, "diff": diff_summary}
