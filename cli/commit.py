@@ -153,6 +153,7 @@ def cmd_commit(args, config):
                 parts.append(content)
             elif reasoning:
                 state["tokens"] += 1
+                # For reasoning, we only update the preview buffer, not the main parts list.
                 state["buf"] = ("…thinking: " + reasoning)[-120:]
         return "".join(parts)
 
@@ -215,6 +216,9 @@ def cmd_commit(args, config):
         "no preamble, no explanation, no markdown fences, no quotes. "
         "First line: imperative-mood summary, <=72 chars. "
         "Optional body after a blank line, wrapped at 72 chars."
+        f"\n\nIMPORTANT: You have a total budget of {config.token_limits.commit_message} tokens. "
+        f"Please reserve at least {config.token_limits.commit_message_reserved} tokens for the final commit message content "
+        f"to avoid being cut off by reasoning or other overhead."
     )
 
     async def _final_message(diff_or_summary: str, *, from_summary: bool) -> str:
