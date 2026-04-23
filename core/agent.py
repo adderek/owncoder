@@ -65,11 +65,18 @@ class Agent:
         indexed_count = store.stats()["chunks"] if store else 0
         system_content = _build_system_prompt(config, indexed_count=indexed_count)
 
-        from agent.context import ensure_context_files, load_always_context
+        from agent.context import ensure_context_files, load_always_context, load_project_doc
         ensure_context_files(config, system_content)
         user_context = load_always_context(config)
+        project_doc, project_doc_warning = load_project_doc(config)
+        if project_doc_warning:
+            logger.warning(project_doc_warning)
+            import sys
+            print(f"warning: {project_doc_warning}", file=sys.stderr)
 
         self.messages = [{"role": "system", "content": system_content}]
+        if project_doc:
+            self.messages.append({"role": "system", "content": project_doc})
         if user_context:
             self.messages.append({"role": "system", "content": user_context})
 

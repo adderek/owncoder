@@ -108,3 +108,48 @@ def load_always_context(config: "Config") -> str | None:
         return None
     content = strip_comments(user_path.read_text(encoding="utf-8"))
     return content if content.strip() else None
+
+
+# Project-level doc files, searched in working_dir. AGENT.md preferred (tool-agnostic).
+_PROJECT_DOC_NAMES = ("AGENT.md", "CLAUDE.md")
+
+
+def load_project_doc(config: "Config") -> tuple[str | None, str | None]:
+    """Load project instructions from AGENT.md or CLAUDE.md in working_dir.
+
+    Returns (content, warning). Warning is set when both files exist and
+    resolve to distinct paths (not symlinks to the same file). If one is a
+    symlink to the other, only one is read and no warning is emitted.
+    """
+    working_dir = Path(config.tools.working_dir)
+    found: list[tuple[str, Path]] = []
+    for name in _PROJECT_DOC_NAMES:
+        p = working_dir / name
+        if p.is_file():
+            found.append((name, p))
+
+    if not found:
+        return None, None
+
+    warning: str | None = None
+    if len(found) > 1:
+        try:
+            resolved = {p.resolve() for _, p in found}
+        except OSError:
+            resolved = set()
+        if len(resolved) > 1:
+            names = ", ".join(n for n, _ in found)
+            warning = (
+                f"Both {names} found in {working_dir}; using {found[0][0]}. "
+                f"Consider symlinking one to the other to keep them in sync."
+            )
+
+    chosen_name, chosen_path = found[0]
+    try:
+        text = chosen_path.read_text(encoding="utf-8").strip()
+    except OSError as e:
+        return None, f"Failed to read {chosen_path}: {e}"
+    if not text:
+        return None, warning
+    header = f"# Project instructions (from {chosen_name})"
+    return f"{header}\n\n{text}", warning
