@@ -50,6 +50,12 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/wrap", [], "toggle line wrapping", False),
     ("/tools", [], "list available tools", False),
     ("/undo", [], "restore last file snapshot", False),
+    ("/plan", [], "plan: new <goal> | show | steps | step <id> <status> | abort | pause | stash | resume", True),
+    ("/plans", [], "list saved plans", False),
+    ("/abort-plan", [], "mark active plan aborted (no stash)", False),
+    ("/stash-plan", [], "git stash current changes + mark plan stashed", False),
+    ("/pause-plan", [], "mark active plan paused; resume later", False),
+    ("/recoveries", [], "list pending crash-recovery records", False),
 ]
 
 
@@ -137,6 +143,169 @@ def _apply_max_tokens(agent, arg: str) -> tuple[bool, str]:
         return True, f"max output tokens = {n}"
     agent.config.llm.ctx_window = n
     return True, f"input ctx_window = {n}"
+
+
+def _active_plan(agent):
+    from agent.planning import list_plans
+    sid = getattr(getattr(agent, "session", None), "id", "") or ""
+    for p in list_plans():
+        if p.status in ("active", "pending") and (not sid or p.session_id == sid):
+            return p
+    # Fallback: first active plan regardless of session
+    for p in list_plans():
+        if p.status == "active":
+            return p
+    return None
+
+
+def _render_plan(plan) -> str:
+    lines = [
+        f"[bold]plan[/bold] {plan.id}  [dim]status={plan.status}[/dim]",
+        f"  goal: {plan.goal}",
+    ]
+    done, total = plan.progress()
+    lines.append(f"  progress: {done}/{total} steps")
+    for s in plan.steps:
+        marker = {
+            "pending": "·", "in_progress": "▶", "completed": "✓",
+            "failed": "✗", "skipped": "—",
+        }.get(s.status, "?")
+        lines.append(f"   {marker} [{s.id}] {s.description}")
+        for t_desc in s.tests:
+            lines.append(f"        · test: {t_desc}")
+    return "\n".join(lines)
+
+
+def _apply_plan(agent, arg: str) -> tuple[bool, str]:
+    """Handle /plan <sub> …. Returns (ok, message)."""
+    from agent.planning import (
+        create_plan, load_plan, save_plan, list_plans,
+    )
+    from agent.planning.plan import update_step
+
+    parts = arg.strip().split(maxsplit=1)
+    if not parts:
+        plan = _active_plan(agent)
+        if plan is None:
+            return True, "No active plan. Usage: /plan new <goal>"
+        return True, _render_plan(plan)
+
+    sub = parts[0].lower()
+    rest = parts[1] if len(parts) > 1 else ""
+
+    if sub in ("new", "create"):
+        if not rest.strip():
+            return False, "Usage: /plan new <goal>"
+        sid = getattr(getattr(agent, "session", None), "id", "") or ""
+        plan = create_plan(goal=rest.strip(), session_id=sid)
+        plan.status = "active"
+        save_plan(plan)
+        return True, f"Created plan {plan.id}. Add steps via /plan step add <description>."
+
+    if sub == "show":
+        plan = _active_plan(agent)
+        if plan is None:
+            return False, "No active plan."
+        return True, _render_plan(plan)
+
+    if sub == "steps":
+        plan = _active_plan(agent)
+        if plan is None:
+            return False, "No active plan."
+        return True, _render_plan(plan)
+
+    if sub == "step":
+        plan = _active_plan(agent)
+        if plan is None:
+            return False, "No active plan."
+        sp = rest.split(maxsplit=2)
+        if not sp:
+            return False, "Usage: /plan step add <desc> | <id> <status> [note]"
+        action = sp[0]
+        if action == "add":
+            desc = sp[1] if len(sp) > 1 else ""
+            if len(sp) > 2:
+                desc = f"{sp[1]} {sp[2]}"
+            if not desc:
+                return False, "Usage: /plan step add <desc>"
+            from agent.planning.plan import Step
+            sid = f"s{len(plan.steps) + 1}"
+            plan.steps.append(Step(id=sid, description=desc))
+            save_plan(plan)
+            return True, f"Added step {sid}: {desc}"
+        # /plan step <id> <status> [note]
+        step_id = sp[0]
+        if len(sp) < 2:
+            return False, "Usage: /plan step <id> <status>"
+        status = sp[1]
+        note = sp[2] if len(sp) > 2 else ""
+        if status not in ("pending", "in_progress", "completed", "failed", "skipped"):
+            return False, f"Bad status '{status}'."
+        fields: dict = {"status": status}
+        if note:
+            fields["notes"] = note
+        updated = update_step(plan, step_id, **fields)
+        if updated is None:
+            return False, f"No step {step_id}."
+        # Auto-finalize
+        done = all(s.status in ("completed", "skipped") for s in plan.steps)
+        if done and plan.steps:
+            plan.status = "completed"
+            save_plan(plan)
+        return True, f"step {step_id} → {status}"
+
+    if sub == "abort":
+        plan = _active_plan(agent)
+        if plan is None:
+            return False, "No active plan."
+        plan.status = "aborted"
+        save_plan(plan)
+        return True, f"Plan {plan.id} aborted."
+
+    if sub == "pause":
+        plan = _active_plan(agent)
+        if plan is None:
+            return False, "No active plan."
+        plan.status = "paused"
+        save_plan(plan)
+        return True, f"Plan {plan.id} paused."
+
+    if sub == "stash":
+        plan = _active_plan(agent)
+        if plan is None:
+            return False, "No active plan."
+        import subprocess
+        try:
+            r = subprocess.run(
+                ["git", "stash", "push", "-u", "-m", f"plan:{plan.id}"],
+                capture_output=True, text=True, timeout=15,
+                cwd=agent.config.tools.working_dir,
+            )
+            stash_out = r.stdout.strip() or r.stderr.strip()
+        except Exception as e:
+            stash_out = f"git stash failed: {e}"
+        plan.status = "stashed"
+        save_plan(plan)
+        return True, f"Plan {plan.id} stashed.\n{stash_out}"
+
+    if sub == "resume":
+        target = rest.strip()
+        if target:
+            plan = load_plan(target)
+        else:
+            # pick latest paused/stashed
+            plan = None
+            for p in list_plans():
+                if p.status in ("paused", "stashed"):
+                    plan = p
+                    break
+        if plan is None:
+            return False, "No plan to resume."
+        plan.status = "active"
+        save_plan(plan)
+        return True, f"Plan {plan.id} resumed."
+
+    return False, f"Unknown /plan subcommand '{sub}'."
 
 
 def _match_commands(prefix: str) -> list[tuple[str, str, bool]]:
@@ -1003,15 +1172,12 @@ def _build_textual_app(agent: "Agent", session=None):
         }}
         TokenBar {{
             height: 1;
-            color: {t.text_dim};
         }}
         ContextBreakdownBar {{
             height: 1;
-            color: {t.text_dim};
         }}
         OutputBreakdownBar {{
             height: 1;
-            color: {t.text_dim};
         }}
         #loading-row {{
             display: none;
@@ -1627,6 +1793,48 @@ def _build_textual_app(agent: "Agent", session=None):
                 if self._agent.messages:
                     self._restore_chat_history(self._agent.messages)
                 self._reload_qa_views()
+
+            elif cmd == "/plan":
+                ok, msg = _apply_plan(self._agent, arg)
+                color = t.success if ok else t.warning
+                for line in msg.splitlines():
+                    self._write_sys(f"[{color}]{line}[/{color}]")
+
+            elif cmd == "/plans":
+                from agent.planning import list_plans
+                plans = list_plans()
+                if not plans:
+                    self._write_sys(f"[{t.text_dim}]No plans.[/{t.text_dim}]")
+                else:
+                    for p in plans:
+                        done, total = p.progress()
+                        self._write_sys(
+                            f"[{t.success}]{p.id}[/{t.success}] "
+                            f"[dim]({p.status}, {done}/{total})[/dim] {p.goal[:80]}"
+                        )
+
+            elif cmd in ("/abort-plan", "/pause-plan", "/stash-plan"):
+                sub_map = {
+                    "/abort-plan": "abort",
+                    "/pause-plan": "pause",
+                    "/stash-plan": "stash",
+                }
+                ok, msg = _apply_plan(self._agent, sub_map[cmd])
+                color = t.success if ok else t.warning
+                for line in msg.splitlines():
+                    self._write_sys(f"[{color}]{line}[/{color}]")
+
+            elif cmd == "/recoveries":
+                from agent.planning import recovery
+                recs = recovery.scan_pending()
+                if not recs:
+                    self._write_sys(f"[{t.text_dim}]No pending crash recoveries.[/{t.text_dim}]")
+                else:
+                    for r in recs:
+                        self._write_sys(
+                            f"[{t.warning}]{r.session_id}[/{t.warning}] "
+                            f"[dim]{r.exception}[/dim]"
+                        )
 
             else:
                 self._write_sys(

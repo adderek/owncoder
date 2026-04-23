@@ -117,6 +117,10 @@ def main() -> None:
         config.tools.working_dir = str(project_root)
 
     configure_sessions(config.tools.working_dir, config.tools.agent_dir)
+    from agent.planning import configure_plans
+    from agent.planning.recovery import configure as configure_recovery
+    configure_plans(config.tools.working_dir, config.tools.agent_dir)
+    configure_recovery(config.tools.working_dir, config.tools.agent_dir)
     log_dir = Path(config.tools.working_dir) / config.tools.agent_dir
     _setup_logging(str(log_dir), config.logs)
     log_path = log_dir / "agent.log"
@@ -145,6 +149,12 @@ def main() -> None:
         elif args.command == "chat":
             from agent.cli.chat import cmd_chat
             check_reachability(config)
+            if config.recovery.enabled:
+                from agent.planning import recovery as _rec
+                try:
+                    _rec.handle_pending_at_startup(config.recovery.prompt_mode)
+                except Exception:
+                    pass
             cmd_chat(args, config)
         elif args.command == "run":
             from agent.cli.run import cmd_run

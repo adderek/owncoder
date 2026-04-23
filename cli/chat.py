@@ -105,10 +105,39 @@ def cmd_chat(args, config):
         session = new_session()
         console.print(f"New session: {session.id}")
 
+    # Expose session on agent so planning helpers can tag plans with session_id.
+    agent.session = session
     try:
         active_session = run_ui(agent, session=session)
         if active_session is not None:
             session = active_session
+    except BaseException as exc:
+        try:
+            if config.recovery.enabled and not isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                from agent.planning import recovery as _rec
+                last_user = ""
+                for m in reversed(agent.messages or []):
+                    if m.get("role") == "user":
+                        last_user = str(m.get("content", ""))[:1000]
+                        break
+                active_plan_id = None
+                try:
+                    from agent.planning import list_plans
+                    for p in list_plans():
+                        if p.status == "active" and (not session or p.session_id == session.id):
+                            active_plan_id = p.id
+                            break
+                except Exception:
+                    pass
+                _rec.record_crash(
+                    session_id=session.id,
+                    exc=exc,
+                    plan_id=active_plan_id,
+                    last_user_message=last_user,
+                )
+        except Exception:
+            pass
+        raise
     finally:
         save_session(session, agent.messages)
         if store:

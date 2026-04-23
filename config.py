@@ -287,6 +287,33 @@ class SecurityConfig:
 
 
 @dataclass
+class PlanningConfig:
+    """Plan-driven execution cycle.
+
+    When enabled, the agent can create a Plan (goal + atomic Steps + tests per
+    step) and iterate through it with red-green discipline. Plans persist under
+    `.agent/plans/`.
+    """
+    enabled: bool = True
+    auto_commit_on_step_complete: bool = False
+    max_steps: int = 50
+
+
+@dataclass
+class RecoveryConfig:
+    """Crash-recovery behaviour.
+
+    prompt_mode: one of
+        ask           — interactively ask per pending crash record (default)
+        auto_recover  — always offer recovery silently
+        auto_skip     — always ignore silently
+    """
+    prompt_mode: str = "ask"
+    enabled: bool = True
+    keep_resolved_days: int = 14
+
+
+@dataclass
 class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
@@ -300,6 +327,8 @@ class Config:
     token_limits: TokenLimitsConfig = field(default_factory=TokenLimitsConfig)
     tool_compaction: ToolCompactionConfig = field(default_factory=ToolCompactionConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
+    planning: PlanningConfig = field(default_factory=PlanningConfig)
+    recovery: RecoveryConfig = field(default_factory=RecoveryConfig)
 
 
 def _apply_env_overrides(config: Config) -> None:
@@ -366,6 +395,10 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_SECURITY_RSS_MB": ("security", "rss_mb"),
         "AGENT_SECURITY_FOLLOW_SYMLINKS": ("security", "follow_symlinks"),
         "AGENT_SECURITY_ALLOW_LEGACY_SHELL": ("security", "allow_legacy_shell"),
+        "AGENT_PLANNING_ENABLED": ("planning", "enabled"),
+        "AGENT_PLANNING_AUTO_COMMIT": ("planning", "auto_commit_on_step_complete"),
+        "AGENT_RECOVERY_PROMPT_MODE": ("recovery", "prompt_mode"),
+        "AGENT_RECOVERY_ENABLED": ("recovery", "enabled"),
     }
     for env_key, (section, attr) in env_map.items():
         val = os.environ.get(env_key)
@@ -416,6 +449,8 @@ def _merge(config: Config, data: dict) -> None:
         ("token_limits", config.token_limits),
         ("tool_compaction", config.tool_compaction),
         ("security", config.security),
+        ("planning", config.planning),
+        ("recovery", config.recovery),
     ):
         section_data = data.get(section_name, {})
         _merge_obj(obj, section_data)
