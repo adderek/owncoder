@@ -198,7 +198,8 @@ class TokenLimitsConfig:
     """
     asm_splitter: int = 256
     asm_describer: int = 512
-    commit_message: int = 4096
+    commit_message: int = 8192
+    commit_message_max_tokens: int = 16384  # Increased to allow more room for reasoning
     commit_message_reserved: int = 512
     commit_chunk_chars: int = 12000          # char budget per chunk when iteratively summarizing a large staged diff
     commit_summary_tokens: int = 1024        # max_tokens for each per-chunk summary step

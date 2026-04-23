@@ -155,6 +155,10 @@ def cmd_commit(args, config):
                 state["tokens"] += 1
                 # For reasoning, we only update the preview buffer, not the main parts list.
                 state["buf"] = ("…thinking: " + reasoning)[-120:]
+                # If no content has been received yet, we can use reasoning as a fallback
+                # to prevent returning an empty message if the model only outputs reasoning.
+                if not parts:
+                    parts.append(reasoning)
         return "".join(parts)
 
     summary_system = (
