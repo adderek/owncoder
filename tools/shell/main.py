@@ -38,31 +38,15 @@ def _truncate_stream(s: str, cap: int = _SHELL_OUTPUT_CAP) -> tuple[str, bool]:
     )
 
 
-_DANGEROUS_PATTERNS = [
-    "rm -rf",
-    "rm -fr",
-    "sudo ",
-    "curl | bash",
-    "curl|bash",
-    "wget | bash",
-    "wget|bash",
-    "bash <(",
-    "sh <(",
-    "> /dev/",
-    ">/dev/",
-    "dd if=",
-    "mkfs",
-    "fdisk",
-    "parted",
-    "chmod -R 777",
-    "chmod 777 /",
-    ":(){:|:&};",  # fork bomb
-    "shutdown",
-    "reboot",
-    "halt",
-    "poweroff",
-    "iptables -F",
-]
+# Coarse tripwire on shlex-tokenised argv. Substring matching on the raw
+# shell string is trivially defeatable (whitespace, quoting, $(...), base64);
+# stripping it avoids a false sense of safety. Real defence lives in the
+# sandbox bind mounts plus rules.check_command.
+_CONFIRM_COMMANDS = {
+    "rm", "dd", "mkfs", "fdisk", "parted",
+    "shutdown", "reboot", "halt", "poweroff",
+    "sudo", "doas",
+}
 
 
 def setup(config) -> None:
@@ -85,10 +69,37 @@ class ToolDisabledError(Exception):
 
 
 def _check_dangerous(cmd: str) -> str | None:
-    lower = cmd.lower()
-    for pattern in _DANGEROUS_PATTERNS:
-        if pattern in lower:
-            return pattern
+    """Return the matching command basename if argv[0] looks destructive.
+
+    Uses shlex tokenisation so `rm  -rf` (multiple spaces), `"rm" -rf`, or
+    leading env assignments still match. Pipe/&&/; chains are walked so the
+    first command of each segment is inspected. Returns None on parse error
+    (caller's rules.check_command still runs).
+    """
+    import re
+    # Shlex does not split on shell operators (; && || | &); pre-insert
+    # whitespace around them so they land as standalone tokens.
+    pre = re.sub(r"(&&|\|\||[;|&])", r" \1 ", cmd)
+    try:
+        tokens = shlex.split(pre, posix=True)
+    except ValueError:
+        return None
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok in {"|", "||", "&&", ";", "&"}:
+            i += 1
+            continue
+        # Skip VAR=value prefixes.
+        if "=" in tok and tok.split("=", 1)[0].replace("_", "").isalnum():
+            i += 1
+            continue
+        base = os.path.basename(tok)
+        if base in _CONFIRM_COMMANDS:
+            return base
+        # Advance past this segment to the next separator.
+        while i < len(tokens) and tokens[i] not in {"|", "||", "&&", ";", "&"}:
+            i += 1
     return None
 
 
@@ -122,7 +133,7 @@ def run_command(cmd: str, cwd: str | None = None, timeout: int | None = None) ->
     danger = _check_dangerous(cmd)
     if danger:
         return {
-            "error": f"Dangerous command pattern '{danger}' requires explicit confirmation before running.",
+            "error": f"Destructive command '{danger}' requires explicit confirmation before running.",
             "cmd": cmd,
             "requires_confirm": True,
         }
@@ -190,20 +201,13 @@ def run_command(cmd: str, cwd: str | None = None, timeout: int | None = None) ->
             if result.timed_out:
                 err_msg = f"Command timed out after {effective_timeout}s"
         else:
-            # Unconfigured (test fixtures). Preserve old behaviour.
-            start = time.monotonic()
-            proc = subprocess.run(
-                cmd,
-                shell=True,
-                cwd=effective_cwd,
-                capture_output=True,
-                text=True,
-                timeout=effective_timeout,
-                env={**os.environ},
-            )
-            duration_ms = int((time.monotonic() - start) * 1000)
-            raw_stdout, raw_stderr = proc.stdout, proc.stderr
-            returncode = proc.returncode
+            # Refuse to execute when the security harness hasn't been
+            # initialised — host exec with the full parent env is exactly
+            # the bypass path this harness exists to close.
+            return {
+                "error": "security harness not initialized; refusing to run shell command",
+                "cmd": cmd,
+            }
     except subprocess.TimeoutExpired as e:
         duration_ms = int((time.monotonic() - start) * 1000) if 'start' in locals() else 0
         raw_stdout = (

@@ -125,7 +125,9 @@ def safe_open(path: str | os.PathLike, mode: str = "r", *, encoding: str | None 
         flags |= os.O_NOFOLLOW
     # O_CLOEXEC on the resulting fd so it doesn't leak into child processes.
     flags |= getattr(os, "O_CLOEXEC", 0)
-    fd = os.open(real, flags, 0o644)
+    # 0o600 — the agent may write files derived from secrets; don't leak
+    # them to other local users via the default umask.
+    fd = os.open(real, flags, 0o600)
     # Wrap fd in a Python file object with the requested textness.
     binary = "b" in mode
     if binary:

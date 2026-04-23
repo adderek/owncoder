@@ -50,11 +50,34 @@ def _resolve(path: str) -> Path:
             return _sec_fs.safe_resolve(path)
     except Exception:
         pass
+    import os as _os
     p = Path(path)
     if not p.is_absolute():
         p = _working_dir() / p
-    resolved = p.resolve()
     base = _working_dir().resolve()
+    # Reject any existing symlink component along the literal requested
+    # path before calling resolve() — otherwise a symlink inside the root
+    # that points outside would silently pass the _within check below.
+    parts: list[str] = []
+    for part in p.parts:
+        if part == "..":
+            if parts:
+                parts.pop()
+            continue
+        if part == ".":
+            continue
+        parts.append(part)
+    base_parts = list(base.parts)
+    if parts[: len(base_parts)] != base_parts:
+        raise ValueError(f"Path escapes working directory: {path!r}")
+    cur = Path(*base_parts)
+    for part in parts[len(base_parts):]:
+        cur = cur / part
+        if not _os.path.lexists(cur):
+            break
+        if _os.path.islink(cur):
+            raise ValueError(f"Symlink traversal denied: {cur}")
+    resolved = p.resolve()
     if resolved != base and not str(resolved).startswith(str(base) + "/"):
         raise ValueError(f"Path escapes working directory: {path!r}")
     return resolved

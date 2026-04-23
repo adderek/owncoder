@@ -58,7 +58,24 @@ def write_file(path: str, content: str) -> dict:
     else:
         diff_summary = f"(new file, {len(content.splitlines())} lines)"
 
-    fpath.write_text(content, encoding="utf-8")
+    # Route through security.fs.safe_open so the final component gets
+    # O_NOFOLLOW — a symlink planted at fpath between _resolve and the
+    # write must not redirect the write. Fall back to write_text only when
+    # the harness is not configured (bare ToolsConfig fixtures).
+    try:
+        from agent.security import policy as _sec_policy, fs as _sec_fs
+        from . import paths as _paths
+        # Mirror _resolve's gate: only route through safe_open when the
+        # files-layer config is set *and* the security harness is active.
+        # Otherwise sec_policy.root may point at a stale root from a prior
+        # fixture and safe_resolve would spuriously reject the write.
+        if _paths._config is not None and _sec_policy.is_configured():
+            with _sec_fs.safe_open(fpath, "w") as f:
+                f.write(content)
+        else:
+            fpath.write_text(content, encoding="utf-8")
+    except ImportError:
+        fpath.write_text(content, encoding="utf-8")
 
     if not is_new and fpath.suffix == ".py":
         try:

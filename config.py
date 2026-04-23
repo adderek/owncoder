@@ -277,13 +277,18 @@ class SecurityConfig:
         r".*_TOKEN$", r".*_KEY$", r".*_SECRET$", r".*_PASSWORD$",
         r"^AWS_.*", r"^GITHUB_.*", r"^GH_.*", r"^SSH_.*", r"^GPG_.*",
         r"^ANTHROPIC_.*", r"^OPENAI_.*", r"^GOOGLE_.*",
+        r"^AZURE_.*", r"^GCP_.*", r"^GCLOUD_.*", r"^CLAUDE_.*",
+        r"^NPM_TOKEN.*", r".*CREDENTIAL.*", r".*PASSWD.*",
+        r"^DATABASE_URL$", r"^REDIS_URL$", r"^MONGO.*URI$",
     ])
     # Argv allowlist: first token (basename) must match. Empty = no
     # allowlist (falls back to .agent.sandbox rules).
     argv_allow: list = field(default_factory=list)
     # Enable the legacy shell-string entry point (`run_command`). When False
-    # only run_argv + approved shell_script are exposed.
-    allow_legacy_shell: bool = True
+    # only run_argv + approved shell_script are exposed. Defaults to False
+    # so the agent refuses un-tokenised shell strings unless the operator
+    # explicitly opts in via agent.toml or AGENT_SECURITY_ALLOW_LEGACY_SHELL.
+    allow_legacy_shell: bool = False
 
 
 @dataclass

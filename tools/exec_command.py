@@ -1,69 +1,71 @@
 #!/usr/bin/env python3
-"""Execute system commands in the project directory."""
+"""Execute system commands via the security harness.
 
-import os
+The `agent exec` CLI shells commands on the user's behalf. Everything goes
+through :mod:`agent.security.runner` so the CLI entry point is bounded by
+the same sandbox, env scrub, and rlimits as the LLM-facing tools.
+"""
+
+from __future__ import annotations
+
 import shlex
-import subprocess
-import sys
 from pathlib import Path
 from typing import List, Optional
 
-def execute_command(command: List[str], working_dir: Optional[str] = None) -> tuple[int, str, str]:
+from agent.security import policy as _policy, fs as _fs, runner as _runner
+
+
+def _ensure_policy(config) -> None:
+    _policy.setup(config)
+    _fs._root_dev = None
+    _fs._root_ino = None
+    _fs.init_root_pin()
+
+
+def execute_command(
+    command: List[str],
+    working_dir: Optional[str] = None,
+    config=None,
+) -> tuple[int, str, str]:
+    """Run *command* inside the configured sandbox.
+
+    Returns ``(returncode, stdout, stderr)``. When *config* is omitted the
+    caller is expected to have initialised the security policy already.
     """
-    Execute a command in the project directory.
-    
-    Args:
-        command: List of command arguments
-        working_dir: Optional working directory (defaults to project root)
-        
-    Returns:
-        Tuple of (return_code, stdout, stderr)
-    """
-    # Determine the working directory
-    if working_dir is None:
-        # Default to the project root (where main.py is located)
-        working_dir = Path(__file__).parent.parent.parent.resolve()
-    else:
-        working_dir = Path(working_dir).resolve()
-    
+    if config is not None:
+        _ensure_policy(config)
+    if not _policy.is_configured():
+        return (1, "", "security harness not initialized")
+
+    cwd = Path(working_dir).resolve() if working_dir else _policy.get().root
     try:
-        # Execute the command
-        result = subprocess.run(
-            command,
-            cwd=working_dir,
-            capture_output=True,
-            text=True,
-            timeout=300  # 5 minute timeout
-        )
-        return (result.returncode, result.stdout, result.stderr)
-    except subprocess.TimeoutExpired:
-        return (1, "", "Command timed out")
-    except Exception as e:
+        result = _runner.run(list(command), cwd=cwd)
+    except _runner.SandboxUnavailable as e:
         return (1, "", str(e))
+    except FileNotFoundError as e:
+        return (1, "", str(e))
+    except Exception as e:
+        return (1, "", f"{type(e).__name__}: {e}")
+    return (result.returncode, result.stdout, result.stderr)
+
 
 def handle_exec_command(args, config):
-    """Handle the exec command."""
+    """Handle the `agent exec` subcommand."""
     from rich.console import Console
-    
+
     console = Console()
-    
-    # Get the command to execute
+
     if not args.prompt:
         console.print("[red]No command provided.[/red]")
         return 1
-    
-    # Parse the command from the prompt
+
     command_parts = shlex.split(args.prompt)
-    
-    # Validate command
     if not command_parts:
         console.print("[red]Invalid command.[/red]")
         return 1
-    
-    # Execute command
-    return_code, stdout, stderr = execute_command(command_parts)
-    
-    # Display results
+
+    return_code, stdout, stderr = execute_command(command_parts, config=config)
+
     if return_code == 0:
         if stdout.strip():
             console.print("[green]Command executed successfully:[/green]")
@@ -72,5 +74,5 @@ def handle_exec_command(args, config):
         console.print(f"[red]Command failed with exit code {return_code}[/red]")
         if stderr.strip():
             console.print(f"[red]{stderr}[/red]")
-    
+
     return return_code
