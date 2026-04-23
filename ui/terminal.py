@@ -384,8 +384,8 @@ def _render_context_report(agent, theme) -> str:
     lines.append(f"[bold]Context breakdown[/bold]  [dim](ctx_window={ctx:,})[/dim]")
     lines.append("")
     header = (
-        f"  [dim]{'':1} {'segment':<14} {'description':<44}"
-        f"{'tokens':>9} {'%':>6}  bar[/dim]"
+        f"  [dim]{'':1} {'segment':<14} {'bar':<{bar_w}}  "
+        f"{'tokens':>9} {'%':>6}  description[/dim]"
     )
     lines.append(header)
 
@@ -397,15 +397,15 @@ def _render_context_report(agent, theme) -> str:
         desc = _CTX_SEGMENT_DESCS.get(label, "")
         bar = _mini_bar(tok / ctx if ctx else 0, color, bar_w)
         lines.append(
-            f"  [{color}]█[/{color}] {label:<14} [dim]{desc:<44}[/dim]"
-            f"{tok:>9,} {pct:>5.1f}%  {bar}"
+            f"  [{color}]█[/{color}] {label:<14} {bar}  "
+            f"{tok:>9,} {pct:>5.1f}%  [dim]{desc}[/dim]"
         )
 
     free = max(0, ctx - total)
     total_pct = (total / ctx * 100) if ctx else 0.0
     lines.append("")
     lines.append(
-        f"  [bold]{'total':<16}[/bold] {'':<44}"
+        f"  [bold]{'total':<16}[/bold] {'':<{bar_w}}  "
         f"{total:>9,} {total_pct:>5.1f}%   [dim]free: {free:,}[/dim]"
     )
     lines.append("")
@@ -442,8 +442,8 @@ def _render_context_report(agent, theme) -> str:
             tok / out_total if out_total else 0, color, bar_w
         )
         lines.append(
-            f"  [{color}]█[/{color}] {label:<14} [dim]{desc:<44}[/dim]"
-            f"{tok:>9,} {pct:>5.1f}%  {bar}"
+            f"  [{color}]█[/{color}] {label:<14} {bar}  "
+            f"{tok:>9,} {pct:>5.1f}%  [dim]{desc}[/dim]"
         )
     c = theme.cmd_color
     lines.append(
