@@ -18,7 +18,7 @@ def _find_project_root(start_dir: Path, search_parents: bool) -> Path | None:
 
 
 def main() -> None:
-    sys.setrecursionlimit(2000)
+    sys.setrecursionlimit(5000)
     parser = argparse.ArgumentParser(prog="agent", description="Local code agent")
     parser.add_argument("--config", type=str, help="Path to agent.toml")
 

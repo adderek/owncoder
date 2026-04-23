@@ -127,21 +127,22 @@ def _parse_with_tree_sitter(content: str, language: str, path: str, cfg: "RAGCon
         end = node.end_byte
         return content[start:end]
 
-    def collect(node, depth=0):
+    # Iterative DFS to avoid Python recursion limits on deeply nested ASTs.
+    stack = [(root, 0)]
+    while stack:
+        node, depth = stack.pop()
         if node.type in target_types and depth <= 2:
             text = node_text(node)
             token_count = _count_tokens_approx(text)
             if token_count < cfg.chunk_min_tokens:
-                return
+                continue
             name = _extract_name(node, language)
-            # For class definitions, emit header + per-method chunks
             if "class" in node.type:
-                # Emit class header (up to first method)
                 header_lines = []
+                method_children = []
                 for child in node.children:
                     if child.type in target_types:
-                        # emit methods separately
-                        collect(child, depth + 1)
+                        method_children.append(child)
                     else:
                         header_lines.append(node_text(child))
                 header = "\n".join(header_lines[:5])
@@ -156,8 +157,10 @@ def _parse_with_tree_sitter(content: str, language: str, path: str, cfg: "RAGCon
                         "end_line": node.end_point[0] + 1,
                         "content": text[:cfg.chunk_max_tokens * 4],
                     })
-                return
-            # Trim to max tokens
+                # Push methods in reverse so original order is preserved on pop.
+                for child in reversed(method_children):
+                    stack.append((child, depth + 1))
+                continue
             if token_count > cfg.chunk_max_tokens:
                 text = text[:cfg.chunk_max_tokens * 4]
             chunks.append({
@@ -171,10 +174,8 @@ def _parse_with_tree_sitter(content: str, language: str, path: str, cfg: "RAGCon
                 "content": text,
             })
         else:
-            for child in node.children:
-                collect(child, depth)
-
-    collect(root)
+            for child in reversed(node.children):
+                stack.append((child, depth))
 
     # Group remaining top-level statements not covered by chunks
     covered_lines: set[int] = set()
@@ -359,11 +360,14 @@ def chunk_file(path: str, cfg: "RAGConfig") -> list[dict]:
     if not content.strip():
         return []
 
-    if language == "asm":
-        chunks = _asm_chunks(content, path, cfg)
-    elif TREE_SITTER_LANG.get(language):
-        chunks = _parse_with_tree_sitter(content, TREE_SITTER_LANG[language], path, cfg)
-    else:
+    try:
+        if language == "asm":
+            chunks = _asm_chunks(content, path, cfg)
+        elif TREE_SITTER_LANG.get(language):
+            chunks = _parse_with_tree_sitter(content, TREE_SITTER_LANG[language], path, cfg)
+        else:
+            chunks = _fallback_chunks(content, path, language, cfg)
+    except RecursionError:
         chunks = _fallback_chunks(content, path, language, cfg)
 
     # Always emit at least one chunk for small files that fell below chunk_min_tokens
