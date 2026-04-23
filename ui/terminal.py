@@ -56,6 +56,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/stash-plan", [], "git stash current changes + mark plan stashed", False),
     ("/pause-plan", [], "mark active plan paused; resume later", False),
     ("/recoveries", [], "list pending crash-recovery records", False),
+    ("/quit", ["/exit", "/q!"], "quit the agent", False),
 ]
 
 
@@ -1824,6 +1825,10 @@ def _build_textual_app(agent: "Agent", session=None):
                 for line in msg.splitlines():
                     self._write_sys(f"[{color}]{line}[/{color}]")
 
+            elif cmd in ("/quit", "/exit", "/q!"):
+                self.action_quit()
+                return
+
             elif cmd == "/recoveries":
                 from agent.planning import recovery
                 recs = recovery.scan_pending()
@@ -2765,6 +2770,10 @@ async def simple_loop(agent: "Agent", session=None):
 
             elif cmd in ("/context", "/ctx", "/legend"):
                 console.print(_render_context_report(agent, t))
+
+            elif cmd in ("/quit", "/exit", "/q!"):
+                console.print(f"[{t.text_dim}]Bye.[/{t.text_dim}]")
+                return
 
             else:
                 console.print(
