@@ -24,7 +24,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import audit, policy
+from . import audit, policy, seccomp_filter
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +69,8 @@ def _probe_backend(name: str) -> bool:
                 "--unshare-pid", "--unshare-net",
                 "--ro-bind", "/usr", "/usr",
                 "--symlink", "usr/bin", "/bin",
+                "--symlink", "usr/lib", "/lib",
+                "--symlink", "usr/lib64", "/lib64",
                 "--", "/bin/true",
             ]
         elif name == "firejail":
@@ -111,7 +113,7 @@ def select_backend() -> str:
     return _BACKEND
 
 
-def _rlimit_preexec():
+def _rlimit_preexec(sandbox_backend: str = "none") -> None:
     cfg = policy.get().cfg
     # Wall-clock is enforced by the parent (SIGKILL after timeout).
     # CPU limit via rlimit; hit it and the kernel sends SIGKILL.
@@ -124,10 +126,14 @@ def _rlimit_preexec():
         resource.setrlimit(resource.RLIMIT_AS, (rss, rss))
     except (ValueError, OSError):
         pass
-    try:
-        resource.setrlimit(resource.RLIMIT_NPROC, (cfg.nproc, cfg.nproc))
-    except (ValueError, OSError):
-        pass
+    if sandbox_backend == "none":
+        # For bwrap/firejail the nproc limit would be applied to the sandbox
+        # launcher itself, causing unshare(CLONE_NEWPID) to fail with EAGAIN
+        # when the user already has many processes. Apply it only for host exec.
+        try:
+            resource.setrlimit(resource.RLIMIT_NPROC, (cfg.nproc, cfg.nproc))
+        except (ValueError, OSError):
+            pass
     try:
         fsize = cfg.fsize_mb * 1024 * 1024
         resource.setrlimit(resource.RLIMIT_FSIZE, (fsize, fsize))
@@ -145,7 +151,7 @@ def _rlimit_preexec():
         pass
 
 
-def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool) -> list[str]:
+def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool, seccomp_fd: int | None = None) -> list[str]:
     pol = policy.get()
     root = pol.root
     a = [
@@ -163,7 +169,7 @@ def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool) -> list[str]:
         "--tmpfs", "/tmp",
         "--tmpfs", "/run",
         "--ro-bind", "/usr", "/usr",
-        "--ro-bind", "/etc/alternatives", "/etc/alternatives",
+        "--ro-bind-try", "/etc/alternatives", "/etc/alternatives",
         "--ro-bind-try", "/etc/ssl", "/etc/ssl",
         "--ro-bind-try", "/etc/ca-certificates", "/etc/ca-certificates",
         "--ro-bind-try", "/etc/resolv.conf", "/etc/resolv.conf",
@@ -176,6 +182,8 @@ def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool) -> list[str]:
     ]
     if not network:
         a += ["--unshare-net"]
+    if seccomp_fd is not None:
+        a += ["--add-seccomp-fd", str(seccomp_fd)]
     a += ["--"] + argv
     return a
 
@@ -220,8 +228,10 @@ def run(
         if cwd_path != pol.root:
             raise ValueError(f"cwd escapes project root: {cwd_path}")
     backend = select_backend()
+    seccomp_fd: int | None = None
     if backend == "bwrap":
-        wrapped = _bwrap_argv(list(argv), cwd=cwd_path, network=network)
+        seccomp_fd = seccomp_filter.build_filter_fd()
+        wrapped = _bwrap_argv(list(argv), cwd=cwd_path, network=network, seccomp_fd=seccomp_fd)
     elif backend == "firejail":
         wrapped = _firejail_argv(list(argv), cwd=cwd_path, network=network)
     else:
@@ -241,9 +251,11 @@ def run(
         cwd=str(cwd_path),
         network=network,
         wall_s=wall,
+        seccomp=seccomp_fd is not None,
     )
     start = time.monotonic()
     timed_out = False
+    pass_fds = (seccomp_fd,) if seccomp_fd is not None else ()
     try:
         proc = subprocess.Popen(
             wrapped,
@@ -252,9 +264,13 @@ def run(
             stdin=subprocess.PIPE if stdin_bytes is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            preexec_fn=_rlimit_preexec,
+            preexec_fn=lambda: _rlimit_preexec(backend),
             close_fds=True,
+            pass_fds=pass_fds,
         )
+        if seccomp_fd is not None:
+            os.close(seccomp_fd)
+            seccomp_fd = None
         try:
             out_b, err_b = proc.communicate(input=stdin_bytes, timeout=wall)
             rc = proc.returncode
@@ -266,8 +282,11 @@ def run(
                 proc.kill()
             out_b, err_b = proc.communicate()
             rc = -signal.SIGKILL
-    except FileNotFoundError as e:
-        audit.record("run.error", backend=backend, argv=list(argv), error=str(e))
+    except Exception as e:
+        if seccomp_fd is not None:
+            os.close(seccomp_fd)
+        if isinstance(e, FileNotFoundError):
+            audit.record("run.error", backend=backend, argv=list(argv), error=str(e))
         raise
     duration_ms = int((time.monotonic() - start) * 1000)
     stdout = (out_b or b"").decode("utf-8", errors="replace")
