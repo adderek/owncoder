@@ -7,7 +7,7 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 
-from .models import Config
+from .models import Config, ModelEntry
 
 
 def _apply_env_overrides(config: Config) -> None:
@@ -138,6 +138,43 @@ def _merge(config: Config, data: dict) -> None:
         _merge_obj(obj, section_data)
 
 
+def _merge_models(config: Config, data: dict) -> None:
+    """Parse [models.<name>] tables and populate config.model_entries."""
+    models_section = data.get("models", {})
+    for name, entry_data in models_section.items():
+        if not isinstance(entry_data, dict):
+            continue
+        existing = config.model_entries.get(name)
+        if existing is None:
+            existing = ModelEntry()
+            config.model_entries[name] = existing
+        for field, val in entry_data.items():
+            if hasattr(existing, field):
+                setattr(existing, field, val)
+
+
+def _backfill_model_entries(config: Config) -> None:
+    """Mirror legacy [llm]/[embeddings] into model_entries if not overridden."""
+    if "default" not in config.model_entries:
+        llm = config.llm
+        config.model_entries["default"] = ModelEntry(
+            base_url=llm.base_url,
+            api_key=llm.api_key,
+            model=llm.model,
+            ctx_window=llm.ctx_window,
+            max_output_tokens=llm.max_output_tokens,
+            temperature=llm.temperature,
+        )
+    if "embeddings" not in config.model_entries:
+        emb = config.embeddings
+        config.model_entries["embeddings"] = ModelEntry(
+            base_url=emb.base_url,
+            api_key=getattr(emb, "api_key", "local"),
+            model=emb.model,
+            dimensions=emb.dimensions,
+        )
+
+
 def load_config(extra_path: Path | None = None) -> Config:
     config = Config()
 
@@ -148,12 +185,18 @@ def load_config(extra_path: Path | None = None) -> Config:
     if extra_path:
         search_paths.append(extra_path)
 
+    raw_data: list[dict] = []
     for p in search_paths:
         if p.exists():
             data = _load_toml(p)
+            raw_data.append(data)
             _merge(config, data)
 
+    for data in raw_data:
+        _merge_models(config, data)
+
     _apply_env_overrides(config)
+    _backfill_model_entries(config)
     return config
 
 

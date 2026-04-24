@@ -230,9 +230,25 @@ class RecoveryConfig:
 
 
 @dataclass
+class ModelEntry:
+    """Single named model endpoint with capabilities declared via tags."""
+    base_url: str = "http://localhost:8080/v1"
+    api_key: str = "local"
+    model: str = ""
+    ctx_window: int = 16384
+    max_output_tokens: int = 4096
+    temperature: float = 0.7
+    dimensions: int = 0          # embeddings only
+    tags: list = field(default_factory=list)
+    extra: dict = field(default_factory=dict)
+
+
+@dataclass
 class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
+    # [models.<name>] entries; populated by loader (back-compat: mirrors llm/embeddings)
+    model_entries: dict = field(default_factory=dict)
     rag: RAGConfig = field(default_factory=RAGConfig)
     tools: ToolsConfig = field(default_factory=ToolsConfig)
     ui: UIConfig = field(default_factory=UIConfig)
