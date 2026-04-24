@@ -1,0 +1,207 @@
+"""Config loading: TOML merge, env overrides, reachability check."""
+from __future__ import annotations
+
+import os
+import tomllib
+import urllib.request
+import urllib.error
+from pathlib import Path
+
+from .models import Config
+
+
+def _apply_env_overrides(config: Config) -> None:
+    env_map = {
+        "AGENT_LLM_BASE_URL": ("llm", "base_url"),
+        "AGENT_LLM_API_KEY": ("llm", "api_key"),
+        "AGENT_LLM_MODEL": ("llm", "model"),
+        "AGENT_LLM_CTX_WINDOW": ("llm", "ctx_window"),
+        "AGENT_LLM_MAX_OUTPUT_TOKENS": ("llm", "max_output_tokens"),
+        "AGENT_LLM_MAX_ITERATIONS": ("llm", "max_iterations"),
+        "AGENT_LLM_TEMPERATURE": ("llm", "temperature"),
+        "AGENT_LLM_THINK_LEVEL": ("llm", "think_level"),
+        "AGENT_LLM_AUTO_DETECT_CTX": ("llm", "auto_detect_ctx"),
+        "AGENT_LLM_NARRATION_FALLBACK": ("llm", "narration_fallback"),
+        "AGENT_LOOP_GUARD_ENABLED": ("loop_guard", "enabled"),
+        "AGENT_LOOP_GUARD_WINDOW": ("loop_guard", "window"),
+        "AGENT_LOOP_GUARD_THRESHOLD": ("loop_guard", "repeat_threshold"),
+        "AGENT_EMBEDDINGS_BASE_URL": ("embeddings", "base_url"),
+        "AGENT_EMBEDDINGS_MODEL": ("embeddings", "model"),
+        "AGENT_EMBEDDINGS_DIMENSIONS": ("embeddings", "dimensions"),
+        "AGENT_EMBEDDINGS_MAX_TOKENS": ("embeddings", "max_tokens"),
+        "AGENT_RAG_DB_PATH": ("rag", "db_path"),
+        "AGENT_RAG_ARCHIVE_DB_PATH": ("rag", "archive_db_path"),
+        "AGENT_RAG_ARCHIVE_TTL_DAYS": ("rag", "archive_ttl_days"),
+        "AGENT_RAG_TOP_K": ("rag", "top_k"),
+        "AGENT_TOOLS_ALLOW_SHELL": ("tools", "allow_shell"),
+        "AGENT_TOOLS_SHELL_TIMEOUT": ("tools", "shell_timeout"),
+        "AGENT_TOOLS_WORKING_DIR": ("tools", "working_dir"),
+        "AGENT_UI_MODE": ("ui", "mode"),
+        "AGENT_ASM_ENABLED": ("asm", "enabled"),
+        "AGENT_ASM_SPLITTER_CTX_TOKENS": ("asm", "splitter_ctx_tokens"),
+        "AGENT_ASM_SPLITTER_OVERLAP_LINES": ("asm", "splitter_overlap_lines"),
+        "AGENT_ASM_DESCRIBER_MODEL": ("asm", "describer_model"),
+        "AGENT_ASM_DESCRIBER_CTX_TOKENS": ("asm", "describer_ctx_tokens"),
+        "AGENT_ASM_GROUP_SIZE": ("asm", "group_size"),
+        "AGENT_ASM_MAX_LEVELS": ("asm", "max_levels"),
+        "AGENT_ASM_BATCH_SIZE": ("asm", "batch_size"),
+        "AGENT_COMPILE_PROMPTS": ("compile_prompts", "enabled"),
+        "AGENT_COMPILE_PROMPTS_AUTO_RECOMPILE": ("compile_prompts", "auto_recompile"),
+        "AGENT_COMPILE_PROMPTS_THRESHOLD": ("compile_prompts", "error_rate_threshold"),
+        "AGENT_COMPILE_PROMPTS_MIN_SAMPLES": ("compile_prompts", "min_samples"),
+        "AGENT_COMPILE_PROMPTS_CACHE_DIR": ("compile_prompts", "cache_dir"),
+        "AGENT_TOKEN_LIMITS_ASM_SPLITTER": ("token_limits", "asm_splitter"),
+        "AGENT_TOKEN_LIMITS_ASM_DESCRIBER": ("token_limits", "asm_describer"),
+        "AGENT_TOKEN_LIMITS_COMMIT_MESSAGE": ("token_limits", "commit_message"),
+        "AGENT_TOKEN_LIMITS_COMMIT_MESSAGE_RESERVED": ("token_limits", "commit_message_reserved"),
+        "AGENT_TOKEN_LIMITS_COMMIT_CHUNK_CHARS": ("token_limits", "commit_chunk_chars"),
+        "AGENT_TOKEN_LIMITS_COMMIT_SUMMARY_TOKENS": ("token_limits", "commit_summary_tokens"),
+        "AGENT_TOKEN_LIMITS_PROMPT_COMPILE_MIN": ("token_limits", "prompt_compile_min"),
+        "AGENT_TOKEN_LIMITS_COMPACTOR_ANALYZE_MIN": ("token_limits", "compactor_analyze_min"),
+        "AGENT_TOKEN_LIMITS_COMPACTOR_SYNTH_INITIAL": ("token_limits", "compactor_synthesize_initial"),
+        "AGENT_TOKEN_LIMITS_COMPACTOR_SYNTH_RETRY": ("token_limits", "compactor_synthesize_retry"),
+        "AGENT_TOOL_COMPACTION_ENABLED": ("tool_compaction", "enabled"),
+        "AGENT_TOOL_COMPACTION_BASE_URL": ("tool_compaction", "base_url"),
+        "AGENT_TOOL_COMPACTION_API_KEY": ("tool_compaction", "api_key"),
+        "AGENT_TOOL_COMPACTION_MODEL": ("tool_compaction", "model"),
+        "AGENT_TOOL_COMPACTION_MAX_OUTPUT_TOKENS": ("tool_compaction", "max_output_tokens"),
+        "AGENT_TOOL_COMPACTION_TIMEOUT": ("tool_compaction", "timeout_seconds"),
+        "AGENT_TOOL_COMPACTION_MIN_LENGTH": ("tool_compaction", "min_length_to_compact"),
+        "AGENT_TOOL_COMPACTION_CONCURRENCY": ("tool_compaction", "concurrency_limit"),
+        "AGENT_TOOL_COMPACTION_PROMPT_PATH": ("tool_compaction", "prompt_path"),
+        "AGENT_SECURITY_BACKEND": ("security", "sandbox_backend"),
+        "AGENT_SECURITY_REQUIRE_SANDBOX": ("security", "require_sandbox"),
+        "AGENT_SECURITY_NETWORK": ("security", "network"),
+        "AGENT_SECURITY_CPU_SECONDS": ("security", "cpu_seconds"),
+        "AGENT_SECURITY_WALL_SECONDS": ("security", "wall_seconds"),
+        "AGENT_SECURITY_RSS_MB": ("security", "rss_mb"),
+        "AGENT_SECURITY_FOLLOW_SYMLINKS": ("security", "follow_symlinks"),
+        "AGENT_SECURITY_ALLOW_LEGACY_SHELL": ("security", "allow_legacy_shell"),
+        "AGENT_PLANNING_ENABLED": ("planning", "enabled"),
+        "AGENT_PLANNING_AUTO_COMMIT": ("planning", "auto_commit_on_step_complete"),
+        "AGENT_RECOVERY_PROMPT_MODE": ("recovery", "prompt_mode"),
+        "AGENT_RECOVERY_ENABLED": ("recovery", "enabled"),
+    }
+    for env_key, (section, attr) in env_map.items():
+        val = os.environ.get(env_key)
+        if val is None:
+            continue
+        section_obj = getattr(config, section)
+        current = getattr(section_obj, attr)
+        if isinstance(current, bool):
+            setattr(section_obj, attr, val.lower() in ("1", "true", "yes"))
+        elif isinstance(current, int):
+            setattr(section_obj, attr, int(val))
+        elif isinstance(current, float):
+            setattr(section_obj, attr, float(val))
+        else:
+            setattr(section_obj, attr, val)
+
+
+def _load_toml(path: Path) -> dict:
+    with open(path, "rb") as f:
+        return tomllib.load(f)
+
+
+def _merge_obj(obj: object, data: dict) -> None:
+    """Recursively apply *data* dict onto a dataclass *obj*."""
+    for key, val in data.items():
+        if not hasattr(obj, key):
+            continue
+        attr = getattr(obj, key)
+        if isinstance(val, dict) and hasattr(attr, "__dataclass_fields__"):
+            _merge_obj(attr, val)
+        elif isinstance(val, dict) and isinstance(attr, dict):
+            attr.update(val)
+        else:
+            setattr(obj, key, val)
+
+
+def _merge(config: Config, data: dict) -> None:
+    for section_name, obj in (
+        ("llm", config.llm),
+        ("embeddings", config.embeddings),
+        ("rag", config.rag),
+        ("tools", config.tools),
+        ("ui", config.ui),
+        ("asm_analysis", config.asm),
+        ("logs", config.logs),
+        ("loop_guard", config.loop_guard),
+        ("compile_prompts", config.compile_prompts),
+        ("token_limits", config.token_limits),
+        ("tool_compaction", config.tool_compaction),
+        ("security", config.security),
+        ("planning", config.planning),
+        ("recovery", config.recovery),
+    ):
+        section_data = data.get(section_name, {})
+        _merge_obj(obj, section_data)
+
+
+def load_config(extra_path: Path | None = None) -> Config:
+    config = Config()
+
+    search_paths = [
+        Path.home() / ".config" / "agent" / "agent.toml",
+        Path("agent.toml"),
+    ]
+    if extra_path:
+        search_paths.append(extra_path)
+
+    for p in search_paths:
+        if p.exists():
+            data = _load_toml(p)
+            _merge(config, data)
+
+    _apply_env_overrides(config)
+    return config
+
+
+def check_reachability(config: Config) -> None:
+    url = config.llm.base_url.rstrip("/") + "/models"
+    try:
+        req = urllib.request.Request(url, method="GET")
+        req.add_header("Authorization", f"Bearer {config.llm.api_key}")
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            if config.llm.auto_detect_ctx:
+                _try_detect_ctx_window(config, resp)
+    except (urllib.error.URLError, OSError) as e:
+        import sys
+        print(
+            f"\nWarning: LLM endpoint not reachable at {config.llm.base_url}\n"
+            f"  Reason: {e}\n"
+            f"  Make sure your LLM server is running, or set [llm] base_url in agent.toml.\n"
+            f"  Continuing anyway — chat will fail until the server is available.\n",
+            file=sys.stderr,
+        )
+
+
+def _try_detect_ctx_window(config: Config, resp) -> None:
+    """Try to detect context window size from the /models endpoint response."""
+    import json
+    import sys
+    try:
+        data = json.loads(resp.read())
+        models = data.get("data", [])
+        if not models:
+            return
+        model_info = models[0]
+        for m in models:
+            if m.get("id") == config.llm.model:
+                model_info = m
+                break
+        ctx_size = (
+            model_info.get("context_length")
+            or model_info.get("max_model_len")
+            or model_info.get("n_ctx")
+        )
+        if ctx_size and isinstance(ctx_size, int) and ctx_size > 0:
+            if ctx_size != config.llm.ctx_window:
+                print(
+                    f"Auto-detected context window: {ctx_size} tokens "
+                    f"(config had {config.llm.ctx_window})",
+                    file=sys.stderr,
+                )
+                config.llm.ctx_window = ctx_size
+    except Exception:
+        pass
