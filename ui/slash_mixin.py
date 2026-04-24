@@ -1,0 +1,370 @@
+"""Slash-command handler mixin for CodeAgentApp.
+
+Accesses self._t, self._wt, self._agent, self._session, and helper methods
+defined on CodeAgentApp (or ViewMixin): _write_sys, _begin_chat, etc.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+from pathlib import Path
+
+from rich.markup import escape as _escape
+
+from agent.ui.slash import (
+    _apply_think,
+    _apply_temperature,
+    _apply_plan,
+)
+from agent.ui.render import _render_context_report, _OUT_SEGMENT_COLORS
+
+logger = logging.getLogger(__name__)
+
+
+class SlashHandlerMixin:
+    """Handles /command dispatch for the Textual app."""
+
+    async def _run_slash(self, cmd: str, arg: str) -> None:
+        t = self._t
+
+        if cmd == "/help":
+            from agent.ui.readline_loop import _make_help_text
+            self._write_sys(_make_help_text(t))
+
+        elif cmd == "/q":
+            from textual.widgets import TabbedContent
+            self.query_one(TabbedContent).active = "tab-q"
+
+        elif cmd == "/a":
+            from textual.widgets import TabbedContent
+            self.query_one(TabbedContent).active = "tab-a"
+
+        elif cmd == "/sparse":
+            from textual.widgets import TabbedContent
+            self.query_one(TabbedContent).active = "tab-sparse"
+
+        elif cmd == "/compact":
+            from openai import AsyncOpenAI
+            from agent.memory.compactor import compact
+            cfg = self._agent.config
+            client = AsyncOpenAI(base_url=cfg.llm.base_url, api_key=cfg.llm.api_key)
+            before = self._agent.token_estimate()
+            self._write_sys(f"[{t.text_dim}]Compacting…[/{t.text_dim}]")
+            try:
+                self._agent.messages = await compact(self._agent.messages, cfg, client)
+                after = self._agent.token_estimate()
+                self._write_sys(f"[{t.success}]Compacted.[/{t.success}] {before} → {after} tokens")
+            except Exception as e:
+                self._write_sys(f"[{t.error}]Compact failed: {e}[/{t.error}]")
+            self._refresh_token_bar()
+
+        elif cmd in ("/continue", "/c"):
+            self._begin_chat("continue")
+
+        elif cmd == "/clear":
+            self.query_one("#chat-log", self._wt.ConversationView).clear()
+            self._switch_to_chat()
+
+        elif cmd == "/tokens":
+            used = self._agent.token_estimate()
+            cfg = self._agent.config
+            peak = getattr(self._agent, "round_peak_tokens", 0)
+            last_peak = getattr(self._agent, "last_round_peak_tokens", 0)
+            self._write_sys(
+                f"tokens: {used}/{cfg.llm.ctx_window}  "
+                f"({len(self._agent.messages)} messages)  "
+                f"peak: {peak}  prev-round peak: {last_peak}"
+            )
+
+        elif cmd in ("/context", "/ctx", "/legend"):
+            self._write_sys(_render_context_report(self._agent, t))
+            self._refresh_token_bar()
+
+        elif cmd in ("/output", "/out"):
+            scope = (arg.strip().lower() or "session")
+            if scope not in ("session", "last"):
+                self._write_sys(f"[{t.warning}]Usage: /output [session|last][/{t.warning}]")
+            else:
+                breakdown = self._agent.output_breakdown(scope)
+                total = sum(s["tokens"] for s in breakdown)
+                header = "Output breakdown — " + (
+                    "cumulative session" if scope == "session" else "last turn"
+                )
+                self._write_sys(f"[bold]{header}[/bold]")
+                for seg in breakdown:
+                    tok = seg["tokens"]
+                    pct = (tok / total * 100) if total else 0
+                    color = _OUT_SEGMENT_COLORS.get(seg["label"], "white")
+                    self._write_sys(
+                        f"  [{color}]█[/{color}] {seg['label']:<10} {tok:>7,}  ({pct:5.1f}%)"
+                    )
+                self._write_sys(f"  {'total':<12} {total:>7,}")
+                try:
+                    out_bar = self.query_one("#output-breakdown", self._wt.OutputBreakdownBar)
+                    out_bar.set_segments(
+                        breakdown,
+                        scope_label="out" if scope == "session" else "turn",
+                    )
+                except Exception:
+                    pass
+
+        elif cmd == "/reset":
+            system = next(
+                (m for m in self._agent.messages if m.get("role") == "system"), None
+            )
+            self._agent.messages = [system] if system else []
+            self._write_sys(f"[{t.text_dim}]Conversation history cleared.[/{t.text_dim}]")
+
+        elif cmd == "/tools":
+            from agent.tools import get_schemas
+            names = [s["function"]["name"] for s in get_schemas()]
+            self._write_sys("Tools: " + "  ".join(names))
+
+        elif cmd == "/save":
+            from agent.memory.session import save_session
+            save_session(self._session, self._agent.messages)
+            label = self._session.short_name or self._session.id
+            self._write_sys(f"[{t.text_dim}]Saved session '{label}'.[/{t.text_dim}]")
+
+        elif cmd == "/load":
+            if not arg.strip():
+                self._write_sys(f"[{t.warning}]Usage: /load <session-id-or-short-name>[/{t.warning}]")
+            else:
+                from agent.memory.session import load_session
+                loaded_session, loaded_msgs = load_session(arg.strip())
+                if loaded_session is None:
+                    self._write_sys(f"[{t.warning}]Session '{arg.strip()}' not found.[/{t.warning}]")
+                else:
+                    loaded_msgs = [
+                        {k: v for k, v in m.items() if not k.startswith("_")}
+                        for m in loaded_msgs
+                    ]
+                    self._agent.messages = loaded_msgs
+                    self._session = loaded_session
+                    label = loaded_session.short_name or loaded_session.id
+                    self._write_sys(
+                        f"[{t.text_dim}]Loaded session '{label}' "
+                        f"({len(loaded_msgs)} messages).[/{t.text_dim}]"
+                    )
+                    self._refresh_token_bar()
+                    self._restore_chat_history(loaded_msgs)
+                    self._switch_to_chat()
+
+        elif cmd == "/sessions":
+            from agent.memory.session import list_sessions
+            import datetime
+            sessions = list_sessions()
+            if not sessions:
+                self._write_sys(f"[{t.text_dim}]No sessions found.[/{t.text_dim}]")
+            for s in sessions:
+                ts_val = s.get("updated_at") or s.get("created_at")
+                ts = (
+                    datetime.datetime.fromtimestamp(ts_val).strftime("%Y-%m-%d %H:%M")
+                    if ts_val
+                    else "?"
+                )
+                label = s.get("short_name") or s["id"]
+                name_extra = (
+                    f"  [{t.text_dim}]{s['name']}[/{t.text_dim}]" if s.get("name") else ""
+                )
+                self._write_sys(
+                    f"  [{t.cmd_color}]{label}[/{t.cmd_color}]{name_extra}"
+                    f"  {s['message_count']} msgs  [{t.text_dim}]{ts}[/{t.text_dim}]"
+                )
+
+        elif cmd == "/undo":
+            from agent.tools.files import undo_file, undo_candidates
+            target = arg.strip()
+            if not target:
+                candidates = undo_candidates()
+                if not candidates:
+                    self._write_sys(f"[{t.warning}]Nothing to undo.[/{t.warning}]")
+                else:
+                    self._write_sys("Undo candidates: " + ", ".join(candidates))
+            else:
+                r = undo_file(target)
+                if "error" in r:
+                    self._write_sys(f"[{t.error}]{r['error']}[/{t.error}]")
+                else:
+                    self._write_sys(f"[{t.success}]Restored {target}[/{t.success}]")
+
+        elif cmd == "/exec":
+            if not arg.strip():
+                self._write_sys(f"[{t.warning}]Usage: /exec <command>[/{t.warning}]")
+            else:
+                from agent.tools.shell import run_command
+                self._write_sys(f"[{t.text_dim}]$ {arg.strip()}[/{t.text_dim}]")
+                result = run_command(arg.strip())
+                if result.get("stdout"):
+                    self._write_sys(result["stdout"].rstrip())
+                if result.get("stderr"):
+                    self._write_sys(f"[{t.warning}]{result['stderr'].rstrip()}[/{t.warning}]")
+                rc = result.get("returncode", 0)
+                if rc != 0:
+                    self._write_sys(f"[{t.error}]exit code {rc}[/{t.error}]")
+                elif result.get("error"):
+                    self._write_sys(f"[{t.error}]{result['error']}[/{t.error}]")
+
+        elif cmd == "/export":
+            import json as _json
+            lines = []
+            for m in self._agent.messages:
+                role = m.get("role", "?")
+                if role == "system":
+                    continue
+                content = m.get("content") or ""
+                if isinstance(content, list):
+                    content = _json.dumps(content)
+                tool_calls = m.get("tool_calls", [])
+                if role == "user":
+                    lines.append(f"**You:** {content}\n")
+                elif role == "assistant":
+                    if tool_calls:
+                        names = ", ".join(
+                            tc["function"]["name"]
+                            for tc in tool_calls
+                            if isinstance(tc, dict)
+                        )
+                        lines.append(f"**Agent** *(tools: {names})*: {content}\n")
+                    else:
+                        lines.append(f"**Agent:** {content}\n")
+            md_text = "\n---\n".join(lines)
+            label = (
+                (self._session.short_name or self._session.id)
+                if self._session
+                else "session"
+            )
+            target = arg.strip() or f"{label}.md"
+            Path(target).write_text(md_text, encoding="utf-8")
+            self._write_sys(
+                f"[{t.text_dim}]Exported to {target} ({len(lines)} turns).[/{t.text_dim}]"
+            )
+
+        elif cmd == "/analyze-asm":
+            await self._run_analyze_asm(arg)
+
+        elif cmd == "/think":
+            ok, msg = _apply_think(self._agent, arg)
+            color = t.success if ok else t.warning
+            for line in msg.splitlines():
+                self._write_sys(f"[{color}]{line}[/{color}]")
+
+        elif cmd in ("/temperature", "/temp"):
+            ok, msg = _apply_temperature(self._agent, arg)
+            color = t.success if ok else t.warning
+            for line in msg.splitlines():
+                self._write_sys(f"[{color}]{line}[/{color}]")
+
+        elif cmd == "/wrap":
+            from agent.ui.prefs import load_prefs, save_prefs
+            self._wrap_enabled = not self._wrap_enabled
+            state = "enabled" if self._wrap_enabled else "disabled"
+            _p = load_prefs()
+            _p["chat_wrap"] = "wrap" if self._wrap_enabled else "nowrap"
+            save_prefs(_p)
+            self._write_sys(f"[{t.success}]Line wrapping {state}.[/{t.success}]")
+            self.query_one("#chat-log", self._wt.ConversationView).clear()
+            if self._agent.messages:
+                self._restore_chat_history(self._agent.messages)
+            self._reload_qa_views()
+
+        elif cmd in ("/round-summary", "/summary"):
+            from agent.ui.prefs import load_prefs, save_prefs
+            self._round_summary_enabled = not self._round_summary_enabled
+            state = "enabled" if self._round_summary_enabled else "disabled"
+            p = load_prefs()
+            p["round_summary"] = self._round_summary_enabled
+            save_prefs(p)
+            self._write_sys(f"[{t.success}]Round summary {state}.[/{t.success}]")
+
+        elif cmd == "/plan":
+            ok, msg = _apply_plan(self._agent, arg)
+            color = t.success if ok else t.warning
+            for line in msg.splitlines():
+                self._write_sys(f"[{color}]{line}[/{color}]")
+
+        elif cmd == "/plans":
+            from agent.planning import list_plans
+            plans = list_plans()
+            if not plans:
+                self._write_sys(f"[{t.text_dim}]No plans.[/{t.text_dim}]")
+            else:
+                for p in plans:
+                    done, total = p.progress()
+                    self._write_sys(
+                        f"[{t.success}]{p.id}[/{t.success}] "
+                        f"[dim]({p.status}, {done}/{total})[/dim] {p.goal[:80]}"
+                    )
+
+        elif cmd in ("/abort-plan", "/pause-plan", "/stash-plan"):
+            sub_map = {
+                "/abort-plan": "abort",
+                "/pause-plan": "pause",
+                "/stash-plan": "stash",
+            }
+            ok, msg = _apply_plan(self._agent, sub_map[cmd])
+            color = t.success if ok else t.warning
+            for line in msg.splitlines():
+                self._write_sys(f"[{color}]{line}[/{color}]")
+
+        elif cmd in ("/quit", "/exit", "/q!"):
+            self.action_quit()
+            return
+
+        elif cmd == "/recoveries":
+            from agent.planning import recovery
+            recs = recovery.scan_pending()
+            if not recs:
+                self._write_sys(f"[{t.text_dim}]No pending crash recoveries.[/{t.text_dim}]")
+            else:
+                for r in recs:
+                    self._write_sys(
+                        f"[{t.warning}]{r.session_id}[/{t.warning}] [dim]{r.exception}[/dim]"
+                    )
+
+        else:
+            self._write_sys(f"[{t.warning}]Unknown command '{cmd}'. Type /help.[/{t.warning}]")
+
+    async def _run_analyze_asm(self, arg: str) -> None:
+        t = self._t
+        from agent.tools.analyze_asm import analyze_asm, get_interrupt_flag
+
+        parts = arg.split()
+        if not parts:
+            self._write_sys(
+                f"[{t.warning}]Usage: /analyze-asm <file> [--resume] [--force] [--levels N][/{t.warning}]"
+            )
+            return
+        path = parts[0]
+        resume = "--resume" in parts
+        force = "--force" in parts
+        max_levels = None
+        if "--levels" in parts:
+            idx = parts.index("--levels")
+            if idx + 1 < len(parts):
+                try:
+                    max_levels = int(parts[idx + 1])
+                except ValueError:
+                    pass
+
+        interrupt = get_interrupt_flag()
+        interrupt.clear()
+        self._write_sys(f"[{t.text_dim}]Analyzing {path}…  ESC to interrupt[/{t.text_dim}]")
+
+        def _do_analyze():
+            kwargs = {"path": path, "resume": resume, "force": force}
+            if max_levels is not None:
+                kwargs["max_levels"] = max_levels
+            return analyze_asm(**kwargs)
+
+        loop = asyncio.get_event_loop()
+        try:
+            result = await loop.run_in_executor(None, _do_analyze)
+        except Exception as e:
+            self._write_sys(f"[{t.error}]analyze-asm error: {e}[/{t.error}]")
+            return
+
+        if "error" in result:
+            self._write_sys(f"[{t.error}]{result['error']}[/{t.error}]")
+        else:
+            self._write_sys(f"[{t.success}]{result.get('message', str(result))}[/{t.success}]")
