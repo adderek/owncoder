@@ -196,6 +196,8 @@ async def run_turn(
             raise
 
         finish_reason = getattr(choice, "finish_reason", None)
+        if finish_reason == "length" and on_truncation is not None:
+            on_truncation()
 
         _pending_reasoning_ref: list[int | None] = [None]
         if turn_reasoning and side_log is not None:
