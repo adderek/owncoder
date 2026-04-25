@@ -25,7 +25,11 @@ def build_widget_classes(t, agent) -> SimpleNamespace:  # noqa: ARG001
     from textual.message import Message
     from rich.markup import escape as _escape
 
-    from agent.ui.render import _CTX_SEGMENT_COLORS, _OUT_SEGMENT_COLORS
+    from agent.ui.render import (
+        _CTX_SEGMENT_COLORS, _CTX_SEGMENT_LABELS,
+        _OUT_SEGMENT_COLORS, _OUT_SEGMENT_LABELS,
+        _labeled_bar_segment,
+    )
     from agent.ui.slash import _match_commands
 
     # ── helpers ───────────────────────────────────────────────────────────────
@@ -138,8 +142,9 @@ def build_widget_classes(t, agent) -> SimpleNamespace:  # noqa: ARG001
             for seg, n in zip(self._segments, cells):
                 if n <= 0:
                     continue
-                color = _CTX_SEGMENT_COLORS.get(seg["label"], "white")
-                parts.append(f"[{color}]{'█' * n}[/{color}]")
+                color = _CTX_SEGMENT_COLORS.get(seg["label"], "rgb(128,128,128)")
+                short = _CTX_SEGMENT_LABELS.get(seg["label"], seg["label"])
+                parts.append(_labeled_bar_segment(short, n, color))
             if remaining > 0:
                 parts.append(f"[dim]{'░' * remaining}[/dim]")
             self.update(f"{label} {''.join(parts)}")
@@ -188,8 +193,9 @@ def build_widget_classes(t, agent) -> SimpleNamespace:  # noqa: ARG001
             for seg, n in zip(self._segments, cells):
                 if n <= 0:
                     continue
-                color = _OUT_SEGMENT_COLORS.get(seg["label"], "white")
-                parts.append(f"[{color}]{'█' * n}[/{color}]")
+                color = _OUT_SEGMENT_COLORS.get(seg["label"], "rgb(128,128,128)")
+                short = _OUT_SEGMENT_LABELS.get(seg["label"], seg["label"])
+                parts.append(_labeled_bar_segment(short, n, color))
             if remaining > 0:
                 parts.append(f"[dim]{'░' * remaining}[/dim]")
             self.update(f"{label} {''.join(parts)}")

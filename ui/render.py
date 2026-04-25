@@ -11,13 +11,23 @@ if TYPE_CHECKING:
 # OutputBreakdownBar) and the /context report both read from these — any
 # edit here propagates to the bars and the legend in lockstep.
 _CTX_SEGMENT_COLORS: dict[str, str] = {
-    "agent_prompt": "blue",
-    "user_context": "cyan",
-    "tools_schema": "yellow",
-    "skills":       "magenta",
-    "user_input":   "green",
-    "assistant":    "bright_white",
-    "tool_results": "red",
+    "agent_prompt": "rgb(26,95,168)",
+    "user_context": "rgb(0,155,155)",
+    "tools_schema": "rgb(185,130,0)",
+    "skills":       "rgb(148,45,190)",
+    "user_input":   "rgb(30,150,60)",
+    "assistant":    "rgb(100,100,115)",
+    "tool_results": "rgb(190,35,35)",
+}
+
+_CTX_SEGMENT_LABELS: dict[str, str] = {
+    "agent_prompt": "sys",
+    "user_context": "user",
+    "tools_schema": "tools",
+    "skills":       "skills",
+    "user_input":   "input",
+    "assistant":    "asst",
+    "tool_results": "result",
 }
 
 _CTX_SEGMENT_DESCS: dict[str, str] = {
@@ -31,10 +41,17 @@ _CTX_SEGMENT_DESCS: dict[str, str] = {
 }
 
 _OUT_SEGMENT_COLORS: dict[str, str] = {
-    "reasoning": "magenta",
-    "tool":      "yellow",
-    "content":   "bright_white",
-    "other":     "blue",
+    "reasoning": "rgb(148,45,190)",
+    "tool":      "rgb(185,130,0)",
+    "content":   "rgb(100,100,115)",
+    "other":     "rgb(26,95,168)",
+}
+
+_OUT_SEGMENT_LABELS: dict[str, str] = {
+    "reasoning": "think",
+    "tool":      "tool",
+    "content":   "text",
+    "other":     "other",
 }
 
 _OUT_SEGMENT_DESCS: dict[str, str] = {
@@ -49,9 +66,15 @@ def _mini_bar(fraction: float, color: str, width: int = 20) -> str:
     frac = max(0.0, min(1.0, fraction))
     filled = int(round(frac * width))
     return (
-        f"[{color}]{'█' * filled}[/{color}]"
+        f"[{color}]{'█' * filled}[/]"
         f"[dim]{'░' * (width - filled)}[/dim]"
     )
+
+
+def _labeled_bar_segment(label: str, n: int, color: str) -> str:
+    """n terminal cells: label text (truncated/padded) on colored background."""
+    text = label[:n].ljust(n)
+    return f"[white on {color}]{text}[/]"
 
 
 def _render_context_report(agent, theme) -> str:
@@ -79,7 +102,7 @@ def _render_context_report(agent, theme) -> str:
         desc = _CTX_SEGMENT_DESCS.get(label, "")
         bar = _mini_bar(tok / ctx if ctx else 0, color, bar_w)
         lines.append(
-            f"  [{color}]█[/{color}] {label:<14} {bar}  "
+            f"  [{color}]█[/] {label:<14} {bar}  "
             f"{tok:>9,} {pct:>5.1f}%  [dim]{desc}[/dim]"
         )
 
@@ -124,7 +147,7 @@ def _render_context_report(agent, theme) -> str:
             tok / out_total if out_total else 0, color, bar_w
         )
         lines.append(
-            f"  [{color}]█[/{color}] {label:<14} {bar}  "
+            f"  [{color}]█[/] {label:<14} {bar}  "
             f"{tok:>9,} {pct:>5.1f}%  [dim]{desc}[/dim]"
         )
     c = theme.cmd_color
