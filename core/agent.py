@@ -59,6 +59,7 @@ class Agent:
         self._pending_bg_tasks: set[asyncio.Task] = set()
         self.round_peak_tokens: int = 0
         self.last_round_peak_tokens: int = 0
+        self._inject_queue: asyncio.Queue = asyncio.Queue()
 
         load_all_tools(config=config, store=store, embedder=embedder, asm_store=asm_store)
 
@@ -113,6 +114,10 @@ class Agent:
         except asyncio.TimeoutError:
             pass
         return sum(1 for t in tasks if not t.done())
+
+    def inject(self, text: str) -> None:
+        """Queue a user message to be injected on the next run_turn iteration."""
+        self._inject_queue.put_nowait(text)
 
     def cancel_background(self) -> int:
         n = 0
@@ -229,6 +234,13 @@ class Agent:
         self._turn_id += 1
         turn_id = self._turn_id
 
+        # drain stale injections from a previous turn
+        while not self._inject_queue.empty():
+            try:
+                self._inject_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
         self.last_round_peak_tokens = self.round_peak_tokens
         self.round_peak_tokens = self.token_estimate()
 
@@ -283,6 +295,7 @@ class Agent:
             facts_store=self._facts_store,
             turn_index=turn_id,
             side_log=self._side_log,
+            inject_queue=self._inject_queue,
         )
 
         if self._qa_logger is not None:

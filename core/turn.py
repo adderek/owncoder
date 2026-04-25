@@ -63,6 +63,7 @@ async def run_turn(
     facts_store=None,
     turn_index: int | None = None,
     side_log=None,
+    inject_queue: asyncio.Queue | None = None,
     _depth: int = 0,
 ) -> tuple[str, list[dict]]:
     def _phase(label: str, detail: str = "") -> None:
@@ -109,6 +110,15 @@ async def run_turn(
             pass
 
     while True:
+        if inject_queue is not None:
+            while True:
+                try:
+                    injected = inject_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                messages = messages + [{"role": "user", "content": f"[mid-turn message from user]: {injected}"}]
+                _phase("user_injected", injected[:60])
+
         token_est = _count_tokens_approx(messages)
         _notify_ctx(token_est)
         budget = config.llm.ctx_window - config.llm.max_output_tokens - 500
