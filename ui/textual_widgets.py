@@ -88,17 +88,27 @@ def build_widget_classes(t, agent) -> SimpleNamespace:  # noqa: ARG001
                 peak_cell = bar_len - 1
             if compact_cell >= bar_len:
                 compact_cell = bar_len - 1
-            fill_color = "red" if used_frac > 0.85 else ("yellow" if used_frac > 0.65 else "green")
+            if used_frac > 0.85:
+                fill_rgb = "rgb(198,40,40)"
+            elif used_frac > 0.65:
+                fill_rgb = "rgb(249,168,37)"
+            else:
+                fill_rgb = "rgb(56,142,60)"
+            empty_rgb = "rgb(30,30,30)"
+            peak_rgb  = "rgb(186,85,211)"
+            thresh_rgb = "rgb(198,40,40)"
             parts = []
             for i in range(bar_len):
+                is_filled = i < used_cells
+                bg = fill_rgb if is_filled else empty_rgb
                 if i == peak_cell and peak_cell >= 0:
-                    parts.append("[bold magenta]╋[/bold magenta]")
+                    parts.append(f"[bold {peak_rgb} on {bg}]▕[/]")
                 elif i == compact_cell:
-                    parts.append("[bold red]│[/bold red]")
-                elif i < used_cells:
-                    parts.append(f"[{fill_color}]█[/{fill_color}]")
+                    parts.append(f"[bold {thresh_rgb} on {bg}]▕[/]")
+                elif is_filled:
+                    parts.append(f"[{fill_rgb} on {fill_rgb}]█[/]")
                 else:
-                    parts.append("[dim]░[/dim]")
+                    parts.append(f"[rgb(70,70,70) on {empty_rgb}]░[/]")
             self.update(f"{label} {''.join(parts)}")
 
     class ContextBreakdownBar(Static):
