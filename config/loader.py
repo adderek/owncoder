@@ -17,11 +17,11 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_LLM_MODEL": ("llm", "model"),
         "AGENT_LLM_CTX_WINDOW": ("llm", "ctx_window"),
         "AGENT_LLM_MAX_OUTPUT_TOKENS": ("llm", "max_output_tokens"),
-        "AGENT_LLM_MAX_ITERATIONS": ("llm", "max_iterations"),
         "AGENT_LLM_TEMPERATURE": ("llm", "temperature"),
-        "AGENT_LLM_THINK_LEVEL": ("llm", "think_level"),
-        "AGENT_LLM_AUTO_DETECT_CTX": ("llm", "auto_detect_ctx"),
-        "AGENT_LLM_NARRATION_FALLBACK": ("llm", "narration_fallback"),
+        "AGENT_LLM_MAX_ITERATIONS": ("agent", "max_iterations"),
+        "AGENT_LLM_THINK_LEVEL": ("agent", "think_level"),
+        "AGENT_LLM_AUTO_DETECT_CTX": ("agent", "auto_detect_ctx"),
+        "AGENT_LLM_NARRATION_FALLBACK": ("agent", "narration_fallback"),
         "AGENT_LOOP_GUARD_ENABLED": ("loop_guard", "enabled"),
         "AGENT_LOOP_GUARD_WINDOW": ("loop_guard", "window"),
         "AGENT_LOOP_GUARD_THRESHOLD": ("loop_guard", "repeat_threshold"),
@@ -97,6 +97,13 @@ def _apply_env_overrides(config: Config) -> None:
         else:
             setattr(section_obj, attr, val)
 
+    # Role overrides: AGENT_MODEL_ROLE_<ROLE> = model-entry-name
+    for role in ("default", "summarizer", "embeddings"):
+        env_key = f"AGENT_MODEL_ROLE_{role.upper()}"
+        val = os.environ.get(env_key)
+        if val:
+            config.model_roles[role] = val
+
 
 def _load_toml(path: Path) -> dict:
     with open(path, "rb") as f:
@@ -119,8 +126,7 @@ def _merge_obj(obj: object, data: dict) -> None:
 
 def _merge(config: Config, data: dict) -> None:
     for section_name, obj in (
-        ("llm", config.llm),
-        ("embeddings", config.embeddings),
+        ("agent", config.agent),
         ("rag", config.rag),
         ("tools", config.tools),
         ("ui", config.ui),
@@ -138,23 +144,71 @@ def _merge(config: Config, data: dict) -> None:
         _merge_obj(obj, section_data)
 
 
+_KNOWN_ROLES = {"default", "summarizer", "embeddings"}
+
+
 def _merge_models(config: Config, data: dict) -> None:
-    """Parse [models.<name>] tables and populate config.model_entries."""
+    """Parse [models] section: scalar strings are role mappings, dicts are entries."""
     models_section = data.get("models", {})
     for name, entry_data in models_section.items():
-        if not isinstance(entry_data, dict):
-            continue
-        existing = config.model_entries.get(name)
-        if existing is None:
-            existing = ModelEntry()
-            config.model_entries[name] = existing
-        for field, val in entry_data.items():
-            if hasattr(existing, field):
-                setattr(existing, field, val)
+        if isinstance(entry_data, str):
+            # e.g. summarizer = "deepseek-r1"
+            config.model_roles[name] = entry_data
+        elif isinstance(entry_data, dict):
+            existing = config.model_entries.get(name)
+            if existing is None:
+                existing = ModelEntry()
+                config.model_entries[name] = existing
+            for fld, val in entry_data.items():
+                if hasattr(existing, fld):
+                    setattr(existing, fld, val)
 
 
-def _backfill_model_entries(config: Config) -> None:
-    """Mirror legacy [llm]/[embeddings] into model_entries if not overridden."""
+def _apply_model_entry_to_llm(config: Config) -> None:
+    """Bridge resolved model entries → config.llm/embeddings.
+
+    Runs after all TOML files are merged.  Env overrides run after this,
+    so they can still override individual fields.
+    """
+    # Connection/model settings from the resolved default model entry
+    default_name = config.model_roles.get("default", "default")
+    default_entry = config.model_entries.get(default_name)
+    if default_entry is not None:
+        config.llm.base_url = default_entry.base_url
+        config.llm.api_key = default_entry.api_key
+        if default_entry.model:
+            config.llm.model = default_entry.model
+        config.llm.ctx_window = default_entry.ctx_window
+        config.llm.max_output_tokens = default_entry.max_output_tokens
+        config.llm.temperature = default_entry.temperature
+
+    # Behavior settings from config.agent (sourced from [agent] TOML section)
+    config.llm.max_iterations = config.agent.max_iterations
+    config.llm.compaction_threshold = config.agent.compaction_threshold
+    config.llm.compaction_message_threshold = config.agent.compaction_message_threshold
+    config.llm.narration_fallback = config.agent.narration_fallback
+    config.llm.auto_detect_ctx = config.agent.auto_detect_ctx
+    config.llm.think_level = config.agent.think_level
+
+    # Embeddings from the resolved embeddings model entry
+    emb_name = config.model_roles.get("embeddings", "embeddings")
+    emb_entry = config.model_entries.get(emb_name)
+    if emb_entry is not None:
+        config.embeddings.base_url = emb_entry.base_url
+        if emb_entry.model:
+            config.embeddings.model = emb_entry.model
+        if emb_entry.dimensions:
+            config.embeddings.dimensions = emb_entry.dimensions
+
+
+def _ensure_model_registry_keys(config: Config) -> None:
+    """Ensure model_entries has 'default' and 'embeddings' keys for ModelRegistry.
+
+    Only creates entries if the key is absent — i.e. no [models.default] or
+    [models.embeddings] was configured explicitly.  Uses the (now-correct)
+    config.llm / config.embeddings values as source so the registry always
+    has a fallback even when no [models] section exists at all.
+    """
     if "default" not in config.model_entries:
         llm = config.llm
         config.model_entries["default"] = ModelEntry(
@@ -178,9 +232,13 @@ def _backfill_model_entries(config: Config) -> None:
 def load_config(extra_path: Path | None = None) -> Config:
     config = Config()
 
+    # Search order (later files override earlier ones):
+    #   1. ~/.config/agent/agent.toml  — user-global settings
+    #   2. extra_path                  — project-specific agent.toml (absolute)
+    # Note: we deliberately omit Path("agent.toml") (CWD-relative) to avoid
+    # accidentally loading a config from a subdirectory of the project.
     search_paths = [
         Path.home() / ".config" / "agent" / "agent.toml",
-        Path("agent.toml"),
     ]
     if extra_path:
         search_paths.append(extra_path)
@@ -195,8 +253,12 @@ def load_config(extra_path: Path | None = None) -> Config:
     for data in raw_data:
         _merge_models(config, data)
 
+    # Bridge: populate config.llm/embeddings from model entries + config.agent
+    _apply_model_entry_to_llm(config)
+    # Env overrides have highest priority (run after bridge)
     _apply_env_overrides(config)
-    _backfill_model_entries(config)
+    # Ensure registry fallback keys exist (uses now-correct config.llm values)
+    _ensure_model_registry_keys(config)
     return config
 
 
@@ -213,7 +275,7 @@ def check_reachability(config: Config) -> None:
         print(
             f"\nWarning: LLM endpoint not reachable at {config.llm.base_url}\n"
             f"  Reason: {e}\n"
-            f"  Make sure your LLM server is running, or set [llm] base_url in agent.toml.\n"
+            f"  Make sure your LLM server is running, or configure [models] in agent.toml.\n"
             f"  Continuing anyway — chat will fail until the server is available.\n",
             file=sys.stderr,
         )

@@ -2,6 +2,7 @@
 from .models import (
     LLMConfig,
     EmbeddingsConfig,
+    AgentConfig,
     RAGConfig,
     AsmAnalysisConfig,
     ToolsConfig,
@@ -26,11 +27,11 @@ from .registry import ModelRegistry
 
 
 def make_registry(config: Config) -> ModelRegistry:
-    return ModelRegistry(config.model_entries)
+    return ModelRegistry(config.model_entries, config.model_roles)
 
 
 __all__ = [
-    "LLMConfig", "EmbeddingsConfig", "RAGConfig", "AsmAnalysisConfig",
+    "LLMConfig", "EmbeddingsConfig", "AgentConfig", "RAGConfig", "AsmAnalysisConfig",
     "ToolsConfig", "ThemeConfig", "UIConfig", "CompilePromptsConfig",
     "LoopGuardConfig", "LogsConfig", "TokenLimitsConfig", "ToolCompactionConfig",
     "SecurityConfig", "PlanningConfig", "RecoveryConfig", "ModelEntry", "Config",

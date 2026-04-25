@@ -71,7 +71,10 @@ def main() -> None:
     # commit
     commit_p = sub.add_parser("commit", help="Generate and apply a commit message for a subrepo")
     commit_p.add_argument("path", type=str, help="Path to subrepo (absolute or relative to working dir)")
-    commit_p.add_argument("--model", type=str, help="Override model name")
+    commit_p.add_argument("--model", type=str, help="Override model name (primary + summarization)")
+    commit_p.add_argument("--summarizer-model", type=str, dest="summarizer_model",
+                          help="Named model entry to use for chunked diff summarization"
+                               " (overrides [models] summarizer role)")
 
     # exec
     exec_p = sub.add_parser("exec", help="Execute a system command in the project directory")

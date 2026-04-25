@@ -30,18 +30,15 @@ async def _call_llm_one_line(
     system_prompt: str,
     content: str,
 ) -> str:
-    """Stream a one-line summary from a fresh isolated client.
-
-    Streaming lets the model use as many thinking tokens as it needs without
-    a hard cap cutting off the answer.  <think>…</think> blocks are stripped
-    from the final output so only the summary sentence is returned.
-    """
+    """Stream a one-line summary using the summarizer model (falls back to default LLM)."""
     from openai import AsyncOpenAI
-    client = AsyncOpenAI(base_url=config.llm.base_url, api_key=config.llm.api_key)
+    from agent.config import make_registry
+    entry = make_registry(config).summarizer
+    client = AsyncOpenAI(base_url=entry.base_url, api_key=entry.api_key)
     try:
         parts: list[str] = []
         stream = await client.chat.completions.create(
-            model=config.llm.model,
+            model=entry.model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": content[:4000]},

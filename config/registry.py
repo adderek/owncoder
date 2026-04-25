@@ -10,18 +10,36 @@ if TYPE_CHECKING:
 class ModelRegistry:
     """Thin wrapper around the `model_entries` dict from Config."""
 
-    def __init__(self, entries: dict[str, "ModelEntry"]) -> None:
+    def __init__(self, entries: dict[str, "ModelEntry"], roles: dict[str, str] | None = None) -> None:
         self._entries = entries
+        self._roles: dict[str, str] = roles or {}
+
+    # ── Role-based access ──────────────────────────────────────────────────
+
+    def for_role(self, role: str) -> "ModelEntry | None":
+        """Return entry for a named role, or None if unset."""
+        name = self._roles.get(role)
+        if name:
+            return self._entries.get(name)
+        return self._entries.get(role)
 
     # ── Required entries ───────────────────────────────────────────────────
 
     @property
     def default(self) -> "ModelEntry":
-        return self._entries["default"]
+        name = self._roles.get("default", "default")
+        return self._entries[name]
 
     @property
     def embeddings(self) -> "ModelEntry":
-        return self._entries["embeddings"]
+        name = self._roles.get("embeddings", "embeddings")
+        return self._entries[name]
+
+    @property
+    def summarizer(self) -> "ModelEntry":
+        """Return the configured summarizer entry, falling back to default."""
+        entry = self.for_role("summarizer")
+        return entry if entry is not None else self.default
 
     # ── Lookup ─────────────────────────────────────────────────────────────
 
@@ -45,4 +63,4 @@ class ModelRegistry:
         return list(self._entries.keys())
 
     def __repr__(self) -> str:
-        return f"ModelRegistry({list(self._entries)})"
+        return f"ModelRegistry({list(self._entries)}, roles={self._roles})"

@@ -243,6 +243,17 @@ class RecoveryConfig:
 
 
 @dataclass
+class AgentConfig:
+    """Agent runtime behavior (independent of model/endpoint choice)."""
+    max_iterations: int = 10
+    compaction_threshold: float = 0.75
+    compaction_message_threshold: int = 15
+    narration_fallback: bool = True
+    auto_detect_ctx: bool = True
+    think_level: str = "normal"
+
+
+@dataclass
 class ModelEntry:
     """Single named model endpoint with capabilities declared via tags."""
     base_url: str = "http://localhost:8080/v1"
@@ -260,8 +271,11 @@ class ModelEntry:
 class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
-    # [models.<name>] entries; populated by loader (back-compat: mirrors llm/embeddings)
+    agent: AgentConfig = field(default_factory=AgentConfig)
+    # [models.<name>] entries; populated by loader
     model_entries: dict = field(default_factory=dict)
+    # role → model entry name (e.g. {"summarizer": "deepseek-r1"})
+    model_roles: dict = field(default_factory=dict)
     rag: RAGConfig = field(default_factory=RAGConfig)
     tools: ToolsConfig = field(default_factory=ToolsConfig)
     ui: UIConfig = field(default_factory=UIConfig)

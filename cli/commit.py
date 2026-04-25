@@ -115,11 +115,26 @@ def cmd_commit(args, config):
     from rich.markup import escape as _markup_escape
     import time as _time
     from openai import AsyncOpenAI
+    from agent.config import make_registry
+
+    # Resolve summarizer model entry (for chunked diff summarization only).
+    registry = make_registry(config)
+    summ_entry = None
+    summ_override = getattr(args, "summarizer_model", None)
+    if summ_override:
+        summ_entry = registry.get(summ_override)
+        if summ_entry is None:
+            console.print(f"[red]Unknown model entry '{summ_override}'. "
+                          f"Available: {registry.names()}[/red]")
+            return
+    elif config.model_roles.get("summarizer"):
+        summ_entry = registry.summarizer
 
     if chunked:
+        summ_label = f" · summarizer: {summ_entry.model}" if summ_entry else ""
         console.print(
             f"[dim]Generating commit message for {path} "
-            f"(staged diff: {diff_chars:,} chars → {len(chunks)} chunks of ≤{chunk_chars:,})…[/dim]"
+            f"(staged diff: {diff_chars:,} chars → {len(chunks)} chunks of ≤{chunk_chars:,}{summ_label})…[/dim]"
         )
     else:
         console.print(
@@ -127,13 +142,23 @@ def cmd_commit(args, config):
             f"(staged diff: {diff_chars:,} chars)…[/dim]"
         )
 
-    client = AsyncOpenAI(base_url=config.llm.base_url, api_key=config.llm.api_key)
+    primary_client = AsyncOpenAI(base_url=config.llm.base_url, api_key=config.llm.api_key)
+    primary_model = config.llm.model
+
+    if summ_entry:
+        summ_client = AsyncOpenAI(base_url=summ_entry.base_url, api_key=summ_entry.api_key)
+        summ_model = summ_entry.model
+    else:
+        summ_client = primary_client
+        summ_model = primary_model
 
     state = {"tokens": 0, "buf": "", "start": _time.monotonic(), "phase": "starting"}
 
-    async def _stream(messages: list[dict], *, max_tokens: int) -> str:
-        stream = await client.chat.completions.create(
-            model=config.llm.model,
+    async def _stream(messages: list[dict], *, max_tokens: int, client=None, model: str = "") -> str:
+        _client = client or primary_client
+        _model = model or primary_model
+        stream = await _client.chat.completions.create(
+            model=_model,
             messages=messages,
             temperature=0.2,
             max_tokens=max_tokens,
@@ -204,15 +229,18 @@ def cmd_commit(args, config):
             {"role": "system", "content": summary_system},
             {"role": "user", "content": _build_user(False, False)},
         ]
-        out = (await _stream(messages, max_tokens=summary_tokens)).strip()
+        out = (await _stream(messages, max_tokens=summary_tokens,
+                             client=summ_client, model=summ_model)).strip()
 
         first_line = out.splitlines()[0].strip() if out else ""
         if first_line == _REQUEST_PREV_RAW and prev_raw:
             messages[-1]["content"] = _build_user(True, False)
-            out = (await _stream(messages, max_tokens=summary_tokens)).strip()
+            out = (await _stream(messages, max_tokens=summary_tokens,
+                                 client=summ_client, model=summ_model)).strip()
         elif first_line == _REQUEST_PREV_SUMMARY and running_summary:
             messages[-1]["content"] = _build_user(False, True)
-            out = (await _stream(messages, max_tokens=summary_tokens)).strip()
+            out = (await _stream(messages, max_tokens=summary_tokens,
+                                 client=summ_client, model=summ_model)).strip()
         return out
 
     final_system = (

@@ -1,0 +1,270 @@
+# agent.toml.example — copy to agent.toml and uncomment what you need.
+#
+# Model resolution order:
+#   1. [models] role assignments  (default / summarizer / embeddings)
+#   2. Built-in defaults (localhost:8080/v1)
+#
+# CLI overrides:
+#   agent chat --model <name-or-id>
+#   agent commit --model <name-or-id>         # primary model
+#   agent commit --summarizer-model <entry>   # chunked-diff summarizer only
+#
+# Env overrides:
+#   AGENT_MODEL_ROLE_DEFAULT=<entry-name>
+#   AGENT_MODEL_ROLE_SUMMARIZER=<entry-name>
+#   AGENT_MODEL_ROLE_EMBEDDINGS=<entry-name>
+#   AGENT_LLM_BASE_URL / AGENT_LLM_API_KEY / AGENT_LLM_MODEL
+#   AGENT_EMBEDDINGS_BASE_URL / AGENT_EMBEDDINGS_MODEL
+
+# ── Role assignments ──────────────────────────────────────────────────────────
+# Point each role at a named [models.<entry>] below.
+
+[models]
+default    = "local-coder"     # primary coding model (chat, run, commit final msg)
+summarizer = "deepseek-r1"     # used for commit chunked summaries, Q/A summaries
+embeddings = "nomic-local"     # used for RAG
+
+[models.local-coder]
+base_url          = "http://localhost:8080/v1"
+api_key           = "local"
+model             = "qwen3-coder-30b"
+ctx_window        = 32768
+max_output_tokens = 8192
+temperature       = 0.7
+tags = ["coding"]
+
+[models.local-fast]
+base_url          = "http://localhost:8080/v1"
+api_key           = "local"
+model             = "qwen3-8b"
+ctx_window        = 16384
+max_output_tokens = 4096
+temperature       = 0.7
+tags = ["fast", "summarizer"]
+
+[models.nomic-local]
+base_url   = "http://localhost:8080/v1"
+api_key    = "local"
+model      = "nomic-embed-text"
+dimensions = 768
+tags = ["embeddings"]
+
+# ── DeepSeek (online API) ─────────────────────────────────────────────────────
+# Sign up at https://platform.deepseek.com — get api_key from the dashboard.
+
+[models.deepseek-r1]
+base_url          = "https://api.deepseek.com/v1"
+api_key           = "sk-..."           # replace with your DeepSeek API key
+model             = "deepseek-r1"
+ctx_window        = 65536
+max_output_tokens = 8192
+temperature       = 0.6
+tags = ["reasoning", "summarizer"]
+
+[models.deepseek-v4-preview]
+base_url          = "https://api.deepseek.com/v1"
+api_key           = "sk-..."           # replace with your DeepSeek API key
+model             = "deepseek-v4-preview"
+ctx_window        = 65536
+max_output_tokens = 8192
+temperature       = 0.7
+tags = ["coding", "reasoning"]
+
+# ── SmartAIPI ─────────────────────────────────────────────────────────────────
+# Fill in base_url and api_key from your SmartAIPI account.
+
+[models.smartaipi]
+base_url          = ""                 # e.g. "https://api.smartaipi.com/v1"
+api_key           = ""
+model             = ""                 # model id from provider
+ctx_window        = 32768
+max_output_tokens = 4096
+temperature       = 0.7
+tags = []
+
+# ── OpenAI-compatible catch-all ───────────────────────────────────────────────
+
+[models.openai-gpt4o]
+base_url          = "https://api.openai.com/v1"
+api_key           = "sk-..."
+model             = "gpt-4o"
+ctx_window        = 128000
+max_output_tokens = 4096
+temperature       = 0.7
+tags = ["coding"]
+
+# ── Agent runtime behavior ────────────────────────────────────────────────────
+
+[agent]
+max_iterations            = 10       # max tool-call rounds per user turn
+compaction_threshold      = 0.75     # compact context when usage exceeds this fraction
+compaction_message_threshold = 15    # also compact after this many messages
+narration_fallback        = true     # emit narration text if model skips tool-call
+auto_detect_ctx           = true     # query server for actual context size on startup
+think_level               = "normal" # "none" | "min" | "normal" | "max"
+
+# ── RAG ───────────────────────────────────────────────────────────────────────
+
+[rag]
+db_path          = ".agent/index.db"
+archive_db_path  = ".agent/index-archive.db"
+archive_ttl_days = 30
+chunk_min_tokens = 20
+chunk_max_tokens = 400
+top_k            = 8
+hybrid           = true
+
+# ── Tools ─────────────────────────────────────────────────────────────────────
+
+[tools]
+allow_shell    = true
+shell_timeout  = 30
+working_dir    = "."
+agent_dir      = ".agent"
+preamble_path  = ".agent/agent.preamble"
+search_parents = true
+
+# ── UI ────────────────────────────────────────────────────────────────────────
+
+[ui]
+mode             = "textual"      # "textual" | "simple"
+syntax_highlight = true
+show_token_count = true
+q_summaries      = true           # one-line Q/A summaries (uses summarizer model)
+chat_wrap        = "last used"    # "wrap" | "nowrap" | "last used"
+round_summary    = true           # show gray Q/A summary line after each turn
+reasoning_fold   = "end_of_round" # "immediate" | "end_of_round" | "never"
+
+[ui.theme]
+bg             = "#0C0C0C"
+panel_bg       = "#141414"
+panel_bg_dark  = "#0E0E0E"
+chat_bg        = "#111111"
+chat_bg_focus  = "#191919"
+input_bg       = "#111111"
+input_bg_focus = "#191919"
+border         = "#2E7D32"
+active         = "#E8801A"
+scrollbar_bg   = "#1C1C1C"
+scrollbar_thumb = "#3A3A3A"
+text           = "#C0C0C0"
+text_dim       = "#505050"
+user_color     = "#388E3C"
+agent_color    = "#E8801A"
+tool_color     = "#505050"
+cmd_color      = "#388E3C"
+prompt         = "#388E3C"
+success        = "#388E3C"
+warning        = "#F9A825"
+error          = "#C62828"
+thinking_color = "#404060"
+
+# ── Token limits ──────────────────────────────────────────────────────────────
+# Raise these if a reasoning model burns its budget on hidden <think> tokens.
+
+[token_limits]
+asm_splitter                 = 256
+asm_describer                = 512
+commit_message               = 4096
+commit_message_max_tokens    = 16384
+commit_message_reserved      = 512
+commit_chunk_chars           = 12000
+commit_summary_tokens        = 1024
+prompt_compile_min           = 2048
+compactor_analyze_min        = 2048
+compactor_synthesize_initial = 2048
+compactor_synthesize_retry   = 4096
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+
+[logs]
+level           = "DEBUG"    # file log level
+stderr_level    = "WARNING"  # terminal log level
+max_bytes       = 20971520   # 20 MB per file
+backup_count    = 5
+dedupe_preamble = true
+
+[logs.sources]
+"httpcore"            = "WARNING"
+"httpcore.http11"     = "WARNING"
+"httpcore.connection" = "WARNING"
+"httpx"               = "WARNING"
+"openai._base_client" = "INFO"
+"asyncio"             = "INFO"
+
+# ── Loop guard ────────────────────────────────────────────────────────────────
+
+[loop_guard]
+enabled          = true
+window           = 10
+repeat_threshold = 3
+per_tool_threshold = { list_files = 6, read_file = 5, search_code = 5 }
+
+# ── ASM analysis ──────────────────────────────────────────────────────────────
+
+[asm_analysis]
+enabled               = false
+splitter_ctx_tokens   = 8192
+splitter_overlap_lines = 20
+describer_model       = ""       # empty = inherit default model
+describer_ctx_tokens  = 8192
+group_size            = 8
+max_levels            = 6
+batch_size            = 4
+
+# ── Compiled prompts ──────────────────────────────────────────────────────────
+
+[compile_prompts]
+enabled                = true
+auto_recompile         = true
+max_recompile_attempts = 3
+error_rate_threshold   = 0.2
+min_samples            = 5
+min_savings_ratio      = 0.10
+cache_dir              = ".agent/compiled_prompts"
+exclude                = []
+
+# ── Tool compaction ───────────────────────────────────────────────────────────
+
+[tool_compaction]
+enabled               = false
+base_url              = ""       # optional smaller endpoint; empty = default model endpoint
+api_key               = ""
+model                 = ""       # empty = inherit default model
+max_output_tokens     = 512
+timeout_seconds       = 30.0
+min_length_to_compact = 500
+concurrency_limit     = 2
+skip_on_error         = true
+skip_on_truncated     = true
+skip_tools            = ["read_file"]
+prompt_path           = ""
+
+# ── Planning ──────────────────────────────────────────────────────────────────
+
+[planning]
+enabled                      = true
+auto_commit_on_step_complete = false
+max_steps                    = 50
+
+# ── Recovery ──────────────────────────────────────────────────────────────────
+
+[recovery]
+enabled            = true
+prompt_mode        = "ask"   # "ask" | "always" | "never"
+keep_resolved_days = 14
+
+# ── Security / sandbox ────────────────────────────────────────────────────────
+
+[security]
+sandbox_backend    = "auto"  # "auto" | "bubblewrap" | "seccomp" | "none"
+require_sandbox    = false
+network            = "off"   # "off" | "lo" | "full"
+cpu_seconds        = 20
+wall_seconds       = 30
+rss_mb             = 512
+nproc              = 64
+fsize_mb           = 256
+nofile             = 256
+follow_symlinks    = false
+allow_legacy_shell = false

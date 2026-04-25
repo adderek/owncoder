@@ -1,66 +1,11 @@
-[llm]
-#base_url = "http://localhost:8080/v1"
-#api_key = "local"
-#model = "qwen3-coder-30b"
-#ctx_window = 16384
-compaction_threshold = 0.75
-#max_output_tokens = 4096
+# agent.toml — default config shipped inside the agent package.
+# Overridden by ~/.config/agent/agent.toml and the project-level agent.toml.
+# See agent.toml.example for a full reference of all available options.
 
-[embeddings]
-base_url = "http://localhost:8080/v1"
-model = "nomic-embed-text"
-dimensions = 768
-
-[rag]
-db_path = ".agent/index.db"
-chunk_min_tokens = 20
-chunk_max_tokens = 400
-top_k = 8
-hybrid = true
-
-[tools]
-allow_shell = true
-shell_timeout = 30
-working_dir = "."
-
-[ui]
-mode = "textual"
-syntax_highlight = true
-show_token_count = true
-q_summaries = true
-
-[token_limits]
-# max_tokens for non-chat LLM calls. Raise these if a reasoning-capable model
-# (gemma-reasoning, qwen3, deepseek-r1, …) spends the whole budget on hidden
-# reasoning_content and leaves the visible response empty.
-asm_splitter = 256
-asm_describer = 512
-commit_message = 4096
-prompt_compile_min = 2048
-compactor_analyze_min = 2048
-compactor_synthesize_initial = 2048
-compactor_synthesize_retry = 4096
-
-[logs]
-# Root file-log level. Set to "INFO" to shrink the log further.
-level = "DEBUG"
-# Level for the stderr handler (what you see in the terminal).
-stderr_level = "WARNING"
-# Rotation: roll over at max_bytes, keep backup_count archives.
-max_bytes = 20971520   # 20 MB
-backup_count = 5
-# When true, the static system prompt + tools schema is logged once per process
-# (identified by a short hash) and future LLM calls reference it by id.
-dedupe_preamble = true
-
-# Per-source log levels. Merges with built-in defaults — add a source here to
-# silence (or re-enable) a specific logger without code changes.
-#   e.g. to debug raw HTTP: "httpcore.http11" = "DEBUG"
-[logs.sources]
-"httpcore" = "WARNING"
-"httpcore.http11" = "WARNING"
-"httpcore.connection" = "WARNING"
-"httpx" = "WARNING"
-"openai._base_client" = "INFO"
-"asyncio" = "INFO"
-
+[agent]
+max_iterations            = 10
+compaction_threshold      = 0.75
+compaction_message_threshold = 15
+narration_fallback        = true
+auto_detect_ctx           = true
+think_level               = "normal"
