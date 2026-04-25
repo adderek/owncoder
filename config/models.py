@@ -177,6 +177,9 @@ class ToolCompactionConfig:
     min_length_to_compact: int = 500
     skip_on_error: bool = True
     skip_on_truncated: bool = True
+    # Tools whose raw output is always passed through unchanged (never compacted).
+    # read_file is exempt by default: anchor matching requires verbatim content.
+    skip_tools: list = field(default_factory=lambda: ["read_file"])
     concurrency_limit: int = 2
     prompt_path: str = ""
 

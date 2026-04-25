@@ -59,6 +59,7 @@ async def run_turn(
     on_phase=None,
     on_reasoning=None,
     on_context_size=None,
+    on_truncation=None,
     facts_store=None,
     turn_index: int | None = None,
     side_log=None,
@@ -90,6 +91,8 @@ async def run_turn(
     MAX_NUDGES = 3
     content_parts: list[str] = []
     iter_count = 0
+    _read_path_counts: dict[str, int] = {}
+    _READ_PATH_WARN_THRESHOLD = 3
     max_iter = max(1, int(getattr(config.llm, "max_iterations", 10)))
     loop_cfg = getattr(config, "loop_guard", None)
     loop_detector: LoopDetector | None = None
@@ -303,7 +306,31 @@ async def run_turn(
                 results = list(await asyncio.gather(*[_maybe_compact(i, r) for i, r in enumerate(results)]))
 
             from agent import prompt_compiler
+            patched_results: list[str] = []
             for tc, result in zip(tool_calls, results):
+                if tc.function.name == "read_file":
+                    try:
+                        a = json.loads(tc.function.arguments or "{}")
+                        rpath = str(a.get("path", ""))
+                        if rpath:
+                            _read_path_counts[rpath] = _read_path_counts.get(rpath, 0) + 1
+                            if _read_path_counts[rpath] >= _READ_PATH_WARN_THRESHOLD:
+                                try:
+                                    r_parsed = json.loads(result)
+                                except Exception:
+                                    r_parsed = {}
+                                if isinstance(r_parsed, dict):
+                                    r_parsed["_loop_warning"] = (
+                                        f"[loop-guard] '{rpath}' read {_read_path_counts[rpath]}× this turn. "
+                                        "If previous reads didn't give you the anchor, use search_code or "
+                                        "specify start_line/end_line to target a different section. "
+                                        "Do not re-read the same range again."
+                                    )
+                                    result = json.dumps(r_parsed)
+                    except Exception:
+                        pass
+                patched_results.append(result)
+            for tc, result in zip(tool_calls, patched_results):
                 messages.append(_tool_result_message(tc.id, result))
                 ok = True
                 try:

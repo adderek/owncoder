@@ -69,8 +69,10 @@ def _load_prompt(config: "Config") -> str:
     return _DEFAULT_PROMPT
 
 
-def _should_skip(result_str: str, config: "Config") -> tuple[bool, str]:
+def _should_skip(result_str: str, config: "Config", tool_name: str = "") -> tuple[bool, str]:
     tc = config.tool_compaction
+    if tool_name and tool_name in (tc.skip_tools or []):
+        return True, "skip_tools"
     if len(result_str) < tc.min_length_to_compact:
         return True, "too_short"
     try:
@@ -107,7 +109,7 @@ async def compact_result(
         "compacted_len": len(result_str),
         "seconds": 0.0,
     }
-    skip, reason = _should_skip(result_str, config)
+    skip, reason = _should_skip(result_str, config, tool_name)
     if skip:
         info["skipped"] = True
         info["reason"] = reason

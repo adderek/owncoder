@@ -151,10 +151,13 @@ def _validate_chunk(
         match_mode = "loose"
 
     if not spans:
+        fuzzy = _find_loose_v2(original, anchor, lo, hi)
+        candidates = [_candidate(original, s, e, i) for i, (s, e) in enumerate(fuzzy[:_MAX_CANDIDATES])] if fuzzy else []
         return None, err(
             "anchor_not_found",
             "anchor not present in file (exact search%s). Re-read the file and re-quote."
             % (" + loose fallback" if mode == "loose" else ""),
+            fuzzy_candidates=candidates,
         )
     if len(spans) > 1:
         cands = [_candidate(original, s, e, i) for i, (s, e) in enumerate(spans[:_MAX_CANDIDATES])]

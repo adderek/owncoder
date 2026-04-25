@@ -1,10 +1,10 @@
 [llm]
-base_url = "http://localhost:8080/v1"
-api_key = "local"
-model = "qwen3-coder-30b"
-ctx_window = 16384
+#base_url = "http://localhost:8080/v1"
+#api_key = "local"
+#model = "qwen3-coder-30b"
+#ctx_window = 16384
 compaction_threshold = 0.75
-max_output_tokens = 4096
+#max_output_tokens = 4096
 
 [embeddings]
 base_url = "http://localhost:8080/v1"
