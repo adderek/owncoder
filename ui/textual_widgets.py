@@ -102,7 +102,7 @@ def build_widget_classes(t, agent) -> SimpleNamespace:  # noqa: ARG001
                 is_filled = i < used_cells
                 bg = fill_rgb if is_filled else empty_rgb
                 if i == peak_cell and peak_cell >= 0:
-                    parts.append(f"[bold {peak_rgb} on {bg}]🞨[/]")
+                    parts.append(f"[bold {peak_rgb} on {bg}]▕[/]")
                 elif i == compact_cell:
                     parts.append(f"[bold {thresh_rgb} on {bg}]🞀[/]")
                 elif is_filled:

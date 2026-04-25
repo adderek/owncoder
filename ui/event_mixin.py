@@ -177,8 +177,8 @@ class EventHandlerMixin:
             self._loading_timer = None
         self.query_one("#loading-row").remove_class("active")
 
+        self._agent_running = False
         input_widget = self.query_one("#input-bar", self._wt.PromptInput)
-        input_widget.disabled = False
         input_widget.focus()
 
         empty_response = False

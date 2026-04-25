@@ -122,6 +122,7 @@ def _build_textual_app(agent: "Agent", session=None):
             self._chat_user_lines: list[int] = []
             self._sys_messages: list[str] = []
             self._tool_stats: dict[str, dict[str, int]] = {}
+            self._agent_running: bool = False
 
             chat_wrap_cfg = self._agent.config.ui.chat_wrap
             if chat_wrap_cfg == "wrap":
@@ -330,6 +331,18 @@ def _build_textual_app(agent: "Agent", session=None):
             user_text = event.value.strip()
             if not user_text:
                 return
+            if self._agent_running:
+                if user_text.startswith("/") or user_text.lower() == "continue":
+                    self._write_sys(
+                        f"[{t.warning}]Agent running — slash commands and 'continue' "
+                        f"not accepted mid-turn. Text messages are injected.[/{t.warning}]"
+                    )
+                    return
+                self._agent.inject(user_text)
+                self._write_chat(
+                    f"[bold {t.user_color}]↑ You (mid-turn):[/bold {t.user_color}] {_escape(user_text)}"
+                )
+                return
             if user_text.startswith("/"):
                 parts = user_text.split(None, 1)
                 await self._run_slash(parts[0].lower(), parts[1] if len(parts) > 1 else "")
@@ -397,7 +410,7 @@ def _build_textual_app(agent: "Agent", session=None):
             self._iter_limit = 0
             self._current_user_text = user_text
 
-            self.query_one("#input-bar", PromptInput).disabled = True
+            self._agent_running = True
             self.query_one("#loading-row").add_class("active")
             self.query_one("#loading-tokens", Static).update(
                 f"in: [bold]{self._tokens_before:,}[/bold]"

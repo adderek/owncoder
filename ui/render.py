@@ -124,7 +124,7 @@ def _render_context_report(agent, theme) -> str:
         "[rgb(70,70,70) on rgb(30,30,30)] [/] free"
     )
     lines.append(
-        "  [bold rgb(198,40,40)]▕[/] compaction threshold "
+        "  [bold rgb(198,40,40)]🞀[/] compaction threshold "
         "(auto-compact fires here)   "
         "[bold rgb(186,85,211)]▕[/] peak in last agent round"
     )
