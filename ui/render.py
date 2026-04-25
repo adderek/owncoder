@@ -118,15 +118,15 @@ def _render_context_report(agent, theme) -> str:
     # ── Token bar key ──────────────────────────────────────────────────────
     lines.append("[bold]tokens bar[/bold]  [dim]fill of ctx_window[/dim]")
     lines.append(
-        "  [green]█[/green] used under 65%   "
-        "[yellow]█[/yellow] 65–85%   "
-        "[red]█[/red] over 85%   "
-        "[dim]░[/dim] free"
+        "  [rgb(56,142,60) on rgb(56,142,60)]█[/] used under 65%   "
+        "[rgb(249,168,37) on rgb(249,168,37)]█[/] 65–85%   "
+        "[rgb(198,40,40) on rgb(198,40,40)]█[/] over 85%   "
+        "[rgb(70,70,70) on rgb(30,30,30)] [/] free"
     )
     lines.append(
-        "  [bold red]│[/bold red] compaction threshold "
+        "  [bold rgb(198,40,40)]▕[/] compaction threshold "
         "(auto-compact fires here)   "
-        "[bold magenta]╋[/bold magenta] peak in last agent round"
+        "[bold rgb(186,85,211)]▕[/] peak in last agent round"
     )
     lines.append("")
 
