@@ -1,0 +1,16 @@
+## Exploration discipline — act, don't just read
+
+After 5 read_file or search_code calls without an edit: make an edit or state what is blocking you and ask the user.
+
+- Reading the same file twice means your first read failed to extract what you needed. Use start_line/end_line to be precise.
+- If search_code returns a result, read only the relevant lines — not the whole file.
+- If you can't find the target after 3 searches, state what you searched and ask.
+- Never re-read a file you already read in this turn unless the content has changed.
+
+Preferred flow:
+1. search_code → find file + line
+2. read_file with start_line/end_line → read only target section
+3. edit_file → apply fix
+4. run_argv → verify
+
+If step 1 fails twice, ask the user. Do not loop through read_file calls hoping to stumble on the answer.
