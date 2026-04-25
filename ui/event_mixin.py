@@ -116,8 +116,7 @@ class EventHandlerMixin:
 
     _STREAM_RENDER_INTERVAL = 0.05  # 50ms throttle
 
-    def _stream_tail(self) -> str:
-        buf = self._stream_buffer
+    def _stream_tail(self, buf: list) -> str:
         total = sum(len(s) for s in buf)
         if total <= 800:
             return "".join(buf)
@@ -127,12 +126,30 @@ class EventHandlerMixin:
             result.append(chunk)
             if acc >= 800:
                 break
-        tail = "".join(reversed(result))
-        return tail[-800:]
+        return "".join(reversed(result))[-800:]
+
+    def _flush_reasoning(self) -> None:
+        """Write folded reasoning summary to chat log and clear stream-view."""
+        if not self._reasoning_buffer:
+            return
+        total_chars = sum(len(s) for s in self._reasoning_buffer)
+        t = self._t
+        self._write_chat(
+            f"[{t.thinking_color}]▶ thinking ({total_chars:,} chars)[/{t.thinking_color}]"
+        )
+        self._reasoning_buffer = []
+        self._reasoning_active = False
+        stream_view = self.query_one("#stream-view")
+        stream_view.remove_class("active")
+        stream_view.update("")
+        self._streaming_active = False
+        self._stream_last_render = 0.0
 
     def on_reasoning_token_event(self, event) -> None:
         from rich.text import Text
-        self._stream_buffer.append(event.token)
+        t = self._t
+        self._reasoning_buffer.append(event.token)
+        self._reasoning_active = True
         now = time.monotonic()
         if now - self._stream_last_render < self._STREAM_RENDER_INTERVAL:
             return
@@ -141,13 +158,18 @@ class EventHandlerMixin:
         if not self._streaming_active:
             self._streaming_active = True
             stream_view.add_class("active")
-        tail = self._stream_tail()
+        tail = self._stream_tail(self._reasoning_buffer)
         content = Text.assemble(("thinking:", "dim italic"), (f" {tail}▌", "dim italic"))
         stream_view.update(content)
 
     def on_token_stream_event(self, event) -> None:
         from rich.text import Text
         t = self._t
+        if self._reasoning_active:
+            self._reasoning_active = False
+            fold_mode = getattr(self._agent.config.ui, "reasoning_fold", "end_of_round")
+            if fold_mode == "immediate":
+                self._flush_reasoning()
         self._stream_buffer.append(event.token)
         now = time.monotonic()
         if now - self._stream_last_render < self._STREAM_RENDER_INTERVAL:
@@ -157,7 +179,7 @@ class EventHandlerMixin:
         if not self._streaming_active:
             self._streaming_active = True
             stream_view.add_class("active")
-        tail = self._stream_tail()
+        tail = self._stream_tail(self._stream_buffer)
         content = Text.assemble(("Agent:", f"bold {t.agent_color}"), (f" {tail}▌",))
         stream_view.update(content)
 
@@ -225,6 +247,9 @@ class EventHandlerMixin:
             f"{tools_line}\n{token_line}" if tools_line else token_line
         )
 
+        fold_mode = getattr(self._agent.config.ui, "reasoning_fold", "end_of_round")
+        if self._reasoning_buffer and fold_mode != "never":
+            self._flush_reasoning()
         if self._streaming_active:
             stream_view = self.query_one("#stream-view")
             stream_view.remove_class("active")

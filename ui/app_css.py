@@ -3,6 +3,15 @@ from __future__ import annotations
 
 
 def build_app_css(t) -> str:
+    _scrollbar_css = f"""
+        scrollbar-background: {t.scrollbar_bg};
+        scrollbar-background-hover: {t.scrollbar_bg};
+        scrollbar-background-active: {t.scrollbar_bg};
+        scrollbar-color: {t.scrollbar_thumb};
+        scrollbar-color-hover: {t.active};
+        scrollbar-color-active: {t.active};
+        scrollbar-corner-color: {t.scrollbar_bg};
+    """
     return f"""
     Screen {{
         background: {t.bg};
@@ -26,31 +35,34 @@ def build_app_css(t) -> str:
     }}
     #chat-log {{
         height: 1fr;
-        border: solid {t.border};
-        padding: 0 1;
+        background: {t.chat_bg};
+        padding: 0;
+        {_scrollbar_css}
     }}
     #chat-log:focus {{
-        border: solid {t.active};
+        background: {t.chat_bg_focus};
     }}
     #sys-log {{
         height: 1fr;
-        border: solid {t.border};
-        padding: 0 1;
+        background: {t.chat_bg};
+        padding: 0;
+        {_scrollbar_css}
     }}
     #sys-log:focus {{
-        border: solid {t.active};
+        background: {t.chat_bg_focus};
     }}
     #q-log, #a-log, #sparse-log {{
         height: 1fr;
-        border: solid {t.border};
-        padding: 0 1;
+        background: {t.chat_bg};
+        padding: 0;
+        {_scrollbar_css}
     }}
     #q-log:focus, #a-log:focus, #sparse-log:focus {{
-        border: solid {t.active};
+        background: {t.chat_bg_focus};
     }}
     .placeholder-pane {{
         height: 1fr;
-        border: solid {t.border};
+        background: {t.chat_bg};
         padding: 2 4;
         color: {t.text_dim};
     }}
@@ -70,10 +82,14 @@ def build_app_css(t) -> str:
         height: auto;
         max-height: 8;
         min-height: 3;
-        border: solid {t.border};
+        background: {t.input_bg};
+        border: none;
+        padding: 0;
+        {_scrollbar_css}
     }}
     #input-bar:focus {{
-        border: solid {t.active};
+        background: {t.input_bg_focus};
+        border: none;
     }}
     CompletionBar {{
         height: auto;
@@ -127,9 +143,9 @@ def build_app_css(t) -> str:
         height: auto;
         max-height: 10;
         display: none;
-        background: {t.bg};
+        background: {t.chat_bg};
         padding: 0 1;
-        color: {t.text};
+        color: {t.thinking_color};
     }}
     #stream-view.active {{
         display: block;

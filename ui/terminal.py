@@ -123,6 +123,8 @@ def _build_textual_app(agent: "Agent", session=None):
             self._sys_messages: list[str] = []
             self._tool_stats: dict[str, dict[str, int]] = {}
             self._agent_running: bool = False
+            self._reasoning_buffer: list[str] = []
+            self._reasoning_active: bool = False
 
             chat_wrap_cfg = self._agent.config.ui.chat_wrap
             if chat_wrap_cfg == "wrap":
@@ -169,7 +171,7 @@ def _build_textual_app(agent: "Agent", session=None):
             yield OutputBreakdownBar(id="output-breakdown")
             with TabbedContent(initial="tab-chat", id="view-tabs"):
                 with TabPane("chat", id="tab-chat"):
-                    yield ConversationView(id="chat-log", markup=True, highlight=True)
+                    yield ConversationView(id="chat-log", markup=True, highlight=False)
                     yield Static("", id="stream-view", markup=True)
                 with TabPane("Q", id="tab-q"):
                     yield QView(id="q-log", markup=True, highlight=False)
@@ -409,6 +411,8 @@ def _build_textual_app(agent: "Agent", session=None):
             self._iter_done = 0
             self._iter_limit = 0
             self._current_user_text = user_text
+            self._reasoning_buffer = []
+            self._reasoning_active = False
 
             self._agent_running = True
             self.query_one("#loading-row").add_class("active")

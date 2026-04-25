@@ -76,24 +76,33 @@ class ThemeConfig:
     bg:            str = "#0C0C0C"   # main screen background
     panel_bg:      str = "#141414"   # header / status-bar background
     panel_bg_dark: str = "#0E0E0E"   # slightly darker panel (git bar)
+    chat_bg:       str = "#111111"   # log/chat area unfocused background
+    chat_bg_focus: str = "#191919"   # log/chat area focused background
+    input_bg:      str = "#111111"   # input box unfocused background
+    input_bg_focus: str = "#191919"  # input box focused background
 
-    # ── Borders ────────────────────────────────────────────────────────────
-    border: str = "#2E7D32"   # content area border (dark forest green)
-    active: str = "#E8801A"   # active / emphasized element border (orange)
+    # ── Borders (kept for theming; no longer drawn as widget frames) ────────
+    border: str = "#2E7D32"   # reserved / future use
+    active: str = "#E8801A"   # active / emphasized element color (orange)
+
+    # ── Scrollbars ─────────────────────────────────────────────────────────
+    scrollbar_bg:    str = "#1C1C1C"   # scrollbar track
+    scrollbar_thumb: str = "#3A3A3A"   # scrollbar handle
 
     # ── Text ───────────────────────────────────────────────────────────────
     text:     str = "#C0C0C0"   # normal text
     text_dim: str = "#505050"   # de-emphasised text
 
     # ── Semantic roles ─────────────────────────────────────────────────────
-    user_color:  str = "#388E3C"   # "You:" label  (medium green)
-    agent_color: str = "#E8801A"   # "Agent:" label (orange — emphasised)
-    tool_color:  str = "#505050"   # tool-call indicator (dim)
-    cmd_color:   str = "#388E3C"   # slash-command names in /help (green)
-    prompt:      str = "#388E3C"   # CLI input prompt ">" (green)
-    success:     str = "#388E3C"   # success messages
-    warning:     str = "#F9A825"   # warning / unknown-command messages
-    error:       str = "#C62828"   # error messages
+    user_color:   str = "#388E3C"   # "You:" label  (medium green)
+    agent_color:  str = "#E8801A"   # "Agent:" label (orange — emphasised)
+    tool_color:   str = "#505050"   # tool-call indicator (dim)
+    cmd_color:    str = "#388E3C"   # slash-command names in /help (green)
+    prompt:       str = "#388E3C"   # CLI input prompt ">" (green)
+    success:      str = "#388E3C"   # success messages
+    warning:      str = "#F9A825"   # warning / unknown-command messages
+    error:        str = "#C62828"   # error messages
+    thinking_color: str = "#404060" # reasoning/thinking text color
 
 
 @dataclass
@@ -104,6 +113,7 @@ class UIConfig:
     show_token_count: bool = True
     chat_wrap: str = "last used"  # 'wrap', 'nowrap', or 'last used'
     round_summary: bool = True  # show gray Q/A summary line after each turn
+    reasoning_fold: str = "end_of_round"  # "immediate" | "end_of_round" | "never"
     theme: ThemeConfig = field(default_factory=ThemeConfig)
 
 
