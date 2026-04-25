@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import traceback
 
 from rich.markup import escape as _escape
@@ -113,27 +114,50 @@ class EventHandlerMixin:
             f"[dim]• {_escape(event.label)}{detail}[/dim]"
         )
 
+    _STREAM_RENDER_INTERVAL = 0.05  # 50ms throttle
+
+    def _stream_tail(self) -> str:
+        buf = self._stream_buffer
+        total = sum(len(s) for s in buf)
+        if total <= 800:
+            return "".join(buf)
+        result, acc = [], 0
+        for chunk in reversed(buf):
+            acc += len(chunk)
+            result.append(chunk)
+            if acc >= 800:
+                break
+        tail = "".join(reversed(result))
+        return tail[-800:]
+
     def on_reasoning_token_event(self, event) -> None:
         from rich.text import Text
-        t = self._t
-        self._stream_buffer += event.token
+        self._stream_buffer.append(event.token)
+        now = time.monotonic()
+        if now - self._stream_last_render < self._STREAM_RENDER_INTERVAL:
+            return
+        self._stream_last_render = now
         stream_view = self.query_one("#stream-view")
         if not self._streaming_active:
             self._streaming_active = True
             stream_view.add_class("active")
-        tail = self._stream_buffer[-800:] if len(self._stream_buffer) > 800 else self._stream_buffer
+        tail = self._stream_tail()
         content = Text.assemble(("thinking:", "dim italic"), (f" {tail}▌", "dim italic"))
         stream_view.update(content)
 
     def on_token_stream_event(self, event) -> None:
         from rich.text import Text
         t = self._t
-        self._stream_buffer += event.token
+        self._stream_buffer.append(event.token)
+        now = time.monotonic()
+        if now - self._stream_last_render < self._STREAM_RENDER_INTERVAL:
+            return
+        self._stream_last_render = now
         stream_view = self.query_one("#stream-view")
         if not self._streaming_active:
             self._streaming_active = True
             stream_view.add_class("active")
-        tail = self._stream_buffer[-800:] if len(self._stream_buffer) > 800 else self._stream_buffer
+        tail = self._stream_tail()
         content = Text.assemble(("Agent:", f"bold {t.agent_color}"), (f" {tail}▌",))
         stream_view.update(content)
 
@@ -206,7 +230,8 @@ class EventHandlerMixin:
             stream_view.remove_class("active")
             stream_view.update("")
             self._streaming_active = False
-            self._stream_buffer = ""
+            self._stream_buffer = []
+            self._stream_last_render = 0.0
 
         if self._last_tool_calls:
             tool_part = self._render_tool_summary()
