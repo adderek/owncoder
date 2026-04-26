@@ -377,7 +377,7 @@ def build_widget_classes(t, agent) -> SimpleNamespace:  # noqa: ARG001
                 else:
                     cmd_part = f"[{t.cmd_color}]{cmd}[/{t.cmd_color}]"
                 lines.append(
-                    f" {marker} {cmd_part:<20} [{t.text_dim}]{desc}[/{t.text_dim}]"
+                    f" {marker} {cmd_part:<20} [{t.text_dim}]{_escape(desc)}[/{t.text_dim}]"
                 )
             if len(matches) > self.MAX_VISIBLE:
                 lines.append(
