@@ -28,7 +28,10 @@ def _merge_trailing_assistants(api_messages: list[dict]) -> list[dict]:
             and not a.get("tool_calls")
             and not b.get("tool_calls")
         ):
-            merged = {"role": "assistant", "content": (a.get("content") or "") + (b.get("content") or "")}
+            merged: dict = {"role": "assistant", "content": (a.get("content") or "") + (b.get("content") or "")}
+            rc = (a.get("reasoning_content") or "") + (b.get("reasoning_content") or "")
+            if rc:
+                merged["reasoning_content"] = rc
             out = out[:-2] + [merged]
         else:
             break

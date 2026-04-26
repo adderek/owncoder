@@ -140,6 +140,15 @@ async def run_turn(
             return result
         api_messages = [_to_api_msg(m) for m in messages]
         api_messages = _merge_trailing_assistants(api_messages)
+        # DeepSeek / reasoning models require reasoning_content on ALL assistant
+        # messages in a thinking-mode session. Fill absent ones with "".
+        if any(m.get("role") == "assistant" and m.get("reasoning_content") for m in api_messages):
+            api_messages = [
+                {**m, "reasoning_content": m.get("reasoning_content", "")}
+                if m.get("role") == "assistant" and "reasoning_content" not in m
+                else m
+                for m in api_messages
+            ]
 
         turn_reasoning: str = ""
         try:
