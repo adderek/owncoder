@@ -11,6 +11,8 @@ import logging
 from rich.markup import escape as _escape
 from rich.markdown import Markdown
 
+from agent.ui.render import _delatex
+
 logger = logging.getLogger(__name__)
 
 
@@ -57,7 +59,7 @@ class ViewMixin:
                 if content:
                     if self._wrap_enabled:
                         chat_log.write(f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}]")
-                        chat_log.write(Markdown(content.strip()))
+                        chat_log.write(Markdown(_delatex(content.strip())))
                     else:
                         chat_log.write(
                             f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] {_escape(_one_line(content, wrap=False))}"

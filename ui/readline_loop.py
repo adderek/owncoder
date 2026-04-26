@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agent.ui.slash import _apply_think, _apply_temperature, _apply_max_tokens
-from agent.ui.render import _render_context_report
+from agent.ui.render import _render_context_report, _delatex
 
 logger = logging.getLogger(__name__)
 
@@ -637,7 +637,7 @@ async def simple_loop(agent: "Agent", session=None):
             console.print()  # end the streaming line
         elif response:
             console.print()
-            console.print(Markdown(response))
+            console.print(Markdown(_delatex(response)))
         elif tool_results:
             console.print(
                 f"[{t.text_dim}]Done. ({', '.join(tool_results)})[/{t.text_dim}]"

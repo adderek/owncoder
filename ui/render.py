@@ -1,10 +1,114 @@
 """Render helpers: context/output color tables, mini_bar, context report."""
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     pass
+
+# LaTeX math → Unicode substitution table
+_LATEX_MAP: dict[str, str] = {
+    r"\rightarrow": "→",
+    r"\to": "→",
+    r"\leftarrow": "←",
+    r"\gets": "←",
+    r"\Rightarrow": "⇒",
+    r"\Leftarrow": "⇐",
+    r"\leftrightarrow": "↔",
+    r"\Leftrightarrow": "⇔",
+    r"\uparrow": "↑",
+    r"\downarrow": "↓",
+    r"\Uparrow": "⇑",
+    r"\Downarrow": "⇓",
+    r"\nearrow": "↗",
+    r"\searrow": "↘",
+    r"\swarrow": "↙",
+    r"\nwarrow": "↖",
+    r"\infty": "∞",
+    r"\alpha": "α",
+    r"\beta": "β",
+    r"\gamma": "γ",
+    r"\delta": "δ",
+    r"\epsilon": "ε",
+    r"\varepsilon": "ε",
+    r"\zeta": "ζ",
+    r"\eta": "η",
+    r"\theta": "θ",
+    r"\iota": "ι",
+    r"\kappa": "κ",
+    r"\lambda": "λ",
+    r"\mu": "μ",
+    r"\nu": "ν",
+    r"\xi": "ξ",
+    r"\pi": "π",
+    r"\rho": "ρ",
+    r"\sigma": "σ",
+    r"\tau": "τ",
+    r"\upsilon": "υ",
+    r"\phi": "φ",
+    r"\varphi": "φ",
+    r"\chi": "χ",
+    r"\psi": "ψ",
+    r"\omega": "ω",
+    r"\Gamma": "Γ",
+    r"\Delta": "Δ",
+    r"\Theta": "Θ",
+    r"\Lambda": "Λ",
+    r"\Xi": "Ξ",
+    r"\Pi": "Π",
+    r"\Sigma": "Σ",
+    r"\Phi": "Φ",
+    r"\Psi": "Ψ",
+    r"\Omega": "Ω",
+    r"\leq": "≤",
+    r"\le": "≤",
+    r"\geq": "≥",
+    r"\ge": "≥",
+    r"\neq": "≠",
+    r"\ne": "≠",
+    r"\approx": "≈",
+    r"\equiv": "≡",
+    r"\pm": "±",
+    r"\times": "×",
+    r"\div": "÷",
+    r"\cdot": "·",
+    r"\ldots": "…",
+    r"\cdots": "⋯",
+    r"\forall": "∀",
+    r"\exists": "∃",
+    r"\in": "∈",
+    r"\notin": "∉",
+    r"\subset": "⊂",
+    r"\supset": "⊃",
+    r"\subseteq": "⊆",
+    r"\supseteq": "⊇",
+    r"\cup": "∪",
+    r"\cap": "∩",
+    r"\emptyset": "∅",
+    r"\nabla": "∇",
+    r"\partial": "∂",
+    r"\sum": "∑",
+    r"\prod": "∏",
+    r"\int": "∫",
+    r"\sqrt": "√",
+    r"\neg": "¬",
+    r"\land": "∧",
+    r"\lor": "∨",
+    r"\oplus": "⊕",
+    r"\otimes": "⊗",
+}
+
+# Matches $\command$ or $\command{...}$ — simple inline math only
+_LATEX_RE = re.compile(r"\$\\([A-Za-z]+)(?:\{[^}]*\})?\$")
+
+
+def _delatex(text: str) -> str:
+    """Replace inline LaTeX math tokens (``$\\cmd$``) with Unicode equivalents."""
+    def _sub(m: re.Match) -> str:
+        key = "\\" + m.group(1)
+        return _LATEX_MAP.get(key, m.group(0))
+    return _LATEX_RE.sub(_sub, text)
 
 
 # Single source of truth. Top-bar widgets (ContextBreakdownBar,

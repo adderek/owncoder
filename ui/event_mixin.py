@@ -186,6 +186,7 @@ class EventHandlerMixin:
     def on_worker_state_changed(self, event) -> None:
         from textual.worker import WorkerState
         from rich.markdown import Markdown as _Markdown
+        from agent.ui.render import _delatex
 
         if event.worker.name != "chat":
             return
@@ -277,7 +278,7 @@ class EventHandlerMixin:
                 )
             else:
                 self._write_chat(f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}]")
-                self._write_chat(_Markdown(response))
+                self._write_chat(_Markdown(_delatex(response)))
 
         if event.state == WorkerState.SUCCESS:
             if self._round_summary_enabled:
