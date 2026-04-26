@@ -373,10 +373,19 @@ def _apply_model(agent, arg: str) -> tuple[bool, str]:
             base_url=entry.base_url,
             api_key=entry.api_key,
         )
-        return True, (
+        msg = (
             f"switched default → [bold]{entry_name}[/bold]  "
             f"model={cfg.llm.model}  url={cfg.llm.base_url}"
         )
+        used = agent.token_estimate()
+        threshold = int(entry.ctx_window * cfg.llm.compaction_threshold)
+        if used > threshold:
+            msg += (
+                f"\n[yellow]Warning: current context ({used} tokens) exceeds "
+                f"compaction threshold ({threshold}) for new ctx_window={entry.ctx_window}. "
+                f"Compaction will trigger on next turn.[/yellow]"
+            )
+        return True, msg
 
     # Non-default role: just update model_roles (no client to recreate)
     return True, f"role '{role}' → [bold]{entry_name}[/bold]  (model={entry.model})"

@@ -121,7 +121,7 @@ async def run_turn(
 
         token_est = _count_tokens_approx(messages)
         _notify_ctx(token_est)
-        budget = config.llm.ctx_window - config.llm.max_output_tokens - 500
+        budget = max(1, config.llm.ctx_window - config.llm.max_output_tokens - 500)
         if token_est > budget:
             logger.warning("Pre-flight: estimated %d tokens exceeds budget %d, compacting...", token_est, budget)
             _phase("compact", f"{token_est}→budget {budget}")
@@ -199,7 +199,7 @@ async def run_turn(
                 if _count_tokens_approx(messages) >= old_count:
                     messages = _truncate_large_messages(messages, budget)
                 token_est = _count_tokens_approx(messages)
-                budget = config.llm.ctx_window - config.llm.max_output_tokens - 500
+                budget = max(1, config.llm.ctx_window - config.llm.max_output_tokens - 500)
                 if token_est > budget:
                     messages = _truncate_large_messages(messages, budget)
                 continue
