@@ -41,6 +41,9 @@ class Step:
     notes: str = ""
     started_at: float | None = None
     completed_at: float | None = None
+    snapshot_refs: list[dict] = field(default_factory=list)
+    retry_count: int = 0
+    max_retries: int = 3
 
 
 @dataclass
@@ -74,7 +77,7 @@ class Plan:
     @classmethod
     def from_dict(cls, data: dict) -> "Plan":
         steps_raw = data.get("steps", []) or []
-        steps = [Step(**s) for s in steps_raw]
+        steps = [Step(**{k: v for k, v in s.items() if k in Step.__dataclass_fields__}) for s in steps_raw]
         return cls(
             id=data["id"],
             goal=data.get("goal", ""),

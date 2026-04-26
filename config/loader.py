@@ -79,6 +79,8 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_SECURITY_ALLOW_LEGACY_SHELL": ("security", "allow_legacy_shell"),
         "AGENT_PLANNING_ENABLED": ("planning", "enabled"),
         "AGENT_PLANNING_AUTO_COMMIT": ("planning", "auto_commit_on_step_complete"),
+        "AGENT_PLANNING_INCREMENTS_ENABLED": ("planning", "increments_enabled"),
+        "AGENT_PLANNING_MAX_STEP_RETRIES": ("planning", "max_step_retries"),
         "AGENT_RECOVERY_PROMPT_MODE": ("recovery", "prompt_mode"),
         "AGENT_RECOVERY_ENABLED": ("recovery", "enabled"),
     }

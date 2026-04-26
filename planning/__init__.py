@@ -21,6 +21,13 @@ from agent.planning.plan import (
     delete_plan,
 )
 from agent.planning import recovery
+from agent.planning.increment import (
+    RepoSnapshot,
+    find_git_repos,
+    snapshot_step,
+    revert_to_snapshots,
+    squash_snapshot,
+)
 
 __all__ = [
     "Plan",
@@ -34,4 +41,9 @@ __all__ = [
     "list_plans",
     "delete_plan",
     "recovery",
+    "RepoSnapshot",
+    "find_git_repos",
+    "snapshot_step",
+    "revert_to_snapshots",
+    "squash_snapshot",
 ]

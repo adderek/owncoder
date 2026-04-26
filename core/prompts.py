@@ -30,6 +30,19 @@ _REASONING_EFFORT = {
     "off": "none", "low": "low", "normal": "medium", "high": "high", "max": "high",
 }
 
+_INCREMENTS_INSTRUCTIONS = """\
+## Incremental step execution
+
+When working through plan steps, follow this protocol for each step:
+
+1. Call `snapshot_step(plan_id, step_id)` before making any file changes.
+2. Implement the step. Write verification criteria (tests/checks) from `step.tests` first if present.
+3. Run verification. On success: call `complete_step(plan_id, step_id)`.
+4. On failure: call `revert_step(plan_id, step_id)`.
+   - If `exhausted=false`: fix the approach and retry from step 2.
+   - If `exhausted=true`: report the failure, do not attempt further changes on this step.\
+"""
+
 
 def _log_llm_request(messages: list, tools, config: "Config") -> None:
     if not getattr(config, "logs", None) or not getattr(config.logs, "dedupe_preamble", True):
@@ -85,6 +98,10 @@ def _build_system_prompt(config: "Config", project_name: str = "", indexed_count
             if text:
                 text = prompt_compiler.load(f"guidelines/{path.name}", text, config)
                 prompt = f"{prompt}\n\n{text}"
+
+    if getattr(config.planning, "increments_enabled", False):
+        prompt = f"{prompt}\n\n{_INCREMENTS_INSTRUCTIONS}"
+
     return prompt
 
 

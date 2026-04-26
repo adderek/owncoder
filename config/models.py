@@ -232,6 +232,9 @@ class PlanningConfig:
     enabled: bool = True
     auto_commit_on_step_complete: bool = False
     max_steps: int = 50
+    increments_enabled: bool = False
+    max_step_retries: int = 3
+    squash_snap_on_success: bool = False
 
 
 @dataclass
