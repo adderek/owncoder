@@ -199,14 +199,16 @@ def _build_textual_app(agent: "Agent", session=None):
                 bar = self.query_one("#token-bar", TokenBar)
             except Exception:
                 return
+            ctx = self._agent.config.llm.ctx_window
             bar.update_tokens(
                 self._agent.token_estimate(),
                 peak=getattr(self._agent, "round_peak_tokens", 0),
                 compact_frac=getattr(self._agent.config.llm, "compaction_threshold", 0.75),
+                ctx_window=ctx,
             )
             try:
                 breakdown = self.query_one("#context-breakdown", ContextBreakdownBar)
-                breakdown.set_segments(self._agent.context_breakdown())
+                breakdown.set_segments(self._agent.context_breakdown(), ctx_window=ctx)
             except Exception:
                 pass
             try:

@@ -283,6 +283,8 @@ class SlashHandlerMixin:
             color = t.success if ok else t.warning
             for line in msg.splitlines():
                 self._write_sys(f"[{color}]{line}[/{color}]")
+            if ok:
+                self._refresh_token_bar()
 
         elif cmd == "/plan":
             ok, msg = _apply_plan(self._agent, arg)

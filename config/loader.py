@@ -15,7 +15,6 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_LLM_BASE_URL": ("llm", "base_url"),
         "AGENT_LLM_API_KEY": ("llm", "api_key"),
         "AGENT_LLM_MODEL": ("llm", "model"),
-        "AGENT_LLM_CTX_WINDOW": ("llm", "ctx_window"),
         "AGENT_LLM_MAX_OUTPUT_TOKENS": ("llm", "max_output_tokens"),
         "AGENT_LLM_TEMPERATURE": ("llm", "temperature"),
         "AGENT_LLM_MAX_ITERATIONS": ("agent", "max_iterations"),
@@ -303,10 +302,10 @@ def _try_detect_ctx_window(config: Config, resp) -> None:
             or model_info.get("n_ctx")
         )
         if ctx_size and isinstance(ctx_size, int) and ctx_size > 0:
-            if ctx_size != config.llm.ctx_window:
+            if ctx_size < config.llm.ctx_window:
                 print(
                     f"Auto-detected context window: {ctx_size} tokens "
-                    f"(config had {config.llm.ctx_window})",
+                    f"(config had {config.llm.ctx_window} — reducing to match server)",
                     file=sys.stderr,
                 )
                 config.llm.ctx_window = ctx_size

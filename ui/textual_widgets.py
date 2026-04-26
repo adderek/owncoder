@@ -59,11 +59,13 @@ def build_widget_classes(t, agent) -> SimpleNamespace:  # noqa: ARG001
             self._used = 0
             self._peak = 0
 
-        def update_tokens(self, used: int, peak: int = 0, compact_frac: float | None = None) -> None:
+        def update_tokens(self, used: int, peak: int = 0, compact_frac: float | None = None, ctx_window: int | None = None) -> None:
             self._used = used
             self._peak = peak
             if compact_frac is not None:
                 self._compact_frac = compact_frac
+            if ctx_window is not None:
+                self._ctx = ctx_window
             self._redraw()
 
         def on_resize(self, _event) -> None:
@@ -119,8 +121,10 @@ def build_widget_classes(t, agent) -> SimpleNamespace:  # noqa: ARG001
             self._ctx = ctx_window
             self._segments: list[dict] = []
 
-        def set_segments(self, segments: list[dict]) -> None:
+        def set_segments(self, segments: list[dict], ctx_window: int | None = None) -> None:
             self._segments = list(segments)
+            if ctx_window is not None:
+                self._ctx = ctx_window
             self._redraw()
 
         def on_resize(self, _event) -> None:
