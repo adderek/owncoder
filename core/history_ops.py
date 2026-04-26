@@ -54,7 +54,10 @@ def _collapse_tool_rounds(
                 j += 1
 
             if m.get("content") and str(m["content"]).strip():
-                out.append({"role": "assistant", "content": m["content"]})
+                extracted: dict = {"role": "assistant", "content": m["content"]}
+                if rc := m.get("_reasoning_content"):
+                    extracted["_reasoning_content"] = rc
+                out.append(extracted)
 
             parts: list[str] = []
             refs: list[int] = []

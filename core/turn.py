@@ -133,7 +133,12 @@ async def run_turn(
                 messages = _truncate_large_messages(messages, budget)
                 logger.warning("Post-truncation: %d tokens (budget %d)", _count_tokens_approx(messages), budget)
 
-        api_messages = [{k: v for k, v in m.items() if not k.startswith("_")} for m in messages]
+        def _to_api_msg(m: dict) -> dict:
+            result = {k: v for k, v in m.items() if not k.startswith("_")}
+            if rc := m.get("_reasoning_content"):
+                result["reasoning_content"] = rc
+            return result
+        api_messages = [_to_api_msg(m) for m in messages]
         api_messages = _merge_trailing_assistants(api_messages)
 
         turn_reasoning: str = ""
@@ -221,10 +226,13 @@ async def run_turn(
 
         def stamp_reasoning(m: dict) -> dict:
             ref = _pending_reasoning_ref[0]
+            extra: dict = {}
+            if turn_reasoning:
+                extra["_reasoning_content"] = turn_reasoning
             if ref is None:
-                return m
+                return {**m, **extra} if extra else m
             _pending_reasoning_ref[0] = None
-            return {**m, "_reasoning_ref": ref}
+            return {**m, "_reasoning_ref": ref, **extra}
 
         tool_calls = msg.tool_calls if msg.tool_calls else None
 
