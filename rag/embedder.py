@@ -22,11 +22,16 @@ class Embedder:
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
+        from agent.core.model_status import _inc as _ms_inc, _dec as _ms_dec
         truncated = [self._truncate(t) for t in texts]
-        response = self._client.embeddings.create(
-            model=self._cfg.model,
-            input=truncated,
-        )
+        _ms_inc("emb")
+        try:
+            response = self._client.embeddings.create(
+                model=self._cfg.model,
+                input=truncated,
+            )
+        finally:
+            _ms_dec("emb")
         return [item.embedding for item in response.data]
 
     def embed_one(self, text: str) -> list[float]:

@@ -41,6 +41,7 @@ def _strip_tool_blocks(text: str) -> str:
 async def _stream_response(client, config: "Config", api_messages, tools, on_token, on_usage=None, on_reasoning=None):
     from agent._tokens import count_tokens_approx
     from agent.memory.compactor import _count_tokens_approx
+    from agent.core.model_status import _inc as _ms_inc, _dec as _ms_dec
 
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
@@ -54,61 +55,65 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
     t_first_token: float | None = None
     server_usage: dict | None = None
 
-    stream = await client.chat.completions.create(
-        messages=api_messages,
-        tools=tools if tools else None,
-        stream=True,
-        stream_options={"include_usage": True},
-        **_build_call_kwargs(config),
-    )
+    _ms_inc("main")
+    try:
+        stream = await client.chat.completions.create(
+            messages=api_messages,
+            tools=tools if tools else None,
+            stream=True,
+            stream_options={"include_usage": True},
+            **_build_call_kwargs(config),
+        )
 
-    async for chunk in stream:
-        u = getattr(chunk, "usage", None)
-        if u is not None:
-            server_usage = {
-                "prompt_tokens": getattr(u, "prompt_tokens", 0) or 0,
-                "completion_tokens": getattr(u, "completion_tokens", 0) or 0,
-                "total_tokens": getattr(u, "total_tokens", 0) or 0,
-            }
+        async for chunk in stream:
+            u = getattr(chunk, "usage", None)
+            if u is not None:
+                server_usage = {
+                    "prompt_tokens": getattr(u, "prompt_tokens", 0) or 0,
+                    "completion_tokens": getattr(u, "completion_tokens", 0) or 0,
+                    "total_tokens": getattr(u, "total_tokens", 0) or 0,
+                }
 
-        choice = chunk.choices[0] if chunk.choices else None
-        if choice is None:
-            continue
+            choice = chunk.choices[0] if chunk.choices else None
+            if choice is None:
+                continue
 
-        if choice.finish_reason:
-            finish_reason = choice.finish_reason
+            if choice.finish_reason:
+                finish_reason = choice.finish_reason
 
-        delta = choice.delta
-        rc = getattr(delta, "reasoning_content", None)
-        if rc:
-            if t_first_token is None:
-                t_first_token = time.monotonic()
-            reasoning_parts.append(rc)
-            if on_reasoning is not None:
-                try:
-                    on_reasoning(rc)
-                except Exception:
-                    logger.exception("on_reasoning callback failed")
-        if delta.content:
-            if t_first_token is None:
-                t_first_token = time.monotonic()
-            content_parts.append(delta.content)
-            on_token(delta.content)
-        for tc_delta in (delta.tool_calls or []):
-            if t_first_token is None:
-                t_first_token = time.monotonic()
-            if tc_delta.function and tc_delta.function.arguments:
-                tool_arg_chars += len(tc_delta.function.arguments)
-            idx = tc_delta.index
-            if idx not in tc_acc:
-                tc_acc[idx] = {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
-            if tc_delta.id:
-                tc_acc[idx]["id"] = tc_delta.id
-            if tc_delta.function:
-                if tc_delta.function.name:
-                    tc_acc[idx]["function"]["name"] += tc_delta.function.name
-                if tc_delta.function.arguments:
-                    tc_acc[idx]["function"]["arguments"] += tc_delta.function.arguments
+            delta = choice.delta
+            rc = getattr(delta, "reasoning_content", None)
+            if rc:
+                if t_first_token is None:
+                    t_first_token = time.monotonic()
+                reasoning_parts.append(rc)
+                if on_reasoning is not None:
+                    try:
+                        on_reasoning(rc)
+                    except Exception:
+                        logger.exception("on_reasoning callback failed")
+            if delta.content:
+                if t_first_token is None:
+                    t_first_token = time.monotonic()
+                content_parts.append(delta.content)
+                on_token(delta.content)
+            for tc_delta in (delta.tool_calls or []):
+                if t_first_token is None:
+                    t_first_token = time.monotonic()
+                if tc_delta.function and tc_delta.function.arguments:
+                    tool_arg_chars += len(tc_delta.function.arguments)
+                idx = tc_delta.index
+                if idx not in tc_acc:
+                    tc_acc[idx] = {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
+                if tc_delta.id:
+                    tc_acc[idx]["id"] = tc_delta.id
+                if tc_delta.function:
+                    if tc_delta.function.name:
+                        tc_acc[idx]["function"]["name"] += tc_delta.function.name
+                    if tc_delta.function.arguments:
+                        tc_acc[idx]["function"]["arguments"] += tc_delta.function.arguments
+    finally:
+        _ms_dec("main")
 
     full_content = "".join(content_parts)
     if tc_acc:

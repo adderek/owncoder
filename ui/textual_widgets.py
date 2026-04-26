@@ -333,6 +333,25 @@ def build_widget_classes(t, agent) -> SimpleNamespace:  # noqa: ARG001
         def set_status(self, text: str) -> None:
             self.update(text)
 
+    _MODEL_STATUS_ROLES = [("llm", "main"), ("emb", "emb"), ("sum", "sum")]
+
+    class ModelStatusBar(Static):
+        """Compact inline indicator of model request states (idle/running)."""
+
+        def on_mount(self) -> None:
+            self.set_interval(0.15, self._refresh)
+
+        def _refresh(self) -> None:
+            from agent.core.model_status import get_states
+            states = get_states()
+            parts = []
+            for label, role in _MODEL_STATUS_ROLES:
+                if states.get(role, "idle") == "running":
+                    parts.append(f"[rgb(56,142,60)]{label}:●[/]")
+                else:
+                    parts.append(f"[dim]{label}:○[/dim]")
+            self.update("  ".join(parts))
+
     class HintBar(Static):
         """Contextual hints shown during history navigation."""
 
@@ -654,6 +673,7 @@ def build_widget_classes(t, agent) -> SimpleNamespace:  # noqa: ARG001
         SparseView=SparseView,
         ContextPanel=ContextPanel,
         GitStatusBar=GitStatusBar,
+        ModelStatusBar=ModelStatusBar,
         HintBar=HintBar,
         CompletionBar=CompletionBar,
         PromptInput=PromptInput,

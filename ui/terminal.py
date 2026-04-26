@@ -77,6 +77,7 @@ def _build_textual_app(agent: "Agent", session=None):
     SparseView = _w.SparseView
     ContextPanel = _w.ContextPanel
     GitStatusBar = _w.GitStatusBar
+    ModelStatusBar = _w.ModelStatusBar
     HintBar = _w.HintBar
     CompletionBar = _w.CompletionBar
     PromptInput = _w.PromptInput
@@ -158,10 +159,12 @@ def _build_textual_app(agent: "Agent", session=None):
             if self._session:
                 label = self._session.short_name or self._session.id
                 session_label = f"  [{t.text_dim}]{label}[/{t.text_dim}]"
-            yield Static(
-                f"[bold]local-code-agent[/bold]  [{t.text_dim}]{cfg.llm.model}[/{t.text_dim}]{session_label}",
-                id="header-bar",
-            )
+            with Horizontal(id="header-bar"):
+                yield Static(
+                    f"[bold]local-code-agent[/bold]  [{t.text_dim}]{cfg.llm.model}[/{t.text_dim}]{session_label}",
+                    id="header-title",
+                )
+                yield ModelStatusBar("", id="model-status")
             yield TokenBar(
                 cfg.llm.ctx_window,
                 compact_frac=getattr(cfg.llm, "compaction_threshold", 0.75),

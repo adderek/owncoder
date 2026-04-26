@@ -22,6 +22,17 @@ def build_app_css(t) -> str:
         background: {t.panel_bg};
         color: {t.text_dim};
         padding: 0 1;
+        layout: horizontal;
+    }}
+    #header-title {{
+        width: 1fr;
+        height: 1;
+        color: {t.text_dim};
+    }}
+    #model-status {{
+        width: auto;
+        height: 1;
+        color: {t.text_dim};
     }}
     TabbedContent {{
         height: 1fr;

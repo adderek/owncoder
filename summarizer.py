@@ -33,8 +33,10 @@ async def _call_llm_one_line(
     """Stream a one-line summary using the summarizer model (falls back to default LLM)."""
     from openai import AsyncOpenAI
     from agent.config import make_registry
+    from agent.core.model_status import _inc as _ms_inc, _dec as _ms_dec
     entry = make_registry(config).summarizer
     client = AsyncOpenAI(base_url=entry.base_url, api_key=entry.api_key)
+    _ms_inc("sum")
     try:
         parts: list[str] = []
         stream = await client.chat.completions.create(
@@ -50,6 +52,7 @@ async def _call_llm_one_line(
             if delta and delta.content:
                 parts.append(delta.content)
     finally:
+        _ms_dec("sum")
         await client.close()
 
     full = "".join(parts)
