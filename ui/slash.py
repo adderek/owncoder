@@ -37,7 +37,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
         "set sampling temperature (0.0–2.0, - or default to reset)",
         True,
     ),
-    ("/think", [], "set thinking level  off|low|normal|high|max", True),
+    ("/think", ["/effort"], "set thinking level  off|low|normal|high|max", True),
     ("/max_tokens", [], "set max tokens   [out <n> | in <n> | <n> | default]", True),
     ("/wrap", [], "toggle line wrapping", False),
     ("/round-summary", ["/summary"], "toggle gray Q/A summary after each turn", False),
