@@ -15,6 +15,7 @@ from agent.ui.slash import (
     _apply_think,
     _apply_temperature,
     _apply_plan,
+    _apply_model,
 )
 from agent.ui.render import _render_context_report, _OUT_SEGMENT_COLORS
 
@@ -276,6 +277,12 @@ class SlashHandlerMixin:
             p["round_summary"] = self._round_summary_enabled
             save_prefs(p)
             self._write_sys(f"[{t.success}]Round summary {state}.[/{t.success}]")
+
+        elif cmd == "/model":
+            ok, msg = _apply_model(self._agent, arg)
+            color = t.success if ok else t.warning
+            for line in msg.splitlines():
+                self._write_sys(f"[{color}]{line}[/{color}]")
 
         elif cmd == "/plan":
             ok, msg = _apply_plan(self._agent, arg)

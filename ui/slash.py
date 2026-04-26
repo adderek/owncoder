@@ -48,6 +48,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/abort-plan", [], "mark active plan aborted (no stash)", False),
     ("/stash-plan", [], "git stash current changes + mark plan stashed", False),
     ("/pause-plan", [], "mark active plan paused; resume later", False),
+    ("/model", [], "switch active model  [<entry> | role=<entry> | role=?]", True),
     ("/recoveries", [], "list pending crash-recovery records", False),
     ("/quit", ["/exit", "/q!"], "quit the agent", False),
 ]
@@ -300,6 +301,85 @@ def _apply_plan(agent, arg: str) -> tuple[bool, str]:
         return True, f"Plan {plan.id} resumed."
 
     return False, f"Unknown /plan subcommand '{sub}'."
+
+
+_ROLE_ALIASES: dict[str, str] = {
+    "llm": "default",
+    "default": "default",
+    "sum": "summarizer",
+    "summarizer": "summarizer",
+    "emb": "embeddings",
+    "embeddings": "embeddings",
+}
+
+
+def _apply_model(agent, arg: str) -> tuple[bool, str]:
+    """Handle /model [role=]<entry-name>.  Returns (ok, message)."""
+    from openai import AsyncOpenAI
+
+    cfg = agent.config
+    entries = cfg.model_entries
+
+    def _status() -> str:
+        cur_model = cfg.llm.model
+        cur_url = cfg.llm.base_url
+        lines = [
+            f"active LLM: [bold]{cur_model}[/bold]  ({cur_url})",
+            f"  roles: default={cfg.model_roles.get('default', '—')}  "
+            f"summarizer={cfg.model_roles.get('summarizer', '—')}",
+            "available entries:",
+        ]
+        for name, e in sorted(entries.items()):
+            tags = f"  [{', '.join(e.tags)}]" if e.tags else ""
+            lines.append(f"  [bold]{name}[/bold]  {e.model}  ({e.base_url}){tags}")
+        return "\n".join(lines)
+
+    v = arg.strip()
+    if not v:
+        return True, _status()
+
+    # Parse optional "role=" prefix
+    role = "default"
+    entry_name = v
+    if "=" in v:
+        role_raw, _, entry_name = v.partition("=")
+        role_raw = role_raw.strip().lower()
+        entry_name = entry_name.strip()
+        if role_raw not in _ROLE_ALIASES:
+            known = ", ".join(sorted(_ROLE_ALIASES))
+            return False, f"Unknown role '{role_raw}'. Known: {known}"
+        role = _ROLE_ALIASES[role_raw]
+
+    if entry_name == "?":
+        return True, _status()
+
+    if entry_name not in entries:
+        known = ", ".join(sorted(entries))
+        return False, f"No model entry '{entry_name}'. Available: {known}"
+
+    entry = entries[entry_name]
+    cfg.model_roles[role] = entry_name
+
+    if role == "default":
+        cfg.llm.base_url = entry.base_url
+        cfg.llm.api_key = entry.api_key
+        if entry.model:
+            cfg.llm.model = entry.model
+        cfg.llm.ctx_window = entry.ctx_window
+        cfg.llm.max_output_tokens = entry.max_output_tokens
+        cfg.llm.temperature = entry.temperature
+        # Recreate the OpenAI client with new endpoint/key
+        agent._client = AsyncOpenAI(
+            base_url=entry.base_url,
+            api_key=entry.api_key,
+        )
+        return True, (
+            f"switched default → [bold]{entry_name}[/bold]  "
+            f"model={cfg.llm.model}  url={cfg.llm.base_url}"
+        )
+
+    # Non-default role: just update model_roles (no client to recreate)
+    return True, f"role '{role}' → [bold]{entry_name}[/bold]  (model={entry.model})"
 
 
 def _match_commands(prefix: str) -> list[tuple[str, str, bool]]:

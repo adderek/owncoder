@@ -7,7 +7,7 @@ import traceback
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agent.ui.slash import _apply_think, _apply_temperature, _apply_max_tokens
+from agent.ui.slash import _apply_think, _apply_temperature, _apply_max_tokens, _apply_model
 from agent.ui.render import _render_context_report, _delatex
 
 logger = logging.getLogger(__name__)
@@ -474,6 +474,11 @@ async def simple_loop(agent: "Agent", session=None):
             elif cmd == "/max_tokens":
                 ok, msg = _apply_max_tokens(agent, arg)
                 console.print(f"[{'green' if ok else 'yellow'}]{msg}[/]")
+
+            elif cmd == "/model":
+                ok, msg = _apply_model(agent, arg)
+                for line in msg.splitlines():
+                    console.print(f"[{'green' if ok else 'yellow'}]{line}[/]")
 
             elif cmd in ("/context", "/ctx", "/legend"):
                 console.print(_render_context_report(agent, t))
