@@ -203,21 +203,23 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                 bar = self.query_one("#token-bar", TokenBar)
             except Exception:
                 return
-            ctx = self._agent.config.llm.ctx_window
+            info = self._server.get_llm_info()
+            ctx = info["ctx_window"]
+            peak, _ = self._server.get_peak_tokens()
             bar.update_tokens(
-                self._agent.token_estimate(),
-                peak=getattr(self._agent, "round_peak_tokens", 0),
-                compact_frac=getattr(self._agent.config.llm, "compaction_threshold", 0.75),
+                self._server.token_estimate(),
+                peak=peak,
+                compact_frac=info["compaction_threshold"],
                 ctx_window=ctx,
             )
             try:
                 breakdown = self.query_one("#context-breakdown", ContextBreakdownBar)
-                breakdown.set_segments(self._agent.context_breakdown(), ctx_window=ctx)
+                breakdown.set_segments(self._server.context_breakdown(), ctx_window=ctx)
             except Exception:
                 pass
             try:
                 out_bar = self.query_one("#output-breakdown", OutputBreakdownBar)
-                out_bar.set_segments(self._agent.output_breakdown("session"), scope_label="out")
+                out_bar.set_segments(self._server.output_breakdown("session"), scope_label="out")
             except Exception:
                 pass
 
@@ -249,8 +251,9 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                     )
                 )
             sys_log.write(f"[{t.text_dim}]Type /help for commands  ·  F1 opens this tab[/{t.text_dim}]")
-            if self._agent.messages:
-                self._restore_chat_history(self._agent.messages)
+            msgs = self._server.get_messages()
+            if msgs:
+                self._restore_chat_history(msgs)
             self._reload_qa_views()
 
         # ── actions ──────────────────────────────────────────────────────────
@@ -372,17 +375,18 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             if not user_text:
                 return
             if event.remove_count > 0:
+                _msgs = self._server.get_messages()
                 user_positions = [
-                    i for i, m in enumerate(self._agent.messages) if m.get("role") == "user"
+                    i for i, m in enumerate(_msgs) if m.get("role") == "user"
                 ]
                 if event.remove_count >= len(user_positions):
                     system = next(
-                        (m for m in self._agent.messages if m.get("role") == "system"), None
+                        (m for m in _msgs if m.get("role") == "system"), None
                     )
-                    self._agent.messages = [system] if system else []
+                    self._server.set_messages([system] if system else [])
                 else:
                     cut = user_positions[-event.remove_count]
-                    self._agent.messages = self._agent.messages[:cut]
+                    self._server.set_messages(_msgs[:cut])
                 self._refresh_token_bar()
             input_widget = self.query_one("#input-bar", PromptInput)
             if event.area._edit_source_idx is not None:
@@ -392,7 +396,7 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
 
         def _update_loading_tokens(self) -> None:
             try:
-                est = self._agent.token_estimate()
+                est = self._server.token_estimate()
                 rcvd = max(0, est - self._tokens_before)
                 text = f"in: [bold]{self._tokens_before:,}[/bold]  out: +{rcvd:,}"
                 if self._iter_limit:
@@ -412,7 +416,7 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             self._last_tool_calls = []
             self._tool_stats = {}
             self._current_tool = None
-            self._tokens_before = self._agent.token_estimate()
+            self._tokens_before = self._server.token_estimate()
             self._streaming_active = False
             self._stream_buffer = []
             self._stream_last_render = 0.0

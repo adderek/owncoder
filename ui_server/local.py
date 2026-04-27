@@ -101,6 +101,31 @@ class LocalUIServer:
     async def compact_messages(self, session_id: str = "") -> None:
         await self._agent.compact_messages()
 
+    # ── read-only state accessors ──────────────────────────────────────────────
+
+    def get_llm_info(self, session_id: str = "") -> dict:
+        cfg = self._agent.config
+        return {
+            "model": cfg.llm.model or "",
+            "ctx_window": cfg.llm.ctx_window or 0,
+            "compaction_threshold": getattr(cfg.llm, "compaction_threshold", 0.75),
+        }
+
+    def get_peak_tokens(self, session_id: str = "") -> "tuple[int, int]":
+        return (
+            getattr(self._agent, "round_peak_tokens", 0),
+            getattr(self._agent, "last_round_peak_tokens", 0),
+        )
+
+    def get_store_stats(self, session_id: str = "") -> "dict | None":
+        store = getattr(self._agent, "store", None)
+        if store is None:
+            return None
+        try:
+            return store.stats()
+        except Exception:
+            return None
+
     # ── runtime config mutation ────────────────────────────────────────────────
 
     def set_think_level(self, arg: str, session_id: str = "") -> "tuple[bool, str]":

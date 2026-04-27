@@ -92,6 +92,20 @@ class UIServerProtocol(Protocol):
         """Compact messages in place using LLM summarization."""
         ...
 
+    # ── read-only state accessors ─────────────────────────────────────────────
+
+    def get_llm_info(self, session_id: str = "") -> dict:
+        """LLM display info: model, ctx_window, compaction_threshold."""
+        ...
+
+    def get_peak_tokens(self, session_id: str = "") -> "tuple[int, int]":
+        """Returns (round_peak_tokens, last_round_peak_tokens)."""
+        ...
+
+    def get_store_stats(self, session_id: str = "") -> "dict | None":
+        """RAG store stats {"files": int, "chunks": int} or None if unavailable."""
+        ...
+
     # ── runtime config mutation ───────────────────────────────────────────────
 
     def set_think_level(self, arg: str, session_id: str = "") -> "tuple[bool, str]":

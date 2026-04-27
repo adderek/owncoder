@@ -181,11 +181,11 @@ def _labeled_bar_segment(label: str, n: int, color: str) -> str:
     return f"[white on {color}]{text}[/]"
 
 
-def _render_context_report(agent, theme) -> str:
+def _render_context_report(server, theme) -> str:
     """Grid-style /context report. Combines breakdown + telemetry legend."""
-    cfg = agent.config
-    ctx = cfg.llm.ctx_window or 1
-    breakdown = agent.context_breakdown()
+    info = server.get_llm_info()
+    ctx = info["ctx_window"] or 1
+    breakdown = server.context_breakdown()
     total = sum(max(0, s.get("tokens", 0)) for s in breakdown)
     bar_w = 20
 
@@ -235,7 +235,7 @@ def _render_context_report(agent, theme) -> str:
     lines.append("")
 
     # ── Output breakdown key ───────────────────────────────────────────────
-    out_breakdown = agent.output_breakdown("session")
+    out_breakdown = server.output_breakdown("session")
     out_total = sum(max(0, s.get("tokens", 0)) for s in out_breakdown)
     lines.append(
         f"[bold]output breakdown[/bold]  "

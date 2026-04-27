@@ -57,18 +57,17 @@ class SlashHandlerMixin:
             self._switch_to_chat()
 
         elif cmd == "/tokens":
-            used = self._agent.token_estimate()
-            cfg = self._agent.config
-            peak = getattr(self._agent, "round_peak_tokens", 0)
-            last_peak = getattr(self._agent, "last_round_peak_tokens", 0)
+            used = self._server.token_estimate()
+            info = self._server.get_llm_info()
+            peak, last_peak = self._server.get_peak_tokens()
             self._write_sys(
-                f"tokens: {used}/{cfg.llm.ctx_window}  "
+                f"tokens: {used}/{info['ctx_window']}  "
                 f"({self._server.message_count()} messages)  "
                 f"peak: {peak}  prev-round peak: {last_peak}"
             )
 
         elif cmd in ("/context", "/ctx", "/legend"):
-            self._write_sys(_render_context_report(self._agent, t))
+            self._write_sys(_render_context_report(self._server, t))
             self._refresh_token_bar()
 
         elif cmd in ("/output", "/out"):
@@ -76,7 +75,7 @@ class SlashHandlerMixin:
             if scope not in ("session", "last"):
                 self._write_sys(f"[{t.warning}]Usage: /output [session|last][/{t.warning}]")
             else:
-                breakdown = self._agent.output_breakdown(scope)
+                breakdown = self._server.output_breakdown(scope)
                 total = sum(s["tokens"] for s in breakdown)
                 header = "Output breakdown — " + (
                     "cumulative session" if scope == "session" else "last turn"

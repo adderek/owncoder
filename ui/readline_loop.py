@@ -56,7 +56,7 @@ def _token_bar(used: int, ctx: int, bar_len: int = 20) -> str:
     return f"[dim]tokens {used}/{ctx}[/dim] {bar}"
 
 
-def _spinner_status_fields(agent, status: str, elapsed: float) -> list[str]:
+def _spinner_status_fields(server, status: str, elapsed: float) -> list[str]:
     """Return status fields in priority order (most meaningful first).
 
     Priority order (can be reordered by user preference in future):
@@ -71,10 +71,10 @@ def _spinner_status_fields(agent, status: str, elapsed: float) -> list[str]:
     """
     fields: list[str] = []
 
-    if agent is not None:
-        cfg = agent.config
-        ctx = cfg.llm.ctx_window or 0
-        used = agent.token_estimate()
+    if server is not None:
+        info = server.get_llm_info()
+        ctx = info["ctx_window"]
+        used = server.token_estimate()
 
         if ctx:
             pct = int(used / ctx * 100)
@@ -83,12 +83,12 @@ def _spinner_status_fields(agent, status: str, elapsed: float) -> list[str]:
             k_ctx = f"{ctx // 1000}k" if ctx >= 1000 else str(ctx)
             fields.append(f"{k_used}/{k_ctx}")
 
-        msg_count = max(0, agent.message_count() - 1)  # exclude system prompt
+        msg_count = max(0, server.message_count() - 1)  # exclude system prompt
         fields.append(f"{msg_count} msg")
 
         # Usage stats: cumulative I/O counts, per-second rates, and breakdown
         # of output tokens into think/tool. Populated via Agent._record_usage.
-        s = getattr(agent, "stats", None)
+        s = server.stats()
         if s and s.get("calls", 0) > 0:
 
             def _k(n: int) -> str:
@@ -107,16 +107,12 @@ def _spinner_status_fields(agent, status: str, elapsed: float) -> list[str]:
 
     fields.append(status)
 
-    if agent is not None and agent.store is not None:
-        try:
-            s = agent.store.stats()
-            fields.append(f"{s['files']} files")
-            fields.append(f"{s['chunks']} chunks")
-        except Exception:
-            pass
-
-    if agent is not None:
-        model = agent.config.llm.model or ""
+    if server is not None:
+        store_s = server.get_store_stats()
+        if store_s is not None:
+            fields.append(f"{store_s['files']} files")
+            fields.append(f"{store_s['chunks']} chunks")
+        model = info["model"]
         if model:
             fields.append(model)
 
@@ -125,7 +121,7 @@ def _spinner_status_fields(agent, status: str, elapsed: float) -> list[str]:
     return fields
 
 
-async def _run_spinner(status_ref: list[str], stop: asyncio.Event, agent=None) -> None:
+async def _run_spinner(status_ref: list[str], stop: asyncio.Event, server=None) -> None:
     import sys
     import shutil
     import time as _time
@@ -143,7 +139,7 @@ async def _run_spinner(status_ref: list[str], stop: asyncio.Event, agent=None) -
         term_width = shutil.get_terminal_size((80, 24)).columns
         available = term_width - ANIM_WIDTH
 
-        fields = _spinner_status_fields(agent, status_ref[0], elapsed)
+        fields = _spinner_status_fields(server, status_ref[0], elapsed)
 
         # Greedily fit as many fields as possible from highest priority
         parts: list[str] = []
@@ -203,7 +199,7 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
         try:
             user_input = input(f"{prompt_esc}>\033[0m ").strip()
         except (EOFError, KeyboardInterrupt):
-            pending = agent.pending_background_count()
+            pending = server.pending_background_count()
             if pending:
                 console.print(
                     f"\n[{t.warning}]Finishing {pending} summary task(s)… "
@@ -229,16 +225,16 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                 console.print(_make_help_text(t))
 
             elif cmd == "/tokens":
-                used = agent.token_estimate()
-                console.print(_token_bar(used, cfg.llm.ctx_window))
+                used = server.token_estimate()
+                console.print(_token_bar(used, server.get_llm_info()["ctx_window"]))
                 console.print(f"  [dim]{server.message_count()} messages in context[/dim]")
 
             elif cmd == "/compact":
-                before = agent.token_estimate()
+                before = server.token_estimate()
                 console.print("[dim]Compacting…[/dim]")
                 try:
                     await server.compact_messages()
-                    after = agent.token_estimate()
+                    after = server.token_estimate()
                     console.print(
                         f"[green]Compacted.[/green] {before} → {after} tokens  "
                         f"({server.message_count()} messages)"
@@ -470,7 +466,7 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                     console.print(f"[{'green' if ok else 'yellow'}]{line}[/]")
 
             elif cmd in ("/context", "/ctx", "/legend"):
-                console.print(_render_context_report(agent, t))
+                console.print(_render_context_report(server, t))
 
             elif cmd in ("/quit", "/exit", "/q!"):
                 console.print(f"[{t.text_dim}]Bye.[/{t.text_dim}]")
@@ -497,7 +493,7 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
         _spinner_status: list[str] = ["thinking…"]
         _spinner_stop = asyncio.Event()
         _spinner_task = asyncio.create_task(
-            _run_spinner(_spinner_status, _spinner_stop, agent=agent)
+            _run_spinner(_spinner_status, _spinner_stop, server=server)
         )
 
         def _clear_spinner() -> None:
@@ -637,7 +633,7 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
             console.print(f"[{t.warning}]No response from model.[/{t.warning}]")
 
         # Post-turn usage summary (persists after the spinner clears).
-        s = getattr(agent, "stats", None)
+        s = server.stats()
         if s and s.get("calls", 0) > 0:
             parts = [
                 f"↑{s['input_tokens']}",
@@ -654,8 +650,9 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
             console.print(f"[{t.text_dim}]{'  '.join(parts)}[/{t.text_dim}]")
 
         if cfg.ui.show_token_count:
+            _llm = server.get_llm_info()
             console.print(
-                f"\n{_token_bar(agent.token_estimate(), cfg.llm.ctx_window)}\n"
+                f"\n{_token_bar(server.token_estimate(), _llm['ctx_window'])}\n"
             )
 
     return session
