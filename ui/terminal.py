@@ -8,7 +8,6 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from agent.agent import Agent
-    from agent.config import Config
 
 from agent.ui.slash import (
     _SLASH_COMMANDS,
