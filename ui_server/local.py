@@ -83,3 +83,20 @@ class LocalUIServer:
 
     def set_session_id(self, session_id: str) -> None:
         self._agent.set_session_id(session_id)
+
+    # ── message management ────────────────────────────────────────────────────
+
+    def message_count(self, session_id: str = "") -> int:
+        return self._agent.message_count()
+
+    def get_messages(self, session_id: str = "") -> list[dict]:
+        return self._agent.get_messages()
+
+    def set_messages(self, messages: list[dict], session_id: str = "") -> None:
+        self._agent.set_messages(messages)
+
+    def reset_messages(self, session_id: str = "") -> None:
+        self._agent.reset_messages()
+
+    async def compact_messages(self, session_id: str = "") -> None:
+        await self._agent.compact_messages()

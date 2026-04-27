@@ -84,7 +84,7 @@ def _spinner_status_fields(agent, status: str, elapsed: float) -> list[str]:
             k_ctx = f"{ctx // 1000}k" if ctx >= 1000 else str(ctx)
             fields.append(f"{k_used}/{k_ctx}")
 
-        msg_count = max(0, len(agent.messages) - 1)  # exclude system prompt
+        msg_count = max(0, agent.message_count() - 1)  # exclude system prompt
         fields.append(f"{msg_count} msg")
 
         # Usage stats: cumulative I/O counts, per-second rates, and breakdown
@@ -232,21 +232,17 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
             elif cmd == "/tokens":
                 used = agent.token_estimate()
                 console.print(_token_bar(used, cfg.llm.ctx_window))
-                console.print(f"  [dim]{len(agent.messages)} messages in context[/dim]")
+                console.print(f"  [dim]{server.message_count()} messages in context[/dim]")
 
             elif cmd == "/compact":
-                from openai import AsyncOpenAI
-                from agent.memory.compactor import compact
-
-                client = AsyncOpenAI(base_url=cfg.llm.base_url, api_key=cfg.llm.api_key)
                 before = agent.token_estimate()
                 console.print("[dim]Compacting…[/dim]")
                 try:
-                    agent.messages = await compact(agent.messages, cfg, client)
+                    await server.compact_messages()
                     after = agent.token_estimate()
                     console.print(
                         f"[green]Compacted.[/green] {before} → {after} tokens  "
-                        f"({len(agent.messages)} messages)"
+                        f"({server.message_count()} messages)"
                     )
                 except Exception as e:
                     console.print(f"[red]Compact failed: {e}[/red]")
@@ -255,17 +251,14 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                 console.clear()
 
             elif cmd == "/reset":
-                system = next(
-                    (m for m in agent.messages if m.get("role") == "system"), None
-                )
-                agent.messages = [system] if system else []
+                server.reset_messages()
                 console.print("[dim]Conversation history cleared.[/dim]")
 
             elif cmd == "/save":
                 from agent.memory.session import save_session
 
                 if session is not None:
-                    save_session(session, agent.messages)
+                    save_session(session, server.get_messages())
                     label = session.short_name or session.id
                     console.print(f"[dim]Saved session '{label}'.[/dim]")
                 else:
@@ -289,7 +282,7 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                             {k: v for k, v in m.items() if not k.startswith("_")}
                             for m in loaded_msgs
                         ]
-                        agent.messages = loaded_msgs
+                        server.set_messages(loaded_msgs)
                         session = loaded_session
                         label = session.short_name or session.id
                         console.print(
@@ -330,7 +323,7 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                 from agent.agent import extract_last_code_block
                 from agent.tools.files import write_file
 
-                result = extract_last_code_block(agent.messages)
+                result = extract_last_code_block(server.get_messages())
                 if not result:
                     console.print(
                         "[yellow]No code block found in recent messages.[/yellow]"
@@ -390,7 +383,7 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                 import json as _json
 
                 lines = []
-                for m in agent.messages:
+                for m in server.get_messages():
                     role = m.get("role", "?")
                     if role == "system":
                         continue
@@ -597,7 +590,7 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
             if session is not None:
                 from agent.memory.session import save_session
 
-                save_session(session, agent.messages)
+                save_session(session, server.get_messages())
 
         async def _on_loop_detected(summary: str, count: int) -> bool:
             # Pause spinner output, ask user, resume.
@@ -640,7 +633,7 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
         if session is not None:
             from agent.memory.session import save_session
 
-            save_session(session, agent.messages)
+            save_session(session, server.get_messages())
 
         # If streaming was active, the text is already printed; just add newline.
         # If no streaming occurred (tool-only turn), print the response normally.

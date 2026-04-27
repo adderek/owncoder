@@ -69,3 +69,25 @@ class UIServerProtocol(Protocol):
     def set_session_id(self, session_id: str) -> None:
         """Associate backend state (qa_log, facts_store) with this session."""
         ...
+
+    # ── message management ───────────────────────────────────────────────────
+
+    def message_count(self, session_id: str = "") -> int:
+        """Number of messages in context (including system messages)."""
+        ...
+
+    def get_messages(self, session_id: str = "") -> list[dict]:
+        """Copy of current message list."""
+        ...
+
+    def set_messages(self, messages: list[dict], session_id: str = "") -> None:
+        """Replace current message list."""
+        ...
+
+    def reset_messages(self, session_id: str = "") -> None:
+        """Clear conversation history, keeping only the first system message."""
+        ...
+
+    async def compact_messages(self, session_id: str = "") -> None:
+        """Compact messages in place using LLM summarization."""
+        ...

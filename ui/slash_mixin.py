@@ -45,15 +45,11 @@ class SlashHandlerMixin:
             self.query_one(TabbedContent).active = "tab-sparse"
 
         elif cmd == "/compact":
-            from openai import AsyncOpenAI
-            from agent.memory.compactor import compact
-            cfg = self._agent.config
-            client = AsyncOpenAI(base_url=cfg.llm.base_url, api_key=cfg.llm.api_key)
-            before = self._agent.token_estimate()
+            before = self._server.token_estimate()
             self._write_sys(f"[{t.text_dim}]Compacting…[/{t.text_dim}]")
             try:
-                self._agent.messages = await compact(self._agent.messages, cfg, client)
-                after = self._agent.token_estimate()
+                await self._server.compact_messages()
+                after = self._server.token_estimate()
                 self._write_sys(f"[{t.success}]Compacted.[/{t.success}] {before} → {after} tokens")
             except Exception as e:
                 self._write_sys(f"[{t.error}]Compact failed: {e}[/{t.error}]")
@@ -73,7 +69,7 @@ class SlashHandlerMixin:
             last_peak = getattr(self._agent, "last_round_peak_tokens", 0)
             self._write_sys(
                 f"tokens: {used}/{cfg.llm.ctx_window}  "
-                f"({len(self._agent.messages)} messages)  "
+                f"({self._server.message_count()} messages)  "
                 f"peak: {peak}  prev-round peak: {last_peak}"
             )
 
@@ -110,10 +106,7 @@ class SlashHandlerMixin:
                     pass
 
         elif cmd == "/reset":
-            system = next(
-                (m for m in self._agent.messages if m.get("role") == "system"), None
-            )
-            self._agent.messages = [system] if system else []
+            self._server.reset_messages()
             self._write_sys(f"[{t.text_dim}]Conversation history cleared.[/{t.text_dim}]")
 
         elif cmd == "/tools":
@@ -123,7 +116,7 @@ class SlashHandlerMixin:
 
         elif cmd == "/save":
             from agent.memory.session import save_session
-            save_session(self._session, self._agent.messages)
+            save_session(self._session, self._server.get_messages())
             label = self._session.short_name or self._session.id
             self._write_sys(f"[{t.text_dim}]Saved session '{label}'.[/{t.text_dim}]")
 
@@ -140,7 +133,7 @@ class SlashHandlerMixin:
                         {k: v for k, v in m.items() if not k.startswith("_")}
                         for m in loaded_msgs
                     ]
-                    self._agent.messages = loaded_msgs
+                    self._server.set_messages(loaded_msgs)
                     self._session = loaded_session
                     label = loaded_session.short_name or loaded_session.id
                     self._write_sys(
@@ -209,7 +202,7 @@ class SlashHandlerMixin:
         elif cmd == "/export":
             import json as _json
             lines = []
-            for m in self._agent.messages:
+            for m in self._server.get_messages():
                 role = m.get("role", "?")
                 if role == "system":
                     continue
@@ -265,8 +258,9 @@ class SlashHandlerMixin:
             save_prefs(_p)
             self._write_sys(f"[{t.success}]Line wrapping {state}.[/{t.success}]")
             self.query_one("#chat-log", self._wt.ConversationView).clear()
-            if self._agent.messages:
-                self._restore_chat_history(self._agent.messages)
+            msgs = self._server.get_messages()
+            if msgs:
+                self._restore_chat_history(msgs)
             self._reload_qa_views()
 
         elif cmd in ("/round-summary", "/summary"):

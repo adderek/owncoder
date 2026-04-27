@@ -138,6 +138,23 @@ class Agent:
                 n += 1
         return n
 
+    def message_count(self) -> int:
+        return len(self.messages)
+
+    def get_messages(self) -> list[dict]:
+        return list(self.messages)
+
+    def set_messages(self, messages: list[dict]) -> None:
+        self.messages = list(messages)
+
+    def reset_messages(self) -> None:
+        system = next((m for m in self.messages if m.get("role") == "system"), None)
+        self.messages = [system] if system else []
+
+    async def compact_messages(self) -> None:
+        from agent.memory.compactor import compact
+        self.messages = await compact(self.messages, self.config, self._client)
+
     def token_estimate(self) -> int:
         return _count_tokens_approx(self.messages)
 
