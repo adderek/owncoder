@@ -25,10 +25,15 @@ def get_schemas() -> list[dict]:
     return list(_schemas)
 
 
-def load_all_tools(config=None, store=None, embedder=None, asm_store=None) -> None:
+def load_all_tools(config=None, store=None, embedder=None, asm_store=None, data_provider=None) -> None:
     global _tools_loaded
     from agent.tools import files, shell, git, search, analyze_asm, edit_file, recall  # noqa: F401
     from agent.tools.rules import load_rules
+
+    # Wrap raw objects in DataProvider when caller hasn't provided one.
+    if data_provider is None:
+        from agent.data_provider import LocalDataProvider
+        data_provider = LocalDataProvider(store=store, embedder=embedder, asm_store=asm_store, config=config)
 
     # Load rule files (.agent.ignore, .agent.ro, .agent.config, etc.)
     working_dir = config.tools.working_dir if config else "."
@@ -55,8 +60,8 @@ def load_all_tools(config=None, store=None, embedder=None, asm_store=None) -> No
     files.setup(config)
     shell.setup(config)
     git.setup(config)
-    search.setup(config, store, embedder, asm_store=asm_store)
-    analyze_asm.setup(config, asm_store, embedder)
+    search.setup(config, data_provider)
+    analyze_asm.setup(config, data_provider.get_asm_store(), data_provider.get_embedder())
 
     if config is not None and getattr(config.planning, "increments_enabled", False):
         from agent.tools import increment_tools  # noqa: F401

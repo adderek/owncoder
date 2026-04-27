@@ -23,8 +23,11 @@ class Agent:
         from openai import AsyncOpenAI
         from agent.tools import load_all_tools
 
-        # Unpack DataProvider into raw components for backward compat with tool setup.
-        if data_provider is not None:
+        # Ensure DataProvider exists; create from raw objects when not provided.
+        if data_provider is None:
+            from agent.data_provider import LocalDataProvider
+            data_provider = LocalDataProvider(store=store, embedder=embedder, asm_store=asm_store, config=config)
+        else:
             store = data_provider.get_store()
             embedder = data_provider.get_embedder()
             asm_store = data_provider.get_asm_store()
@@ -69,7 +72,7 @@ class Agent:
         self.last_round_peak_tokens: int = 0
         self._inject_queue: asyncio.Queue = asyncio.Queue()
 
-        load_all_tools(config=config, store=store, embedder=embedder, asm_store=asm_store)
+        load_all_tools(config=config, data_provider=data_provider)
 
         indexed_count = store.stats()["chunks"] if store else 0
         system_content = _build_system_prompt(config, indexed_count=indexed_count)

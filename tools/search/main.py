@@ -7,23 +7,18 @@ from agent.tools.rules import get_rules
 
 if TYPE_CHECKING:
     from agent.config import Config
-    from agent.rag.store import VectorStore
-    from agent.rag.embedder import Embedder
+    from agent.data_provider import DataProviderProtocol
 
 
 _config = None
-_store = None
-_embedder = None
-_asm_store = None
+_data_provider: "DataProviderProtocol | None" = None
 _archive_store = None
 
 
-def setup(config, store, embedder, asm_store=None) -> None:
-    global _config, _store, _embedder, _asm_store, _archive_store
+def setup(config, data_provider) -> None:
+    global _config, _data_provider, _archive_store
     _config = config
-    _store = store
-    _embedder = embedder
-    _asm_store = asm_store
+    _data_provider = data_provider
     _archive_store = None  # lazy-open on first archive search
 
 
@@ -48,24 +43,12 @@ def setup(config, store, embedder, asm_store=None) -> None:
     },
 )
 def search_code(query: str, top_k: int | None = None) -> dict:
-    if _store is None:
+    if _data_provider is None or _data_provider.get_store() is None:
         return {"error": "Index not loaded. Run 'agent init' first."}
 
     k = top_k or (_config.rag.top_k if _config else 8)
 
-    embedding = None
-    if _embedder:
-        try:
-            embedding = _embedder.embed_one(query)
-        except Exception as e:
-            pass
-
-    if embedding and _config and _config.rag.hybrid:
-        results = _store.hybrid_search(query, embedding, top_k=k)
-    elif embedding:
-        results = _store.vector_search(embedding, top_k=k)
-    else:
-        results = _store.fts_search(query, top_k=k)
+    results = _data_provider.search(query, top_k=k)
 
     # Clean up results for LLM consumption
     cleaned = []
@@ -82,26 +65,30 @@ def search_code(query: str, top_k: int | None = None) -> dict:
             }
         )
 
-    # Also query asm semantic search if available
-    if _asm_store is not None and embedding is not None:
-        try:
-            asm_results = _asm_store.semantic_search(embedding, top_k=k)
-            for r in asm_results:
-                if r.get("description"):
-                    cleaned.append(
-                        {
-                            "path": r.get("path"),
-                            "name": r.get("inferred_name"),
-                            "language": "asm",
-                            "node_type": f"asm_unit_level{r.get('level', 0)}",
-                            "start_line": r.get("start_line"),
-                            "end_line": r.get("end_line"),
-                            "content": r.get("description", ""),
-                            "score": r.get("score"),
-                        }
-                    )
-        except Exception:
-            pass
+    # ASM semantic search — still uses escape hatch until asm_search() added to DataProvider.
+    asm_store = _data_provider.get_asm_store()
+    if asm_store is not None:
+        embedder = _data_provider.get_embedder()
+        if embedder is not None:
+            try:
+                embedding = embedder.embed_one(query)
+                asm_results = asm_store.semantic_search(embedding, top_k=k)
+                for r in asm_results:
+                    if r.get("description"):
+                        cleaned.append(
+                            {
+                                "path": r.get("path"),
+                                "name": r.get("inferred_name"),
+                                "language": "asm",
+                                "node_type": f"asm_unit_level{r.get('level', 0)}",
+                                "start_line": r.get("start_line"),
+                                "end_line": r.get("end_line"),
+                                "content": r.get("description", ""),
+                                "score": r.get("score"),
+                            }
+                        )
+            except Exception:
+                pass
 
     # Rule check: filter out .agent.ignore paths
     rules = get_rules()
