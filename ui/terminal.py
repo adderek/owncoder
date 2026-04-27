@@ -33,7 +33,10 @@ from agent.ui.render import (
 # ── Textual UI ──────────────────────────────────────────────────────────────
 
 
-def _build_textual_app(agent: "Agent", session=None):
+def _build_textual_app(agent: "Agent", session=None, server=None):
+    from agent.ui_server import LocalUIServer
+    if server is None:
+        server = LocalUIServer(agent)
     t = agent.config.ui.theme
 
     from textual.app import App, ComposeResult
@@ -103,9 +106,10 @@ def _build_textual_app(agent: "Agent", session=None):
             Binding("ctrl+tab", "focus_next", "Switch focus", show=False),
         ]
 
-        def __init__(self, agent: "Agent", session=None, **kwargs):
+        def __init__(self, agent: "Agent", session=None, server=None, **kwargs):
             super().__init__(**kwargs)
             self._agent = agent
+            self._server = server
             self._session = session
             self._t = t
             self._wt = _w
@@ -259,14 +263,14 @@ def _build_textual_app(agent: "Agent", session=None):
                 pass
             if self._quit_requested:
                 try:
-                    self._agent.cancel_background()
+                    self._server.cancel_background()
                 except Exception:
                     pass
                 self.exit()
                 return
             pending = 0
             try:
-                pending = self._agent.pending_background_count()
+                pending = self._server.pending_background_count()
             except Exception:
                 pending = 0
             if pending == 0:
@@ -286,7 +290,7 @@ def _build_textual_app(agent: "Agent", session=None):
         @work(exclusive=True, name="graceful_exit")
         async def _graceful_exit_worker(self) -> None:
             try:
-                await self._agent.wait_background(timeout=30.0)
+                await self._server.wait_background(timeout=30.0)
             except Exception:
                 logger.exception("graceful_exit: wait_background error (ignored)")
             self.exit()
@@ -345,7 +349,7 @@ def _build_textual_app(agent: "Agent", session=None):
                         f"not accepted mid-turn. Text messages are injected.[/{t.warning}]"
                     )
                     return
-                self._agent.inject(user_text)
+                self._server.inject(user_text)
                 self._write_chat(
                     f"[bold {t.user_color}]↑ You (mid-turn):[/bold {t.user_color}] {_escape(user_text)}"
                 )
@@ -462,8 +466,9 @@ def _build_textual_app(agent: "Agent", session=None):
             def on_context_size(n: int) -> None:
                 self.post_message(ContextSizeEvent(n))
 
-            result = await self._agent.chat(
+            result = await self._server.chat(
                 user_text,
+                session_id=self._session.id if self._session else "",
                 on_tool_call=on_tool,
                 on_tool_result=on_tool_result,
                 on_user_message=on_user_message,
@@ -477,7 +482,7 @@ def _build_textual_app(agent: "Agent", session=None):
                 save_session(self._session, self._agent.messages)
             return result
 
-    return CodeAgentApp(agent, session=session)
+    return CodeAgentApp(agent, session=session, server=server)
 
 
 from agent.ui.readline_loop import (

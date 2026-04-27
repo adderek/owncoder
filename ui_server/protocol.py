@@ -38,11 +38,15 @@ class UIServerProtocol(Protocol):
         """Inject a message into an active turn (interrupt injection)."""
         ...
 
-    def cancel_background(self, session_id: str) -> int:
+    def pending_background_count(self, session_id: str = "") -> int:
+        """Number of background tasks still running."""
+        ...
+
+    def cancel_background(self, session_id: str = "") -> int:
         """Cancel pending background tasks. Returns number cancelled."""
         ...
 
-    async def wait_background(self, session_id: str, timeout: float | None = None) -> int:
+    async def wait_background(self, session_id: str = "", timeout: float | None = None) -> int:
         """Wait for background tasks. Returns remaining count."""
         ...
 

@@ -56,6 +56,9 @@ class LocalUIServer:
     def inject(self, text: str, session_id: str = "") -> None:
         self._agent.inject(text)
 
+    def pending_background_count(self, session_id: str = "") -> int:
+        return self._agent.pending_background_count()
+
     def cancel_background(self, session_id: str = "") -> int:
         return self._agent.cancel_background()
 
