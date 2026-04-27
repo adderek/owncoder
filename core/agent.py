@@ -304,27 +304,34 @@ class Agent:
             if original_on_tool_call is not None:
                 original_on_tool_call(name, args)
 
+        pre_turn_len = len(self.messages)
         self.messages.append({"role": "user", "content": user_input})
         if on_user_message is not None:
             on_user_message()
-        response, self.messages = await run_turn_ipc(
-            self.messages,
-            self.config,
-            self._client,
-            on_token=on_token,
-            on_tool_call=_tracking_on_tool_call,
-            on_tool_result=on_tool_result,
-            on_usage=self._record_usage,
-            on_progress=on_progress,
-            on_loop_detected=on_loop_detected,
-            on_phase=on_phase,
-            on_reasoning=on_reasoning,
-            on_context_size=_track_ctx,
-            facts_store=self._facts_store,
-            turn_index=turn_id,
-            side_log=self._side_log,
-            inject_queue=self._inject_queue,
-        )
+        try:
+            response, self.messages = await run_turn_ipc(
+                self.messages,
+                self.config,
+                self._client,
+                on_token=on_token,
+                on_tool_call=_tracking_on_tool_call,
+                on_tool_result=on_tool_result,
+                on_usage=self._record_usage,
+                on_progress=on_progress,
+                on_loop_detected=on_loop_detected,
+                on_phase=on_phase,
+                on_reasoning=on_reasoning,
+                on_context_size=_track_ctx,
+                facts_store=self._facts_store,
+                turn_index=turn_id,
+                side_log=self._side_log,
+                inject_queue=self._inject_queue,
+            )
+        except Exception:
+            # Roll back the user message so the next turn doesn't start with
+            # consecutive user messages (which causes a 400 deadloop).
+            self.messages = self.messages[:pre_turn_len]
+            raise
 
         if self._qa_logger is not None:
             task = asyncio.create_task(
