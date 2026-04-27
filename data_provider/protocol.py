@@ -32,9 +32,10 @@ class DataProviderProtocol(Protocol):
         ...
 
     # ── Phase-1 escape hatches ───────────────────────────────────────────────
-    # Return raw objects not yet replaced by purpose-built methods.
-    # get_store: Agent bootstrap (agent.store attr, agent.store.close() in CLI).
-    # get_embedder/get_asm_store: analyze_asm analysis pipeline.
+    # Expose raw objects for consumers that need direct access.
+    # get_store:     Agent.__init__ bootstrap; CLI close(); agent.store UI display.
+    # get_embedder:  analyze_asm analysis pipeline (write path, not query path).
+    # get_asm_store: analyze_asm analysis pipeline (write path, not query path).
 
     def get_store(self) -> Any:
         """Returns underlying VectorStore or None."""

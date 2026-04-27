@@ -13,12 +13,10 @@ from agent.tools import register
 
 if TYPE_CHECKING:
     from agent.config import Config
-    from agent.rag.asm_store import AsmStore
-    from agent.rag.embedder import Embedder
+    from agent.data_provider import DataProviderProtocol
 
 _config = None
-_asm_store = None
-_embedder = None
+_data_provider: "DataProviderProtocol | None" = None
 
 # Shared interrupt flag so the UI can cancel a running analysis
 _interrupt_flag: threading.Event = threading.Event()
@@ -34,11 +32,10 @@ def set_ui_progress_cb(cb: "callable | None") -> None:
     _ui_progress_cb = cb
 
 
-def setup(config, asm_store, embedder) -> None:
-    global _config, _asm_store, _embedder
+def setup(config, data_provider) -> None:
+    global _config, _data_provider
     _config = config
-    _asm_store = asm_store
-    _embedder = embedder
+    _data_provider = data_provider
 
 
 def get_interrupt_flag() -> threading.Event:
@@ -82,7 +79,9 @@ def analyze_asm(
     force: bool = False,
     max_levels: int | None = None,
 ) -> dict:
-    if _config is None or _asm_store is None:
+    asm_store = _data_provider.get_asm_store() if _data_provider else None
+    embedder = _data_provider.get_embedder() if _data_provider else None
+    if _config is None or asm_store is None:
         return {"error": "analyze_asm not initialized. Run 'agent init' first."}
 
     if not _config.asm.enabled:
@@ -175,8 +174,8 @@ def analyze_asm(
     _interrupt_flag.clear()
 
     pipeline = AsmAnalysisPipeline(
-        asm_store=_asm_store,
-        embedder=_embedder,
+        asm_store=asm_store,
+        embedder=embedder,
         splitter=splitter,
         describer=describer,
         cfg=cfg,

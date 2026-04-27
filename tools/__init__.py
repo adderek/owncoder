@@ -61,7 +61,7 @@ def load_all_tools(config=None, store=None, embedder=None, asm_store=None, data_
     shell.setup(config)
     git.setup(config)
     search.setup(config, data_provider)
-    analyze_asm.setup(config, data_provider.get_asm_store(), data_provider.get_embedder())
+    analyze_asm.setup(config, data_provider)
 
     if config is not None and getattr(config.planning, "increments_enabled", False):
         from agent.tools import increment_tools  # noqa: F401
