@@ -130,8 +130,11 @@ def cmd_commit(args, config):
     elif config.model_roles.get("summarizer"):
         summ_entry = registry.summarizer
 
+    primary_client = AsyncOpenAI(base_url=config.llm.base_url, api_key=config.llm.api_key)
+    primary_model = config.llm.model
+
     if chunked:
-        summ_label = f" · summarizer: {summ_entry.model}" if summ_entry else ""
+        summ_label = f" · summarizer: {summ_entry.model}" if summ_entry else f" · summarizer: {primary_model}"
         console.print(
             f"[dim]Generating commit message for {path} "
             f"(staged diff: {diff_chars:,} chars → {len(chunks)} chunks of ≤{chunk_chars:,}{summ_label})…[/dim]"
@@ -139,11 +142,8 @@ def cmd_commit(args, config):
     else:
         console.print(
             f"[dim]Generating commit message for {path} "
-            f"(staged diff: {diff_chars:,} chars)…[/dim]"
+            f"(staged diff: {diff_chars:,} chars · model: {primary_model})…[/dim]"
         )
-
-    primary_client = AsyncOpenAI(base_url=config.llm.base_url, api_key=config.llm.api_key)
-    primary_model = config.llm.model
 
     if summ_entry:
         summ_client = AsyncOpenAI(base_url=summ_entry.base_url, api_key=summ_entry.api_key)
