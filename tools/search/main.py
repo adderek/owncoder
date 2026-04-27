@@ -43,7 +43,7 @@ def setup(config, data_provider) -> None:
     },
 )
 def search_code(query: str, top_k: int | None = None) -> dict:
-    if _data_provider is None or _data_provider.get_store() is None:
+    if _data_provider is None or not _data_provider.is_available():
         return {"error": "Index not loaded. Run 'agent init' first."}
 
     k = top_k or (_config.rag.top_k if _config else 8)
@@ -65,30 +65,21 @@ def search_code(query: str, top_k: int | None = None) -> dict:
             }
         )
 
-    # ASM semantic search — still uses escape hatch until asm_search() added to DataProvider.
-    asm_store = _data_provider.get_asm_store()
-    if asm_store is not None:
-        embedder = _data_provider.get_embedder()
-        if embedder is not None:
-            try:
-                embedding = embedder.embed_one(query)
-                asm_results = asm_store.semantic_search(embedding, top_k=k)
-                for r in asm_results:
-                    if r.get("description"):
-                        cleaned.append(
-                            {
-                                "path": r.get("path"),
-                                "name": r.get("inferred_name"),
-                                "language": "asm",
-                                "node_type": f"asm_unit_level{r.get('level', 0)}",
-                                "start_line": r.get("start_line"),
-                                "end_line": r.get("end_line"),
-                                "content": r.get("description", ""),
-                                "score": r.get("score"),
-                            }
-                        )
-            except Exception:
-                pass
+    # ASM semantic search via DataProvider.asm_search().
+    for r in _data_provider.asm_search(query, top_k=k):
+        if r.get("description"):
+            cleaned.append(
+                {
+                    "path": r.get("path"),
+                    "name": r.get("inferred_name"),
+                    "language": "asm",
+                    "node_type": f"asm_unit_level{r.get('level', 0)}",
+                    "start_line": r.get("start_line"),
+                    "end_line": r.get("end_line"),
+                    "content": r.get("description", ""),
+                    "score": r.get("score"),
+                }
+            )
 
     # Rule check: filter out .agent.ignore paths
     rules = get_rules()

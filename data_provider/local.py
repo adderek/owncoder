@@ -31,6 +31,9 @@ class LocalDataProvider:
 
     # ── high-level API ───────────────────────────────────────────────────────
 
+    def is_available(self) -> bool:
+        return self._store is not None
+
     def search(self, query: str, top_k: int = 8) -> list[dict[str, Any]]:
         """Embed query and search; falls back to FTS if no embedder."""
         if self._store is None:
@@ -52,6 +55,17 @@ class LocalDataProvider:
                 return self._store.fts_search(query, top_k=top_k)
         except Exception:
             logger.warning("DataProvider.search failed", exc_info=True)
+            return []
+
+    def asm_search(self, query: str, top_k: int = 8) -> list[dict[str, Any]]:
+        """Semantic search over indexed ASM units."""
+        if self._asm_store is None or self._embedder is None:
+            return []
+        try:
+            embedding = self._embedder.embed_one(query)
+            return self._asm_store.semantic_search(embedding, top_k=top_k)
+        except Exception:
+            logger.debug("DataProvider.asm_search failed", exc_info=True)
             return []
 
     def stats(self) -> dict[str, Any]:

@@ -15,8 +15,16 @@ from typing import Any, Protocol, runtime_checkable
 class DataProviderProtocol(Protocol):
     """Data access interface between controller and storage backends."""
 
+    def is_available(self) -> bool:
+        """True when an index exists and queries will return results."""
+        ...
+
     def search(self, query: str, top_k: int = 8) -> list[dict[str, Any]]:
-        """Semantic + keyword search. Handles embedding internally."""
+        """Semantic + keyword search over source code index. Handles embedding internally."""
+        ...
+
+    def asm_search(self, query: str, top_k: int = 8) -> list[dict[str, Any]]:
+        """Semantic search over indexed ASM units. Returns [] when no ASM index."""
         ...
 
     def stats(self) -> dict[str, Any]:
@@ -24,17 +32,18 @@ class DataProviderProtocol(Protocol):
         ...
 
     # ── Phase-1 escape hatches ───────────────────────────────────────────────
-    # Return raw objects for tools not yet migrated to the high-level API.
-    # These will be removed once all consumers use search() / purpose-built methods.
+    # Return raw objects not yet replaced by purpose-built methods.
+    # get_store: Agent bootstrap (agent.store attr, agent.store.close() in CLI).
+    # get_embedder/get_asm_store: analyze_asm analysis pipeline.
 
     def get_store(self) -> Any:
         """Returns underlying VectorStore or None."""
         ...
 
     def get_embedder(self) -> Any:
-        """Returns underlying Embedder or None."""
+        """Returns underlying Embedder or None. Used by analyze_asm pipeline."""
         ...
 
     def get_asm_store(self) -> Any:
-        """Returns underlying AsmStore or None."""
+        """Returns underlying AsmStore or None. Used by analyze_asm pipeline."""
         ...
