@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    pass
+    from agent.memory.session import Session
 
 
 @runtime_checkable
@@ -90,4 +90,14 @@ class UIServerProtocol(Protocol):
 
     async def compact_messages(self, session_id: str = "") -> None:
         """Compact messages in place using LLM summarization."""
+        ...
+
+    # ── session persistence ───────────────────────────────────────────────────
+
+    def save_session(self, session: "Session", session_id: str = "") -> None:
+        """Persist session + current messages to disk."""
+        ...
+
+    def load_session(self, name: str, session_id: str = "") -> "tuple[Session | None, list[dict]]":
+        """Load session by id/name. Returns (session, messages) or (None, [])."""
         ...

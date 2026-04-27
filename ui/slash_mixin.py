@@ -115,8 +115,7 @@ class SlashHandlerMixin:
             self._write_sys("Tools: " + "  ".join(names))
 
         elif cmd == "/save":
-            from agent.memory.session import save_session
-            save_session(self._session, self._server.get_messages())
+            self._server.save_session(self._session)
             label = self._session.short_name or self._session.id
             self._write_sys(f"[{t.text_dim}]Saved session '{label}'.[/{t.text_dim}]")
 
@@ -124,15 +123,10 @@ class SlashHandlerMixin:
             if not arg.strip():
                 self._write_sys(f"[{t.warning}]Usage: /load <session-id-or-short-name>[/{t.warning}]")
             else:
-                from agent.memory.session import load_session
-                loaded_session, loaded_msgs = load_session(arg.strip())
+                loaded_session, loaded_msgs = self._server.load_session(arg.strip())
                 if loaded_session is None:
                     self._write_sys(f"[{t.warning}]Session '{arg.strip()}' not found.[/{t.warning}]")
                 else:
-                    loaded_msgs = [
-                        {k: v for k, v in m.items() if not k.startswith("_")}
-                        for m in loaded_msgs
-                    ]
                     self._server.set_messages(loaded_msgs)
                     self._session = loaded_session
                     label = loaded_session.short_name or loaded_session.id

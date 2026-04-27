@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from agent.core.agent import Agent
+    from agent.memory.session import Session
 
 logger = logging.getLogger(__name__)
 
@@ -100,3 +101,19 @@ class LocalUIServer:
 
     async def compact_messages(self, session_id: str = "") -> None:
         await self._agent.compact_messages()
+
+    # ── session persistence ────────────────────────────────────────────────────
+
+    def save_session(self, session: "Session", session_id: str = "") -> None:
+        from agent.memory.session import save_session
+        save_session(session, self._agent.get_messages())
+
+    def load_session(self, name: str, session_id: str = "") -> "tuple[Session | None, list[dict]]":
+        from agent.memory.session import load_session
+        session, messages = load_session(name)
+        if session is not None:
+            messages = [
+                {k: v for k, v in m.items() if not k.startswith("_")}
+                for m in messages
+            ]
+        return session, messages

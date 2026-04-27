@@ -255,10 +255,8 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                 console.print("[dim]Conversation history cleared.[/dim]")
 
             elif cmd == "/save":
-                from agent.memory.session import save_session
-
                 if session is not None:
-                    save_session(session, server.get_messages())
+                    server.save_session(session)
                     label = session.short_name or session.id
                     console.print(f"[dim]Saved session '{label}'.[/dim]")
                 else:
@@ -270,18 +268,12 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                         "[yellow]Usage: /load <session-id-or-short-name>[/yellow]"
                     )
                 else:
-                    from agent.memory.session import load_session
-
-                    loaded_session, loaded_msgs = load_session(arg.strip())
+                    loaded_session, loaded_msgs = server.load_session(arg.strip())
                     if loaded_session is None:
                         console.print(
                             f"[yellow]Session '{arg.strip()}' not found.[/yellow]"
                         )
                     else:
-                        loaded_msgs = [
-                            {k: v for k, v in m.items() if not k.startswith("_")}
-                            for m in loaded_msgs
-                        ]
                         server.set_messages(loaded_msgs)
                         session = loaded_session
                         label = session.short_name or session.id
@@ -588,9 +580,7 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
 
         def _on_user_message() -> None:
             if session is not None:
-                from agent.memory.session import save_session
-
-                save_session(session, server.get_messages())
+                server.save_session(session)
 
         async def _on_loop_detected(summary: str, count: int) -> bool:
             # Pause spinner output, ask user, resume.
@@ -631,9 +621,7 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
             await _spinner_task
 
         if session is not None:
-            from agent.memory.session import save_session
-
-            save_session(session, server.get_messages())
+            server.save_session(session)
 
         # If streaming was active, the text is already printed; just add newline.
         # If no streaming occurred (tool-only turn), print the response normally.

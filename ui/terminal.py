@@ -436,8 +436,6 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
 
         @work(exclusive=True, exit_on_error=False, name="chat")
         async def _start_chat(self, user_text: str) -> str:
-            from agent.memory.session import save_session
-
             def on_tool(name: str, args: str) -> None:
                 self._last_tool_calls.append(name)
                 self._current_tool = name
@@ -449,7 +447,7 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
 
             def on_user_message() -> None:
                 if self._session is not None:
-                    save_session(self._session, self._agent.messages)
+                    self._server.save_session(self._session)
 
             def on_token(token: str) -> None:
                 self.post_message(TokenStreamEvent(token))
@@ -479,7 +477,7 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                 on_context_size=on_context_size,
             )
             if self._session is not None:
-                save_session(self._session, self._agent.messages)
+                self._server.save_session(self._session)
             return result
 
     return CodeAgentApp(agent, session=session, server=server)
