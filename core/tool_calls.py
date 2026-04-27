@@ -68,16 +68,22 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
     from agent import failure_report as _fr
     from agent.tools import get_tool, get_schemas
     from agent.tools.rules import get_rules
+    import json
+    import asyncio
+    import logging
 
     name = tool_call.function.name
     raw_args = tool_call.function.arguments or "{}"
     args: dict
+    rules = get_rules()
+
     try:
         args = json.loads(raw_args)
         if not isinstance(args, dict):
             raise json.JSONDecodeError("arguments must be a JSON object", raw_args, 0)
     except json.JSONDecodeError as e:
         args = {}
+        rules.record_tool_usage(name, False)
         _fr.report("invalid_tool_call", {
             "tool": name,
             "reason": "args_json_decode_error",
@@ -85,12 +91,17 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
             "error": f"{type(e).__name__}: {e}",
             "tool_call_id": getattr(tool_call, "id", None),
         }, config=config)
+        return json.dumps({"error": f"Invalid JSON arguments: {e}"})
+
     if isinstance(args, dict):
         args.pop("purpose", None)
+
     logger.debug("execute_tool: %s  args=%s", name, args)
+
     fn = get_tool(name)
     if fn is None:
         logger.warning("execute_tool: unknown tool %r", name)
+        rules.record_tool_usage(name, False)
         _fr.report("invalid_tool_call", {
             "tool": name,
             "reason": "unknown_tool",
@@ -100,70 +111,51 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
             "tool_call_id": getattr(tool_call, "id", None),
         }, config=config)
         return json.dumps({"error": f"Unknown tool: {name}"})
+
+    needs_approval, approval_reason = rules.check_approval(name, args)
+    if needs_approval:
+        rules.record_tool_usage(name, False)
+        return json.dumps({"error": approval_reason, "requires_approval": True, "tool": name})
+
     _schemas_map = {s["function"]["name"]: s["function"] for s in get_schemas()}
     if name in _schemas_map:
         params = _schemas_map[name].get("parameters", {})
         required = params.get("required", [])
         missing = [r for r in required if r not in args]
         if missing:
-            logger.warning("execute_tool: %s missing required args: %s", name, missing)
-            _fr.report("invalid_tool_call", {
-                "tool": name,
-                "reason": "missing_required_args",
-                "missing": missing,
-                "arguments": args,
-                "required": required,
-                "allowed": sorted(params.get("properties", {}).keys()),
-                "tool_call_id": getattr(tool_call, "id", None),
-            }, config=config)
+            rules.record_tool_usage(name, False)
             return json.dumps({
-                "error": f"Missing required argument(s): {', '.join(missing)}",
-                "tool": name,
-                "hint": f"Call {name} again and include: {', '.join(missing)}",
+                "error": f"Missing required arguments: {', '.join(missing)}",
+                "tool": name
             })
-        allowed = set(params.get("properties", {}).keys())
-        if allowed:
-            unknown = [k for k in args if k not in allowed]
-            if unknown:
-                logger.warning("execute_tool: %s unknown args: %s", name, unknown)
-                _fr.report("invalid_tool_call", {
-                    "tool": name,
-                    "reason": "unknown_args",
-                    "unknown": unknown,
-                    "arguments": args,
-                    "allowed": sorted(allowed),
-                    "tool_call_id": getattr(tool_call, "id", None),
-                }, config=config)
-                return json.dumps({
-                    "error": f"Unknown argument(s): {', '.join(unknown)}",
-                    "tool": name,
-                    "allowed": sorted(allowed),
-                    "hint": f"Remove {', '.join(unknown)} and retry. {name} accepts only: {', '.join(sorted(allowed))}.",
-                })
-    rules = get_rules()
-    needs_approval, approval_reason = rules.check_approval(name, args)
-    if needs_approval:
-        return json.dumps({"error": approval_reason, "requires_approval": True, "tool": name})
 
     try:
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(None, lambda: fn(**args))
+
         if isinstance(result, dict):
             rules.log_action(name, args, result)
+
         serialised = json.dumps(result, ensure_ascii=False)
         logger.debug("execute_tool: %s  result_len=%d", name, len(serialised))
+
         limit = _tool_result_char_limit(config) if config else 32_000
         if len(serialised) > limit:
+            rules.record_tool_usage(name, True)
             return json.dumps({
                 "truncated": True,
                 "partial_content": serialised[:limit],
                 "original_length": len(serialised),
                 "hint": "Use start_line/end_line or a more specific query to get smaller results.",
             }, ensure_ascii=False)
+
+        rules.record_tool_usage(name, True)
         return serialised
+
     except Exception as e:
         import traceback
-        logger.error("execute_tool: %s raised %s: %s\n%s", name, type(e).__name__, e, traceback.format_exc())
+        logger.error("execute_tool: %s raised %s: %s\\n%s", name, type(e).__name__, e, traceback.format_exc())
+        rules.record_tool_usage(name, False)
         _fr.report_exception(e, kind="tool_exception", context={
             "tool": name,
             "arguments": args,

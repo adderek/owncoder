@@ -70,6 +70,7 @@ class Rules:
         self.audit = audit or AuditConfig()
         self.boundary = boundary or BoundaryConfig()
         self._files_created: int = 0  # per-session counter
+        self.tool_stats: dict[str, dict[str, int]] = {}  # {tool_name: {"total": 0, "success": 0, "failure": 0}}
 
     # ── Read checks ────────────────────────────────────────────────────
 
@@ -244,6 +245,18 @@ class Rules:
         return True, None
 
     # ── Audit logging ──────────────────────────────────────────────────
+
+    def record_tool_usage(self, tool: str, success: bool) -> None:
+        """Update tool usage statistics."""
+        if tool not in self.tool_stats:
+            self.tool_stats[tool] = {"total": 0, "success": 0, "failure": 0}
+        
+        stats = self.tool_stats[tool]
+        stats["total"] += 1
+        if success:
+            stats["success"] += 1
+        else:
+            stats["failure"] += 1
 
     def log_action(self, tool: str, args: dict, result: dict | None = None) -> None:
         """Write an audit log entry (if enabled)."""
