@@ -19,9 +19,15 @@ logger = logging.getLogger(__name__)
 
 
 class Agent:
-    def __init__(self, config: "Config", store=None, embedder=None, asm_store=None) -> None:
+    def __init__(self, config: "Config", store=None, embedder=None, asm_store=None, data_provider=None) -> None:
         from openai import AsyncOpenAI
         from agent.tools import load_all_tools
+
+        # Unpack DataProvider into raw components for backward compat with tool setup.
+        if data_provider is not None:
+            store = data_provider.get_store()
+            embedder = data_provider.get_embedder()
+            asm_store = data_provider.get_asm_store()
 
         self.config = config
         self._llm_defaults: dict = {
@@ -30,6 +36,7 @@ class Agent:
             "temperature": config.llm.temperature,
             "think_level": config.llm.think_level,
         }
+        self.data_provider = data_provider
         self.store = store
         self.embedder = embedder
         self.asm_store = asm_store

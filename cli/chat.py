@@ -49,6 +49,7 @@ def cmd_chat(args, config):
     from agent.agent import Agent
     from agent.ui.terminal import run_ui
     from agent.memory.session import new_session, load_session, save_session
+    from agent.data_provider import LocalDataProvider
     from rich.console import Console
     import os
 
@@ -90,7 +91,8 @@ def cmd_chat(args, config):
             "Run [bold]agent init[/bold] to build one."
         )
 
-    agent = Agent(config, store=store, embedder=embedder, asm_store=asm_store)
+    data_provider = LocalDataProvider(store=store, embedder=embedder, asm_store=asm_store, config=config)
+    agent = Agent(config, data_provider=data_provider)
 
     if args.session:
         session, messages = load_session(args.session)

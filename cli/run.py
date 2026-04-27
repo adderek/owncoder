@@ -9,6 +9,7 @@ def cmd_run(args, config):
     from agent.rag.store import VectorStore
     from agent.rag.embedder import Embedder
     from agent.agent import Agent
+    from agent.data_provider import LocalDataProvider
     from rich.console import Console
 
     console = Console()
@@ -34,7 +35,8 @@ def cmd_run(args, config):
         except Exception:
             pass
 
-    agent = Agent(config, store=store, embedder=embedder)
+    data_provider = LocalDataProvider(store=store, embedder=embedder, config=config)
+    agent = Agent(config, data_provider=data_provider)
 
     def on_tool(name: str, args_str: str) -> None:
         console.print(f"  [dim]→ {name}[/dim]")
