@@ -2,7 +2,7 @@
 
 All classes capture ``t`` (theme) and ``_escape`` from the enclosing scope via
 the builder function, so they cannot be module-level.  Call
-``build_widget_classes(t, agent)`` once inside ``_build_textual_app`` and
+``build_widget_classes(t)`` once inside ``_build_textual_app`` and
 destructure the returned namespace.
 """
 from __future__ import annotations
@@ -14,12 +14,11 @@ if TYPE_CHECKING:
     pass
 
 
-def build_widget_classes(t, agent) -> SimpleNamespace:  # noqa: ARG001
+def build_widget_classes(t) -> SimpleNamespace:
     """Return a SimpleNamespace of all widget/message classes.
 
-    ``t`` is ``agent.config.ui.theme`` — a plain object whose attributes are
-    Rich color/style strings.  Classes reference it by closure so the theme is
-    baked in at construction time.
+    ``t`` is the theme object whose attributes are Rich color/style strings.
+    Classes reference it by closure so the theme is baked in at construction time.
     """
     from textual.widgets import Static, RichLog, TextArea
     from textual.message import Message

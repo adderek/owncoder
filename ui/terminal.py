@@ -49,7 +49,7 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
     from rich.markdown import Markdown
 
     from agent.ui.textual_widgets import build_widget_classes
-    _w = build_widget_classes(t, agent)
+    _w = build_widget_classes(t)
 
     # Import mixins inside factory so ImportError propagates if Textual absent
     from agent.ui.app_css import build_app_css
