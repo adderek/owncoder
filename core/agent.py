@@ -9,7 +9,8 @@ from agent.memory.compactor import _count_tokens_approx
 from agent.tools import get_schemas
 
 from .prompts import _build_system_prompt
-from .turn import run_turn, _post_turn_capture_and_summarize
+from .turn import _post_turn_capture_and_summarize
+from agent.ipc.controller import run_turn_ipc
 
 if TYPE_CHECKING:
     from agent.config import Config
@@ -279,7 +280,7 @@ class Agent:
         self.messages.append({"role": "user", "content": user_input})
         if on_user_message is not None:
             on_user_message()
-        response, self.messages = await run_turn(
+        response, self.messages = await run_turn_ipc(
             self.messages,
             self.config,
             self._client,
