@@ -92,6 +92,28 @@ class UIServerProtocol(Protocol):
         """Compact messages in place using LLM summarization."""
         ...
 
+    # ── runtime config mutation ───────────────────────────────────────────────
+
+    def set_think_level(self, arg: str, session_id: str = "") -> "tuple[bool, str]":
+        """Set/query think level. Returns (ok, message)."""
+        ...
+
+    def set_temperature(self, arg: str, session_id: str = "") -> "tuple[bool, str]":
+        """Set/query temperature. Returns (ok, message)."""
+        ...
+
+    def set_max_tokens(self, arg: str, session_id: str = "") -> "tuple[bool, str]":
+        """Set/query max output tokens / ctx_window. Returns (ok, message)."""
+        ...
+
+    def set_model(self, arg: str, session_id: str = "") -> "tuple[bool, str]":
+        """Switch model entry. Returns (ok, message)."""
+        ...
+
+    def set_plan(self, arg: str, session_id: str = "") -> "tuple[bool, str]":
+        """Handle plan subcommands. Returns (ok, message)."""
+        ...
+
     # ── session persistence ───────────────────────────────────────────────────
 
     def save_session(self, session: "Session", session_id: str = "") -> None:

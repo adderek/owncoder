@@ -11,12 +11,6 @@ from pathlib import Path
 
 from rich.markup import escape as _escape
 
-from agent.ui.slash import (
-    _apply_think,
-    _apply_temperature,
-    _apply_plan,
-    _apply_model,
-)
 from agent.ui.render import _render_context_report, _OUT_SEGMENT_COLORS
 
 logger = logging.getLogger(__name__)
@@ -232,13 +226,13 @@ class SlashHandlerMixin:
             await self._run_analyze_asm(arg)
 
         elif cmd == "/think":
-            ok, msg = _apply_think(self._agent, arg)
+            ok, msg = self._server.set_think_level(arg)
             color = t.success if ok else t.warning
             for line in msg.splitlines():
                 self._write_sys(f"[{color}]{line}[/{color}]")
 
         elif cmd in ("/temperature", "/temp"):
-            ok, msg = _apply_temperature(self._agent, arg)
+            ok, msg = self._server.set_temperature(arg)
             color = t.success if ok else t.warning
             for line in msg.splitlines():
                 self._write_sys(f"[{color}]{line}[/{color}]")
@@ -267,7 +261,7 @@ class SlashHandlerMixin:
             self._write_sys(f"[{t.success}]Round summary {state}.[/{t.success}]")
 
         elif cmd == "/model":
-            ok, msg = _apply_model(self._agent, arg)
+            ok, msg = self._server.set_model(arg)
             color = t.success if ok else t.warning
             for line in msg.splitlines():
                 self._write_sys(f"[{color}]{line}[/{color}]")
@@ -275,7 +269,7 @@ class SlashHandlerMixin:
                 self._refresh_token_bar()
 
         elif cmd == "/plan":
-            ok, msg = _apply_plan(self._agent, arg)
+            ok, msg = self._server.set_plan(arg)
             color = t.success if ok else t.warning
             for line in msg.splitlines():
                 self._write_sys(f"[{color}]{line}[/{color}]")
@@ -299,7 +293,7 @@ class SlashHandlerMixin:
                 "/pause-plan": "pause",
                 "/stash-plan": "stash",
             }
-            ok, msg = _apply_plan(self._agent, sub_map[cmd])
+            ok, msg = self._server.set_plan(sub_map[cmd])
             color = t.success if ok else t.warning
             for line in msg.splitlines():
                 self._write_sys(f"[{color}]{line}[/{color}]")

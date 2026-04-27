@@ -7,7 +7,6 @@ import traceback
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agent.ui.slash import _apply_think, _apply_temperature, _apply_max_tokens, _apply_model
 from agent.ui.render import _render_context_report, _delatex
 
 logger = logging.getLogger(__name__)
@@ -454,19 +453,19 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                         console.print(f"[red]analyze-asm error: {e}[/red]")
 
             elif cmd == "/think":
-                ok, msg = _apply_think(agent, arg)
+                ok, msg = server.set_think_level(arg)
                 console.print(f"[{'green' if ok else 'yellow'}]{msg}[/]")
 
             elif cmd in ("/temperature", "/temp"):
-                ok, msg = _apply_temperature(agent, arg)
+                ok, msg = server.set_temperature(arg)
                 console.print(f"[{'green' if ok else 'yellow'}]{msg}[/]")
 
             elif cmd == "/max_tokens":
-                ok, msg = _apply_max_tokens(agent, arg)
+                ok, msg = server.set_max_tokens(arg)
                 console.print(f"[{'green' if ok else 'yellow'}]{msg}[/]")
 
             elif cmd == "/model":
-                ok, msg = _apply_model(agent, arg)
+                ok, msg = server.set_model(arg)
                 for line in msg.splitlines():
                     console.print(f"[{'green' if ok else 'yellow'}]{line}[/]")
 

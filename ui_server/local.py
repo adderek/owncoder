@@ -43,7 +43,6 @@ class LocalUIServer:
             on_token=on_token,
             on_tool_call=on_tool_call,
             on_tool_result=on_tool_result,
-            on_usage=on_usage,
             on_progress=on_progress,
             on_loop_detected=on_loop_detected,
             on_phase=on_phase,
@@ -101,6 +100,28 @@ class LocalUIServer:
 
     async def compact_messages(self, session_id: str = "") -> None:
         await self._agent.compact_messages()
+
+    # ── runtime config mutation ────────────────────────────────────────────────
+
+    def set_think_level(self, arg: str, session_id: str = "") -> "tuple[bool, str]":
+        from agent.ui.slash import _apply_think
+        return _apply_think(self._agent, arg)
+
+    def set_temperature(self, arg: str, session_id: str = "") -> "tuple[bool, str]":
+        from agent.ui.slash import _apply_temperature
+        return _apply_temperature(self._agent, arg)
+
+    def set_max_tokens(self, arg: str, session_id: str = "") -> "tuple[bool, str]":
+        from agent.ui.slash import _apply_max_tokens
+        return _apply_max_tokens(self._agent, arg)
+
+    def set_model(self, arg: str, session_id: str = "") -> "tuple[bool, str]":
+        from agent.ui.slash import _apply_model
+        return _apply_model(self._agent, arg)
+
+    def set_plan(self, arg: str, session_id: str = "") -> "tuple[bool, str]":
+        from agent.ui.slash import _apply_plan
+        return _apply_plan(self._agent, arg)
 
     # ── session persistence ────────────────────────────────────────────────────
 
