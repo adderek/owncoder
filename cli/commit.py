@@ -103,7 +103,25 @@ def cmd_commit(args, config):
     status = _git("status", "--short")
     recent_log = _git("log", "--oneline", "-10")
 
-    chunk_chars = config.token_limits.commit_chunk_chars
+    # Resolve chunk size
+    chunk_size_arg = getattr(args, "chunk_size", None)
+    if chunk_size_arg:
+        if chunk_size_arg.endswith("%"):
+            try:
+                percentage = float(chunk_size_arg[:-1]) / 100.0
+                chunk_chars = int(config.llm.ctx_window * percentage)
+            except (ValueError, TypeError):
+                console.print(f"[red]Invalid chunk size percentage: {chunk_size_arg}[/red]")
+                return
+        else:
+            try:
+                chunk_chars = int(chunk_size_arg)
+            except ValueError:
+                console.print(f"[red]Invalid chunk size: {chunk_size_arg}. Must be integer or percentage (e.g. '50%').[/red]")
+                return
+    else:
+        chunk_chars = config.token_limits.commit_chunk_chars
+
     summary_tokens = config.token_limits.commit_summary_tokens
     diff_chars = len(staged_diff)
     chunks = _split_diff(staged_diff, chunk_chars) if diff_chars > chunk_chars else [staged_diff]
