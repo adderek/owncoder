@@ -20,15 +20,6 @@ from agent.ui.slash import (
     _apply_plan,
     _match_commands,
 )
-from agent.ui.render import (
-    _CTX_SEGMENT_COLORS,
-    _CTX_SEGMENT_DESCS,
-    _OUT_SEGMENT_COLORS,
-    _OUT_SEGMENT_DESCS,
-    _mini_bar,
-    _render_context_report,
-)
-
 
 # ── Textual UI ──────────────────────────────────────────────────────────────
 
@@ -37,7 +28,7 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
     from agent.ui_server import LocalUIServer
     if server is None:
         server = LocalUIServer(agent)
-    t = agent.config.ui.theme
+    t = server.get_ui_config()["theme"]
 
     from textual.app import App, ComposeResult
     from textual.widgets import (
@@ -108,7 +99,6 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
 
         def __init__(self, agent: "Agent", session=None, server=None, **kwargs):
             super().__init__(**kwargs)
-            self._agent = agent
             self._server = server
             self._session = session
             self._t = t
@@ -131,7 +121,8 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             self._reasoning_buffer: list[str] = []
             self._reasoning_active: bool = False
 
-            chat_wrap_cfg = self._agent.config.ui.chat_wrap
+            ui_cfg = self._server.get_ui_config()
+            chat_wrap_cfg = ui_cfg["chat_wrap"]
             if chat_wrap_cfg == "wrap":
                 self._wrap_enabled = True
             elif chat_wrap_cfg == "nowrap":
@@ -143,9 +134,7 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             else:
                 self._wrap_enabled = False
 
-            self._round_summary_enabled = bool(
-                getattr(self._agent.config.ui, "round_summary", True)
-            )
+            self._round_summary_enabled = ui_cfg["round_summary"]
             try:
                 from agent.ui.prefs import load_prefs
                 _p = load_prefs()
@@ -155,26 +144,26 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                 pass
 
             if session is not None:
-                agent.set_session_id(session.id)
+                self._server.set_session_id(session.id)
 
         def compose(self) -> ComposeResult:
-            cfg = self._agent.config
+            _info = self._server.get_llm_info()
             session_label = ""
             if self._session:
                 label = self._session.short_name or self._session.id
                 session_label = f"  [{t.text_dim}]{label}[/{t.text_dim}]"
             with Horizontal(id="header-bar"):
                 yield Static(
-                    f"[bold]local-code-agent[/bold]  [{t.text_dim}]{cfg.llm.model}[/{t.text_dim}]{session_label}",
+                    f"[bold]local-code-agent[/bold]  [{t.text_dim}]{_info['model']}[/{t.text_dim}]{session_label}",
                     id="header-title",
                 )
                 yield ModelStatusBar("", id="model-status")
             yield TokenBar(
-                cfg.llm.ctx_window,
-                compact_frac=getattr(cfg.llm, "compaction_threshold", 0.75),
+                _info["ctx_window"],
+                compact_frac=_info["compaction_threshold"],
                 id="token-bar",
             )
-            yield ContextBreakdownBar(cfg.llm.ctx_window, id="context-breakdown")
+            yield ContextBreakdownBar(_info["ctx_window"], id="context-breakdown")
             yield OutputBreakdownBar(id="output-breakdown")
             with TabbedContent(initial="tab-chat", id="view-tabs"):
                 with TabPane("chat", id="tab-chat"):
@@ -497,14 +486,15 @@ from agent.ui.readline_loop import (
 
 
 def run_ui(agent: "Agent", session=None):
-    cfg = agent.config
-    if cfg.ui.mode == "textual":
+    from agent.ui_server import LocalUIServer
+    server = LocalUIServer(agent)
+    if server.get_ui_config()["mode"] == "textual":
         try:
-            app = _build_textual_app(agent, session=session)
+            app = _build_textual_app(agent, session=session, server=server)
             app.run()
             return app._session
         except ImportError:
             print("Textual not available, falling back to simple mode.")
-            return asyncio.run(simple_loop(agent, session=session))
+            return asyncio.run(simple_loop(agent, session=session, server=server))
     else:
-        return asyncio.run(simple_loop(agent, session=session))
+        return asyncio.run(simple_loop(agent, session=session, server=server))

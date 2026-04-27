@@ -98,6 +98,10 @@ class UIServerProtocol(Protocol):
         """LLM display info: model, ctx_window, compaction_threshold."""
         ...
 
+    def get_ui_config(self, session_id: str = "") -> dict:
+        """UI display config: theme, mode, chat_wrap, round_summary, show_token_count."""
+        ...
+
     def get_peak_tokens(self, session_id: str = "") -> "tuple[int, int]":
         """Returns (round_peak_tokens, last_round_peak_tokens)."""
         ...

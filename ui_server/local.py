@@ -111,6 +111,16 @@ class LocalUIServer:
             "compaction_threshold": getattr(cfg.llm, "compaction_threshold", 0.75),
         }
 
+    def get_ui_config(self, session_id: str = "") -> dict:
+        cfg = self._agent.config
+        return {
+            "theme": cfg.ui.theme,
+            "mode": getattr(cfg.ui, "mode", "simple"),
+            "chat_wrap": getattr(cfg.ui, "chat_wrap", "last used"),
+            "round_summary": bool(getattr(cfg.ui, "round_summary", True)),
+            "show_token_count": bool(getattr(cfg.ui, "show_token_count", False)),
+        }
+
     def get_peak_tokens(self, session_id: str = "") -> "tuple[int, int]":
         return (
             getattr(self._agent, "round_peak_tokens", 0),

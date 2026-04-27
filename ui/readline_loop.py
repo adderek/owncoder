@@ -180,8 +180,9 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
     if server is None:
         server = LocalUIServer(agent)
 
-    cfg = agent.config
-    t = cfg.ui.theme
+    _ui_cfg = server.get_ui_config()
+    _llm_cfg = server.get_llm_info()
+    t = _ui_cfg["theme"]
     console = Console()
 
     if session is not None:
@@ -189,7 +190,7 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
 
     prompt_esc = _hex_to_ansi(t.prompt)
     console.print(
-        f"[bold {t.agent_color}]local-code-agent[/bold {t.agent_color}]  [dim]{cfg.llm.model}  {cfg.llm.ctx_window} ctx[/dim]"
+        f"[bold {t.agent_color}]local-code-agent[/bold {t.agent_color}]  [dim]{_llm_cfg['model']}  {_llm_cfg['ctx_window']} ctx[/dim]"
     )
     console.print(
         f"[{t.text_dim}]/help /compact /tokens /reset /tools /exec /apply /save /sessions  ·  Ctrl+D to quit[/{t.text_dim}]\n"
@@ -649,10 +650,9 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                 parts.append(f"tool {s['tool_tokens']}")
             console.print(f"[{t.text_dim}]{'  '.join(parts)}[/{t.text_dim}]")
 
-        if cfg.ui.show_token_count:
-            _llm = server.get_llm_info()
+        if _ui_cfg["show_token_count"]:
             console.print(
-                f"\n{_token_bar(server.token_estimate(), _llm['ctx_window'])}\n"
+                f"\n{_token_bar(server.token_estimate(), _llm_cfg['ctx_window'])}\n"
             )
 
     return session

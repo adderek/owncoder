@@ -1,6 +1,6 @@
 """Slash-command handler mixin for CodeAgentApp.
 
-Accesses self._t, self._wt, self._agent, self._session, and helper methods
+Accesses self._t, self._wt, self._server, self._session, and helper methods
 defined on CodeAgentApp (or ViewMixin): _write_sys, _begin_chat, etc.
 """
 from __future__ import annotations
