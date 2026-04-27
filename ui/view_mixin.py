@@ -113,7 +113,7 @@ class ViewMixin:
 
     def _append_qa_turn(self, user_text: str, response: str) -> None:
         try:
-            turn_id = getattr(self._agent, "_turn_id", 0)
+            turn_id = self._server.get_turn_id()
             q_data = {"turn_id": turn_id, "content": user_text}
             a_data = {
                 "turn_id": turn_id,

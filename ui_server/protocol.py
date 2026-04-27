@@ -99,7 +99,11 @@ class UIServerProtocol(Protocol):
         ...
 
     def get_ui_config(self, session_id: str = "") -> dict:
-        """UI display config: theme, mode, chat_wrap, round_summary, show_token_count."""
+        """UI display config: theme, mode, chat_wrap, round_summary, show_token_count, reasoning_fold."""
+        ...
+
+    def get_turn_id(self, session_id: str = "") -> int:
+        """Current turn counter (for Q/A tab display)."""
         ...
 
     def get_peak_tokens(self, session_id: str = "") -> "tuple[int, int]":

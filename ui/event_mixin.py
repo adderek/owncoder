@@ -167,7 +167,7 @@ class EventHandlerMixin:
         t = self._t
         if self._reasoning_active:
             self._reasoning_active = False
-            fold_mode = getattr(self._agent.config.ui, "reasoning_fold", "end_of_round")
+            fold_mode = self._server.get_ui_config()["reasoning_fold"]
             if fold_mode == "immediate":
                 self._flush_reasoning()
         self._stream_buffer.append(event.token)
@@ -224,7 +224,7 @@ class EventHandlerMixin:
             logger.warning("chat worker cancelled")
             response = None
 
-        tokens_after = self._agent.token_estimate()
+        tokens_after = self._server.token_estimate()
         delta = tokens_after - self._tokens_before
         tools_line = self._render_tool_summary()
         token_line = (
@@ -232,7 +232,7 @@ class EventHandlerMixin:
             f"[{t.active}]+{delta:,}[/{t.active}] new  "
             f"total {tokens_after:,}[/{t.text_dim}]"
         )
-        s = getattr(self._agent, "stats", None)
+        s = self._server.stats()
         if s and s.get("calls", 0) > 0:
             extras = [f"↑{s['input_tokens']:,}", f"↓{s['output_tokens']:,}"]
             if s.get("in_tps"):
@@ -248,7 +248,7 @@ class EventHandlerMixin:
             f"{tools_line}\n{token_line}" if tools_line else token_line
         )
 
-        fold_mode = getattr(self._agent.config.ui, "reasoning_fold", "end_of_round")
+        fold_mode = self._server.get_ui_config()["reasoning_fold"]
         if self._reasoning_buffer and fold_mode != "never":
             self._flush_reasoning()
         if self._streaming_active:

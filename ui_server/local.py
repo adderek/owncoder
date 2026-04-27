@@ -119,7 +119,11 @@ class LocalUIServer:
             "chat_wrap": getattr(cfg.ui, "chat_wrap", "last used"),
             "round_summary": bool(getattr(cfg.ui, "round_summary", True)),
             "show_token_count": bool(getattr(cfg.ui, "show_token_count", False)),
+            "reasoning_fold": getattr(cfg.ui, "reasoning_fold", "end_of_round"),
         }
+
+    def get_turn_id(self, session_id: str = "") -> int:
+        return getattr(self._agent, "_turn_id", 0)
 
     def get_peak_tokens(self, session_id: str = "") -> "tuple[int, int]":
         return (
