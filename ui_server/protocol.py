@@ -1,0 +1,67 @@
+"""UIServerProtocol — interface between user interfaces and the backend.
+
+UIs should program against this protocol, not Agent directly.
+Phase 1: LocalUIServer wraps a single Agent in-process.
+Later: replace with a transport-backed implementation for remote/multi-UI access.
+"""
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    pass
+
+
+@runtime_checkable
+class UIServerProtocol(Protocol):
+    """What every UI needs from the backend."""
+
+    async def chat(
+        self,
+        text: str,
+        session_id: str,
+        on_token=None,
+        on_tool_call=None,
+        on_tool_result=None,
+        on_usage=None,
+        on_progress=None,
+        on_loop_detected=None,
+        on_phase=None,
+        on_reasoning=None,
+        on_context_size=None,
+        on_user_message=None,
+    ) -> str:
+        """Send a user message; stream events via callbacks; return full response."""
+        ...
+
+    def inject(self, text: str, session_id: str) -> None:
+        """Inject a message into an active turn (interrupt injection)."""
+        ...
+
+    def cancel_background(self, session_id: str) -> int:
+        """Cancel pending background tasks. Returns number cancelled."""
+        ...
+
+    async def wait_background(self, session_id: str, timeout: float | None = None) -> int:
+        """Wait for background tasks. Returns remaining count."""
+        ...
+
+    def stats(self, session_id: str) -> dict:
+        """Token usage stats for the session."""
+        ...
+
+    def token_estimate(self, session_id: str) -> int:
+        """Current context token estimate."""
+        ...
+
+    def context_breakdown(self, session_id: str) -> list[dict]:
+        """Context breakdown by segment for display."""
+        ...
+
+    def output_breakdown(self, session_id: str, scope: str = "session") -> list[dict]:
+        """Output token breakdown by type."""
+        ...
+
+    def set_session_id(self, session_id: str) -> None:
+        """Associate backend state (qa_log, facts_store) with this session."""
+        ...

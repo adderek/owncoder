@@ -1,0 +1,82 @@
+"""LocalUIServer — single-agent in-process implementation of UIServerProtocol."""
+from __future__ import annotations
+
+import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agent.core.agent import Agent
+
+logger = logging.getLogger(__name__)
+
+
+class LocalUIServer:
+    """Wraps a single Agent; session_id is accepted but not used for routing (one agent).
+
+    Satisfies UIServerProtocol. Later phases swap this for a transport-backed
+    server that can route between multiple agents/sessions.
+    """
+
+    def __init__(self, agent: "Agent") -> None:
+        self._agent = agent
+
+    # ── chat ────────────────────────────────────────────────────────────────
+
+    async def chat(
+        self,
+        text: str,
+        session_id: str = "",
+        on_token=None,
+        on_tool_call=None,
+        on_tool_result=None,
+        on_usage=None,
+        on_progress=None,
+        on_loop_detected=None,
+        on_phase=None,
+        on_reasoning=None,
+        on_context_size=None,
+        on_user_message=None,
+    ) -> str:
+        return await self._agent.chat(
+            text,
+            on_token=on_token,
+            on_tool_call=on_tool_call,
+            on_tool_result=on_tool_result,
+            on_usage=on_usage,
+            on_progress=on_progress,
+            on_loop_detected=on_loop_detected,
+            on_phase=on_phase,
+            on_reasoning=on_reasoning,
+            on_context_size=on_context_size,
+            on_user_message=on_user_message,
+        )
+
+    # ── control ─────────────────────────────────────────────────────────────
+
+    def inject(self, text: str, session_id: str = "") -> None:
+        self._agent.inject(text)
+
+    def cancel_background(self, session_id: str = "") -> int:
+        return self._agent.cancel_background()
+
+    async def wait_background(self, session_id: str = "", timeout: float | None = None) -> int:
+        return await self._agent.wait_background(timeout=timeout)
+
+    # ── state queries ────────────────────────────────────────────────────────
+
+    def stats(self, session_id: str = "") -> dict:
+        return dict(self._agent.stats)
+
+    def token_estimate(self, session_id: str = "") -> int:
+        return self._agent.token_estimate()
+
+    def context_breakdown(self, session_id: str = "") -> list[dict]:
+        return self._agent.context_breakdown()
+
+    def output_breakdown(self, session_id: str = "", scope: str = "session") -> list[dict]:
+        return self._agent.output_breakdown(scope=scope)
+
+    # ── session ──────────────────────────────────────────────────────────────
+
+    def set_session_id(self, session_id: str) -> None:
+        self._agent.set_session_id(session_id)

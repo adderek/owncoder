@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from agent.agent import Agent
     from agent.config import ThemeConfig
+    from agent.ui_server import UIServerProtocol
 
 
 def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
@@ -174,18 +175,22 @@ def _hex_to_ansi(hex_color: str) -> str:
     return f"\033[38;2;{r};{g};{b}m"
 
 
-async def simple_loop(agent: "Agent", session=None):
+async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | None" = None):
     from rich.console import Console
     from rich.markdown import Markdown
     from rich.markup import escape as _escape
     import readline  # enables arrow keys / history on Linux
+
+    from agent.ui_server import LocalUIServer
+    if server is None:
+        server = LocalUIServer(agent)
 
     cfg = agent.config
     t = cfg.ui.theme
     console = Console()
 
     if session is not None:
-        agent.set_session_id(session.id)
+        server.set_session_id(session.id)
 
     prompt_esc = _hex_to_ansi(t.prompt)
     console.print(
@@ -206,9 +211,9 @@ async def simple_loop(agent: "Agent", session=None):
                     f"Ctrl+C again to force exit.[/{t.warning}]"
                 )
                 try:
-                    await agent.wait_background(timeout=30.0)
+                    await server.wait_background(timeout=30.0)
                 except KeyboardInterrupt:
-                    agent.cancel_background()
+                    server.cancel_background()
             console.print(f"[{t.text_dim}]Bye.[/{t.text_dim}]")
             break
 
@@ -612,8 +617,9 @@ async def simple_loop(agent: "Agent", session=None):
             return answer in ("y", "yes")
 
         try:
-            response = await agent.chat(
+            response = await server.chat(
                 user_input,
+                session_id=session.id if session else "",
                 on_tool_call=on_tool,
                 on_tool_result=on_tool_result,
                 on_token=on_token,
