@@ -130,7 +130,15 @@ def run_command(cmd: str, cwd: str | None = None, timeout: int | None = None) ->
             "Shell commands are disabled in config (tools.allow_shell = false)"
         )
 
-    # Gate legacy shell-string path early — before expensive rule checks.
+    danger = _check_dangerous(cmd)
+    if danger:
+        return {
+            "error": f"Destructive command '{danger}' requires explicit confirmation before running.",
+            "cmd": cmd,
+            "requires_confirm": True,
+        }
+
+    # Gate legacy shell-string path before expensive rule checks.
     if _sec_policy.is_configured() and not _sec_policy.get().cfg.allow_legacy_shell:
         return {
             "error": (
@@ -139,14 +147,6 @@ def run_command(cmd: str, cwd: str | None = None, timeout: int | None = None) ->
                 "for scripts that need shell features."
             ),
             "cmd": cmd,
-        }
-
-    danger = _check_dangerous(cmd)
-    if danger:
-        return {
-            "error": f"Destructive command '{danger}' requires explicit confirmation before running.",
-            "cmd": cmd,
-            "requires_confirm": True,
         }
 
     # ── Rule checks (.agent.config, .agent.sandbox, .agent.ro, .agent.boundary) ──
