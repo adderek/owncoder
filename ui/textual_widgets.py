@@ -396,18 +396,12 @@ def build_widget_classes(t) -> SimpleNamespace:
     class ModelStatusBar(Static):
         """Compact inline indicator of model request states (idle/running). Click to view config."""
 
-        DEFAULT_CSS = """
-        ModelStatusBar {
-            cursor: pointer;
-        }
-        """
-
         def on_mount(self) -> None:
             self.set_interval(0.15, self._refresh)
             self.tooltip = "Click to view model config"
 
         def _refresh(self) -> None:
-            from agent.core.model_status import get_states
+            from agent.core.model_status import get_states, get_counts
             states = get_states()
             parts = []
             for label, role in _MODEL_STATUS_ROLES:
@@ -415,6 +409,9 @@ def build_widget_classes(t) -> SimpleNamespace:
                     parts.append(f"[rgb(56,142,60)]{label}:●[/]")
                 else:
                     parts.append(f"[dim]{label}:○[/dim]")
+            worker_count = get_counts().get("workers", 0)
+            if worker_count > 0:
+                parts.append(f"[rgb(232,128,26)]agents:{worker_count}●[/]")
             self.update("  ".join(parts))
 
         def on_click(self) -> None:

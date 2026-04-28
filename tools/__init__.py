@@ -67,4 +67,8 @@ def load_all_tools(config=None, store=None, embedder=None, asm_store=None, data_
         from agent.tools import increment_tools  # noqa: F401
         increment_tools.setup(config)
 
+    if config is not None and getattr(getattr(config, "parallel", None), "enabled", False):
+        from agent.tools import parallel  # noqa: F401
+        parallel.setup(config, data_provider)
+
     _tools_loaded = True

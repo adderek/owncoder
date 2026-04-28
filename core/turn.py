@@ -64,6 +64,7 @@ async def run_turn(
     turn_index: int | None = None,
     side_log=None,
     inject_queue: asyncio.Queue | None = None,
+    excluded_tools: set[str] | None = None,
     _depth: int = 0,
 ) -> tuple[str, list[dict]]:
     def _phase(label: str, detail: str = "") -> None:
@@ -83,6 +84,8 @@ async def run_turn(
             logger.exception("on_context_size callback failed")
 
     tools = get_schemas()
+    if excluded_tools:
+        tools = [t for t in tools if t.get("function", {}).get("name") not in excluded_tools]
     tc_cfg = getattr(config, "tool_compaction", None)
     compaction_on = bool(tc_cfg and getattr(tc_cfg, "enabled", False))
     if compaction_on:

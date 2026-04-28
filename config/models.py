@@ -248,6 +248,50 @@ class RecoveryConfig:
 
 
 @dataclass
+class ParallelConfig:
+    """Parallel agent fan-out via spawn_agents tool.
+
+    Model groups let you apply per-group concurrency limits so GPU workers
+    (limit 1) don't compete with cloud workers (limit 5) under a single cap.
+
+    agent.toml example:
+
+        [parallel]
+        enabled = true
+        worker_tools = "readonly"
+        worker_timeout_seconds = 120
+
+        [parallel.groups.gpu]
+        models = ["local-coder"]
+        max_concurrent = 1
+
+        [parallel.groups.cpu]
+        models = ["local-fast"]
+        max_concurrent = 2
+
+        [parallel.groups.cloud]
+        models = ["deepseek-r1", "deepseek-v4-preview"]
+        max_concurrent = 5
+
+    spawn_agents tasks pick a model by name; the group that owns that model
+    enforces its own semaphore.  Models not in any group use global_max_concurrent.
+    Backward-compat: flat `workers` list works when groups are not defined.
+    """
+    enabled: bool = False
+    # Flat worker list (backward compat / simple case — no per-group limits).
+    workers: list = field(default_factory=list)
+    # Global concurrency cap (applies to models not covered by any group).
+    global_max_concurrent: int = 4
+    # Per-group config: dict of {group_name: {"models": [...], "max_concurrent": N}}.
+    # Populated by loader from [parallel.groups.*] TOML sections.
+    groups: dict = field(default_factory=dict)
+    # "readonly" = read_file/search_code/list_files/grep/recall only.
+    # "all" = full tool set minus spawn_agents.
+    worker_tools: str = "readonly"
+    worker_timeout_seconds: int = 120
+
+
+@dataclass
 class AgentConfig:
     """Agent runtime behavior (independent of model/endpoint choice)."""
     max_iterations: int = 10
@@ -293,3 +337,4 @@ class Config:
     security: SecurityConfig = field(default_factory=SecurityConfig)
     planning: PlanningConfig = field(default_factory=PlanningConfig)
     recovery: RecoveryConfig = field(default_factory=RecoveryConfig)
+    parallel: ParallelConfig = field(default_factory=ParallelConfig)

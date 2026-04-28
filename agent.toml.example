@@ -268,3 +268,43 @@ fsize_mb           = 256
 nofile             = 256
 follow_symlinks    = false
 allow_legacy_shell = false
+
+# ── Parallel agents ───────────────────────────────────────────────────────────
+# Gives the agent a `spawn_agents` tool to fan-out independent subtasks across
+# multiple model endpoints simultaneously.
+#
+# Each task runs in a fresh worker agent with its own LLM client.  Workers share
+# the RAG store (read-only) but have isolated message history.  Workers cannot
+# call spawn_agents themselves (recursion guard).
+#
+# Example: research a topic on GPU + CPU + DeepSeek in parallel:
+#   spawn_agents(tasks=[
+#     {"task": "...", "model": "local-coder"},
+#     {"task": "...", "model": "local-fast"},
+#     {"task": "...", "model": "deepseek-r1"},
+#   ])
+
+[parallel]
+enabled                = false
+workers                = ["local-coder"] # flat list used round-robin when task.model omitted; overridden by groups
+global_max_concurrent  = 4              # cap for models not in any group
+worker_tools           = "readonly"     # "readonly" = read_file/search_code/list_files/grep/recall only
+                                        # "all"      = full tool set minus spawn_agents
+worker_timeout_seconds = 120
+
+# ── Model groups (optional) ───────────────────────────────────────────────────
+# Each group has its own concurrency limit so GPU workers don't contend with
+# cloud workers.  A model that belongs to a group uses that group's semaphore
+# rather than global_max_concurrent.
+
+# [parallel.groups.gpu]
+# models         = ["local-coder"]
+# max_concurrent = 1                   # only one GPU job at a time
+
+# [parallel.groups.cpu]
+# models         = ["local-fast"]
+# max_concurrent = 2
+
+# [parallel.groups.cloud]
+# models         = ["deepseek-r1", "deepseek-v4-preview"]
+# max_concurrent = 5                   # API rate-limit headroom

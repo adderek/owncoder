@@ -1,0 +1,246 @@
+"""spawn_agents — fan-out parallel agent tool.
+
+Dispatches independent subtasks to worker agents (each with its own LLM
+endpoint / model entry).  Workers share the same data_provider (RAG, store)
+but get fresh message history and cannot spawn further workers.
+
+Model groups (configured in agent.toml) apply per-group concurrency limits:
+
+    [parallel.groups.gpu]
+    models = ["local-coder"]
+    max_concurrent = 1
+
+    [parallel.groups.cloud]
+    models = ["deepseek-r1", "deepseek-v4-preview"]
+    max_concurrent = 5
+
+Models not in any group use `global_max_concurrent` as the cap.
+"""
+from __future__ import annotations
+
+import asyncio
+import copy
+import json
+import logging
+from typing import TYPE_CHECKING
+
+from agent.tools import register
+
+if TYPE_CHECKING:
+    from agent.config import Config, ModelEntry
+
+logger = logging.getLogger(__name__)
+
+_config: "Config | None" = None
+_data_provider = None
+
+# Tools allowed in "readonly" worker mode.
+_READONLY_TOOLS = frozenset({
+    "read_file",
+    "list_files",
+    "search_code",
+    "grep",
+    "recall",
+    "git_status",
+    "git_log",
+    "git_diff",
+})
+
+# Tool always stripped from workers regardless of worker_tools setting.
+_WORKER_EXCLUDED = frozenset({"spawn_agents"})
+
+
+def setup(config: "Config", data_provider=None) -> None:
+    global _config, _data_provider
+    _config = config
+    _data_provider = data_provider
+
+
+def _worker_config(config: "Config", model_name: str) -> "Config":
+    """Return a shallow-copied Config with llm overridden from named model entry."""
+    entry: "ModelEntry | None" = config.model_entries.get(model_name)
+    if entry is None:
+        raise ValueError(
+            f"spawn_agents: unknown model entry '{model_name}'. "
+            f"Available: {list(config.model_entries)}"
+        )
+    new_cfg = copy.copy(config)
+    new_llm = copy.copy(config.llm)
+    new_llm.base_url = entry.base_url
+    new_llm.api_key = entry.api_key
+    if entry.model:
+        new_llm.model = entry.model
+    new_llm.ctx_window = entry.ctx_window
+    new_llm.max_output_tokens = entry.max_output_tokens
+    new_llm.temperature = entry.temperature
+    new_cfg.llm = new_llm
+    return new_cfg
+
+
+def _build_group_semaphores(config: "Config") -> tuple[dict[str, asyncio.Semaphore], dict[str, str]]:
+    """Return (group_semaphores, model_to_group) from config.parallel.groups.
+
+    model_to_group maps model_name -> group_name so we know which semaphore to
+    acquire for a given model.  Models not in any group use the global cap.
+    """
+    pcfg = config.parallel
+    group_sems: dict[str, asyncio.Semaphore] = {}
+    model_to_group: dict[str, str] = {}
+
+    for group_name, group_data in pcfg.groups.items():
+        if not isinstance(group_data, dict):
+            continue
+        limit = int(group_data.get("max_concurrent", 1))
+        group_sems[group_name] = asyncio.Semaphore(max(1, limit))
+        for m in group_data.get("models", []):
+            model_to_group[m] = group_name
+
+    return group_sems, model_to_group
+
+
+async def _run_worker(
+    task: str,
+    model_name: str,
+    config: "Config",
+    data_provider,
+    timeout: int,
+    excluded_tools: set[str],
+) -> dict:
+    from openai import AsyncOpenAI
+    from agent.core.turn import run_turn
+    from agent.core.prompts import _build_system_prompt
+
+    try:
+        wcfg = _worker_config(config, model_name)
+    except ValueError as exc:
+        return {"model": model_name, "output": None, "error": str(exc), "tokens": {}}
+
+    client = AsyncOpenAI(base_url=wcfg.llm.base_url, api_key=wcfg.llm.api_key)
+
+    store = data_provider.get_store() if data_provider else None
+    indexed_count = store.stats()["chunks"] if store else 0
+    system_content = _build_system_prompt(wcfg, indexed_count=indexed_count)
+    messages: list[dict] = [
+        {"role": "system", "content": system_content},
+        {"role": "user", "content": task},
+    ]
+
+    usage: dict = {}
+
+    def _on_usage(u: dict) -> None:
+        usage.update(u)
+
+    from agent.core.model_status import track_async as _track
+    try:
+        async with _track("workers"):
+            response, _ = await asyncio.wait_for(
+                run_turn(
+                    messages=messages,
+                    config=wcfg,
+                    client=client,
+                    on_usage=_on_usage,
+                    excluded_tools=excluded_tools,
+                ),
+                timeout=timeout,
+            )
+        return {"model": model_name, "output": response, "error": None, "tokens": usage}
+    except asyncio.TimeoutError:
+        return {
+            "model": model_name,
+            "output": None,
+            "error": f"timeout after {timeout}s",
+            "tokens": usage,
+        }
+    except Exception as exc:
+        logger.exception("spawn_agents worker %s failed", model_name)
+        return {"model": model_name, "output": None, "error": str(exc), "tokens": usage}
+
+
+@register(
+    "spawn_agents",
+    {
+        "description": (
+            "Run independent subtasks in parallel across multiple agent workers, "
+            "each potentially using a different model/endpoint (GPU, CPU, cloud). "
+            "Per-group concurrency limits prevent overloading any single backend. "
+            "Workers are read-only by default (no file edits). "
+            "Only available when [parallel] enabled = true in agent.toml."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tasks": {
+                    "type": "array",
+                    "description": "List of subtasks to dispatch to worker agents.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "task": {
+                                "type": "string",
+                                "description": "The subtask prompt for this worker.",
+                            },
+                            "model": {
+                                "type": "string",
+                                "description": (
+                                    "Named model entry from agent.toml [models.*]. "
+                                    "If omitted, workers are assigned round-robin from "
+                                    "[parallel].workers list."
+                                ),
+                            },
+                        },
+                        "required": ["task"],
+                    },
+                    "minItems": 1,
+                },
+            },
+            "required": ["tasks"],
+        },
+    },
+)
+async def spawn_agents(tasks: list[dict]) -> str:
+    if _config is None:
+        return json.dumps({"error": "spawn_agents: tool not initialised"})
+
+    pcfg = getattr(_config, "parallel", None)
+    if pcfg is None or not pcfg.enabled:
+        return json.dumps({"error": "spawn_agents: parallel.enabled = false in agent.toml"})
+
+    workers_pool: list[str] = list(pcfg.workers)
+    timeout: int = int(pcfg.worker_timeout_seconds)
+    worker_tools_mode: str = pcfg.worker_tools
+
+    # Build excluded tool set for workers.
+    excluded: set[str] = set(_WORKER_EXCLUDED)
+    if worker_tools_mode == "readonly":
+        from agent.tools import get_schemas
+        all_names = {s["function"]["name"] for s in get_schemas()}
+        excluded |= (all_names - _READONLY_TOOLS)
+
+    # Build per-group semaphores and model->group mapping.
+    group_sems, model_to_group = _build_group_semaphores(_config)
+    global_sem = asyncio.Semaphore(max(1, int(pcfg.global_max_concurrent)))
+
+    # Assign model per task (round-robin from workers_pool when not explicit).
+    tasks_with_models: list[tuple[str, str | None]] = []
+    for i, item in enumerate(tasks):
+        task_prompt = item.get("task", "")
+        model_name = item.get("model") or (workers_pool[i % len(workers_pool)] if workers_pool else None)
+        tasks_with_models.append((task_prompt, model_name))
+
+    async def _guarded(task_prompt: str, model_name: str | None):
+        if model_name is None:
+            return {
+                "model": None,
+                "output": None,
+                "error": "no model specified and no workers configured in [parallel].workers",
+                "tokens": {},
+            }
+        group_name = model_to_group.get(model_name)
+        sem = group_sems.get(group_name, global_sem) if group_name else global_sem
+        async with sem:
+            return await _run_worker(
+                task_prompt, model_name, _config, _data_provider, timeout, excluded
+            )
+
+    results = await asyncio.gather(*[_guarded(t, m) for t, m in tasks_with_models])
+    return json.dumps({"results": list(results)}, indent=2)

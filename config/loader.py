@@ -140,6 +140,7 @@ def _merge(config: Config, data: dict) -> None:
         ("security", config.security),
         ("planning", config.planning),
         ("recovery", config.recovery),
+        ("parallel", config.parallel),
     ):
         section_data = data.get(section_name, {})
         _merge_obj(obj, section_data)

@@ -19,6 +19,12 @@ def get_states() -> dict[str, str]:
         return {role: ("running" if n > 0 else "idle") for role, n in _counts.items()}
 
 
+def get_counts() -> dict[str, int]:
+    """Return role → active request count snapshot."""
+    with _lock:
+        return dict(_counts)
+
+
 def _inc(role: str) -> None:
     with _lock:
         _counts[role] = _counts.get(role, 0) + 1
