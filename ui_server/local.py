@@ -111,6 +111,46 @@ class LocalUIServer:
             "compaction_threshold": getattr(cfg.llm, "compaction_threshold", 0.75),
         }
 
+    def get_model_configs(self, session_id: str = "") -> dict:
+        """Return display config for each model role (llm, emb, sum)."""
+        cfg = self._agent.config
+        llm = cfg.llm
+        emb = cfg.embeddings
+        # Resolve summarizer: check model_roles → model_entries, fallback to llm
+        sum_entry = None
+        roles = getattr(cfg, "model_roles", {})
+        entries = getattr(cfg, "model_entries", {})
+        sum_name = roles.get("summarizer") or roles.get("sum")
+        if sum_name:
+            sum_entry = entries.get(sum_name)
+        if sum_entry is None:
+            sum_entry = entries.get("summarizer")
+        return {
+            "llm": {
+                "model": llm.model or "",
+                "base_url": llm.base_url or "",
+                "ctx_window": llm.ctx_window or 0,
+                "max_output_tokens": llm.max_output_tokens,
+                "temperature": llm.temperature,
+                "think_level": getattr(llm, "think_level", "normal"),
+                "max_iterations": getattr(llm, "max_iterations", 10),
+            },
+            "emb": {
+                "model": emb.model or "",
+                "base_url": emb.base_url or "",
+                "dimensions": emb.dimensions,
+                "max_tokens": emb.max_tokens,
+            },
+            "sum": {
+                "model": sum_entry.model if sum_entry else llm.model or "",
+                "base_url": sum_entry.base_url if sum_entry else llm.base_url or "",
+                "ctx_window": sum_entry.ctx_window if sum_entry else llm.ctx_window or 0,
+                "max_output_tokens": sum_entry.max_output_tokens if sum_entry else llm.max_output_tokens,
+                "temperature": sum_entry.temperature if sum_entry else llm.temperature,
+                "source": sum_name if sum_entry else "(fallback to llm)",
+            },
+        }
+
     def get_ui_config(self, session_id: str = "") -> dict:
         cfg = self._agent.config
         return {

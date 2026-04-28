@@ -338,11 +338,73 @@ def build_widget_classes(t) -> SimpleNamespace:
 
     _MODEL_STATUS_ROLES = [("llm", "main"), ("emb", "emb"), ("sum", "sum")]
 
+    class ModelConfigScreen:
+        pass  # defined below after ModalScreen import
+
+    from textual.screen import ModalScreen
+    from textual.widgets import Button
+    from textual.containers import Vertical
+
+    class ModelConfigScreen(ModalScreen):
+        """Modal popup showing config for all model roles."""
+
+        CSS = """
+        ModelConfigScreen {
+            align: center middle;
+        }
+        #model-config-dialog {
+            width: 60;
+            height: auto;
+            max-height: 30;
+            border: solid $primary;
+            background: $surface;
+            padding: 1 2;
+        }
+        #model-config-close {
+            margin-top: 1;
+            width: 100%;
+        }
+        """
+
+        def __init__(self, configs: dict) -> None:
+            super().__init__()
+            self._configs = configs
+
+        def compose(self):
+            from textual.containers import Vertical
+            from textual.widgets import Button, Static, RichLog
+            lines = []
+            role_labels = [("llm", "LLM  (main)"), ("emb", "Embed"), ("sum", "Summarizer")]
+            for role, heading in role_labels:
+                cfg = self._configs.get(role, {})
+                lines.append(f"[bold]{heading}[/bold]")
+                for k, v in cfg.items():
+                    lines.append(f"  [{t.text_dim}]{k}[/{t.text_dim}]  {_escape(str(v))}")
+                lines.append("")
+            body = "\n".join(lines).rstrip()
+            with Vertical(id="model-config-dialog"):
+                yield Static(body, markup=True)
+                yield Button("Close  [ESC]", id="model-config-close")
+
+        def on_button_pressed(self, event) -> None:
+            self.dismiss()
+
+        def on_key(self, event) -> None:
+            if event.key in ("escape", "q"):
+                self.dismiss()
+
     class ModelStatusBar(Static):
-        """Compact inline indicator of model request states (idle/running)."""
+        """Compact inline indicator of model request states (idle/running). Click to view config."""
+
+        DEFAULT_CSS = """
+        ModelStatusBar {
+            cursor: pointer;
+        }
+        """
 
         def on_mount(self) -> None:
             self.set_interval(0.15, self._refresh)
+            self.tooltip = "Click to view model config"
 
         def _refresh(self) -> None:
             from agent.core.model_status import get_states
@@ -354,6 +416,14 @@ def build_widget_classes(t) -> SimpleNamespace:
                 else:
                     parts.append(f"[dim]{label}:○[/dim]")
             self.update("  ".join(parts))
+
+        def on_click(self) -> None:
+            try:
+                server = self.app._server
+                configs = server.get_model_configs()
+            except Exception:
+                configs = {}
+            self.app.push_screen(ModelConfigScreen(configs))
 
     class HintBar(Static):
         """Contextual hints shown during history navigation."""
