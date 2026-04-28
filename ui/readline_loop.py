@@ -486,6 +486,17 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
         import os as _os
         import json as _json
 
+        _bell_enabled = _ui_cfg.get("bell_on_input_request", True)
+        _title_mode = _ui_cfg.get("terminal_title", "auto")
+
+        def _set_term_title(title: str) -> None:
+            if _title_mode == "off":
+                return
+            sys.stdout.write(f"\033]0;{title}\007")
+            sys.stdout.flush()
+
+        _set_term_title("agent — working")
+
         verbose = _os.environ.get("AGENT_VERBOSE", "").lower() in ("1", "true", "yes")
 
         tool_results: list[str] = []
@@ -611,6 +622,10 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
         except Exception as e:
             logger.error("chat error: %s\n%s", e, traceback.format_exc())
             console.print(f"[{t.error}]Error: {e}[/{t.error}]")
+            _set_term_title("agent — error, waiting for input")
+            if _bell_enabled:
+                sys.stdout.write("\007")
+                sys.stdout.flush()
             continue
         finally:
             _spinner_stop.set()
@@ -618,6 +633,11 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
 
         if session is not None:
             server.save_session(session)
+
+        _set_term_title("agent — waiting for input")
+        if _bell_enabled:
+            sys.stdout.write("\007")
+            sys.stdout.flush()
 
         # If streaming was active, the text is already printed; just add newline.
         # If no streaming occurred (tool-only turn), print the response normally.

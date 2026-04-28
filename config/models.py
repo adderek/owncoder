@@ -114,6 +114,8 @@ class UIConfig:
     chat_wrap: str = "last used"  # 'wrap', 'nowrap', or 'last used'
     round_summary: bool = True  # show gray Q/A summary line after each turn
     reasoning_fold: str = "end_of_round"  # "immediate" | "end_of_round" | "never"
+    bell_on_input_request: bool = True  # BEL when agent finishes/fails and waits for input
+    terminal_title: str = "auto"  # "auto" = animated spinner+activity | "off" = no title mgmt
     theme: ThemeConfig = field(default_factory=ThemeConfig)
 
 

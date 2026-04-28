@@ -119,6 +119,9 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             self._agent_running: bool = False
             self._reasoning_buffer: list[str] = []
             self._reasoning_active: bool = False
+            self._title_task_label: str = ""
+            self._title_spinner_idx: int = 0
+            self._title_spinner_timer = None
 
             ui_cfg = self._server.get_ui_config()
             chat_wrap_cfg = ui_cfg["chat_wrap"]
@@ -133,6 +136,8 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             else:
                 self._wrap_enabled = False
 
+            self._bell_on_input_request: bool = ui_cfg.get("bell_on_input_request", True)
+            self._terminal_title: str = ui_cfg.get("terminal_title", "auto")
             self._round_summary_enabled = ui_cfg["round_summary"]
             try:
                 from agent.ui.prefs import load_prefs
@@ -394,6 +399,14 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             except Exception:
                 pass
 
+        _TITLE_SPINNERS = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+        def _tick_title_spinner(self) -> None:
+            s = self._TITLE_SPINNERS[self._title_spinner_idx % len(self._TITLE_SPINNERS)]
+            self._title_spinner_idx += 1
+            label = self._title_task_label or "working"
+            self.title = f"{s} agent — {label}"
+
         def _begin_chat(self, user_text: str) -> None:
             self._switch_to_chat()
             chat_log = self.query_one("#chat-log", ConversationView)
@@ -416,6 +429,12 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             self._reasoning_active = False
 
             self._agent_running = True
+            self._title_task_label = "thinking"
+            self._title_spinner_idx = 0
+            if self._terminal_title != "off":
+                if self._title_spinner_timer is not None:
+                    self._title_spinner_timer.stop()
+                self._title_spinner_timer = self.set_interval(0.1, self._tick_title_spinner)
             self.query_one("#loading-row").add_class("active")
             self.query_one("#loading-tokens", Static).update(
                 f"in: [bold]{self._tokens_before:,}[/bold]"

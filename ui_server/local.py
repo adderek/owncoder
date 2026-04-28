@@ -120,6 +120,8 @@ class LocalUIServer:
             "round_summary": bool(getattr(cfg.ui, "round_summary", True)),
             "show_token_count": bool(getattr(cfg.ui, "show_token_count", False)),
             "reasoning_fold": getattr(cfg.ui, "reasoning_fold", "end_of_round"),
+            "bell_on_input_request": bool(getattr(cfg.ui, "bell_on_input_request", True)),
+            "terminal_title": getattr(cfg.ui, "terminal_title", "auto"),
         }
 
     def get_turn_id(self, session_id: str = "") -> int:

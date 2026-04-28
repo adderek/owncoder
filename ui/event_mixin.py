@@ -74,6 +74,7 @@ class EventHandlerMixin:
         if preview:
             label += f" [dim]({_escape(preview)})[/dim]"
         self.query_one("#context-panel", self._wt.ContextPanel).set_context(label)
+        self._title_task_label = event.name
 
     def on_tool_result_event(self, event) -> None:
         stats = self._tool_stats.setdefault(event.name, {"ok": 0, "err": 0})
@@ -113,6 +114,7 @@ class EventHandlerMixin:
         self.query_one("#context-panel", self._wt.ContextPanel).set_context(
             f"[dim]• {_escape(event.label)}{detail}[/dim]"
         )
+        self._title_task_label = event.label
 
     _STREAM_RENDER_INTERVAL = 0.05  # 50ms throttle
 
@@ -198,11 +200,25 @@ class EventHandlerMixin:
         if self._loading_timer is not None:
             self._loading_timer.stop()
             self._loading_timer = None
+        if self._title_spinner_timer is not None:
+            self._title_spinner_timer.stop()
+            self._title_spinner_timer = None
         self.query_one("#loading-row").remove_class("active")
 
         self._agent_running = False
         input_widget = self.query_one("#input-bar", self._wt.PromptInput)
         input_widget.focus()
+
+        if getattr(self, "_terminal_title", "auto") != "off":
+            if event.state == WorkerState.ERROR:
+                self.title = "agent — error, waiting for input"
+            elif event.state == WorkerState.SUCCESS:
+                self.title = "agent — waiting for input"
+            else:
+                self.title = "agent — cancelled"
+        if event.state in (WorkerState.SUCCESS, WorkerState.ERROR):
+            if getattr(self, "_bell_on_input_request", True):
+                self.bell()
 
         empty_response = False
         if event.state == WorkerState.SUCCESS:
