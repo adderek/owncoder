@@ -130,6 +130,17 @@ def run_command(cmd: str, cwd: str | None = None, timeout: int | None = None) ->
             "Shell commands are disabled in config (tools.allow_shell = false)"
         )
 
+    # Gate legacy shell-string path early — before expensive rule checks.
+    if _sec_policy.is_configured() and not _sec_policy.get().cfg.allow_legacy_shell:
+        return {
+            "error": (
+                "Legacy shell string execution is disabled. "
+                "Use run_argv with an explicit argv list, or shell_script "
+                "for scripts that need shell features."
+            ),
+            "cmd": cmd,
+        }
+
     danger = _check_dangerous(cmd)
     if danger:
         return {
@@ -171,19 +182,12 @@ def run_command(cmd: str, cwd: str | None = None, timeout: int | None = None) ->
     if rules.config.max_timeout > 0:
         effective_timeout = min(effective_timeout, rules.config.max_timeout)
 
-    # Gate legacy shell-string path. When security harness is configured and
-    # the user hasn't opted in to legacy shell, require run_argv / shell_script.
-    if _sec_policy.is_configured() and not _sec_policy.get().cfg.allow_legacy_shell:
-        return {
-            "error": (
-                "Legacy shell string execution is disabled. "
-                "Use run_argv with an explicit argv list, or shell_script "
-                "for scripts that need shell features."
-            ),
-            "cmd": cmd,
-        }
-
     err_msg = None
+    raw_stdout = ""
+    raw_stderr = ""
+    returncode = -1
+    duration_ms = 0
+    t_start = time.monotonic()
     try:
         if _sec_policy.is_configured():
             # Route through sandbox. Legacy entry still takes a shell string,
@@ -209,7 +213,7 @@ def run_command(cmd: str, cwd: str | None = None, timeout: int | None = None) ->
                 "cmd": cmd,
             }
     except subprocess.TimeoutExpired as e:
-        duration_ms = int((time.monotonic() - start) * 1000) if 'start' in locals() else 0
+        duration_ms = int((time.monotonic() - t_start) * 1000)
         raw_stdout = (
             (e.stdout or b"").decode("utf-8", errors="replace")
             if isinstance(e.stdout, bytes)
@@ -222,6 +226,9 @@ def run_command(cmd: str, cwd: str | None = None, timeout: int | None = None) ->
         )
         returncode = -1
         err_msg = f"Command timed out after {effective_timeout}s"
+    except Exception as e:
+        duration_ms = int((time.monotonic() - t_start) * 1000)
+        err_msg = f"Runner error: {type(e).__name__}: {e}"
 
     stdout, stdout_trunc = _truncate_stream(raw_stdout)
     stderr, stderr_trunc = _truncate_stream(raw_stderr)

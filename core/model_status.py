@@ -6,11 +6,16 @@ Thread-safe via a lock; safe to call from async contexts.
 from __future__ import annotations
 
 import threading
+import time
 from contextlib import asynccontextmanager, contextmanager
 
 _lock = threading.Lock()
 _counts: dict[str, int] = {}
 _listeners: list = []
+
+# Per-worker detail records for parallel agent fan-out.
+_worker_seq: int = 0
+_workers: dict[int, dict] = {}  # worker_id → {model, task, started_at, finished_at, status, error}
 
 
 def get_states() -> dict[str, str]:
@@ -72,3 +77,59 @@ def track_sync(role: str):
         yield
     finally:
         _dec(role)
+
+
+# ── Parallel worker registry ──────────────────────────────────────────────────
+
+def register_worker(model: str, task: str, max_task_chars: int = 80) -> int:
+    """Register a new parallel worker. Returns its worker_id."""
+    global _worker_seq
+    preview = task[:max_task_chars] + ("…" if len(task) > max_task_chars else "")
+    with _lock:
+        _worker_seq += 1
+        wid = _worker_seq
+        _workers[wid] = {
+            "model": model,
+            "task": preview,
+            "started_at": time.monotonic(),
+            "finished_at": None,
+            "status": "running",
+            "error": None,
+        }
+    return wid
+
+
+def finish_worker(worker_id: int, *, error: str | None = None) -> None:
+    """Mark worker as done (success or error)."""
+    with _lock:
+        w = _workers.get(worker_id)
+        if w is not None:
+            w["finished_at"] = time.monotonic()
+            w["status"] = "error" if error else "done"
+            w["error"] = error
+
+
+def get_workers() -> list[dict]:
+    """Return snapshot of all worker records, most-recent first."""
+    with _lock:
+        now = time.monotonic()
+        out = []
+        for wid, w in sorted(_workers.items(), reverse=True):
+            end = w["finished_at"] or now
+            out.append({
+                "id": wid,
+                "model": w["model"],
+                "task": w["task"],
+                "elapsed": round(end - w["started_at"], 1),
+                "status": w["status"],
+                "error": w["error"],
+            })
+        return out
+
+
+def clear_finished_workers() -> None:
+    """Remove completed/errored workers from the registry."""
+    with _lock:
+        done = [wid for wid, w in _workers.items() if w["status"] != "running"]
+        for wid in done:
+            del _workers[wid]

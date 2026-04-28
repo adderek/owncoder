@@ -119,10 +119,11 @@ async def compact_result(
         purpose = f"(no purpose supplied) tool={tool_name} args={json.dumps(args)[:200]}"
 
     model = tc.model or config.llm.model
+    safe_result = result_str.replace("{", "{{").replace("}", "}}")
     prompt = _load_prompt(config).format(
         tool=tool_name,
         purpose=purpose.strip(),
-        result=result_str,
+        result=safe_result,
     )
 
     client = _get_client(config, main_client)

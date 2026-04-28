@@ -130,7 +130,9 @@ async def _run_worker(
     def _on_usage(u: dict) -> None:
         usage.update(u)
 
-    from agent.core.model_status import track_async as _track
+    from agent.core.model_status import track_async as _track, register_worker, finish_worker
+    wid = register_worker(model_name, task)
+    err: str | None = None
     try:
         async with _track("workers"):
             response, _ = await asyncio.wait_for(
@@ -143,17 +145,17 @@ async def _run_worker(
                 ),
                 timeout=timeout,
             )
+        finish_worker(wid)
         return {"model": model_name, "output": response, "error": None, "tokens": usage}
     except asyncio.TimeoutError:
-        return {
-            "model": model_name,
-            "output": None,
-            "error": f"timeout after {timeout}s",
-            "tokens": usage,
-        }
+        err = f"timeout after {timeout}s"
+        finish_worker(wid, error=err)
+        return {"model": model_name, "output": None, "error": err, "tokens": usage}
     except Exception as exc:
         logger.exception("spawn_agents worker %s failed", model_name)
-        return {"model": model_name, "output": None, "error": str(exc), "tokens": usage}
+        err = str(exc)
+        finish_worker(wid, error=err)
+        return {"model": model_name, "output": None, "error": err, "tokens": usage}
 
 
 @register(

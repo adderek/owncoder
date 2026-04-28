@@ -393,12 +393,83 @@ def build_widget_classes(t) -> SimpleNamespace:
             if event.key in ("escape", "q"):
                 self.dismiss()
 
+    class WorkersScreen(ModalScreen):
+        """Modal showing parallel worker status. Auto-refreshes while workers run."""
+
+        CSS = """
+        WorkersScreen {
+            align: center middle;
+        }
+        #workers-dialog {
+            width: 72;
+            height: auto;
+            max-height: 36;
+            border: solid $primary;
+            background: $surface;
+            padding: 1 2;
+        }
+        #workers-close {
+            margin-top: 1;
+            width: 100%;
+        }
+        """
+
+        def compose(self):
+            from textual.containers import Vertical
+            from textual.widgets import Button, Static
+            with Vertical(id="workers-dialog"):
+                yield Static("", id="workers-body", markup=True)
+                yield Button("Close  [ESC]", id="workers-close")
+
+        def on_mount(self) -> None:
+            self.set_interval(0.25, self._refresh)
+            self._refresh()
+
+        def _refresh(self) -> None:
+            from agent.core.model_status import get_workers
+            workers = get_workers()
+            if not workers:
+                body = f"[{t.text_dim}]No parallel workers recorded.[/{t.text_dim}]"
+            else:
+                lines = [f"[bold]Parallel workers[/bold]  [{t.text_dim}](most recent first)[/{t.text_dim}]\n"]
+                status_color = {
+                    "running": "rgb(232,128,26)",
+                    "done": "rgb(56,142,60)",
+                    "error": "rgb(198,40,40)",
+                }
+                status_icon = {"running": "●", "done": "✓", "error": "✗"}
+                for w in workers:
+                    sc = status_color.get(w["status"], t.text_dim)
+                    ic = status_icon.get(w["status"], "?")
+                    elapsed = f"{w['elapsed']}s"
+                    lines.append(
+                        f"[{sc}]{ic}[/{sc}] [{t.text_dim}]#{w['id']}[/{t.text_dim}]"
+                        f"  [bold]{_escape(w['model'])}[/bold]"
+                        f"  [{t.text_dim}]{elapsed}[/{t.text_dim}]"
+                    )
+                    lines.append(f"   [{t.text_dim}]{_escape(w['task'])}[/{t.text_dim}]")
+                    if w["error"]:
+                        lines.append(f"   [rgb(198,40,40)]{_escape(w['error'])}[/]")
+                    lines.append("")
+                body = "\n".join(lines).rstrip()
+            try:
+                self.query_one("#workers-body").update(body)
+            except Exception:
+                pass
+
+        def on_button_pressed(self, event) -> None:
+            self.dismiss()
+
+        def on_key(self, event) -> None:
+            if event.key in ("escape", "q"):
+                self.dismiss()
+
     class ModelStatusBar(Static):
         """Compact inline indicator of model request states (idle/running). Click to view config."""
 
         def on_mount(self) -> None:
             self.set_interval(0.15, self._refresh)
-            self.tooltip = "Click to view model config"
+            self.tooltip = "Click to view model config / worker status"
 
         def _refresh(self) -> None:
             from agent.core.model_status import get_states, get_counts
@@ -415,6 +486,10 @@ def build_widget_classes(t) -> SimpleNamespace:
             self.update("  ".join(parts))
 
         def on_click(self) -> None:
+            from agent.core.model_status import get_workers
+            if get_workers():
+                self.app.push_screen(WorkersScreen())
+                return
             try:
                 server = self.app._server
                 configs = server.get_model_configs()

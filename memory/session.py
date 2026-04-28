@@ -114,7 +114,7 @@ def _session_from_data(data: dict, file_path: Path | None = None) -> Session:
         name=data.get("name", ""),
         description=data.get("description", ""),
         summary=data.get("summary", ""),
-        tags=data.get("tags", []),
+        tags=list(data.get("tags") or []),
         created_at=data.get("created_at", data.get("saved_at", time.time())),
         updated_at=data.get("updated_at", data.get("saved_at", time.time())),
     )

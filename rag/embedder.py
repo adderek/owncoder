@@ -22,6 +22,7 @@ class Embedder:
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
+        import logging
         from agent.core.model_status import _inc as _ms_inc, _dec as _ms_dec
         truncated = [self._truncate(t) for t in texts]
         _ms_inc("emb")
@@ -30,9 +31,12 @@ class Embedder:
                 model=self._cfg.model,
                 input=truncated,
             )
+            return [item.embedding for item in response.data]
+        except Exception as exc:
+            logging.getLogger(__name__).warning("embedder: API error: %s", exc)
+            return [[] for _ in texts]
         finally:
             _ms_dec("emb")
-        return [item.embedding for item in response.data]
 
     def embed_one(self, text: str) -> list[float]:
         return self.embed([text])[0]
