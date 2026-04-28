@@ -247,7 +247,20 @@ def load_config(extra_path: Path | None = None) -> Config:
     raw_data: list[dict] = []
     for p in search_paths:
         if p.exists():
-            data = _load_toml(p)
+            try:
+                data = _load_toml(p)
+            except tomllib.TOMLDecodeError as exc:
+                import sys
+                print(
+                    f"\nConfig error in {p}:\n"
+                    f"  {exc}\n"
+                    f"\nCommon causes:\n"
+                    f"  - Duplicate section headers (e.g. two [planning] blocks) — merge them into one\n"
+                    f"  - Invalid TOML syntax (missing quotes, bad value types)\n"
+                    f"\nFix: open {p} and resolve the issue, then retry.\n",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
             raw_data.append(data)
             _merge(config, data)
 
