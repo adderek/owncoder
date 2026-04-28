@@ -43,6 +43,32 @@ When working through plan steps, follow this protocol for each step:
    - If `exhausted=true`: report the failure, do not attempt further changes on this step.\
 """
 
+_DAG_PLANNING_INSTRUCTIONS = """\
+## Plan-driven execution with DAG dependencies
+
+When given a multi-step goal, create a plan and break it into atomic steps with explicit dependencies.
+
+### Creating a plan
+Use the planning tools or slash commands:
+- Create: `/plan new <goal>` or `create_plan(goal, steps=[...])`
+- Add steps: `/plan step add <description>`
+- Wire dependencies: `/plan dep <step_id> <dep_step_id>` or `plan_add_dep(plan_id, step_id, dep_step_id)`
+  - Only add deps when there is a real ordering constraint. Don't over-specify.
+
+### Choosing what to work on
+- Call `plan_ready_steps(plan_id)` to get unblocked steps. Never start a step whose deps are unresolved.
+- When steps are independent (no shared state, separate files), prefer working on multiple ready steps before reporting back.
+- If `ready_count=0` and `blocked_count>0`, some dependency is stuck — surface this explicitly.
+
+### Completing steps
+- Mark each step done via `complete_step` (with increments) or `/plan step <id> completed`.
+- After a batch finishes, consider `/plan compact` to summarize completed steps and free context.
+
+### Multi-agent hints (future)
+- If a step has `agent_constraints`, note them — they indicate LLM or environment requirements for future routing.
+- Use `plan_assign_step` to claim a step before starting it in concurrent contexts.\
+"""
+
 
 def _log_llm_request(messages: list, tools, config: "Config") -> None:
     if not getattr(config, "logs", None) or not getattr(config.logs, "dedupe_preamble", True):
@@ -98,6 +124,9 @@ def _build_system_prompt(config: "Config", project_name: str = "", indexed_count
             if text:
                 text = prompt_compiler.load(f"guidelines/{path.name}", text, config)
                 prompt = f"{prompt}\n\n{text}"
+
+    if getattr(config.planning, "enabled", True):
+        prompt = f"{prompt}\n\n{_DAG_PLANNING_INSTRUCTIONS}"
 
     if getattr(config.planning, "increments_enabled", False):
         prompt = f"{prompt}\n\n{_INCREMENTS_INSTRUCTIONS}"

@@ -126,6 +126,127 @@ def tool_complete_step(plan_id: str, step_id: str, notes: str = "") -> dict:
 
 
 @register(
+    "plan_ready_steps",
+    {
+        "description": (
+            "Return all pending steps that have no unresolved dependencies. "
+            "Use this to decide which steps can be worked on in parallel or next."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "plan_id": {"type": "string", "description": "Plan ID"},
+            },
+            "required": ["plan_id"],
+        },
+    },
+)
+def tool_plan_ready_steps(plan_id: str) -> dict:
+    from agent.planning import load_plan
+
+    plan = load_plan(plan_id)
+    if plan is None:
+        return {"ok": False, "error": f"plan not found: {plan_id}"}
+
+    ready = plan.ready_steps()
+    blocked = plan.blocked_steps()
+    return {
+        "ok": True,
+        "ready": [{"id": s.id, "description": s.description, "assigned_to": s.assigned_to} for s in ready],
+        "blocked": [{"id": s.id, "description": s.description, "deps": s.deps} for s in blocked],
+        "ready_count": len(ready),
+        "blocked_count": len(blocked),
+    }
+
+
+@register(
+    "plan_add_dep",
+    {
+        "description": (
+            "Add a dependency between two steps in a plan. "
+            "step_id will not start until dep_step_id is completed/skipped."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "plan_id": {"type": "string", "description": "Plan ID"},
+                "step_id": {"type": "string", "description": "Step that depends on dep_step_id"},
+                "dep_step_id": {"type": "string", "description": "Step that must complete first"},
+            },
+            "required": ["plan_id", "step_id", "dep_step_id"],
+        },
+    },
+)
+def tool_plan_add_dep(plan_id: str, step_id: str, dep_step_id: str) -> dict:
+    from agent.planning import load_plan, save_plan
+    from agent.planning.dag import detect_cycles
+
+    plan = load_plan(plan_id)
+    if plan is None:
+        return {"ok": False, "error": f"plan not found: {plan_id}"}
+
+    step = next((s for s in plan.steps if s.id == step_id), None)
+    if step is None:
+        return {"ok": False, "error": f"step not found: {step_id}"}
+    if not any(s.id == dep_step_id for s in plan.steps):
+        return {"ok": False, "error": f"dep step not found: {dep_step_id}"}
+    if dep_step_id in step.deps:
+        return {"ok": True, "message": "dep already exists"}
+
+    step.deps.append(dep_step_id)
+    cycles = detect_cycles(plan.steps)
+    if cycles:
+        step.deps.remove(dep_step_id)
+        return {"ok": False, "error": f"would create cycle involving: {cycles}"}
+
+    save_plan(plan)
+    return {"ok": True, "message": f"{step_id} now depends on {dep_step_id}"}
+
+
+@register(
+    "plan_assign_step",
+    {
+        "description": (
+            "Assign a step to a specific agent and optionally record LLM/env constraints. "
+            "Used for multi-agent coordination."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "plan_id": {"type": "string", "description": "Plan ID"},
+                "step_id": {"type": "string", "description": "Step ID to assign"},
+                "agent_id": {"type": "string", "description": "Agent identifier"},
+                "constraints": {
+                    "type": "object",
+                    "description": "Routing hints e.g. {\"llm_tags\": [\"local\"], \"env\": \"gpu-box\"}",
+                },
+            },
+            "required": ["plan_id", "step_id", "agent_id"],
+        },
+    },
+)
+def tool_plan_assign_step(
+    plan_id: str, step_id: str, agent_id: str, constraints: dict | None = None
+) -> dict:
+    from agent.planning import load_plan
+    from agent.planning.plan import update_step
+
+    plan = load_plan(plan_id)
+    if plan is None:
+        return {"ok": False, "error": f"plan not found: {plan_id}"}
+
+    step = next((s for s in plan.steps if s.id == step_id), None)
+    if step is None:
+        return {"ok": False, "error": f"step not found: {step_id}"}
+
+    fields: dict = {"assigned_to": agent_id}
+    if constraints:
+        fields["agent_constraints"] = constraints
+    update_step(plan, step_id, **fields)
+    return {"ok": True, "message": f"{step_id} assigned to {agent_id}"}
+
+
+@register(
     "revert_step",
     {
         "description": (

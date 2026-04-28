@@ -44,6 +44,12 @@ class Step:
     snapshot_refs: list[dict] = field(default_factory=list)
     retry_count: int = 0
     max_retries: int = 3
+    # DAG: step IDs this step must wait on before starting
+    deps: list[str] = field(default_factory=list)
+    # Multi-agent: which agent owns this step (empty = unassigned)
+    assigned_to: str = ""
+    # Multi-agent: routing hints e.g. {"llm_tags": ["local"], "env": "gpu-box"}
+    agent_constraints: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -69,6 +75,21 @@ class Plan:
     def progress(self) -> tuple[int, int]:
         done = sum(1 for s in self.steps if s.status in ("completed", "skipped"))
         return done, len(self.steps)
+
+    def ready_steps(self) -> list[Step]:
+        """Pending steps with all deps resolved."""
+        from agent.planning.dag import ready_steps
+        return ready_steps(self.steps)
+
+    def blocked_steps(self) -> list[Step]:
+        """Pending steps blocked by unresolved deps."""
+        from agent.planning.dag import blocked_steps
+        return blocked_steps(self.steps)
+
+    def critical_path(self) -> list[str]:
+        """Step IDs on longest dep chain."""
+        from agent.planning.dag import critical_path
+        return critical_path(self.steps)
 
     def to_dict(self) -> dict:
         d = asdict(self)

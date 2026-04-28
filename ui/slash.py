@@ -43,7 +43,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/round-summary", ["/summary"], "toggle gray Q/A summary after each turn", False),
     ("/tools", [], "list available tools", False),
     ("/undo", [], "restore last file snapshot", False),
-    ("/plan", [], "plan: new <goal> | show | steps | step <id> <status> | abort | pause | stash | resume", True),
+    ("/plan", [], "plan: new <goal> | show | steps | step <id> <status> | dep <step> <dep> | assign <step> <agent> | compact | abort | pause | stash | resume", True),
     ("/plans", [], "list saved plans", False),
     ("/abort-plan", [], "mark active plan aborted (no stash)", False),
     ("/stash-plan", [], "git stash current changes + mark plan stashed", False),
@@ -160,14 +160,25 @@ def _render_plan(plan) -> str:
     ]
     done, total = plan.progress()
     lines.append(f"  progress: {done}/{total} steps")
+    ready_ids = {s.id for s in plan.ready_steps()}
     for s in plan.steps:
         marker = {
             "pending": "·", "in_progress": "▶", "completed": "✓",
             "failed": "✗", "skipped": "—",
         }.get(s.status, "?")
-        lines.append(f"   {marker} [{s.id}] {s.description}")
+        suffix = ""
+        if s.deps:
+            suffix += f"  [dim]needs: {', '.join(s.deps)}[/dim]"
+        if s.assigned_to:
+            suffix += f"  [dim]@{s.assigned_to}[/dim]"
+        if s.status == "pending" and s.id in ready_ids:
+            suffix += "  [green]ready[/green]"
+        lines.append(f"   {marker} [{s.id}] {s.description}{suffix}")
         for t_desc in s.tests:
             lines.append(f"        · test: {t_desc}")
+    cp = plan.critical_path()
+    if len(cp) > 1:
+        lines.append(f"  critical path: {' → '.join(cp)}")
     return "\n".join(lines)
 
 
@@ -248,6 +259,53 @@ def _apply_plan(agent, arg: str) -> tuple[bool, str]:
             plan.status = "completed"
             save_plan(plan)
         return True, f"step {step_id} → {status}"
+
+    if sub == "dep":
+        plan = _active_plan(agent)
+        if plan is None:
+            return False, "No active plan."
+        dp = rest.split()
+        if len(dp) < 2:
+            return False, "Usage: /plan dep <step_id> <dep_step_id>"
+        step_id, dep_step_id = dp[0], dp[1]
+        step = next((s for s in plan.steps if s.id == step_id), None)
+        if step is None:
+            return False, f"No step {step_id}."
+        if not any(s.id == dep_step_id for s in plan.steps):
+            return False, f"No step {dep_step_id}."
+        if dep_step_id in step.deps:
+            return True, "Dep already exists."
+        step.deps.append(dep_step_id)
+        from agent.planning.dag import detect_cycles
+        cycles = detect_cycles(plan.steps)
+        if cycles:
+            step.deps.remove(dep_step_id)
+            return False, f"Would create cycle: {', '.join(cycles)}"
+        save_plan(plan)
+        return True, f"{step_id} now depends on {dep_step_id}"
+
+    if sub == "assign":
+        plan = _active_plan(agent)
+        if plan is None:
+            return False, "No active plan."
+        ap = rest.split(maxsplit=1)
+        if len(ap) < 2:
+            return False, "Usage: /plan assign <step_id> <agent_id>"
+        step_id, agent_id = ap[0], ap[1]
+        from agent.planning.plan import update_step
+        updated = update_step(plan, step_id, assigned_to=agent_id)
+        if updated is None:
+            return False, f"No step {step_id}."
+        return True, f"{step_id} assigned to {agent_id}"
+
+    if sub == "compact":
+        plan = _active_plan(agent)
+        if plan is None:
+            return False, "No active plan."
+        from agent.planning.compact import compact_plan_sync
+        min_c = int(rest.strip()) if rest.strip().isdigit() else 3
+        ok, msg = compact_plan_sync(plan, min_completed=min_c)
+        return ok, msg
 
     if sub == "abort":
         plan = _active_plan(agent)

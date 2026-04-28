@@ -28,6 +28,13 @@ from agent.planning.increment import (
     revert_to_snapshots,
     squash_snapshot,
 )
+from agent.planning.dag import (
+    ready_steps as dag_ready_steps,
+    blocked_steps as dag_blocked_steps,
+    detect_cycles,
+    critical_path as dag_critical_path,
+)
+from agent.planning.compact import compact_plan, compact_plan_sync
 
 __all__ = [
     "Plan",
@@ -46,4 +53,10 @@ __all__ = [
     "snapshot_step",
     "revert_to_snapshots",
     "squash_snapshot",
+    "dag_ready_steps",
+    "dag_blocked_steps",
+    "detect_cycles",
+    "dag_critical_path",
+    "compact_plan",
+    "compact_plan_sync",
 ]
