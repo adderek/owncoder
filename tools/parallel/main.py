@@ -15,6 +15,18 @@ Model groups (configured in agent.toml) apply per-group concurrency limits:
     max_concurrent = 5
 
 Models not in any group use `global_max_concurrent` as the cap.
+
+When [parallel.decision] enabled = true, omitting `model` on a task triggers
+automatic model selection via the decision-maker (see decision.py).  The caller
+can supply a `hint` object to guide selection:
+
+    {"task": "...", "hint": {"est_in_tokens": 4000, "min_strength": 30, "needs_thinking": true}}
+
+A `context` string can also be provided; it is injected as an assistant message
+before the task so cheap/weak workers receive pre-fetched code without needing
+search tools:
+
+    {"task": "...", "context": "<relevant file contents>"}
 """
 from __future__ import annotations
 
@@ -105,6 +117,7 @@ async def _run_worker(
     data_provider,
     timeout: int,
     excluded_tools: set[str],
+    context: str = "",
 ) -> dict:
     from openai import AsyncOpenAI
     from agent.core.turn import run_turn
@@ -120,10 +133,11 @@ async def _run_worker(
     store = data_provider.get_store() if data_provider else None
     indexed_count = store.stats()["chunks"] if store else 0
     system_content = _build_system_prompt(wcfg, indexed_count=indexed_count)
-    messages: list[dict] = [
-        {"role": "system", "content": system_content},
-        {"role": "user", "content": task},
-    ]
+    messages: list[dict] = [{"role": "system", "content": system_content}]
+    if context:
+        messages.append({"role": "user", "content": context})
+        messages.append({"role": "assistant", "content": "Understood. I have the context."})
+    messages.append({"role": "user", "content": task})
 
     usage: dict = {}
 
@@ -185,8 +199,42 @@ async def _run_worker(
                                 "type": "string",
                                 "description": (
                                     "Named model entry from agent.toml [models.*]. "
-                                    "If omitted, workers are assigned round-robin from "
-                                    "[parallel].workers list."
+                                    "If omitted and [parallel.decision] enabled, the "
+                                    "decision-maker selects automatically using `hint`. "
+                                    "Falls back to round-robin from [parallel].workers."
+                                ),
+                            },
+                            "hint": {
+                                "type": "object",
+                                "description": (
+                                    "Resource hints for automatic model selection. "
+                                    "Ignored when `model` is explicit."
+                                ),
+                                "properties": {
+                                    "est_in_tokens": {
+                                        "type": "integer",
+                                        "description": "Estimated input tokens for this subtask.",
+                                    },
+                                    "est_out_tokens": {
+                                        "type": "integer",
+                                        "description": "Estimated output tokens for this subtask.",
+                                    },
+                                    "min_strength": {
+                                        "type": "number",
+                                        "description": "Minimum model size in billions of parameters.",
+                                    },
+                                    "needs_thinking": {
+                                        "type": "boolean",
+                                        "description": "Task requires extended chain-of-thought reasoning.",
+                                    },
+                                },
+                            },
+                            "context": {
+                                "type": "string",
+                                "description": (
+                                    "Optional pre-fetched context (file contents, RAG results) "
+                                    "injected before the task. Lets weak/cheap workers skip "
+                                    "search tools — supply the relevant code here instead."
                                 ),
                             },
                         },
@@ -222,14 +270,32 @@ async def spawn_agents(tasks: list[dict]) -> str:
     group_sems, model_to_group = _build_group_semaphores(_config)
     global_sem = asyncio.Semaphore(max(1, int(pcfg.global_max_concurrent)))
 
-    # Assign model per task (round-robin from workers_pool when not explicit).
-    tasks_with_models: list[tuple[str, str | None]] = []
+    # Resolve decision-maker once (may be None if disabled).
+    decision_cfg = getattr(pcfg, "decision", None)
+    use_decision = decision_cfg is not None and getattr(decision_cfg, "enabled", False)
+
+    # Assign model per task.
+    tasks_resolved: list[tuple[str, str | None, str]] = []  # (prompt, model, context)
     for i, item in enumerate(tasks):
         task_prompt = item.get("task", "")
-        model_name = item.get("model") or (workers_pool[i % len(workers_pool)] if workers_pool else None)
-        tasks_with_models.append((task_prompt, model_name))
+        context = item.get("context", "") or ""
+        explicit_model = item.get("model")
+        if explicit_model:
+            model_name: str | None = explicit_model
+        elif use_decision:
+            from agent.tools.parallel.decision import pick_model
+            hint = item.get("hint") or {}
+            model_name = pick_model(
+                _config.model_entries,
+                hint,
+                decision_cfg,
+                candidates=list(_config.model_entries.keys()),
+            )
+        else:
+            model_name = workers_pool[i % len(workers_pool)] if workers_pool else None
+        tasks_resolved.append((task_prompt, model_name, context))
 
-    async def _guarded(task_prompt: str, model_name: str | None):
+    async def _guarded(task_prompt: str, model_name: str | None, context: str):
         if model_name is None:
             return {
                 "model": None,
@@ -241,8 +307,9 @@ async def spawn_agents(tasks: list[dict]) -> str:
         sem = group_sems.get(group_name, global_sem) if group_name else global_sem
         async with sem:
             return await _run_worker(
-                task_prompt, model_name, _config, _data_provider, timeout, excluded
+                task_prompt, model_name, _config, _data_provider, timeout, excluded,
+                context=context,
             )
 
-    results = await asyncio.gather(*[_guarded(t, m) for t, m in tasks_with_models])
+    results = await asyncio.gather(*[_guarded(t, m, c) for t, m, c in tasks_resolved])
     return json.dumps({"results": list(results)}, indent=2)

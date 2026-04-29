@@ -196,6 +196,10 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                         f"  [cyan]{fn['name']}[/cyan]  [dim]{fn.get('description', '')[:60]}[/dim]"
                     )
 
+            elif cmd == "/models":
+                from agent.ui.slash import _render_models_table
+                console.print(_render_models_table(agent.config))
+
             elif cmd == "/apply":
                 from agent.agent import extract_last_code_block
                 from agent.tools.files import write_file

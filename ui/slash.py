@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 from agent.ui.slash_plan import _active_plan, _render_plan, _apply_plan
 
 if TYPE_CHECKING:
-    pass
+    from agent.config.models import Config
 
 
 # (primary_name, aliases, short_description, takes_arg)
@@ -51,6 +51,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/stash-plan", [], "git stash current changes + mark plan stashed", False),
     ("/pause-plan", [], "mark active plan paused; resume later", False),
     ("/model", [], "switch active model  [<entry> | role=<entry> | role=?]", True),
+    ("/models", [], "show all configured model entries with capabilities", False),
     ("/recoveries", [], "list pending crash-recovery records", False),
     ("/quit", ["/exit", "/q!"], "quit the agent", False),
 ]
@@ -229,6 +230,58 @@ def _apply_model(agent, arg: str) -> tuple[bool, str]:
 
     # Non-default role: just update model_roles (no client to recreate)
     return True, f"role '{role}' → [bold]{entry_name}[/bold]  (model={entry.model})"
+
+
+def _render_models_table(config: "Config"):
+    """Return a Rich Table showing all model_entries with capabilities."""
+    from rich.table import Table
+
+    entries = config.model_entries
+    roles_rev: dict[str, list[str]] = {}
+    for role, entry_name in config.model_roles.items():
+        roles_rev.setdefault(entry_name, []).append(role)
+
+    active_entry = config.model_roles.get("default", "default")
+
+    tbl = Table(show_header=True, header_style="bold", box=None, pad_edge=False, collapse_padding=True)
+    tbl.add_column("name", style="cyan", no_wrap=True)
+    tbl.add_column("model id", no_wrap=True)
+    tbl.add_column("endpoint", style="dim", no_wrap=True)
+    tbl.add_column("ctx", justify="right", no_wrap=True)
+    tbl.add_column("params", justify="right", no_wrap=True)
+    tbl.add_column("L", justify="center", no_wrap=True)  # local
+    tbl.add_column("T", justify="center", no_wrap=True)  # thinking
+    tbl.add_column("$/in", justify="right", no_wrap=True)
+    tbl.add_column("$/out", justify="right", no_wrap=True)
+    tbl.add_column("roles/tags", style="dim")
+
+    for name in sorted(entries):
+        e = entries[name]
+        is_active = name == active_entry
+
+        ctx_str = f"{e.ctx_window // 1024}k" if e.ctx_window >= 1024 else str(e.ctx_window)
+        params_str = f"{e.params_b:.0f}B" if e.params_b else "?"
+        local_str = "[green]✓[/green]" if e.local else ""
+        think_str = "[cyan]✓[/cyan]" if e.thinking else ""
+        cost_in_str = f"{e.cost_in_per_1k:.4f}" if e.cost_in_per_1k else "—"
+        cost_out_str = f"{e.cost_out_per_1k:.4f}" if e.cost_out_per_1k else "—"
+
+        role_parts = roles_rev.get(name, [])
+        tag_parts = list(e.tags)
+        badge_str = "  ".join(
+            [f"[bold yellow]{r}[/bold yellow]" for r in role_parts] + tag_parts
+        )
+
+        name_str = f"[bold]{name}[/bold]" if is_active else name
+        model_str = (f"[bold]{e.model}[/bold]" if is_active else e.model) or "[dim]—[/dim]"
+
+        tbl.add_row(
+            name_str, model_str, e.base_url,
+            ctx_str, params_str, local_str, think_str,
+            cost_in_str, cost_out_str, badge_str,
+        )
+
+    return tbl
 
 
 def _match_commands(prefix: str) -> list[tuple[str, str, bool]]:

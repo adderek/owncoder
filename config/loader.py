@@ -295,6 +295,11 @@ def check_reachability(config: Config) -> None:
             file=sys.stderr,
         )
 
+    decision_cfg = getattr(config.parallel, "decision", None)
+    if decision_cfg is not None and getattr(decision_cfg, "verify_on_startup", False):
+        from agent.config.model_probe import enrich_model_entries
+        enrich_model_entries(config)
+
 
 def _try_detect_ctx_window(config: Config, resp) -> None:
     """Try to detect context window size from the /models endpoint response."""

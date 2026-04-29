@@ -267,6 +267,16 @@ class SlashHandlerMixin:
             if ok:
                 self._refresh_token_bar()
 
+        elif cmd == "/models":
+            from agent.ui.slash import _render_models_table
+            from rich.console import Console
+            from io import StringIO
+            cfg = self._server._agent.config
+            tbl = _render_models_table(cfg)
+            buf = StringIO()
+            Console(file=buf, highlight=False).print(tbl)
+            self._write_sys(buf.getvalue().rstrip())
+
         elif cmd == "/plan":
             ok, msg = self._server.set_plan(arg)
             color = t.success if ok else t.warning

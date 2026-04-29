@@ -279,6 +279,7 @@ class ParallelConfig:
     Backward-compat: flat `workers` list works when groups are not defined.
     """
     enabled: bool = False
+    decision: "DecisionConfig" = field(default_factory=lambda: DecisionConfig())
     # Flat worker list (backward compat / simple case — no per-group limits).
     workers: list = field(default_factory=list)
     # Global concurrency cap (applies to models not covered by any group).
@@ -315,6 +316,31 @@ class ModelEntry:
     dimensions: int = 0          # embeddings only
     tags: list = field(default_factory=list)
     extra: dict = field(default_factory=dict)
+    # Decision-maker scoring fields
+    params_b: float = 0.0        # model size in billions of parameters (0 = unknown)
+    thinking: bool = False       # supports extended thinking / chain-of-thought
+    local: bool = False          # runs locally (no network cost / latency)
+    cost_in_per_1k: float = 0.0  # USD per 1k input tokens (0 = free/unknown)
+    cost_out_per_1k: float = 0.0 # USD per 1k output tokens (0 = free/unknown)
+    tokens_per_sec: float = 0.0  # estimated throughput (0 = unknown)
+
+
+@dataclass
+class DecisionConfig:
+    """Controls automatic model selection when spawn_agents omits model name.
+
+    agent.toml example:
+        [parallel.decision]
+        enabled = true
+        prefer_local = 2.0      # bonus subtracted from score for local models
+        cost_weight = 1.0       # multiplier on cost component of score
+        strength_weight = 0.5   # penalty weight for models weaker than min_strength
+    """
+    enabled: bool = False
+    prefer_local: float = 2.0
+    cost_weight: float = 1.0
+    strength_weight: float = 0.5
+    verify_on_startup: bool = False  # probe endpoints to enrich/verify ModelEntry fields
 
 
 @dataclass
