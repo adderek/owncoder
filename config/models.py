@@ -323,6 +323,10 @@ class ModelEntry:
     cost_in_per_1k: float = 0.0  # USD per 1k input tokens (0 = free/unknown)
     cost_out_per_1k: float = 0.0 # USD per 1k output tokens (0 = free/unknown)
     tokens_per_sec: float = 0.0  # estimated throughput (0 = unknown)
+    # OpenRouter-style capability indices (0.0 = not rated)
+    intelligence_index: float = 0.0  # general reasoning / intelligence score
+    coding_index: float = 0.0        # coding benchmark score
+    agentic_index: float = 0.0       # agentic / tool-use benchmark score
 
 
 @dataclass

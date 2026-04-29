@@ -32,6 +32,9 @@ ctx_window        = 32768
 max_output_tokens = 8192
 temperature       = 0.7
 tags = ["coding"]
+# intelligence_index = 52.0   # optional: from OpenRouter rankings (0 = not rated)
+# coding_index       = 68.0
+# agentic_index      = 41.0
 
 [models.local-fast]
 base_url          = "http://localhost:8080/v1"
@@ -53,13 +56,16 @@ tags = ["embeddings"]
 # Sign up at https://platform.deepseek.com — get api_key from the dashboard.
 
 [models.deepseek-r1]
-base_url          = "https://api.deepseek.com/v1"
-api_key           = "sk-..."           # replace with your DeepSeek API key
-model             = "deepseek-r1"
-ctx_window        = 65536
-max_output_tokens = 8192
-temperature       = 0.6
-tags = ["reasoning", "summarizer"]
+base_url           = "https://api.deepseek.com/v1"
+api_key            = "sk-..."           # replace with your DeepSeek API key
+model              = "deepseek-r1"
+ctx_window         = 65536
+max_output_tokens  = 8192
+temperature        = 0.6
+tags               = ["reasoning", "summarizer"]
+intelligence_index = 85.0   # from OpenRouter rankings; 0 = not rated
+coding_index       = 80.0
+agentic_index      = 61.0
 
 [models.deepseek-v4-preview]
 base_url          = "https://api.deepseek.com/v1"
