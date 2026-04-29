@@ -52,7 +52,7 @@ class Agent:
         self._facts_store = None
         self._side_log = None
         self._turn_id: int = 0
-        self._notes_sys_idx: int | None = None  # index of current notes system message
+        self._notes_sys_idx: int | None = None  # kept for compat; notes removal now uses marker
         self._session_id: str | None = None
         self._project_memory_store = None  # project-level MemoryStore for session indexing
         self._last_turn_time: float = 0.0
@@ -103,8 +103,7 @@ class Agent:
         if not embedder:
             notes_ctx = load_notes_context(config)
             if notes_ctx:
-                self._notes_sys_idx = len(self.messages)
-                self.messages.append({"role": "system", "content": notes_ctx})
+                self.messages.append({"role": "system", "content": notes_ctx, "_notes_marker": True})
 
         # Project-level MemoryStore for cross-session session-summary indexing.
         try:
@@ -139,8 +138,8 @@ class Agent:
 
         Embeds the query, retrieves top-N notes from the project MemoryStore,
         and upserts a system message into self.messages just before the most
-        recent user message. Tracks its index in _notes_sys_idx so the next
-        call can remove the stale one.
+        recent user message. Uses a ``_notes_marker`` key to find and remove
+        the previous injection regardless of how messages shifted since then.
         """
         if self.embedder is None:
             return
@@ -153,14 +152,12 @@ class Agent:
         except Exception:
             return
         hits = store.hybrid_search(query, embedding=embedding, scope="note", top_k=top_k)
+
+        # Remove any previous notes injection (find by marker, not index).
+        self.messages = [m for m in self.messages if not m.get("_notes_marker")]
+        self._notes_sys_idx = None
+
         if not hits:
-            # If no hits, clear stale notes message.
-            if self._notes_sys_idx is not None:
-                try:
-                    del self.messages[self._notes_sys_idx]
-                except IndexError:
-                    pass
-                self._notes_sys_idx = None
             return
 
         import json as _json
@@ -178,20 +175,11 @@ class Agent:
             lines.append(f"## {title}{tag_str}\n{body}\n")
         notes_content = "\n".join(lines).strip()
 
-        # Remove previous notes message.
-        if self._notes_sys_idx is not None:
-            try:
-                del self.messages[self._notes_sys_idx]
-            except IndexError:
-                pass
-            self._notes_sys_idx = None
-
         # Insert before the last user message (which was just appended).
         insert_at = len(self.messages) - 1
         if insert_at < 0:
             insert_at = 0
-        self.messages.insert(insert_at, {"role": "system", "content": notes_content})
-        self._notes_sys_idx = insert_at
+        self.messages.insert(insert_at, {"role": "system", "content": notes_content, "_notes_marker": True})
 
     def pending_background_count(self) -> int:
         return sum(1 for t in self._pending_bg_tasks if not t.done())
