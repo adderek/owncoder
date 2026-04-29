@@ -79,7 +79,11 @@ def recall_facts(
     except Exception:
         max_results = 3
 
-    hits = _facts_store.search(query, round_id=round_id, max_results=max_results)
+    # Use semantic (vector) search when embedder is wired in; keyword fallback.
+    if round_id is not None:
+        hits = _facts_store.search(query, round_id=round_id, max_results=max_results)
+    else:
+        hits = _facts_store.semantic_search(query, max_results=max_results)
 
     rounds_available = _facts_store.list_round_ids()
     if not hits:
@@ -88,7 +92,7 @@ def recall_facts(
             "matches": [],
             "rounds_available": rounds_available,
             "hint": (
-                "No keyword match. Try broader terms, or pass round_id to see "
+                "No match. Try broader terms, or pass round_id to see "
                 "a full round's detail."
                 if rounds_available
                 else "No compaction rounds have been saved yet."

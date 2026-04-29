@@ -102,7 +102,7 @@ class Agent:
         _fr.set_session(session_id)
         _fr.set_config(self.config)
         self._qa_logger = QALogger(session_id)
-        self._facts_store = FactsStore(session_id)
+        self._facts_store = FactsStore(session_id, embedder=self.embedder)
         try:
             self._side_log = SideLogWriter(get_session_full_dir(session_id))
         except Exception as e:

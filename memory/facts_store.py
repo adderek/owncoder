@@ -69,10 +69,15 @@ _ROUND_FILE_RE = re.compile(r"^round-(\d+)\.json$")
 class FactsStore:
     """Per-session on-disk store of compaction rounds."""
 
-    def __init__(self, session_id: str, base_dir: Path | None = None):
+    def __init__(self, session_id: str, base_dir: Path | None = None, embedder=None):
         self.session_id = session_id
         base = base_dir if base_dir is not None else (_get_session_dir() / get_session_subpath(session_id))
         self.dir = base / "facts"
+        self._embedder = embedder
+        self._mem_store: Any | None = None
+        if embedder is not None:
+            from agent.memory.store import MemoryStore
+            self._mem_store = MemoryStore(base / "memory.db")
 
     # ── internal paths ──────────────────────────────────────────────────────
     def _round_path(self, round_id: int) -> Path:
@@ -169,7 +174,28 @@ class FactsStore:
             facts=dict(facts or {}),
         )
         self.save_round(r)
+        self._index_round(r)
         return r
+
+    def _index_round(self, r: FactsRound) -> None:
+        """Embed and store round in MemoryStore for semantic recall."""
+        if self._mem_store is None or self._embedder is None:
+            return
+        body = "\n\n".join(filter(None, [r.knowledge_draft, r.summary, r.q_view]))
+        if not body.strip():
+            return
+        try:
+            embedding = self._embedder.embed_one(body[:8000])
+            self._mem_store.add(
+                scope="facts_round",
+                body=body,
+                source=str(r.round_id),
+                title=f"Round {r.round_id} turns {r.from_turn}–{r.to_turn}",
+                embedding=embedding if embedding else None,
+                entry_id=f"{self.session_id}:round:{r.round_id}",
+            )
+        except Exception:
+            pass
 
     # ── recall / search ─────────────────────────────────────────────────────
     def search(
@@ -226,3 +252,46 @@ class FactsStore:
             })
         hits.sort(key=lambda h: (-h["score"], -h["round_id"]))
         return hits[:max_results]
+
+    def semantic_search(
+        self,
+        query: str,
+        *,
+        max_results: int = 3,
+        snippet_chars: int = 800,
+    ) -> list[dict[str, Any]]:
+        """Vector search over indexed rounds via MemoryStore.
+
+        Falls back to keyword search when embedder/MemoryStore unavailable.
+        Returns same shape as search().
+        """
+        if self._mem_store is None or self._embedder is None:
+            return self.search(query, max_results=max_results, snippet_chars=snippet_chars)
+        try:
+            embedding = self._embedder.embed_one(query)
+        except Exception:
+            return self.search(query, max_results=max_results, snippet_chars=snippet_chars)
+        mem_hits = self._mem_store.hybrid_search(
+            query, embedding=embedding if embedding else None,
+            scope="facts_round", top_k=max_results,
+        )
+        results = []
+        for h in mem_hits:
+            try:
+                round_id = int(h.get("source", 0))
+            except (ValueError, TypeError):
+                continue
+            r = self.load_round(round_id)
+            if r is None:
+                continue
+            body = h.get("body", "")
+            snippet = body[:snippet_chars]
+            results.append({
+                "round_id": r.round_id,
+                "timestamp": r.timestamp,
+                "from_turn": r.from_turn,
+                "to_turn": r.to_turn,
+                "score": h.get("combined_score", h.get("score", 0.0)),
+                "snippet": snippet,
+            })
+        return results
