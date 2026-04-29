@@ -90,6 +90,10 @@ def main() -> None:
     pr_clr = pr_sub.add_parser("clear", help="Delete cached compiled variants")
     pr_clr.add_argument("name", nargs="?", help="Prompt name. Omit for all.")
 
+    # diag
+    diag_p = sub.add_parser("diag", help="Tool health report from audit.jsonl")
+    diag_p.add_argument("--json", action="store_true", help="Output raw JSON (for scripting)")
+
     # debug
     dbg_p = sub.add_parser("debug", help="Debug utilities")
     dbg_p.add_argument("--context", action="store_true", help="Show full context of current session")
@@ -179,6 +183,9 @@ def main() -> None:
         elif args.command == "debug":
             from agent.cli.debug import cmd_debug_context
             cmd_debug_context(args, config)
+        elif args.command == "diag":
+            from agent.cli.diag import cmd_diag
+            cmd_diag(args, config)
         elif args.command == "exec":
             from agent.tools.exec_command import handle_exec_command
             handle_exec_command(args, config)

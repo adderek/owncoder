@@ -271,11 +271,23 @@ class Rules:
                 for k, v in args.items()
             },
         }
+        try:
+            from agent.failure_report import _current_session_id
+            sid = _current_session_id.get()
+            if sid:
+                entry["session_id"] = sid
+        except Exception:
+            pass
         if result is not None:
             if isinstance(result, dict):
                 entry["result_keys"] = list(result.keys())
-                if "error" in result:
+                has_error = "error" in result
+                entry["outcome"] = "error" if has_error else "ok"
+                if has_error:
                     entry["error"] = result["error"]
+                    # Capture inner errors for atomic_rollback to aid diagnosis.
+                    if result.get("error") == "atomic_rollback" and "errors" in result:
+                        entry["error_detail"] = result["errors"][:5]
             else:
                 entry["result_type"] = str(type(result).__name__)
 

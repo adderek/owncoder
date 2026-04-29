@@ -103,10 +103,29 @@ def _check_dangerous(cmd: str) -> str | None:
     return None
 
 
+_SHELL_OP_RE = __import__("re").compile(r"[|;&]|>>?|<<?\S|`|\$\(")
+
+
+def _try_translate_to_argv(cmd: str) -> list[str] | None:
+    """Return argv list if cmd is a simple command with no shell operators, else None."""
+    if _SHELL_OP_RE.search(cmd):
+        return None
+    try:
+        tokens = shlex.split(cmd)
+        return tokens if tokens else None
+    except ValueError:
+        return None
+
+
 @register(
     "run_command",
     {
-        "description": "Run a shell command with timeout. Returns stdout, stderr, returncode, and duration_ms.",
+        "description": (
+            "Deprecated: use run_argv instead. "
+            "Accepts a shell string for backwards compatibility; "
+            "simple commands are auto-translated to run_argv. "
+            "Use run_command only when you need pipes, redirects, or other shell features."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -140,6 +159,11 @@ def run_command(cmd: str, cwd: str | None = None, timeout: int | None = None) ->
 
     # Gate legacy shell-string path before expensive rule checks.
     if _sec_policy.is_configured() and not _sec_policy.get().cfg.allow_legacy_shell:
+        argv = _try_translate_to_argv(cmd)
+        if argv:
+            result = run_argv(argv, cwd=cwd, timeout=timeout)
+            result["_translated_from"] = cmd
+            return result
         return {
             "error": (
                 "Legacy shell string execution is disabled. "
