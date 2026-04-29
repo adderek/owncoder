@@ -15,7 +15,7 @@ class PathMatcher:
                 import pathspec
 
                 self._spec = pathspec.PathSpec.from_lines(
-                    "gitwildmatch", self._patterns
+                    "gitignore", self._patterns
                 )
             except ImportError:
                 logger.warning("pathspec not installed — path rule matching disabled")
@@ -49,7 +49,7 @@ class ReadonlyMatcher:
                 try:
                     import pathspec
 
-                    spec = pathspec.PathSpec.from_lines("gitwildmatch", [pattern])
+                    spec = pathspec.PathSpec.from_lines("gitignore", [pattern])
                     if spec.match_file(path):
                         return True, self._reasons[pattern]
                 except Exception:

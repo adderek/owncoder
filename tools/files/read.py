@@ -20,7 +20,7 @@ def _build_gitignore_spec(base):
         for line in gi.read_text(encoding="utf-8", errors="replace").splitlines()
         if line.strip() and not line.strip().startswith("#")
     ]
-    return pathspec.PathSpec.from_lines("gitwildmatch", lines)
+    return pathspec.PathSpec.from_lines("gitignore", lines)
 
 
 @register(
