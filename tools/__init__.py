@@ -27,7 +27,7 @@ def get_schemas() -> list[dict]:
 
 def load_all_tools(config=None, store=None, embedder=None, asm_store=None, data_provider=None) -> None:
     global _tools_loaded
-    from agent.tools import files, shell, git, search, analyze_asm, edit_file, recall  # noqa: F401
+    from agent.tools import files, shell, git, search, analyze_asm, edit_file, recall, notes  # noqa: F401
     from agent.tools.rules import load_rules
 
     # Wrap raw objects in DataProvider when caller hasn't provided one.
@@ -62,6 +62,7 @@ def load_all_tools(config=None, store=None, embedder=None, asm_store=None, data_
     git.setup(config)
     search.setup(config, data_provider)
     analyze_asm.setup(config, data_provider)
+    notes.setup(config, embedder=data_provider.get_embedder() if data_provider else None)
 
     if config is not None and getattr(config.planning, "increments_enabled", False):
         from agent.tools import increment_tools  # noqa: F401

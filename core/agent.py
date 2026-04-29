@@ -92,6 +92,11 @@ class Agent:
         if user_context:
             self.messages.append({"role": "system", "content": user_context})
 
+        from agent.tools.notes import load_notes_context
+        notes_ctx = load_notes_context(config)
+        if notes_ctx:
+            self.messages.append({"role": "system", "content": notes_ctx})
+
     def set_session_id(self, session_id: str) -> None:
         from agent.memory.qa_log import QALogger
         from agent.memory.facts_store import FactsStore
