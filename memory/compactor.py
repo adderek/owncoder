@@ -289,6 +289,43 @@ async def _synthesize_summary(
     return _parse_synthesis_output(raw)
 
 
+# ── Project-level session indexing ─────────────────────────────────────────
+
+
+def _index_round_to_project(
+    project_memory_store,
+    round_obj,
+    *,
+    session_id: str | None = None,
+    embedder=None,
+) -> None:
+    """Index a compaction round's summary into the project MemoryStore.
+
+    scope='session_summary'. Enables cross-session recall_sessions search.
+    """
+    try:
+        body = "\n\n".join(filter(None, [round_obj.summary, round_obj.q_view]))
+        if not body.strip():
+            return
+        embedding = None
+        if embedder is not None:
+            try:
+                embedding = embedder.embed_one(body[:4000])
+            except Exception:
+                pass
+        eid = f"session:{session_id or 'unknown'}:round:{round_obj.round_id}"
+        project_memory_store.add(
+            scope="session_summary",
+            body=body,
+            source=session_id or "",
+            title=f"Session {(session_id or '')[:16]}… round {round_obj.round_id} turns {round_obj.from_turn}–{round_obj.to_turn}",
+            embedding=embedding,
+            entry_id=eid,
+        )
+    except Exception:
+        pass
+
+
 # ── Public entry point ──────────────────────────────────────────────────────
 
 
@@ -299,6 +336,8 @@ async def compact(
     keep_last: int = 4,
     facts_store: "FactsStore | None" = None,
     turn_index: int | None = None,
+    project_memory_store=None,
+    session_id: str | None = None,
 ) -> list[dict]:
     """Compact `messages`, returning a shorter message list.
 
@@ -374,8 +413,9 @@ async def compact(
         result.extend(_truncate_tool_results_in(verbatim, max_chars=2000))
         return result
 
+    saved_round = None
     if facts_store is not None:
-        facts_store.new_round(
+        saved_round = facts_store.new_round(
             from_turn=from_turn,
             to_turn=to_turn,
             knowledge_draft=knowledge_draft,
@@ -383,6 +423,14 @@ async def compact(
             q_view=q_view,
             facts=facts,
             prev=prev_round,
+        )
+
+    if project_memory_store is not None and saved_round is not None:
+        _index_round_to_project(
+            project_memory_store,
+            saved_round,
+            session_id=session_id,
+            embedder=getattr(facts_store, "_embedder", None),
         )
 
     # Build the compacted system-summary message

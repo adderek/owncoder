@@ -46,6 +46,8 @@ async def run_turn_ipc(
     turn_index: int | None = None,
     side_log=None,
     inject_queue: asyncio.Queue | None = None,
+    project_memory_store=None,
+    session_id: str | None = None,
 ) -> tuple[str, list[dict]]:
     """Run one agent turn through the IPC layer.
 
@@ -66,6 +68,8 @@ async def run_turn_ipc(
             turn_index=turn_index,
             side_log=side_log,
             inject_queue=inject_queue,
+            project_memory_store=project_memory_store,
+            session_id=session_id,
         )
     )
 

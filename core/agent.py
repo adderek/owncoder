@@ -53,6 +53,8 @@ class Agent:
         self._side_log = None
         self._turn_id: int = 0
         self._notes_sys_idx: int | None = None  # index of current notes system message
+        self._session_id: str | None = None
+        self._project_memory_store = None  # project-level MemoryStore for session indexing
         self.stats: dict = {
             "input_tokens": 0,
             "output_tokens": 0,
@@ -102,6 +104,15 @@ class Agent:
                 self._notes_sys_idx = len(self.messages)
                 self.messages.append({"role": "system", "content": notes_ctx})
 
+        # Project-level MemoryStore for cross-session session-summary indexing.
+        try:
+            from pathlib import Path
+            from agent.memory.store import MemoryStore
+            _agent_dir = Path(config.tools.working_dir) / config.tools.agent_dir
+            self._project_memory_store = MemoryStore(_agent_dir / "memory.db")
+        except Exception:
+            self._project_memory_store = None
+
     def set_session_id(self, session_id: str) -> None:
         from agent.memory.qa_log import QALogger
         from agent.memory.facts_store import FactsStore
@@ -109,6 +120,7 @@ class Agent:
         from agent.memory.side_log import SideLogWriter
         from agent.tools import recall as recall_tool
         from agent import failure_report as _fr
+        self._session_id = session_id
         _fr.set_session(session_id)
         _fr.set_config(self.config)
         self._qa_logger = QALogger(session_id)
@@ -396,6 +408,8 @@ class Agent:
                 turn_index=turn_id,
                 side_log=self._side_log,
                 inject_queue=self._inject_queue,
+                project_memory_store=self._project_memory_store,
+                session_id=self._session_id,
             )
         except Exception:
             # Roll back the user message so the next turn doesn't start with

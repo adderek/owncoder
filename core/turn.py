@@ -65,6 +65,8 @@ async def run_turn(
     side_log=None,
     inject_queue: asyncio.Queue | None = None,
     excluded_tools: set[str] | None = None,
+    project_memory_store=None,
+    session_id: str | None = None,
     _depth: int = 0,
 ) -> tuple[str, list[dict]]:
     def _phase(label: str, detail: str = "") -> None:
@@ -128,7 +130,7 @@ async def run_turn(
         if token_est > budget:
             logger.warning("Pre-flight: estimated %d tokens exceeds budget %d, compacting...", token_est, budget)
             _phase("compact", f"{token_est}→budget {budget}")
-            messages = await compact(messages, config, client, facts_store=facts_store, turn_index=turn_index)
+            messages = await compact(messages, config, client, facts_store=facts_store, turn_index=turn_index, project_memory_store=project_memory_store, session_id=session_id)
             token_est = _count_tokens_approx(messages)
             _phase("compact_done", f"{token_est} tokens")
             if token_est > budget:
@@ -212,7 +214,7 @@ async def run_turn(
                 logger.warning("Context size exceeded (%s), compacting and retrying...", err_detail.get("message", ""))
                 _phase("compact", "context exceeded, retrying")
                 old_count = _count_tokens_approx(messages)
-                messages = await compact(messages, config, client, facts_store=facts_store, turn_index=turn_index)
+                messages = await compact(messages, config, client, facts_store=facts_store, turn_index=turn_index, project_memory_store=project_memory_store, session_id=session_id)
                 if _count_tokens_approx(messages) >= old_count:
                     messages = _truncate_large_messages(messages, budget)
                 token_est = _count_tokens_approx(messages)
@@ -387,7 +389,7 @@ async def run_turn(
 
             if token_est > token_threshold or len(messages) > msg_threshold:
                 _phase("compact", f"post-tool at {token_est} tokens")
-                messages = await compact(messages, config, client, facts_store=facts_store, turn_index=turn_index)
+                messages = await compact(messages, config, client, facts_store=facts_store, turn_index=turn_index, project_memory_store=project_memory_store, session_id=session_id)
                 _phase("compact_done", f"{_count_tokens_approx(messages)} tokens")
             iter_count += 1
             if on_progress is not None:
