@@ -52,6 +52,7 @@ class Agent:
         self._facts_store = None
         self._side_log = None
         self._turn_id: int = 0
+        self._notes_sys_idx: int | None = None  # index of current notes system message
         self.stats: dict = {
             "input_tokens": 0,
             "output_tokens": 0,
@@ -92,10 +93,14 @@ class Agent:
         if user_context:
             self.messages.append({"role": "system", "content": user_context})
 
+        # Notes are injected per-turn based on query relevance (_refresh_notes_context).
+        # A full static load at startup is used only when no embedder is available.
         from agent.tools.notes import load_notes_context
-        notes_ctx = load_notes_context(config)
-        if notes_ctx:
-            self.messages.append({"role": "system", "content": notes_ctx})
+        if not embedder:
+            notes_ctx = load_notes_context(config)
+            if notes_ctx:
+                self._notes_sys_idx = len(self.messages)
+                self.messages.append({"role": "system", "content": notes_ctx})
 
     def set_session_id(self, session_id: str) -> None:
         from agent.memory.qa_log import QALogger
@@ -114,6 +119,65 @@ class Agent:
             logger.warning("SideLogWriter init failed: %s", e)
             self._side_log = None
         recall_tool.setup(self._facts_store)
+
+    def _refresh_notes_context(self, query: str, top_k: int = 6) -> None:
+        """Inject (or replace) a notes system message relevant to *query*.
+
+        Embeds the query, retrieves top-N notes from the project MemoryStore,
+        and upserts a system message into self.messages just before the most
+        recent user message. Tracks its index in _notes_sys_idx so the next
+        call can remove the stale one.
+        """
+        if self.embedder is None:
+            return
+        from agent.tools.notes.notes import _get_store as _notes_store
+        store = _notes_store()
+        if store is None:
+            return
+        try:
+            embedding = self.embedder.embed_one(query[:2000])
+        except Exception:
+            return
+        hits = store.hybrid_search(query, embedding=embedding, scope="note", top_k=top_k)
+        if not hits:
+            # If no hits, clear stale notes message.
+            if self._notes_sys_idx is not None:
+                try:
+                    del self.messages[self._notes_sys_idx]
+                except IndexError:
+                    pass
+                self._notes_sys_idx = None
+            return
+
+        import json as _json
+        lines = ["# Relevant saved notes\n"]
+        for h in hits:
+            title = h.get("title") or "(untitled)"
+            body = h.get("body") or ""
+            tags = h.get("tags")
+            if isinstance(tags, str):
+                try:
+                    tags = _json.loads(tags)
+                except Exception:
+                    tags = []
+            tag_str = f" [{', '.join(tags)}]" if tags else ""
+            lines.append(f"## {title}{tag_str}\n{body}\n")
+        notes_content = "\n".join(lines).strip()
+
+        # Remove previous notes message.
+        if self._notes_sys_idx is not None:
+            try:
+                del self.messages[self._notes_sys_idx]
+            except IndexError:
+                pass
+            self._notes_sys_idx = None
+
+        # Insert before the last user message (which was just appended).
+        insert_at = len(self.messages) - 1
+        if insert_at < 0:
+            insert_at = 0
+        self.messages.insert(insert_at, {"role": "system", "content": notes_content})
+        self._notes_sys_idx = insert_at
 
     def pending_background_count(self) -> int:
         return sum(1 for t in self._pending_bg_tasks if not t.done())
@@ -311,6 +375,7 @@ class Agent:
 
         pre_turn_len = len(self.messages)
         self.messages.append({"role": "user", "content": user_input})
+        self._refresh_notes_context(user_input)
         if on_user_message is not None:
             on_user_message()
         try:
