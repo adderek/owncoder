@@ -191,25 +191,13 @@ def save_session(session: Session, messages: list[dict]) -> None:
 
 
 def load_session(id_or_name: str) -> tuple[Session | None, list[dict]]:
-    """Load a session by ID, short_name, or legacy plain name.
+    """Load a session by ID or short_name.
 
     Returns (session, messages).  If not found returns (None, []).
     """
     sdir = _get_session_dir()
 
-    # 1. Try legacy plain-name file (e.g. "default.json")
-    legacy = sdir / f"{Path(id_or_name).name}.json"
-    if legacy.exists():
-        try:
-            data = json.loads(legacy.read_text(encoding="utf-8"))
-            if not data.get("id"):
-                data["id"] = data.get("name", id_or_name)
-            session = _session_from_data(data, file_path=legacy)
-            return session, data.get("messages", [])
-        except Exception:
-            pass
-
-    # 2. Search all session files (recursively) for a matching id or short_name.
+    # Search all session files (recursively) for a matching id or short_name.
     for p in sorted(
         sdir.rglob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True
     ):
