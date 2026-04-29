@@ -98,7 +98,7 @@ class VectorStore:
         if existing:
             conn.execute("DELETE FROM chunks_fts WHERE rowid = ?", (existing["rowid"],))
 
-        conn.execute("""
+        cur = conn.execute("""
             INSERT OR REPLACE INTO chunks
             (id, path, language, node_type, name, start_line, end_line, content, mtime, git_hash)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -107,11 +107,9 @@ class VectorStore:
             chunk.get("name"), chunk.get("start_line"), chunk.get("end_line"),
             chunk["content"], chunk.get("mtime"), chunk.get("git_hash"),
         ))
-
-        new_row = conn.execute("SELECT rowid FROM chunks WHERE id = ?", (chunk["id"],)).fetchone()
         conn.execute(
             "INSERT INTO chunks_fts(rowid, content, name, path) VALUES (?, ?, ?, ?)",
-            (new_row["rowid"], chunk["content"], chunk.get("name") or "", chunk["path"]),
+            (cur.lastrowid, chunk["content"], chunk.get("name") or "", chunk["path"]),
         )
 
         if chunk.get("embedding"):
@@ -136,7 +134,7 @@ class VectorStore:
             if existing:
                 conn.execute("DELETE FROM chunks_fts WHERE rowid = ?", (existing["rowid"],))
 
-            conn.execute("""
+            cur = conn.execute("""
                 INSERT OR REPLACE INTO chunks
                 (id, path, language, node_type, name, start_line, end_line, content, mtime, git_hash)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -145,11 +143,9 @@ class VectorStore:
                 chunk.get("name"), chunk.get("start_line"), chunk.get("end_line"),
                 chunk["content"], chunk.get("mtime"), chunk.get("git_hash"),
             ))
-
-            new_row = conn.execute("SELECT rowid FROM chunks WHERE id = ?", (chunk["id"],)).fetchone()
             conn.execute(
                 "INSERT INTO chunks_fts(rowid, content, name, path) VALUES (?, ?, ?, ?)",
-                (new_row["rowid"], chunk["content"], chunk.get("name") or "", chunk["path"]),
+                (cur.lastrowid, chunk["content"], chunk.get("name") or "", chunk["path"]),
             )
 
             if chunk.get("embedding"):
