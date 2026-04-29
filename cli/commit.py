@@ -165,9 +165,10 @@ def cmd_commit(args, config):
             f"(staged diff: {diff_chars:,} chars → {len(chunks)} chunks of ≤{chunk_chars:,}{summ_label})…[/dim]"
         )
     else:
+        _display_model = summ_entry.model if summ_override and summ_entry else primary_model
         console.print(
             f"[dim]Generating commit message for {path} "
-            f"(staged diff: {diff_chars:,} chars · model: {primary_model})…[/dim]"
+            f"(staged diff: {diff_chars:,} chars · model: {_display_model})…[/dim]"
         )
 
     if summ_entry:
@@ -293,6 +294,8 @@ def cmd_commit(args, config):
                 {"role": "user", "content": user_prompt},
             ],
             max_tokens=config.token_limits.commit_message,
+            client=summ_client if summ_override else None,
+            model=summ_model if summ_override else "",
         )).strip()
 
     async def _run() -> str:
