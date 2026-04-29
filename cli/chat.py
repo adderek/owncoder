@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import subprocess
 from pathlib import Path
 
 
@@ -41,6 +43,60 @@ def _find_project_root(start_dir: Path, search_parents: bool) -> Path | None:
             break
         curr = curr.parent
     return None
+
+
+def _extract_written_files(messages: list[dict]) -> list[str]:
+    """Return file paths written/edited during a session from its message history."""
+    files: list[str] = []
+    write_tools = {"edit_file", "write_file", "patch_file", "replace_text"}
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls") or []:
+            fn = tc.get("function", {})
+            name = fn.get("name", "")
+            if name not in write_tools:
+                continue
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except Exception:
+                continue
+            if name == "edit_file":
+                for chunk in args.get("chunks") or []:
+                    p = chunk.get("path", "") if isinstance(chunk, dict) else ""
+                    if p and p not in files:
+                        files.append(p)
+            else:
+                p = args.get("path", "")
+                if p and p not in files:
+                    files.append(p)
+    return files
+
+
+def _audit_crash(console, sentinel: Path, messages: list[dict]) -> None:
+    """If sentinel exists (prior crash), warn and show git-dirty written files."""
+    if not sentinel.exists():
+        return
+    console.print("[yellow]Warning: previous run of this session may have crashed.[/yellow]")
+    written = _extract_written_files(messages)
+    if not written:
+        return
+    dirty: list[str] = []
+    for f in written:
+        try:
+            r = subprocess.run(
+                ["git", "diff", "--name-only", "HEAD", "--", f],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.stdout.strip():
+                dirty.append(f)
+        except Exception:
+            pass
+    if dirty:
+        console.print("[yellow]Files modified last session differ from git HEAD:[/yellow]")
+        for f in dirty:
+            console.print(f"  {f}")
+        console.print("  Restore: [bold]git checkout HEAD -- <file>[/bold]")
 
 
 def cmd_chat(args, config):
@@ -107,6 +163,16 @@ def cmd_chat(args, config):
         session = new_session()
         console.print(f"New session: {session.id}")
 
+    from agent.memory.session import get_session_full_dir
+    _sentinel = get_session_full_dir(session.id) / "running"
+    if args.session:
+        _audit_crash(console, _sentinel, agent.messages)
+    try:
+        _sentinel.parent.mkdir(parents=True, exist_ok=True)
+        _sentinel.write_text("")
+    except Exception:
+        pass
+
     # Expose session on agent so planning helpers can tag plans with session_id.
     agent.session = session
     try:
@@ -141,6 +207,10 @@ def cmd_chat(args, config):
             pass
         raise
     finally:
+        try:
+            _sentinel.unlink(missing_ok=True)
+        except Exception:
+            pass
         save_session(session, agent.messages)
         try:
             from agent.memory.promoter import promote_session_to_notes
