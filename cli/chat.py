@@ -142,6 +142,16 @@ def cmd_chat(args, config):
         raise
     finally:
         save_session(session, agent.messages)
+        try:
+            from agent.memory.promoter import promote_session_to_notes
+            promote_session_to_notes(
+                session_id=session.id,
+                config=config,
+                facts_store=getattr(agent, "_facts_store", None),
+                embedder=embedder,
+            )
+        except Exception:
+            pass
         if store:
             store.close()
         if asm_store:
