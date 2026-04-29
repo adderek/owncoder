@@ -10,7 +10,7 @@ from agent.tools import get_schemas
 from openai import BadRequestError
 
 from .prompts import _build_call_kwargs, _inject_think_hint, _log_llm_request
-from .tool_calls import _tool_result_message, _FakeToolCall, execute_tool
+from .tool_calls import _tool_result_message, _FakeToolCall, execute_tool, _parse_raw_tool_calls
 from .streaming import _stream_response, _strip_tool_blocks, _is_narrating_tool_use
 from .history_ops import (
     _merge_trailing_assistants, _collapse_tool_rounds, _truncate_large_messages,
@@ -249,7 +249,6 @@ async def run_turn(
         tool_calls = msg.tool_calls if msg.tool_calls else None
 
         if not tool_calls and msg.content:
-            from .tool_calls import _parse_raw_tool_calls
             raw = _parse_raw_tool_calls(msg.content)
             if raw:
                 tool_calls = [_FakeToolCall(c["name"], c["arguments"]) for c in raw]

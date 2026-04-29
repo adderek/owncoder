@@ -21,15 +21,19 @@ def build_widget_classes(t) -> SimpleNamespace:
     Classes reference it by closure so the theme is baked in at construction time.
     """
     from textual.widgets import Static, RichLog, TextArea
-    from textual.message import Message
     from rich.markup import escape as _escape
 
+    from agent.ui.textual_events import build_event_classes
     from agent.ui.render import (
         _CTX_SEGMENT_COLORS, _CTX_SEGMENT_LABELS,
         _OUT_SEGMENT_COLORS, _OUT_SEGMENT_LABELS,
         _labeled_bar_segment,
     )
     from agent.ui.slash import _match_commands
+
+    # Build event classes first so JumpToTurn is available to view mixins below.
+    _events = build_event_classes()
+    JumpToTurn = _events.JumpToTurn
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
@@ -220,13 +224,6 @@ def build_widget_classes(t) -> SimpleNamespace:
 
     class SysView(RichLog):
         """System log — commands, session info, help output."""
-
-    class JumpToTurn(Message):
-        """Posted when a user clicks an entry in Q/A/Sparse views."""
-
-        def __init__(self, ordinal: int) -> None:
-            super().__init__()
-            self.ordinal = ordinal
 
     class _QALineTrackingMixin:
         """Mixin providing click-to-jump behavior shared by Q/A/Sparse views."""
@@ -744,44 +741,13 @@ def build_widget_classes(t) -> SimpleNamespace:
 
     # ── async event messages ──────────────────────────────────────────────────
 
-    class ToolCallEvent(Message):
-        def __init__(self, name: str, args: str = "") -> None:
-            super().__init__()
-            self.name = name
-            self.args = args
-
-    class ToolResultEvent(Message):
-        def __init__(self, name: str, ok: bool) -> None:
-            super().__init__()
-            self.name = name
-            self.ok = ok
-
-    class TokenStreamEvent(Message):
-        def __init__(self, token: str) -> None:
-            super().__init__()
-            self.token = token
-
-    class IterationProgressEvent(Message):
-        def __init__(self, done: int, limit: int) -> None:
-            super().__init__()
-            self.done = done
-            self.limit = limit
-
-    class PhaseEvent(Message):
-        def __init__(self, label: str, detail: str = "") -> None:
-            super().__init__()
-            self.label = label
-            self.detail = detail
-
-    class ReasoningTokenEvent(Message):
-        def __init__(self, token: str) -> None:
-            super().__init__()
-            self.token = token
-
-    class ContextSizeEvent(Message):
-        def __init__(self, tokens: int) -> None:
-            super().__init__()
-            self.tokens = tokens
+    ToolCallEvent = _events.ToolCallEvent
+    ToolResultEvent = _events.ToolResultEvent
+    TokenStreamEvent = _events.TokenStreamEvent
+    IterationProgressEvent = _events.IterationProgressEvent
+    PhaseEvent = _events.PhaseEvent
+    ReasoningTokenEvent = _events.ReasoningTokenEvent
+    ContextSizeEvent = _events.ContextSizeEvent
 
     # ── placeholder text ──────────────────────────────────────────────────────
 
