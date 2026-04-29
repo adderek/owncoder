@@ -169,7 +169,7 @@ class TokenLimitsConfig:
     commit_message: int = 8192
     commit_message_max_tokens: int = 16384
     commit_message_reserved: int = 512
-    commit_chunk_chars: int = 12000
+    commit_chunk_chars: int = 0  # 0 = auto: derived from ctx_window at runtime
     commit_summary_tokens: int = 1024
     prompt_compile_min: int = 2048
     compactor_analyze_min: int = 2048

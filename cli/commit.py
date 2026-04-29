@@ -121,6 +121,13 @@ def cmd_commit(args, config):
                 return
     else:
         chunk_chars = config.token_limits.commit_chunk_chars
+        if chunk_chars <= 0:
+            # Auto-derive: leave room for running summary (output of prev step),
+            # output budget for this step, and system/prompt overhead (~500 tok).
+            # chars_per_token ≈ 4 for code/diffs.
+            summary_tok = config.token_limits.commit_summary_tokens
+            overhead_tok = summary_tok + summary_tok + 500
+            chunk_chars = max(4000, (config.llm.ctx_window - overhead_tok) * 4)
 
     summary_tokens = config.token_limits.commit_summary_tokens
     diff_chars = len(staged_diff)
