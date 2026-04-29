@@ -278,15 +278,18 @@ def load_config(extra_path: Path | None = None) -> Config:
 
 
 def check_reachability(config: Config) -> None:
+    import sys
     url = config.llm.base_url.rstrip("/") + "/models"
+    print(f"Checking model endpoint {config.llm.base_url} ...", end=" ", flush=True)
     try:
         req = urllib.request.Request(url, method="GET")
         req.add_header("Authorization", f"Bearer {config.llm.api_key}")
         with urllib.request.urlopen(req, timeout=3) as resp:
             if config.llm.auto_detect_ctx:
                 _try_detect_ctx_window(config, resp)
+        print("ok", flush=True)
     except (urllib.error.URLError, OSError) as e:
-        import sys
+        print("unreachable", flush=True)
         print(
             f"\nWarning: LLM endpoint not reachable at {config.llm.base_url}\n"
             f"  Reason: {e}\n"
@@ -298,7 +301,9 @@ def check_reachability(config: Config) -> None:
     decision_cfg = getattr(config.parallel, "decision", None)
     if decision_cfg is not None and getattr(decision_cfg, "verify_on_startup", False):
         from agent.config.model_probe import enrich_model_entries
+        print("Probing model entries ...", end=" ", flush=True)
         enrich_model_entries(config)
+        print("done", flush=True)
 
 
 def _try_detect_ctx_window(config: Config, resp) -> None:
