@@ -496,8 +496,9 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
 
 from agent.ui.readline_loop import (
     simple_loop, _make_help_text, _token_bar,
-    _spinner_status_fields, _run_spinner, _hex_to_ansi,
 )
+from agent.ui.spinner import _spinner_status_fields, _run_spinner
+from agent.ui.colors import _hex_to_ansi
 
 
 # ── Entry point ──────────────────────────────────────────────────────────────

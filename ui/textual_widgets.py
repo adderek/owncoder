@@ -21,6 +21,7 @@ def build_widget_classes(t) -> SimpleNamespace:
     Classes reference it by closure so the theme is baked in at construction time.
     """
     from textual.widgets import Static, RichLog, TextArea
+    from textual.message import Message
     from rich.markup import escape as _escape
 
     from agent.ui.textual_events import build_event_classes
