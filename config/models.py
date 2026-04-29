@@ -175,6 +175,7 @@ class TokenLimitsConfig:
     compactor_analyze_min: int = 2048
     compactor_synthesize_initial: int = 2048
     compactor_synthesize_retry: int = 4096
+    idle_compaction_seconds: float = 120.0  # 0 = disabled
 
 
 @dataclass

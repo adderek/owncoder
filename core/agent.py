@@ -55,6 +55,8 @@ class Agent:
         self._notes_sys_idx: int | None = None  # index of current notes system message
         self._session_id: str | None = None
         self._project_memory_store = None  # project-level MemoryStore for session indexing
+        self._last_turn_time: float = 0.0
+        self._idle_compact_task: asyncio.Task | None = None
         self.stats: dict = {
             "input_tokens": 0,
             "output_tokens": 0,
@@ -231,6 +233,31 @@ class Agent:
     def reset_messages(self) -> None:
         system = next((m for m in self.messages if m.get("role") == "system"), None)
         self.messages = [system] if system else []
+
+    async def _idle_compact_loop(self, delay: float) -> None:
+        """Wait `delay` seconds; if no new turn started, compact messages."""
+        import time as _time
+        stamp = self._last_turn_time
+        await asyncio.sleep(delay)
+        if self._last_turn_time != stamp:
+            return  # new turn started — this fire is stale
+        token_est = self.token_estimate()
+        min_tokens = int(self.config.llm.ctx_window * 0.3)
+        if token_est < min_tokens:
+            return  # not enough content to bother compacting
+        try:
+            from agent.memory.compactor import compact
+            self.messages = await compact(
+                self.messages,
+                self.config,
+                self._client,
+                facts_store=self._facts_store,
+                project_memory_store=self._project_memory_store,
+                session_id=self._session_id,
+            )
+            logger.debug("idle compaction: %d tokens after compact", self.token_estimate())
+        except Exception:
+            logger.debug("idle compaction failed", exc_info=True)
 
     async def compact_messages(self) -> None:
         from agent.memory.compactor import compact
@@ -417,6 +444,9 @@ class Agent:
             self.messages = self.messages[:pre_turn_len]
             raise
 
+        import time as _time
+        self._last_turn_time = _time.monotonic()
+
         if self._qa_logger is not None:
             task = asyncio.create_task(
                 _post_turn_capture_and_summarize(
@@ -431,5 +461,15 @@ class Agent:
             )
             self._pending_bg_tasks.add(task)
             task.add_done_callback(self._pending_bg_tasks.discard)
+
+        idle_sec = getattr(self.config.token_limits, "idle_compaction_seconds", 0.0)
+        if idle_sec > 0:
+            if self._idle_compact_task is not None and not self._idle_compact_task.done():
+                self._idle_compact_task.cancel()
+            self._idle_compact_task = asyncio.create_task(
+                self._idle_compact_loop(idle_sec)
+            )
+            self._pending_bg_tasks.add(self._idle_compact_task)
+            self._idle_compact_task.add_done_callback(self._pending_bg_tasks.discard)
 
         return response
