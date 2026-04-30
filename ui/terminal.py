@@ -139,6 +139,7 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             else:
                 self._wrap_enabled = False
 
+            self._rating_prompted: bool = False
             self._bell_on_input_request: bool = ui_cfg.get("bell_on_input_request", True)
             self._terminal_title: str = ui_cfg.get("terminal_title", "auto")
             self._round_summary_enabled = ui_cfg["round_summary"]
@@ -187,6 +188,12 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             with Horizontal(id="loading-row"):
                 yield LoadingIndicator(id="loading-indicator")
                 yield Static("", id="loading-tokens", markup=True)
+            from textual.widgets import Button as _Button
+            with Horizontal(id="rating-bar"):
+                yield Static("Rate:", id="rating-label", markup=False)
+                yield _Button("👍 Good", id="btn-rate-good")
+                yield _Button("👎 Bad", id="btn-rate-bad")
+                yield _Button("skip", id="btn-rate-skip")
             yield ContextPanel("", id="context-panel")
             yield GitStatusBar("git: loading...", id="git-status")
             yield PromptInput(id="input-bar")
@@ -266,6 +273,17 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                 except Exception:
                     pass
                 self.exit()
+                return
+            # Prompt for session rating before quitting if unrated and has turns.
+            if (
+                not self._rating_prompted
+                and self._session is not None
+                and getattr(self._session, "user_outcome", None) is None
+                and self._server.get_turn_id() > 0
+                and not self._agent_running
+            ):
+                self._rating_prompted = True
+                self._show_rating_bar("Rate session:")
                 return
             pending = 0
             try:
@@ -429,6 +447,7 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             self.title = f"{s} agent — {label}"
 
         def _begin_chat(self, user_text: str) -> None:
+            self._hide_rating_bar()
             self._switch_to_chat()
             chat_log = self.query_one("#chat-log", ConversationView)
             self._chat_user_lines.append(len(chat_log.lines))
@@ -512,6 +531,52 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             if self._session is not None:
                 self._server.save_session(self._session)
             return result
+
+        def _hide_rating_bar(self) -> None:
+            try:
+                self.query_one("#rating-bar").remove_class("active")
+            except Exception:
+                pass
+
+        def _show_rating_bar(self, label: str = "Rate:") -> None:
+            try:
+                self.query_one("#rating-label").update(label)
+                self.query_one("#rating-bar").add_class("active")
+            except Exception:
+                pass
+
+        def _do_rate_session(self, outcome: str, voter: str = "user") -> None:
+            try:
+                sid = self._session.id if self._session else ""
+                self._server.rate_session(outcome=outcome, voter=voter, session_id=sid)
+                if self._session is not None:
+                    self._session.user_outcome = outcome
+                icon = "👍" if outcome == "good" else ("👎" if outcome == "bad" else "·")
+                self._write_chat(
+                    f"[{t.text_dim}]{icon} Session rated: {outcome}[/{t.text_dim}]"
+                )
+            except Exception as exc:
+                logger.warning("rate_session failed: %s", exc)
+
+        def on_button_pressed(self, event) -> None:
+            bid = event.button.id
+            if bid == "btn-rate-good":
+                self._hide_rating_bar()
+                self._do_rate_session("good")
+                if getattr(self, "_rating_prompted", False):
+                    self._rating_prompted = False
+                    self.action_quit()
+            elif bid == "btn-rate-bad":
+                self._hide_rating_bar()
+                self._do_rate_session("bad")
+                if getattr(self, "_rating_prompted", False):
+                    self._rating_prompted = False
+                    self.action_quit()
+            elif bid == "btn-rate-skip":
+                self._hide_rating_bar()
+                if getattr(self, "_rating_prompted", False):
+                    self._rating_prompted = False
+                    self.action_quit()
 
     return CodeAgentApp(agent, session=session, server=server)
 

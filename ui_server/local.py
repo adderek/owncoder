@@ -229,6 +229,10 @@ class LocalUIServer:
         from agent.memory.session import save_session
         save_session(session, self._agent.get_messages())
 
+    def rate_session(self, outcome: str, voter: str = "user", session_id: str = "") -> dict:
+        from agent.tools.rate_session.rate_session import rate_session as _rate
+        return _rate(outcome=outcome, voter=voter, session_id=session_id or None)
+
     def load_session(self, name: str, session_id: str = "") -> "tuple[Session | None, list[dict]]":
         from agent.memory.session import load_session
         session, messages = load_session(name)

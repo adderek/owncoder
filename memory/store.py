@@ -21,6 +21,17 @@ from pathlib import Path
 from typing import Any
 
 
+def _has_all_tags(tags_json: str | None, required: list[str]) -> bool:
+    if not required:
+        return True
+    try:
+        tags = json.loads(tags_json or "[]")
+    except Exception:
+        return False
+    tag_set = set(tags)
+    return all(t in tag_set for t in required)
+
+
 class MemoryStore:
     def __init__(self, db_path: str | Path) -> None:
         self._db_path = str(Path(db_path).resolve())
@@ -195,33 +206,70 @@ class MemoryStore:
 
     # ── search ────────────────────────────────────────────────────────────────
 
+    def update_source_tags(self, scope: str, source: str, tags: list[str]) -> int:
+        """Update tags for all entries matching scope+source. Returns count updated."""
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT rowid, id, body, title FROM entries WHERE scope=? AND source=?",
+            (scope, source),
+        ).fetchall()
+        if not rows:
+            return 0
+        tags_json = json.dumps(tags, ensure_ascii=False)
+        now = time.time()
+        for row in rows:
+            # Delete FTS entry before changing content table to avoid inconsistency.
+            conn.execute("DELETE FROM entries_fts WHERE rowid=?", (row["rowid"],))
+            conn.execute(
+                "UPDATE entries SET tags=?, updated_at=? WHERE rowid=?",
+                (tags_json, now, row["rowid"]),
+            )
+            conn.execute(
+                "INSERT INTO entries_fts(rowid,body,title,tags) VALUES(?,?,?,?)",
+                (row["rowid"], row["body"] or "", row["title"] or "", tags_json),
+            )
+        conn.commit()
+        return len(rows)
+
+    def _tag_filter_sql(self, tags_filter: list[str] | None) -> tuple[str, list]:
+        """Return (sql_fragment, params) for filtering entries by tags."""
+        if not tags_filter:
+            return "", []
+        clauses = [
+            "EXISTS (SELECT 1 FROM json_each(e.tags) WHERE json_each.value=?)"
+            for _ in tags_filter
+        ]
+        return " AND " + " AND ".join(clauses), list(tags_filter)
+
     def fts_search(
         self,
         query: str,
         scope: str | None = None,
         top_k: int = 10,
+        tags_filter: list[str] | None = None,
     ) -> list[dict]:
         if not query.strip():
             return []
         conn = self._conn()
+        tag_sql, tag_params = self._tag_filter_sql(tags_filter)
         try:
             if scope:
                 rows = conn.execute(
-                    """SELECT e.*, bm25(entries_fts) AS score
+                    f"""SELECT e.*, bm25(entries_fts) AS score
                        FROM entries_fts
                        JOIN entries e ON e.rowid = entries_fts.rowid
-                       WHERE entries_fts MATCH ? AND e.scope=?
+                       WHERE entries_fts MATCH ? AND e.scope=?{tag_sql}
                        ORDER BY score LIMIT ?""",
-                    (query, scope, top_k),
+                    (query, scope, *tag_params, top_k),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    """SELECT e.*, bm25(entries_fts) AS score
+                    f"""SELECT e.*, bm25(entries_fts) AS score
                        FROM entries_fts
                        JOIN entries e ON e.rowid = entries_fts.rowid
-                       WHERE entries_fts MATCH ?
+                       WHERE entries_fts MATCH ?{tag_sql}
                        ORDER BY score LIMIT ?""",
-                    (query, top_k),
+                    (query, *tag_params, top_k),
                 ).fetchall()
         except sqlite3.OperationalError:
             return []
@@ -232,36 +280,40 @@ class MemoryStore:
         embedding: list[float],
         scope: str | None = None,
         top_k: int = 10,
+        tags_filter: list[str] | None = None,
     ) -> list[dict]:
         if self._vec_dims is None or self._vec_dims != len(embedding):
             return []
+        tag_sql, tag_params = self._tag_filter_sql(tags_filter)
         try:
             import sqlite_vec
             blob = sqlite_vec.serialize_float32(embedding)
             conn = self._conn()
             if scope:
                 rows = conn.execute(
-                    """SELECT ve.entry_id, ve.distance, e.*
+                    f"""SELECT ve.entry_id, ve.distance, e.*
                        FROM vec_entries ve
                        JOIN entries e ON e.id = ve.entry_id
-                       WHERE ve.embedding MATCH ? AND k=? AND e.scope=?
+                       WHERE ve.embedding MATCH ? AND k=? AND e.scope=?{tag_sql}
                        ORDER BY ve.distance""",
-                    (blob, top_k * 3, scope),
+                    (blob, top_k * 3, scope, *tag_params),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    """SELECT ve.entry_id, ve.distance, e.*
+                    f"""SELECT ve.entry_id, ve.distance, e.*
                        FROM vec_entries ve
                        JOIN entries e ON e.id = ve.entry_id
-                       WHERE ve.embedding MATCH ? AND k=?
+                       WHERE ve.embedding MATCH ? AND k=?{tag_sql}
                        ORDER BY ve.distance""",
-                    (blob, top_k * 3),
+                    (blob, top_k * 3, *tag_params),
                 ).fetchall()
             result = [
                 {"score": 1.0 - r["distance"] / 2.0, **dict(r)} for r in rows
             ]
             if scope:
                 result = [r for r in result if r.get("scope") == scope]
+            if tags_filter:
+                result = [r for r in result if _has_all_tags(r.get("tags"), tags_filter)]
             return result[:top_k]
         except Exception:
             return []
@@ -272,13 +324,14 @@ class MemoryStore:
         embedding: list[float] | None = None,
         scope: str | None = None,
         top_k: int = 10,
+        tags_filter: list[str] | None = None,
     ) -> list[dict]:
         vec_results = (
-            self.vector_search(embedding, scope=scope, top_k=top_k * 2)
+            self.vector_search(embedding, scope=scope, top_k=top_k * 2, tags_filter=tags_filter)
             if embedding
             else []
         )
-        fts_results = self.fts_search(query, scope=scope, top_k=top_k * 2)
+        fts_results = self.fts_search(query, scope=scope, top_k=top_k * 2, tags_filter=tags_filter)
 
         def _norm(id_score: list[tuple[str, float]]) -> dict[str, float]:
             if not id_score:

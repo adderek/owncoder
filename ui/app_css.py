@@ -162,4 +162,56 @@ def build_app_css(t) -> str:
     #stream-view.active {{
         display: block;
     }}
+    #rating-bar {{
+        height: 1;
+        display: none;
+        background: {t.panel_bg};
+        padding: 0 1;
+    }}
+    #rating-bar.active {{
+        display: block;
+    }}
+    #btn-rate-good {{
+        height: 1;
+        min-width: 10;
+        background: {t.panel_bg};
+        color: {t.success};
+        border: none;
+        padding: 0 1;
+    }}
+    #btn-rate-good:hover {{
+        background: {t.active};
+        color: white;
+    }}
+    #btn-rate-bad {{
+        height: 1;
+        min-width: 10;
+        background: {t.panel_bg};
+        color: {t.error};
+        border: none;
+        padding: 0 1;
+    }}
+    #btn-rate-bad:hover {{
+        background: {t.active};
+        color: white;
+    }}
+    #btn-rate-skip {{
+        height: 1;
+        min-width: 8;
+        background: {t.panel_bg};
+        color: {t.text_dim};
+        border: none;
+        padding: 0 1;
+    }}
+    #btn-rate-skip:hover {{
+        background: {t.active};
+        color: white;
+    }}
+    #rating-label {{
+        height: 1;
+        width: auto;
+        background: {t.panel_bg};
+        color: {t.text_dim};
+        padding: 0 1;
+    }}
     """

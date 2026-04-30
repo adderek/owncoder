@@ -54,6 +54,7 @@ class Agent:
         self._turn_id: int = 0
         self._notes_sys_idx: int | None = None  # kept for compat; notes removal now uses marker
         self._session_id: str | None = None
+        self._similar_sessions_injected: bool = False
         self._project_memory_store = None  # project-level MemoryStore for session indexing
         self._last_turn_time: float = 0.0
         self._idle_compact_task: asyncio.Task | None = None
@@ -124,8 +125,10 @@ class Agent:
         from agent.memory.session import get_session_full_dir
         from agent.memory.side_log import SideLogWriter
         from agent.tools import recall as recall_tool
+        from agent.tools import rate_session as rate_session_tool
         from agent import failure_report as _fr
         self._session_id = session_id
+        self._similar_sessions_injected = False
         _fr.set_session(session_id)
         _fr.set_config(self.config)
         self._qa_logger = QALogger(session_id)
@@ -136,6 +139,63 @@ class Agent:
             logger.warning("SideLogWriter init failed: %s", e)
             self._side_log = None
         recall_tool.setup(self._facts_store)
+        rate_session_tool.set_session(session_id)
+
+    def _inject_similar_sessions(self, query: str, top_k: int = 3) -> None:
+        """On first turn, inject top-K similar rated sessions as context.
+
+        Only fires once per session (guarded by _similar_sessions_injected).
+        Requires project MemoryStore and at least one rated session in history.
+        """
+        if self._similar_sessions_injected:
+            return
+        self._similar_sessions_injected = True
+
+        store = self._project_memory_store
+        if store is None:
+            return
+
+        embedding = None
+        if self.embedder is not None:
+            try:
+                embedding = self.embedder.embed_one(query[:2000])
+            except Exception:
+                pass
+
+        # Try good outcomes first; fall back to ok if no good results
+        hits = store.hybrid_search(
+            query,
+            embedding=embedding,
+            scope="session_summary",
+            top_k=top_k,
+            tags_filter=["outcome:good"],
+        )
+        if not hits:
+            hits = store.hybrid_search(
+                query,
+                embedding=embedding,
+                scope="session_summary",
+                top_k=top_k,
+                tags_filter=["outcome:ok"],
+            )
+        if not hits:
+            return
+
+        import json as _json
+        lines = ["# Similar past sessions (rated successful)\n"]
+        for h in hits:
+            title = h.get("title") or "(untitled)"
+            snippet = (h.get("body") or "")[:500]
+            lines.append(f"## {title}\n{snippet}\n")
+        content = "\n".join(lines).strip()
+
+        insert_at = len(self.messages) - 1
+        if insert_at < 0:
+            insert_at = 0
+        self.messages.insert(
+            insert_at,
+            {"role": "system", "content": content, "_similar_sessions_marker": True},
+        )
 
     def _refresh_notes_context(self, query: str, top_k: int = 6) -> None:
         """Inject (or replace) a notes system message relevant to *query*.
@@ -406,6 +466,7 @@ class Agent:
 
         pre_turn_len = len(self.messages)
         self.messages.append({"role": "user", "content": user_input})
+        self._inject_similar_sessions(user_input)
         self._refresh_notes_context(user_input)
         if on_user_message is not None:
             on_user_message()

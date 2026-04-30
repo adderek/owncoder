@@ -55,6 +55,11 @@ def _get_store():
                     "type": "integer",
                     "description": "Max results to return. Default 5.",
                 },
+                "outcome_filter": {
+                    "type": "string",
+                    "enum": ["good", "bad", "ok"],
+                    "description": "Only return sessions with this outcome rating. Omit for all sessions.",
+                },
             },
             "required": ["query"],
         },
@@ -63,6 +68,7 @@ def _get_store():
 def recall_sessions(
     query: str,
     max_results: int = 5,
+    outcome_filter: str | None = None,
 ) -> dict[str, Any]:
     if not (query or "").strip():
         return {"error": "`query` must be non-empty."}
@@ -86,11 +92,13 @@ def recall_sessions(
         except Exception:
             pass
 
+    tags_filter = [f"outcome:{outcome_filter}"] if outcome_filter else None
     hits = store.hybrid_search(
         query,
         embedding=embedding,
         scope="session_summary",
         top_k=max_results,
+        tags_filter=tags_filter,
     )
 
     if not hits:

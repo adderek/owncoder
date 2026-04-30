@@ -39,6 +39,9 @@ class Session:
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
+    user_outcome: str | None = None   # "good" | "bad" | "ok" — set by user
+    agent_outcome: str | None = None  # "good" | "bad" | "ok" — set by agent
+
     # Path to the file this session was loaded from (not serialised)
     _file_path: Path | None = field(default=None, repr=False, compare=False)
 
@@ -117,13 +120,15 @@ def _session_from_data(data: dict, file_path: Path | None = None) -> Session:
         tags=list(data.get("tags") or []),
         created_at=data.get("created_at", data.get("saved_at", time.time())),
         updated_at=data.get("updated_at", data.get("saved_at", time.time())),
+        user_outcome=data.get("user_outcome"),
+        agent_outcome=data.get("agent_outcome"),
     )
     s._file_path = file_path
     return s
 
 
 def _session_to_data(session: Session, messages: list[dict]) -> dict:
-    return {
+    data: dict = {
         "id": session.id,
         "short_name": session.short_name,
         "name": session.name,
@@ -134,6 +139,11 @@ def _session_to_data(session: Session, messages: list[dict]) -> dict:
         "updated_at": session.updated_at,
         "messages": messages,
     }
+    if session.user_outcome is not None:
+        data["user_outcome"] = session.user_outcome
+    if session.agent_outcome is not None:
+        data["agent_outcome"] = session.agent_outcome
+    return data
 
 
 # ── Public API ───────────────────────────────────────────────────────────────
