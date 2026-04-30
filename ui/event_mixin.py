@@ -239,6 +239,11 @@ class EventHandlerMixin:
         else:
             logger.warning("chat worker cancelled")
             response = None
+            if self._session is not None:
+                try:
+                    self._server.save_session(self._session)
+                except Exception:
+                    logger.exception("save_session on cancel failed")
 
         tokens_after = self._server.token_estimate()
         delta = tokens_after - self._tokens_before

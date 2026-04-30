@@ -516,6 +516,13 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             def on_context_size(n: int) -> None:
                 self.post_message(ContextSizeEvent(n))
 
+            async def on_loop_detected(summary: str, count: int) -> bool:
+                self._write_chat(
+                    f"[{t.warning}]⚠ loop guard: repeated tool calls ({summary})."
+                    f" Rephrase to redirect.[/{t.warning}]"
+                )
+                return False
+
             result = await self._server.chat(
                 user_text,
                 session_id=self._session.id if self._session else "",
@@ -527,6 +534,7 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                 on_phase=on_phase,
                 on_reasoning=on_reasoning,
                 on_context_size=on_context_size,
+                on_loop_detected=on_loop_detected,
             )
             if self._session is not None:
                 self._server.save_session(self._session)
