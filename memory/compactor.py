@@ -190,6 +190,8 @@ async def _analyze_transcript(
         )
         if prev_round.summary:
             user_parts.append(f"## Previous compressed summary\n{prev_round.summary}")
+        if prev_round.q_view:
+            user_parts.append(f"## [PREVIOUS Q_VIEW] (carry verbatim unless new instruction supersedes)\n{prev_round.q_view}")
         user_parts.append("## New transcript segment to fold in\n" + transcript_text)
     else:
         user_parts.append("## Transcript to analyze\n" + transcript_text)
@@ -287,6 +289,67 @@ async def _synthesize_summary(
         raise CompactionError("stage 2 output incomplete after retry")
 
     return _parse_synthesis_output(raw)
+
+
+# ── Goal drift detection ────────────────────────────────────────────────────
+
+_DRIFT_SYSTEM = (
+    "You are checking whether an agent's working summary has drifted from the "
+    "user's original request. Compare the two and decide if the goal has "
+    "significantly changed. If drifted, output a corrected one-paragraph q_view "
+    "that stays true to the original request while reflecting any legitimate "
+    "new instructions.\n\n"
+    "Output JSON only: {\"drifted\": true/false, \"corrected_q\": \"...\"}\n"
+    "If not drifted, set corrected_q to empty string."
+)
+
+_DRIFT_JSON_RE = re.compile(r'\{[^{}]*"drifted"[^{}]*\}', re.DOTALL)
+
+
+async def _check_goal_drift(
+    original_request: str,
+    q_view: str,
+    config: "Config",
+    client: "AsyncOpenAI",
+) -> str | None:
+    """Compare original_request vs current q_view. Return corrected q_view if drifted, else None.
+
+    Uses the summarizer model (cheap/fast). Timeout-guarded — returns None on any failure.
+    """
+    if not original_request or not q_view:
+        return None
+    prompt = (
+        f"original_request: {original_request}\n\n"
+        f"current q_view: {q_view}"
+    )
+    try:
+        from agent.config import make_registry
+        entry = make_registry(config).summarizer
+        from openai import AsyncOpenAI as _OAI
+        sum_client = _OAI(base_url=entry.base_url, api_key=entry.api_key)
+        try:
+            response = await sum_client.chat.completions.create(
+                model=entry.model,
+                messages=[
+                    {"role": "system", "content": _DRIFT_SYSTEM},
+                    {"role": "user", "content": prompt},
+                ],
+                max_tokens=300,
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            )
+        finally:
+            await sum_client.close()
+        raw = (response.choices[0].message.content or "").strip()
+        m = _DRIFT_JSON_RE.search(raw)
+        if not m:
+            return None
+        data = json.loads(m.group(0))
+        if data.get("drifted") and data.get("corrected_q"):
+            logger.info("goal_drift: drift detected; correcting q_view")
+            return str(data["corrected_q"]).strip()
+    except Exception as e:
+        logger.debug("_check_goal_drift: skipped (%s)", e)
+    return None
 
 
 # ── Project-level session indexing ─────────────────────────────────────────
@@ -416,6 +479,19 @@ async def compact(
         result.append(error_msg)
         result.extend(_truncate_tool_results_in(verbatim, max_chars=2000))
         return result
+
+    # Propagate original_request from previous round if synthesizer dropped it.
+    prev_original = (prev_round.facts or {}).get("original_request", "") if prev_round else ""
+    if prev_original and not facts.get("original_request"):
+        facts["original_request"] = prev_original
+
+    # Drift check: if original_request exists, verify q_view hasn't drifted.
+    original_request = facts.get("original_request", "")
+    if original_request and q_view:
+        corrected = await _check_goal_drift(original_request, q_view, config, client)
+        if corrected:
+            q_view = corrected
+            facts["_drift_corrected"] = True
 
     saved_round = None
     if facts_store is not None:

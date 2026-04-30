@@ -19,6 +19,15 @@ contradictions). Then fold in whatever the new transcript adds. Do not
 shrink the draft — incremental rounds must accumulate knowledge, not erode
 it.
 
+GOAL PRESERVATION (critical):
+  * If a "[PREVIOUS Q_VIEW]" section is provided, copy it verbatim into a
+    "[PREVIOUS Q_VIEW]" section in your output. Preserve it unless the new
+    transcript contains an explicit user instruction that supersedes it.
+  * Under the "### Intent & Requirements" header, record the user's original
+    request verbatim (first user message), marked as "[ORIGINAL REQUEST]:".
+    If a previous draft already has "[ORIGINAL REQUEST]:", copy it exactly —
+    never rephrase it.
+
 Output a single long-form report organised under these headers:
 
 ### Intent & Requirements

@@ -126,6 +126,7 @@ class Agent:
         from agent.memory.side_log import SideLogWriter
         from agent.tools import recall as recall_tool
         from agent.tools import rate_session as rate_session_tool
+        from agent.tools import recall_history as recall_history_tool
         from agent import failure_report as _fr
         self._session_id = session_id
         self._similar_sessions_injected = False
@@ -139,6 +140,7 @@ class Agent:
             logger.warning("SideLogWriter init failed: %s", e)
             self._side_log = None
         recall_tool.setup(self._facts_store)
+        recall_history_tool.setup(self._qa_logger)
         rate_session_tool.set_session(session_id)
 
     def _inject_similar_sessions(self, query: str, top_k: int = 3) -> None:

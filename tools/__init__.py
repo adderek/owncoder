@@ -27,7 +27,7 @@ def get_schemas() -> list[dict]:
 
 def load_all_tools(config=None, store=None, embedder=None, asm_store=None, data_provider=None) -> None:
     global _tools_loaded
-    from agent.tools import files, shell, git, search, analyze_asm, edit_file, recall, notes, recall_sessions, rate_session  # noqa: F401
+    from agent.tools import files, shell, git, search, analyze_asm, edit_file, recall, notes, recall_sessions, rate_session, recall_history  # noqa: F401
     from agent.tools.rules import load_rules
 
     # Wrap raw objects in DataProvider when caller hasn't provided one.
