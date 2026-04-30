@@ -358,11 +358,15 @@ async def compact(
             return _truncate_tool_results_in(messages, max_chars=budget * 2)
         return messages
 
+    hard_rules_msgs: list[dict] = []
     system_msg = None
     conversation = []
     for m in messages:
         if m.get("role") == "system":
-            system_msg = m
+            if m.get("_hard_rules_marker"):
+                hard_rules_msgs.append(m)
+            else:
+                system_msg = m
         else:
             conversation.append(m)
 
@@ -406,7 +410,7 @@ async def compact(
     except CompactionError as e:
         logger.warning("compact: stage 2 failed, falling back to error summary: %s", e)
         error_msg = {"role": "assistant", "content": f"[SESSION SUMMARY ERROR: {e}]"}
-        result = []
+        result = list(hard_rules_msgs)
         if system_msg:
             result.append(system_msg)
         result.append(error_msg)
@@ -452,7 +456,7 @@ async def compact(
 
     verbatim = _truncate_tool_results_in(verbatim, max_chars=2000)
 
-    result: list[dict] = []
+    result: list[dict] = list(hard_rules_msgs)
     if system_msg:
         result.append(system_msg)
     result.append(compacted_msg)

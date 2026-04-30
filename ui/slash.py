@@ -248,7 +248,10 @@ def _render_models_table(config: "Config"):
     tbl.add_column("model id", no_wrap=True)
     tbl.add_column("endpoint", style="dim", no_wrap=True)
     tbl.add_column("ctx", justify="right", no_wrap=True)
+    tbl.add_column("out", justify="right", no_wrap=True)
+    tbl.add_column("temp", justify="right", no_wrap=True)
     tbl.add_column("params", justify="right", no_wrap=True)
+    tbl.add_column("tok/s", justify="right", no_wrap=True)
     tbl.add_column("L", justify="center", no_wrap=True)  # local
     tbl.add_column("T", justify="center", no_wrap=True)  # thinking
     tbl.add_column("$/in", justify="right", no_wrap=True)
@@ -260,7 +263,10 @@ def _render_models_table(config: "Config"):
         is_active = name == active_entry
 
         ctx_str = f"{e.ctx_window // 1024}k" if e.ctx_window >= 1024 else str(e.ctx_window)
+        out_str = f"{e.max_output_tokens // 1024}k" if e.max_output_tokens >= 1024 else str(e.max_output_tokens)
+        temp_str = f"{e.temperature:.2f}"
         params_str = f"{e.params_b:.0f}B" if e.params_b else "?"
+        tps_str = f"{e.tokens_per_sec:.0f}" if e.tokens_per_sec else "—"
         local_str = "[green]✓[/green]" if e.local else ""
         think_str = "[cyan]✓[/cyan]" if e.thinking else ""
         cost_in_str = f"{e.cost_in_per_1k:.4f}" if e.cost_in_per_1k else "—"
@@ -277,7 +283,8 @@ def _render_models_table(config: "Config"):
 
         tbl.add_row(
             name_str, model_str, e.base_url,
-            ctx_str, params_str, local_str, think_str,
+            ctx_str, out_str, temp_str, params_str, tps_str,
+            local_str, think_str,
             cost_in_str, cost_out_str, badge_str,
         )
 

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from agent.memory.compactor import _count_tokens_approx
 from agent.tools import get_schemas
 
-from .prompts import _build_system_prompt
+from .prompts import _build_system_prompt, load_base_rules, HARD_RULES_MARKER
 from .turn import _post_turn_capture_and_summarize
 from agent.ipc.controller import run_turn_ipc
 
@@ -91,7 +91,11 @@ class Agent:
             import sys
             print(f"warning: {project_doc_warning}", file=sys.stderr)
 
-        self.messages = [{"role": "system", "content": system_content}]
+        base_rules = load_base_rules()
+        self.messages = []
+        if base_rules:
+            self.messages.append({"role": "system", "content": base_rules, HARD_RULES_MARKER: True})
+        self.messages.append({"role": "system", "content": system_content})
         if project_doc:
             self.messages.append({"role": "system", "content": project_doc})
         if user_context:
@@ -219,8 +223,7 @@ class Agent:
         self.messages = list(messages)
 
     def reset_messages(self) -> None:
-        system = next((m for m in self.messages if m.get("role") == "system"), None)
-        self.messages = [system] if system else []
+        self.messages = [m for m in self.messages if m.get("role") == "system"]
 
     async def _idle_compact_loop(self, delay: float) -> None:
         """Wait `delay` seconds; if no new turn started, compact messages."""

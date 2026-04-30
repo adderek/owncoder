@@ -274,7 +274,7 @@ class SlashHandlerMixin:
             cfg = self._server._agent.config
             tbl = _render_models_table(cfg)
             buf = StringIO()
-            Console(file=buf, highlight=False).print(tbl)
+            Console(file=buf, highlight=False, width=300).print(tbl)
             self._write_sys(buf.getvalue().rstrip())
 
         elif cmd == "/plan":

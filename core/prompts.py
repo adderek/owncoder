@@ -13,8 +13,26 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "system.txt"
 GUIDELINES_DIR = Path(__file__).parent.parent / "prompts" / "guidelines"
+BASE_RULES_PATH = Path(__file__).parent.parent / "prompts" / "base_rules.txt"
 
 _PREAMBLE_CACHE: set[str] = set()
+
+# Marker key used to identify hard-rules messages so the compactor preserves them.
+HARD_RULES_MARKER = "_hard_rules_marker"
+
+
+def load_base_rules() -> str:
+    """Return base_rules.txt content, stripping comment lines.
+
+    Returns empty string when file is missing or contains only comments/whitespace.
+    Stable content = server KV cache hit on every turn.
+    """
+    if not BASE_RULES_PATH.exists():
+        return ""
+    lines = BASE_RULES_PATH.read_text(encoding="utf-8").splitlines()
+    content = "\n".join(l for l in lines if not l.startswith("#")).strip()
+    return content
+
 
 THINK_LEVELS = ("off", "low", "normal", "high", "max")
 

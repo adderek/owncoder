@@ -57,6 +57,7 @@ def build_app_css(t) -> str:
         height: 1fr;
         background: {t.chat_bg};
         padding: 0;
+        overflow-x: scroll;
         {_scrollbar_css}
     }}
     #sys-log:focus {{
