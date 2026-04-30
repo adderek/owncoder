@@ -143,11 +143,15 @@ def build_widget_classes(t) -> SimpleNamespace:
             label = f"ctx: {total_used:,}/{ctx:,}"
             bar_len = max(10, width - len(label) - 2)
 
+            if total_used <= 0:
+                self.update(f"{label} [dim]{'░' * bar_len}[/dim]")
+                return
+
             cells = []
             remaining = bar_len
             for seg in self._segments:
                 tok = max(0, seg.get("tokens", 0))
-                raw = tok / ctx * bar_len
+                raw = tok / total_used * bar_len
                 n = int(raw)
                 if tok > 0 and n == 0 and remaining > 0:
                     n = 1
