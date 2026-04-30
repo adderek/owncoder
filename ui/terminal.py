@@ -317,6 +317,8 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             self._write_sys(_make_help_text(t))
 
         def action_continue_turn(self) -> None:
+            if self._agent_running:
+                return
             input_widget = self.query_one("#input-bar", PromptInput)
             if input_widget.disabled:
                 return

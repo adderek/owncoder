@@ -237,7 +237,7 @@ class EventHandlerMixin:
             logger.error("chat worker error: %s\n%s", err, tb)
             response = f"[{t.error}]Error: {err}[/{t.error}]"
         else:
-            logger.warning("chat worker cancelled")
+            logger.info("chat worker cancelled")
             response = None
             if self._session is not None:
                 try:
