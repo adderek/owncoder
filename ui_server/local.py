@@ -1,6 +1,7 @@
 """LocalUIServer — single-agent in-process implementation of UIServerProtocol."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
@@ -20,6 +21,8 @@ class LocalUIServer:
 
     def __init__(self, agent: "Agent") -> None:
         self._agent = agent
+        self._stop_event: asyncio.Event | None = None
+        self._default_max_iterations: int | None = getattr(agent.config.llm, "max_iterations", 10)
 
     # ── chat ────────────────────────────────────────────────────────────────
 
@@ -38,6 +41,7 @@ class LocalUIServer:
         on_context_size=None,
         on_user_message=None,
     ) -> str:
+        self._stop_event = asyncio.Event()
         return await self._agent.chat(
             text,
             on_token=on_token,
@@ -49,7 +53,22 @@ class LocalUIServer:
             on_reasoning=on_reasoning,
             on_context_size=on_context_size,
             on_user_message=on_user_message,
+            stop_event=self._stop_event,
         )
+
+    # ── runtime controls ─────────────────────────────────────────────────────
+
+    def stop_after_iteration(self, session_id: str = "") -> None:
+        """Request graceful stop after the current tool-call iteration finishes."""
+        if self._stop_event is not None:
+            self._stop_event.set()
+
+    def set_unlimited_mode(self, enabled: bool, session_id: str = "") -> None:
+        """Toggle unlimited iterations (None) vs the configured default."""
+        self._agent.config.llm.max_iterations = None if enabled else self._default_max_iterations
+
+    def is_unlimited_mode(self, session_id: str = "") -> bool:
+        return getattr(self._agent.config.llm, "max_iterations", 10) is None
 
     # ── control ─────────────────────────────────────────────────────────────
 

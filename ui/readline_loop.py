@@ -45,8 +45,10 @@ def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
   [{c}]/temperature [v][/{c}]     sampling temperature 0.0–2.0 (alias [{c}]/temp[/{c}]; '-' resets)
   [{c}]/max_tokens [args][/{c}]   set tokens: <n> | out <n> | in <n> | default
   [{c}]/context[/{c}] ([{c}]/ctx[/{c}], [{c}]/legend[/{c}])  context breakdown grid + color/marker key
+  [{c}]/unlimited[/{c}] ([{c}]/nomax[/{c}])  toggle unlimited iterations (no iter cap)
+                       Ctrl+C while running: stop after current iteration (Ctrl+C again = cancel)
 
-[dim]Ctrl+D or Ctrl+C to quit[/dim]
+[dim]Ctrl+D or Ctrl+Q to quit[/dim]
 """
 
 

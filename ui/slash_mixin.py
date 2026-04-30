@@ -311,6 +311,15 @@ class SlashHandlerMixin:
             self.action_quit()
             return
 
+        elif cmd in ("/unlimited", "/nomax"):
+            enabled = not self._server.is_unlimited_mode()
+            self._server.set_unlimited_mode(enabled)
+            if enabled:
+                self._write_sys(f"[{t.success}]Unlimited iterations ON — Ctrl+C to stop after current iteration.[/{t.success}]")
+            else:
+                limit = getattr(self._server._agent.config.llm, "max_iterations", 10)
+                self._write_sys(f"[{t.text_dim}]Unlimited iterations OFF — limit restored to {limit}.[/{t.text_dim}]")
+
         elif cmd == "/recoveries":
             from agent.planning import recovery
             recs = recovery.scan_pending()

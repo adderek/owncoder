@@ -40,6 +40,7 @@ async def run(
     inject_queue: asyncio.Queue | None = None,
     project_memory_store=None,
     session_id: str | None = None,
+    stop_event: asyncio.Event | None = None,
 ) -> None:
     """Run one agent turn; emit result events via `send` (sync callable).
 
@@ -106,6 +107,7 @@ async def run(
             inject_queue=inject_queue,
             project_memory_store=project_memory_store,
             session_id=session_id,
+            stop_event=stop_event,
         )
         send(TurnDoneEvent(response=response, messages=updated_messages))
     except Exception as exc:

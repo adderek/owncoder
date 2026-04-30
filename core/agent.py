@@ -354,6 +354,7 @@ class Agent:
         on_phase=None,
         on_reasoning=None,
         on_context_size=None,
+        stop_event: asyncio.Event | None = None,
     ) -> str:
         self._turn_id += 1
         turn_id = self._turn_id
@@ -425,8 +426,9 @@ class Agent:
                 inject_queue=self._inject_queue,
                 project_memory_store=self._project_memory_store,
                 session_id=self._session_id,
+                stop_event=stop_event,
             )
-        except Exception:
+        except BaseException:
             # Roll back the user message so the next turn doesn't start with
             # consecutive user messages (which causes a 400 deadloop).
             self.messages = self.messages[:pre_turn_len]

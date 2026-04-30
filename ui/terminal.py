@@ -93,6 +93,7 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             Binding("ctrl+d", "quit", "Quit", show=False),
             Binding("f1", "show_help", "Help"),
             Binding("ctrl+r", "continue_turn", "Continue"),
+            Binding("ctrl+c", "interrupt_turn", "Stop", show=False),
             Binding("ctrl+tab", "focus_next", "Switch focus", show=False),
         ]
 
@@ -112,6 +113,8 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             self._loading_timer = None
             self._iter_done: int = 0
             self._iter_limit: int = 0
+            self._stop_requested: bool = False
+            self._chat_worker = None
             self._quit_requested: bool = False
             self._chat_user_lines: list[int] = []
             self._sys_messages: list[str] = []
@@ -301,6 +304,21 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                 return
             self._begin_chat("continue")
 
+        def action_interrupt_turn(self) -> None:
+            if not self._agent_running:
+                return
+            if not self._stop_requested:
+                self._stop_requested = True
+                self._server.stop_after_iteration()
+                self._write_sys(
+                    f"[{t.warning}]Stopping after current iteration… "
+                    f"Press Ctrl+C again to cancel immediately.[/{t.warning}]"
+                )
+            else:
+                if self._chat_worker is not None:
+                    self._chat_worker.cancel()
+                self._write_sys(f"[{t.error}]Cancelled.[/{t.error}]")
+
         # ── git refresh ──────────────────────────────────────────────────────
 
         async def _refresh_git(self) -> None:
@@ -392,7 +410,10 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                 est = self._server.token_estimate()
                 rcvd = max(0, est - self._tokens_before)
                 text = f"in: [bold]{self._tokens_before:,}[/bold]  out: +{rcvd:,}"
-                if self._iter_limit:
+                if self._iter_limit == -1:
+                    stop_hint = "  [bold yellow]⏹ stopping…[/bold yellow]" if self._stop_requested else ""
+                    text += f"  iter {self._iter_done}/∞{stop_hint}"
+                elif self._iter_limit > 0:
                     left = max(0, self._iter_limit - self._iter_done)
                     text += f"  iter {self._iter_done}/{self._iter_limit} ({left} left)"
                 self.query_one("#loading-tokens", Static).update(text)
@@ -424,6 +445,7 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             self._modified_files = []
             self._iter_done = 0
             self._iter_limit = 0
+            self._stop_requested = False
             self._current_user_text = user_text
             self._reasoning_buffer = []
             self._reasoning_active = False
@@ -443,7 +465,7 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                 self._loading_timer.stop()
             self._loading_timer = self.set_interval(0.3, self._update_loading_tokens)
             self.query_one("#context-panel", ContextPanel).set_context("[dim]thinking…[/dim]")
-            self._start_chat(user_text)
+            self._chat_worker = self._start_chat(user_text)
 
         @work(exclusive=True, exit_on_error=False, name="chat")
         async def _start_chat(self, user_text: str) -> str:

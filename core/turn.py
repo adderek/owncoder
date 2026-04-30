@@ -67,6 +67,7 @@ async def run_turn(
     excluded_tools: set[str] | None = None,
     project_memory_store=None,
     session_id: str | None = None,
+    stop_event: asyncio.Event | None = None,
     _depth: int = 0,
 ) -> tuple[str, list[dict]]:
     def _phase(label: str, detail: str = "") -> None:
@@ -99,7 +100,8 @@ async def run_turn(
     iter_count = 0
     _read_path_counts: dict[str, int] = {}
     _READ_PATH_WARN_THRESHOLD = 3
-    max_iter = max(1, int(getattr(config.llm, "max_iterations", 10)))
+    _max_iter_raw = getattr(config.llm, "max_iterations", 10)
+    max_iter: int | None = None if _max_iter_raw is None else max(1, int(_max_iter_raw))
     loop_cfg = getattr(config, "loop_guard", None)
     loop_detector: LoopDetector | None = None
     if loop_cfg is not None and getattr(loop_cfg, "enabled", True):
@@ -110,7 +112,7 @@ async def run_turn(
         )
     if on_progress is not None:
         try:
-            on_progress(0, max_iter)
+            on_progress(0, max_iter if max_iter is not None else -1)
         except Exception:
             pass
 
@@ -158,7 +160,7 @@ async def run_turn(
         turn_reasoning: str = ""
         try:
             if on_token is not None:
-                _phase("generating", f"iter {iter_count + 1}/{max_iter}")
+                _phase("generating", f"iter {iter_count + 1}/{'∞' if max_iter is None else max_iter}")
                 finish_reason, full_content, raw_tool_calls, turn_reasoning = await _stream_response(
                     client, config, api_messages, tools, on_token,
                     on_usage=on_usage, on_reasoning=on_reasoning,
@@ -394,10 +396,15 @@ async def run_turn(
             iter_count += 1
             if on_progress is not None:
                 try:
-                    on_progress(iter_count, max_iter)
+                    on_progress(iter_count, max_iter if max_iter is not None else -1)
                 except Exception:
                     pass
-            if iter_count >= max_iter:
+            if stop_event is not None and stop_event.is_set():
+                logger.info("run_turn: stop_event set after iteration %d, stopping", iter_count)
+                note = "[stopped by user — type 'continue' to resume]"
+                messages = messages + [{"role": "assistant", "content": note}]
+                return "".join(content_parts + [note]), messages
+            if max_iter is not None and iter_count >= max_iter:
                 logger.warning("run_turn: reached max_iterations=%d, stopping tool loop", max_iter)
                 note = f"[iteration limit {max_iter} reached — type 'continue' to keep going]"
                 messages = messages + [{"role": "assistant", "content": note}]
