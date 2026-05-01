@@ -30,6 +30,9 @@ def load_all_tools(config=None, store=None, embedder=None, asm_store=None, data_
     from agent.tools import files, shell, git, search, analyze_asm, edit_file, recall, notes, recall_sessions, rate_session, recall_history  # noqa: F401
     from agent.tools.rules import load_rules
 
+    if config is not None and getattr(config.web_search, "enabled", False):
+        from agent.tools import web_search  # noqa: F401
+
     # Wrap raw objects in DataProvider when caller hasn't provided one.
     if data_provider is None:
         from agent.data_provider import LocalDataProvider
@@ -65,6 +68,9 @@ def load_all_tools(config=None, store=None, embedder=None, asm_store=None, data_
     notes.setup(config, embedder=data_provider.get_embedder() if data_provider else None)
     recall_sessions.setup(config, embedder=data_provider.get_embedder() if data_provider else None)
     rate_session.setup(config)
+
+    if config is not None and getattr(config.web_search, "enabled", False):
+        web_search.setup(config)
 
     if config is not None and getattr(config.planning, "increments_enabled", False):
         from agent.tools import increment_tools  # noqa: F401

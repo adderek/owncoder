@@ -348,6 +348,38 @@ class DecisionConfig:
 
 
 @dataclass
+class WebSearchConfig:
+    """Web search feature. Off by default — user must opt in."""
+    enabled: bool = False
+    backend: str = "duckduckgo"
+    max_results_per_search: int = 10
+    max_search_calls_per_turn: int = 3
+    max_fetch_calls_per_turn: int = 5
+    sandbox: bool = True
+    timeout_connect_s: int = 10
+    timeout_total_s: int = 30
+    user_agent: str = "owncoder-agent/1.0"
+    max_response_bytes: int = 1_048_576   # 1 MB
+    max_result_chars: int = 32_768        # 32 KB per result
+    # Injection patterns: map of pattern string → action.
+    # Actions: "filter" (prefix [FILTERED]), "escape" (backslash-escape).
+    injection_patterns: dict = field(default_factory=lambda: {
+        "Ignore previous instructions": "filter",
+        "Ignore all prior instructions": "filter",
+        "Disregard previous directives": "filter",
+        "Forget all previous instructions": "filter",
+        "SYSTEM:": "escape",
+        "SYSTEM PROMPT:": "escape",
+        "<|im_start|>system": "escape",
+        "<|im_start|>": "replace_tokens",
+        "<|im_end|>": "replace_tokens",
+        "jailbreak": "filter",
+        "developer mode": "filter",
+        "DAN mode": "filter",
+    })
+
+
+@dataclass
 class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
@@ -369,3 +401,4 @@ class Config:
     planning: PlanningConfig = field(default_factory=PlanningConfig)
     recovery: RecoveryConfig = field(default_factory=RecoveryConfig)
     parallel: ParallelConfig = field(default_factory=ParallelConfig)
+    web_search: WebSearchConfig = field(default_factory=WebSearchConfig)

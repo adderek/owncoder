@@ -82,6 +82,8 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_PLANNING_MAX_STEP_RETRIES": ("planning", "max_step_retries"),
         "AGENT_RECOVERY_PROMPT_MODE": ("recovery", "prompt_mode"),
         "AGENT_RECOVERY_ENABLED": ("recovery", "enabled"),
+        "AGENT_WEB_SEARCH_ENABLED": ("web_search", "enabled"),
+        "AGENT_WEB_SEARCH_BACKEND": ("web_search", "backend"),
     }
     for env_key, (section, attr) in env_map.items():
         val = os.environ.get(env_key)
@@ -141,6 +143,7 @@ def _merge(config: Config, data: dict) -> None:
         ("planning", config.planning),
         ("recovery", config.recovery),
         ("parallel", config.parallel),
+        ("web_search", config.web_search),
     ):
         section_data = data.get(section_name, {})
         _merge_obj(obj, section_data)

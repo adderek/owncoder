@@ -58,3 +58,11 @@ git_status()
 
 git_related_files(path)
   Find files most often committed alongside a given file.
+
+web_search(query, num_results=5, source="web")
+  Search the web for up-to-date information. Returns sanitized snippets only.
+  ALWAYS prefer this over web_fetch for initial search. Rate limited to 3/turn.
+
+web_fetch(url)
+  Fetch full page text from a URL. Use only after web_search to get details.
+  All content is sanitized and wrapped for safety. Rate limited to 5/turn.

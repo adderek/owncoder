@@ -246,6 +246,21 @@ skip_on_truncated     = true
 skip_tools            = ["read_file"]
 prompt_path           = ""
 
+# ── Web Search ───────────────────────────────────────────────────────────────
+# Five-layer safety architecture. All web content is treated as hostile.
+# Off by default — you must opt in.
+
+[web_search]
+enabled                     = false    # off by default — set true to enable
+backend                     = "duckduckgo"  # "duckduckgo" (no key) or "brave" (needs API key)
+max_results_per_search      = 10
+max_search_calls_per_turn   = 3
+max_fetch_calls_per_turn    = 5
+sandbox                     = true     # run HTTP requests under bwrap/firejail
+timeout_connect_s           = 10
+timeout_total_s             = 30
+user_agent                  = "owncoder-agent/1.0"
+
 # ── Planning ──────────────────────────────────────────────────────────────────
 
 [planning]

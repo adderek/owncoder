@@ -87,6 +87,10 @@ async def run_turn(
             logger.exception("on_context_size callback failed")
 
     tools = get_schemas()
+    # Reset web search rate limit counters each turn.
+    if getattr(config, "web_search", None) and config.web_search.enabled:
+        from agent.tools.web_search.main import reset_turn_state
+        reset_turn_state()
     if excluded_tools:
         tools = [t for t in tools if t.get("function", {}).get("name") not in excluded_tools]
     tc_cfg = getattr(config, "tool_compaction", None)
