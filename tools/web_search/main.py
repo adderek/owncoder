@@ -68,7 +68,7 @@ def _fetch_raw(url: str, headers: dict[str, str], timeout: int, mode: str) -> tu
 def _search_duckduckgo(query: str, num_results: int) -> list[dict]:
     """Search DuckDuckGo HTML (no API key required)."""
     import urllib.parse
-    import re
+    from html.parser import HTMLParser
 
     url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
     ws_cfg = _config.web_search
@@ -79,40 +79,70 @@ def _search_duckduckgo(query: str, num_results: int) -> list[dict]:
         logger.warning("DuckDuckGo search failed: %s", e)
         return []
 
-    # Parse DuckDuckGo HTML results
     proc = content_processor.process(raw, content_type="text/html")
     if proc.get("binary_rejected") or proc.get("error"):
         return []
 
-    html_text = proc["text"]
+    class DDGParser(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.results = []
+            self.current_link = None
+            self.current_title = ""
+            self.current_snippet = ""
+            self.in_link = False
+            self.in_snippet = False
+            self.last_link_data = None
+
+        def handle_starttag(self, tag, attrs):
+            if tag == 'a':
+                attrs_dict = dict(attrs)
+                classes = attrs_dict.get('class', [])
+                if isinstance(classes, str):
+                    classes = classes.split()
+
+                if 'result__a' in classes:
+                    self.in_link = True
+                    self.current_link = attrs_dict.get('href', '')
+                    self.current_title = ""
+                elif 'result__snippet' in classes:
+                    self.in_snippet = True
+                    self.current_snippet = ""
+
+        def handle_data(self, data):
+            if self.in_link:
+                self.current_title += data
+            elif self.in_snippet:
+                self.current_snippet += data
+
+        def handle_endtag(self, tag):
+            if tag == 'a':
+                if self.in_link:
+                    self.in_link = False
+                    self.last_link_data = {'url': self.current_link, 'title': self.current_title}
+                elif self.in_snippet:
+                    self.in_snippet = False
+                    if self.last_link_data:
+                        self.results.append({
+                            'url': self.last_link_data['url'],
+                            'title': self.last_link_data['title'],
+                            'snippet': self.current_snippet
+                        })
+                        self.last_link_data = None
+
+    parser = DDGParser()
+    parser.feed(raw.decode("utf-8", errors="replace"))
+
     results = []
-
-    # Simple regex-based extraction of result links and snippets from DuckDuckGo HTML
-    # Each result: <a class="result__a" href="...">Title</a> + <a class="result__snippet">...</a>
-    link_pattern = re.compile(
-        r'<a[^>]*class="result__a"[^>]*href="(https?://[^"]+)"[^>]*>(.*?)</a>',
-        re.IGNORECASE,
-    )
-    snippet_pattern = re.compile(
-        r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>',
-        re.IGNORECASE | re.DOTALL,
-    )
-
-    # Re-parse raw HTML for structured extraction
-    raw_text = raw.decode("utf-8", errors="replace")
-    links = link_pattern.findall(raw_text)
-    snippets = snippet_pattern.findall(raw_text)
-
-    for i, (url, title) in enumerate(links[:num_results]):
-        title = content_processor._strip_html(title)
-        snippet = ""
-        if i < len(snippets):
-            snippet = content_processor._strip_html(snippets[i])
+    for i, res in enumerate(parser.results[:num_results]):
+        title = content_processor._strip_html(res['title']).strip()
+        url = res['url']
+        snippet = content_processor._strip_html(res['snippet']).strip()[:500]
         results.append({
             "index": i + 1,
-            "title": title.strip(),
+            "title": title,
             "url": url,
-            "snippet": snippet.strip()[:500],
+            "snippet": snippet,
             "snippet_hash": _sha256(snippet),
         })
 
