@@ -181,6 +181,15 @@ async def _analyze_transcript(
     summary into the prompt so the model extends rather than replaces.
     Uses a generous max_tokens so nuance is not clipped.
     """
+    # Shortcut: when there is no prior round and the transcript is already
+    # small enough to serve as its own knowledge draft, skip the Stage-1
+    # LLM call entirely.  Saves 200-800 ms per short compaction.
+    if prev_round is None:
+        from agent._tokens import count_tokens_approx
+        _SHORT_TRANSCRIPT_THRESHOLD = 1500
+        if count_tokens_approx(transcript_text) < _SHORT_TRANSCRIPT_THRESHOLD:
+            return transcript_text
+
     user_parts: list[str] = []
     if prev_round is not None:
         user_parts.append(

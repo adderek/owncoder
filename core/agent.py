@@ -143,11 +143,15 @@ class Agent:
         recall_history_tool.setup(self._qa_logger)
         rate_session_tool.set_session(session_id)
 
-    def _inject_similar_sessions(self, query: str, top_k: int = 3) -> None:
+    def _inject_similar_sessions(self, query: str, top_k: int = 3, embedding=None) -> None:
         """On first turn, inject top-K similar rated sessions as context.
 
         Only fires once per session (guarded by _similar_sessions_injected).
         Requires project MemoryStore and at least one rated session in history.
+
+        Args:
+            embedding: Optional precomputed embedding for ``query[:2000]``.
+                       When provided, skips the duplicate embedder call.
         """
         if self._similar_sessions_injected:
             return
@@ -157,8 +161,7 @@ class Agent:
         if store is None:
             return
 
-        embedding = None
-        if self.embedder is not None:
+        if embedding is None and self.embedder is not None:
             try:
                 embedding = self.embedder.embed_one(query[:2000])
             except Exception:
@@ -196,16 +199,20 @@ class Agent:
             insert_at = 0
         self.messages.insert(
             insert_at,
-            {"role": "system", "content": content, "_similar_sessions_marker": True},
+            {"role": "user", "content": content, "_similar_sessions_marker": True},
         )
 
-    def _refresh_notes_context(self, query: str, top_k: int = 6) -> None:
-        """Inject (or replace) a notes system message relevant to *query*.
+    def _refresh_notes_context(self, query: str, top_k: int = 6, embedding=None) -> None:
+        """Inject (or replace) a notes message relevant to *query*.
 
         Embeds the query, retrieves top-N notes from the project MemoryStore,
-        and upserts a system message into self.messages just before the most
+        and upserts a user message into self.messages just before the most
         recent user message. Uses a ``_notes_marker`` key to find and remove
         the previous injection regardless of how messages shifted since then.
+
+        Args:
+            embedding: Optional precomputed embedding for ``query[:2000]``.
+                       When provided, skips the duplicate embedder call.
         """
         if self.embedder is None:
             return
@@ -213,10 +220,11 @@ class Agent:
         store = _notes_store()
         if store is None:
             return
-        try:
-            embedding = self.embedder.embed_one(query[:2000])
-        except Exception:
-            return
+        if embedding is None:
+            try:
+                embedding = self.embedder.embed_one(query[:2000])
+            except Exception:
+                return
         hits = store.hybrid_search(query, embedding=embedding, scope="note", top_k=top_k)
 
         # Remove any previous notes injection (find by marker, not index).
@@ -245,7 +253,7 @@ class Agent:
         insert_at = len(self.messages) - 1
         if insert_at < 0:
             insert_at = 0
-        self.messages.insert(insert_at, {"role": "system", "content": notes_content, "_notes_marker": True})
+        self.messages.insert(insert_at, {"role": "user", "content": notes_content, "_notes_marker": True})
 
     def pending_background_count(self) -> int:
         return sum(1 for t in self._pending_bg_tasks if not t.done())
@@ -470,8 +478,15 @@ class Agent:
         _is_continue = user_input.strip().lower() in ("continue", "/continue", "/c")
         if not _is_continue:
             self.messages.append({"role": "user", "content": user_input})
-            self._inject_similar_sessions(user_input)
-            self._refresh_notes_context(user_input)
+            # Compute embedding once; reuse across both injection helpers.
+            precomputed_embedding = None
+            if self.embedder is not None:
+                try:
+                    precomputed_embedding = self.embedder.embed_one(user_input[:2000])
+                except Exception:
+                    pass
+            self._inject_similar_sessions(user_input, embedding=precomputed_embedding)
+            self._refresh_notes_context(user_input, embedding=precomputed_embedding)
         if on_user_message is not None:
             on_user_message()
         try:
