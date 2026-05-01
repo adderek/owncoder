@@ -147,6 +147,11 @@ async def run_turn(
             return result
         api_messages = [_to_api_msg(m) for m in messages]
         api_messages = _merge_trailing_assistants(api_messages)
+        # Trailing assistant without tool_calls = unintentional prefill; reject by
+        # most APIs (and always incompatible with enable_thinking). Strip it.
+        if api_messages and api_messages[-1].get("role") == "assistant" and not api_messages[-1].get("tool_calls"):
+            logger.warning("run_turn: stripping trailing assistant message (prefill) before API call")
+            api_messages = api_messages[:-1]
         # DeepSeek / reasoning models require reasoning_content on ALL assistant
         # messages in a thinking-mode session. Fill absent ones with "".
         if any(m.get("role") == "assistant" and m.get("reasoning_content") for m in api_messages):
