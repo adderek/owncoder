@@ -98,7 +98,10 @@ def edit_file(
         _undo_stack[path] = content
         for v in vs_sorted:
             content = content[: v.start] + v.replacement + content[v.end :]
-            applied.append({"path": path, "chunk_index": v.chunk_index, "removed_lines": v.removed_lines, "added_lines": v.added_lines})
+            entry: dict = {"path": path, "chunk_index": v.chunk_index, "removed_lines": v.removed_lines, "added_lines": v.added_lines}
+            if v.auto_unescaped:
+                entry["auto_unescaped"] = True
+            applied.append(entry)
         size_ok, size_msg = rules.check_write_size(content)
         if not size_ok:
             errors.append({"chunk_index": vs[0].chunk_index, "kind": "write_size_exceeded", "detail": size_msg or "write size limit exceeded", "path": path})

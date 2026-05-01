@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -8,6 +10,18 @@ from .matcher import (
     _count_lines, _find_exact, _find_loose_v2, _range_to_offsets,
     _candidate, _MAX_CANDIDATES,
 )
+
+logger = logging.getLogger(__name__)
+
+_UNESCAPE_MAP = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\"}
+
+
+def _looks_double_escaped(s: str) -> bool:
+    return "\\n" in s and "\n" not in s
+
+
+def _unescape_model_json(s: str) -> str:
+    return re.sub(r"\\([ntr\"\\])", lambda m: _UNESCAPE_MAP[m.group(1)], s)
 
 
 @dataclass
@@ -21,6 +35,7 @@ class _ValidatedChunk:
     replacement: str
     removed_lines: int
     added_lines: int
+    auto_unescaped: bool = False
 
 
 def _validate_chunk(
@@ -150,6 +165,27 @@ def _validate_chunk(
         spans = _find_loose_v2(original, anchor, lo, hi)
         match_mode = "loose"
 
+    auto_unescaped = False
+    if not spans and _looks_double_escaped(anchor):
+        unescaped_anchor = _unescape_model_json(anchor)
+        unescaped_replacement = _unescape_model_json(replacement)
+        unescaped_spans = _find_exact(original, unescaped_anchor, lo, hi)
+        if not unescaped_spans and mode == "loose":
+            unescaped_spans = _find_loose_v2(original, unescaped_anchor, lo, hi)
+        if unescaped_spans:
+            logger.warning(
+                "edit_file: auto-unescaped double-encoded anchor in %s (chunk %d); "
+                "model likely emitted literal \\\\n instead of newlines",
+                path, idx,
+            )
+            anchor = unescaped_anchor
+            replacement = unescaped_replacement
+            anchor_lines = _count_lines(anchor)
+            repl_lines = _count_lines(replacement)
+            spans = unescaped_spans
+            match_mode = "exact"
+            auto_unescaped = True
+
     if not spans:
         fuzzy = _find_loose_v2(original, anchor, lo, hi)
         candidates = [_candidate(original, s, e, i) for i, (s, e) in enumerate(fuzzy[:_MAX_CANDIDATES])] if fuzzy else []
@@ -174,4 +210,5 @@ def _validate_chunk(
         replacement=replacement,
         removed_lines=anchor_lines,
         added_lines=repl_lines,
+        auto_unescaped=auto_unescaped,
     ), None
