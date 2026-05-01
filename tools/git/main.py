@@ -176,7 +176,7 @@ def git_status() -> dict:
         return {"error": stderr or "git status failed"}
 
     lines = stdout.splitlines()
-    branch = ""
+    branch = None
     staged = []
     unstaged = []
     untracked = []
@@ -196,6 +196,9 @@ def git_status() -> dict:
             unstaged.append({"status": y, "file": fname})
         if x == "?" and y == "?":
             untracked.append(fname)
+
+    if branch is None:
+        return {"error": "failed to parse git status: no branch line found"}
 
     return {
         "branch": branch,
