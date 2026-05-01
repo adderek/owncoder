@@ -355,7 +355,7 @@ class WebSearchConfig:
     max_results_per_search: int = 10
     max_search_calls_per_turn: int = 3
     max_fetch_calls_per_turn: int = 5
-    sandbox: bool = True
+    execution_mode: str = "sandboxed"  # "sandboxed" or "direct"
     timeout_connect_s: int = 10
     timeout_total_s: int = 30
     user_agent: str = "owncoder-agent/1.0"

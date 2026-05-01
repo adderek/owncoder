@@ -49,9 +49,24 @@ def _sha256(text: str) -> str:
 # Backend registry
 # ═══════════════════════════════════════════════════════════════════════════
 
+def _fetch_raw(url: str, headers: dict[str, str], timeout: int, mode: str) -> tuple[bytes, dict[str, str]]:
+    """Unified HTTP fetcher for search backends."""
+    import urllib.request
+    import base64
+
+    if mode == "sandboxed":
+        res = http_executor.fetch(url, headers=headers, total_timeout=timeout)
+        if res.get("error"):
+            raise Exception(f"Sandboxed fetch failed: {res['error']}")
+        body = base64.b64decode(res.get("body_base64", ""))
+        return body, dict(res.get("headers", {}))
+    else:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read(), dict(resp.headers)
+
 def _search_duckduckgo(query: str, num_results: int) -> list[dict]:
     """Search DuckDuckGo HTML (no API key required)."""
-    import urllib.request
     import urllib.parse
     import re
 
@@ -59,12 +74,7 @@ def _search_duckduckgo(query: str, num_results: int) -> list[dict]:
     ws_cfg = _config.web_search
 
     try:
-        req = urllib.request.Request(
-            url,
-            headers={"User-Agent": ws_cfg.user_agent},
-        )
-        with urllib.request.urlopen(req, timeout=ws_cfg.timeout_total_s) as resp:
-            raw = resp.read()
+        raw, _ = _fetch_raw(url, {"User-Agent": ws_cfg.user_agent}, ws_cfg.timeout_total_s, ws_cfg.execution_mode)
     except Exception as e:
         logger.warning("DuckDuckGo search failed: %s", e)
         return []
@@ -135,18 +145,16 @@ def _search_brave(query: str, num_results: int) -> list[dict]:
     params = {"q": query, "count": min(num_results, 20)}
     ws_cfg = _config.web_search
 
+    url_with_params = f"{url}?{urllib.parse.urlencode(params)}"
+    headers = {
+        "Accept": "application/json",
+        "Accept-Encoding": "gzip",
+        "X-Subscription-Token": brave_key,
+        "User-Agent": ws_cfg.user_agent,
+    }
     try:
-        req = urllib.request.Request(
-            f"{url}?{urllib.parse.urlencode(params)}",
-            headers={
-                "Accept": "application/json",
-                "Accept-Encoding": "gzip",
-                "X-Subscription-Token": brave_key,
-                "User-Agent": ws_cfg.user_agent,
-            },
-        )
-        with urllib.request.urlopen(req, timeout=ws_cfg.timeout_total_s) as resp:
-            data = _json.loads(resp.read())
+        raw, _ = _fetch_raw(url_with_params, headers, ws_cfg.timeout_total_s, ws_cfg.execution_mode)
+        data = _json.loads(raw)
     except Exception as e:
         logger.warning("Brave search failed: %s", e)
         return [{"error": f"Brave search failed: {e}"}]
