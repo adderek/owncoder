@@ -234,7 +234,6 @@ class Rules:
             "ftp",
         ]
         cmd_lower = cmd.lower().strip()
-        first_word = cmd_lower.split()[0] if cmd_lower.split() else ""
         # Check each segment
         for seg in _split_command_segments(cmd):
             seg_first = seg.strip().split()[0] if seg.strip().split() else ""
