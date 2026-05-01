@@ -9,7 +9,7 @@ from agent.memory.compactor import _count_tokens_approx
 from agent.tools import get_schemas
 
 from .prompts import _build_system_prompt, load_base_rules, HARD_RULES_MARKER
-from .turn import _post_turn_capture_and_summarize
+from .turn import _post_turn_capture_and_summarize, run_turn
 from agent.ipc.controller import run_turn_ipc
 
 if TYPE_CHECKING:
@@ -489,8 +489,9 @@ class Agent:
             self._refresh_notes_context(user_input, embedding=precomputed_embedding)
         if on_user_message is not None:
             on_user_message()
+        _run_turn_fn = run_turn if not self.config.parallel.enabled else run_turn_ipc
         try:
-            response, self.messages = await run_turn_ipc(
+            response, self.messages = await _run_turn_fn(
                 self.messages,
                 self.config,
                 self._client,
