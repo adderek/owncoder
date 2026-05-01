@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -25,8 +26,8 @@ def setup(config: "Config") -> None:
         _sec_fs._root_dev = None
         _sec_fs._root_ino = None
         _sec_fs.init_root_pin()
-    except Exception:
-        pass
+    except Exception as e:
+        logging.warning("Failed to initialize security policy: %s", e)
 
 
 def _working_dir() -> Path:
