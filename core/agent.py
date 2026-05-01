@@ -467,9 +467,11 @@ class Agent:
                 original_on_tool_call(name, args)
 
         pre_turn_len = len(self.messages)
-        self.messages.append({"role": "user", "content": user_input})
-        self._inject_similar_sessions(user_input)
-        self._refresh_notes_context(user_input)
+        _is_continue = user_input.strip().lower() in ("continue", "/continue", "/c")
+        if not _is_continue:
+            self.messages.append({"role": "user", "content": user_input})
+            self._inject_similar_sessions(user_input)
+            self._refresh_notes_context(user_input)
         if on_user_message is not None:
             on_user_message()
         try:
