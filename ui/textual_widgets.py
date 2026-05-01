@@ -669,7 +669,8 @@ def build_widget_classes(t) -> SimpleNamespace:
                 return
             text = self.text
             if text.startswith("/"):
-                cmd_part = text.split()[0] if text.split() else text
+                text_parts = text.split()
+                cmd_part = text_parts[0] if text_parts else text
                 self._comp_matches = _match_commands(cmd_part)
             else:
                 self._comp_matches = []

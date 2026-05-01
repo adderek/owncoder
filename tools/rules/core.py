@@ -236,7 +236,8 @@ class Rules:
         cmd_lower = cmd.lower().strip()
         # Check each segment
         for seg in _split_command_segments(cmd):
-            seg_first = seg.strip().split()[0] if seg.strip().split() else ""
+            seg_parts = seg.strip().split()
+            seg_first = seg_parts[0] if seg_parts else ""
             if seg_first in network_cmds:
                 return False, (
                     f"Network access denied by .agent.boundary (command: {seg_first})"
