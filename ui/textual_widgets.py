@@ -338,6 +338,18 @@ def build_widget_classes(t) -> SimpleNamespace:
         def set_status(self, text: str) -> None:
             self.update(text)
 
+    class QSummaryView(RichLog):
+        """View for summarized user questions."""
+        def set_summary(self, text: str) -> None:
+            self.clear()
+            self.write(text)
+
+    class ASummaryView(RichLog):
+        """View for summarized agent answers."""
+        def set_summary(self, text: str) -> None:
+            self.clear()
+            self.write(text)
+
     _MODEL_STATUS_ROLES = [("llm", "main"), ("emb", "emb"), ("sum", "sum")]
 
     class ModelConfigScreen:
@@ -786,6 +798,8 @@ def build_widget_classes(t) -> SimpleNamespace:
         _QALineTrackingMixin=_QALineTrackingMixin,
         QView=QView,
         AView=AView,
+        QSummaryView=QSummaryView,
+        ASummaryView=ASummaryView,
         SparseView=SparseView,
         ContextPanel=ContextPanel,
         GitStatusBar=GitStatusBar,

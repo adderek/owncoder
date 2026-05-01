@@ -67,6 +67,8 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
     _QALineTrackingMixin = _w._QALineTrackingMixin
     QView = _w.QView
     AView = _w.AView
+    QSummaryView = _w.QSummaryView
+    ASummaryView = _w.ASummaryView
     SparseView = _w.SparseView
     ContextPanel = _w.ContextPanel
     GitStatusBar = _w.GitStatusBar
@@ -179,8 +181,12 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                     yield Static("", id="stream-view", markup=True)
                 with TabPane("Q", id="tab-q"):
                     yield QView(id="q-log", markup=True, highlight=False)
+                with TabPane("Q Summary", id="tab-q-summary"):
+                    yield QSummaryView(id="q-summary-log", markup=True, highlight=False)
                 with TabPane("A", id="tab-a"):
                     yield AView(id="a-log", markup=True, highlight=False)
+                with TabPane("A Summary", id="tab-a-summary"):
+                    yield ASummaryView(id="a-summary-log", markup=True, highlight=False)
                 with TabPane("sparse", id="tab-sparse"):
                     yield SparseView(id="sparse-log", markup=True, highlight=False)
                 with TabPane("sys", id="tab-sys"):
