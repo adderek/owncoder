@@ -14,6 +14,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Repetition guard: break stream if last N content/reasoning chunks are identical
+_REPEAT_WINDOW = 10
+_REPEAT_THRESHOLD = 6
+
 _NARRATION_PHRASES = [
     "i'll apply", "i will apply", "let me apply",
     "i'll patch", "i will patch", "let me patch",
@@ -32,6 +36,31 @@ _LEAK_RE = re.compile(r"<[^>]*\|[^>]*>")
 # ChatML-style tokens like <|im_start|>, <|im_end|>, <|imend>, <|imendend>
 _CHATML_TOKEN_RE = re.compile(r"<\|[^>]*>")
 _THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def _repetition_guard(content: str, threshold: int = _REPEAT_THRESHOLD) -> bool:
+    """Check if last third of text repeats same word/phrase (model stuck in loop).
+
+    Splits tail into word tokens, counts runs of identical tokens.
+    Returns True when same token appears >threshold times consecutively.
+    """
+    words = content.split()
+    if len(words) < threshold:
+        return False
+    # Check the trailing chunk for repeated token runs
+    tail = words[-threshold:]
+    if len(set(tail)) == 1:
+        return True
+    # Also check runs of the same token
+    run_count = 1
+    for i in range(len(words) - 1, 0, -1):
+        if words[i] == words[i - 1]:
+            run_count += 1
+            if run_count >= threshold:
+                return True
+        else:
+            run_count = 1
+    return False
 
 
 def _clean_output(text: str) -> str:
@@ -114,11 +143,17 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
                         on_reasoning(rc)
                     except Exception:
                         logger.exception("on_reasoning callback failed")
+                if _repetition_guard("".join(reasoning_parts)):
+                    logger.warning("Repeating reasoning content detected — breaking stream")
+                    break
             if delta.content:
                 if t_first_token is None:
                     t_first_token = time.monotonic()
                 content_parts.append(delta.content)
                 on_token(delta.content)
+                if _repetition_guard("".join(content_parts)):
+                    logger.warning("Repeating content detected — breaking stream")
+                    break
             for tc_delta in (delta.tool_calls or []):
                 if t_first_token is None:
                     t_first_token = time.monotonic()

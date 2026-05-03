@@ -148,9 +148,42 @@ class TestStreamResponseClean:
         )
         assert content == "Fix the bug."
 
+    @pytest.mark.parametrize(
+        "text,expected_repeat",
+        [
+            ("de-facto de-facto de-facto de-facto de-facto de-facto de-facto", True),
+            ("de-facto " * 10, True),
+            ("a b c d e f g h", False),
+            ("de-facto de-facto something-else de-facto de-facto", False),
+            ("repeat repeat repeat repeat repeat repeat repeat", True),
+        ],
+    )
+    def test_repetition_guard_detects_loops(self, text, expected_repeat):
+        from agent.core.streaming import _repetition_guard
+        assert _repetition_guard(text) == expected_repeat
+
     @pytest.mark.asyncio
-    async def test_on_token_receives_raw_chunks(self):
-        """on_token callback gets raw content before cleaning (transient UI display)."""
+    async def test_stream_breaks_on_repeated_content(self):
+        """Stream breaks when same word repeats many times."""
+        chunks = [self._mock_chunk(content="de-facto ")] * 15
+        client = self._make_client(*chunks)
+        _, content, calls, _ = await _stream_response(
+            client, self._make_config(), [], [], on_token=lambda t: None,
+        )
+        assert "de-facto" in content
+        # Should have fewer than all 15 (broken early)
+        assert content.count("de-facto") < 15
+
+    @pytest.mark.asyncio
+    async def test_repeated_reasoning_breaks_stream(self):
+        """Stream breaks when same reasoning word repeats many times."""
+        chunks = [self._mock_chunk(reasoning="de-facto ")] * 15
+        client = self._make_client(*chunks)
+        _, content, calls, reasoning = await _stream_response(
+            client, self._make_config(), [], [], on_token=lambda t: None,
+        )
+        assert "de-facto" in reasoning
+        assert reasoning.count("de-facto") < 15  # should not have all 15
         tokens: list[str] = []
         client = self._make_client(
             self._mock_chunk(content="hello "),
