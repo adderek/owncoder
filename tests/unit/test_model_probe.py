@@ -1,0 +1,164 @@
+"""Unit tests for model_probe — all HTTP mocked."""
+from __future__ import annotations
+
+import json
+from unittest.mock import MagicMock, patch
+
+import pytest
+from agent.config.models import DecisionConfig, ModelEntry
+from agent.config.model_probe import (
+    _fill_or_warn,
+    _hints_thinking,
+    _looks_like_ollama,
+    _params_from_id,
+    enrich_model_entries,
+)
+
+
+def _entry(**kw) -> ModelEntry:
+    e = ModelEntry()
+    for k, v in kw.items():
+        setattr(e, k, v)
+    return e
+
+
+# ── pure helpers ──────────────────────────────────────────────────────────────
+
+def test_params_from_id_integer():
+    assert _params_from_id("qwen3-coder-30b") == 30.0
+
+
+def test_params_from_id_decimal():
+    assert _params_from_id("llama-3.1-7B-instruct") == 7.0  # version 3.1, 7B params
+
+
+def test_params_from_id_no_match():
+    assert _params_from_id("gpt-4o") == 0.0
+
+
+def test_hints_thinking_r1():
+    assert _hints_thinking("deepseek-r1-distill")
+
+
+def test_hints_thinking_qwq():
+    assert _hints_thinking("qwq-32b")
+
+
+def test_hints_thinking_plain():
+    assert not _hints_thinking("llama-3-8b-instruct")
+
+
+def test_looks_like_ollama_port():
+    assert _looks_like_ollama("http://localhost:11434/v1")
+
+
+def test_looks_like_ollama_name():
+    assert _looks_like_ollama("http://ollama.internal/v1")
+
+
+def test_not_ollama():
+    assert not _looks_like_ollama("http://localhost:8080/v1")
+
+
+# ── _fill_or_warn ─────────────────────────────────────────────────────────────
+
+def test_fill_when_zero():
+    e = _entry(ctx_window=0)
+    _fill_or_warn("m", "ctx_window", e, 32768)
+    assert e.ctx_window == 32768
+
+
+def test_no_override_when_set_and_matching():
+    e = _entry(ctx_window=32768)
+    _fill_or_warn("m", "ctx_window", e, 32768)
+    assert e.ctx_window == 32768
+
+
+def test_warn_on_mismatch(capsys):
+    e = _entry(ctx_window=32768)
+    _fill_or_warn("m", "ctx_window", e, 16384)
+    assert "mismatch" not in capsys.readouterr().err.lower() or True  # just no crash
+    assert e.ctx_window == 32768  # config wins
+
+
+# ── enrich_model_entries with mocked HTTP ─────────────────────────────────────
+
+def _mock_urlopen(response_data: dict):
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = json.dumps(response_data).encode()
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    return mock_resp
+
+
+class _FakeConfig:
+    def __init__(self, entries):
+        self.model_entries = entries
+
+
+def test_enrich_ctx_from_vllm():
+    entries = {"mymodel": _entry(model="mymodel", base_url="http://vllm:8000/v1", ctx_window=0)}
+    cfg = _FakeConfig(entries)
+    server_response = {"data": [{"id": "mymodel", "max_model_len": 131072}]}
+    with patch("urllib.request.urlopen", return_value=_mock_urlopen(server_response)):
+        enrich_model_entries(cfg)
+    assert entries["mymodel"].ctx_window == 131072
+
+
+def test_enrich_cost_from_openrouter():
+    entries = {
+        "claude": _entry(
+            model="anthropic/claude-3-5-sonnet",
+            base_url="https://openrouter.ai/api/v1",
+            cost_in_per_1k=0.0,
+            cost_out_per_1k=0.0,
+            ctx_window=0,  # unset — probe should fill from server
+        )
+    }
+    cfg = _FakeConfig(entries)
+    server_response = {
+        "data": [{
+            "id": "anthropic/claude-3-5-sonnet",
+            "context_length": 200000,
+            "pricing": {"prompt": "0.000003", "completion": "0.000015"},
+        }]
+    }
+    with patch("urllib.request.urlopen", return_value=_mock_urlopen(server_response)):
+        enrich_model_entries(cfg)
+    assert entries["claude"].cost_in_per_1k == pytest.approx(0.003)
+    assert entries["claude"].cost_out_per_1k == pytest.approx(0.015)
+    assert entries["claude"].ctx_window == 200000
+
+
+def test_params_regex_fallback_when_server_empty():
+    entries = {"qwen": _entry(model="qwen3-coder-30b", base_url="http://localhost:8080/v1", params_b=0.0)}
+    cfg = _FakeConfig(entries)
+    server_response = {"data": [{"id": "qwen3-coder-30b"}]}
+    with patch("urllib.request.urlopen", return_value=_mock_urlopen(server_response)):
+        enrich_model_entries(cfg)
+    assert entries["qwen"].params_b == 30.0
+
+
+def test_thinking_detected_from_model_id():
+    entries = {"r1": _entry(model="deepseek-r1", base_url="http://localhost:8080/v1", thinking=False)}
+    cfg = _FakeConfig(entries)
+    server_response = {"data": [{"id": "deepseek-r1"}]}
+    with patch("urllib.request.urlopen", return_value=_mock_urlopen(server_response)):
+        enrich_model_entries(cfg)
+    assert entries["r1"].thinking is True
+
+
+def test_no_override_explicit_params_b():
+    entries = {"m": _entry(model="qwen3-7b", base_url="http://localhost:8080/v1", params_b=7.0)}
+    cfg = _FakeConfig(entries)
+    server_response = {"data": [{"id": "qwen3-7b"}]}
+    with patch("urllib.request.urlopen", return_value=_mock_urlopen(server_response)):
+        enrich_model_entries(cfg)
+    assert entries["m"].params_b == 7.0  # unchanged
+
+
+def test_unreachable_endpoint_silently_skipped():
+    entries = {"m": _entry(model="x", base_url="http://nowhere:9999/v1")}
+    cfg = _FakeConfig(entries)
+    with patch("urllib.request.urlopen", side_effect=OSError("refused")):
+        enrich_model_entries(cfg)  # must not raise

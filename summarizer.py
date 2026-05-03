@@ -23,6 +23,8 @@ _A_SYSTEM = (
 
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+# Strip Gemma 4 / thinking-mode special tokens leaked into output
+_LEAK_RE = re.compile(r"<[^>]*\|[^>]*>")
 
 
 async def _call_llm_one_line(
@@ -38,7 +40,8 @@ async def _call_llm_one_line(
     client = AsyncOpenAI(base_url=entry.base_url, api_key=entry.api_key)
     _ms_inc("sum")
     try:
-        parts: list[str] = []
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
         stream = await client.chat.completions.create(
             model=entry.model,
             messages=[
@@ -49,14 +52,31 @@ async def _call_llm_one_line(
         )
         async for chunk in stream:
             delta = chunk.choices[0].delta if chunk.choices else None
-            if delta and delta.content:
-                parts.append(delta.content)
+            if delta:
+                if delta.content:
+                    content_parts.append(delta.content)
+                if getattr(delta, "reasoning_content", None):
+                    reasoning_parts.append(delta.reasoning_content)
     finally:
         _ms_dec("sum")
         await client.close()
 
-    full = "".join(parts)
-    full = _THINK_RE.sub("", full).strip()
+    def _clean(text: str) -> str:
+        """Strip Gemma 4 thinking-mode prefix artifacts from streamed output."""
+        text = _THINK_RE.sub("", text)
+        text = _LEAK_RE.sub("", text)
+        text = re.sub(
+            r"^(?:\s*(?:<[^>]*\|[^>]*>|\b(?:thought|user|assistant|system|tool)\b)\s*)+",
+            "", text, flags=re.IGNORECASE,
+        )
+        return text.strip()
+
+    raw_content = "".join(content_parts)
+    full = _clean(raw_content)
+    if not full:
+        full = _clean("".join(reasoning_parts))
+    if not full:
+        full = raw_content.strip()
     return full
 
 

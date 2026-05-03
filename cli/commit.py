@@ -12,6 +12,10 @@ from pathlib import Path
 _REQUEST_PREV_RAW = "NEED_PREVIOUS_RAW"
 _REQUEST_PREV_SUMMARY = "NEED_PREVIOUS_SUMMARY"
 
+# Strip thinking-mode special tokens leaked into content by some models (Gemma 4 etc.)
+_LEAK_RE = re.compile(r"<[^>]*\|[^>]*>")
+_THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
 
 def _split_diff(diff: str, chunk_chars: int) -> list[str]:
     """Split a unified diff into chunks <= chunk_chars.
@@ -64,6 +68,63 @@ def _split_diff(diff: str, chunk_chars: int) -> list[str]:
         else:
             merged.append(piece)
     return merged
+
+
+def _save_bug_report(
+    state: dict,
+    final_message: str,
+    chunked: bool,
+    num_chunks: int,
+    diff_chars: int,
+    config,
+    primary_model: str,
+    summ_model: str,
+    elapsed: float,
+    repo_path: Path,
+    user_description: str = "",
+) -> Path | None:
+    """Save raw model outputs + metadata for user-reported bug.
+
+    Creates {agent_dir}/bug-reports/{timestamp}.json for future automated analysis.
+    Returns report path on success, None on failure.
+    """
+    import json
+    from datetime import datetime, timezone
+
+    raw_outputs = state.get("raw_outputs", [])
+    report = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "user_description": user_description,
+        "model": primary_model,
+        "summarizer_model": summ_model,
+        "chunked": chunked,
+        "num_chunks": num_chunks,
+        "tokens_used": state.get("tokens", 0),
+        "elapsed_seconds": round(elapsed, 2),
+        "diff_size_chars": diff_chars,
+        "final_cleaned": final_message,
+        "raw_outputs": raw_outputs,
+        "config": {
+            "reasoning_effort": "low",
+            "temperature": 0.2,
+            "ctx_window": config.llm.ctx_window,
+            "commit_message_max_tokens": config.token_limits.commit_message_max_tokens,
+        },
+    }
+
+    agent_dir = Path(config.tools.agent_dir)
+    if not agent_dir.is_absolute():
+        agent_dir = repo_path / agent_dir
+    reports_dir = agent_dir / "bug-reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    ts = datetime.now().strftime("%Y%m%dT%H%M%S")
+    report_path = reports_dir / f"{ts}.json"
+    try:
+        report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+        return report_path
+    except OSError:
+        return None
 
 
 def cmd_commit(args, config):
@@ -142,6 +203,8 @@ def cmd_commit(args, config):
     from openai import AsyncOpenAI
     from agent.config import make_registry
 
+    state = {"tokens": 0, "buf": "", "start": _time.monotonic(), "phase": "starting", "raw_outputs": []}
+
     # Resolve summarizer model entry (for chunked diff summarization only).
     registry = make_registry(config)
     summ_entry = None
@@ -178,7 +241,16 @@ def cmd_commit(args, config):
         summ_client = primary_client
         summ_model = primary_model
 
-    state = {"tokens": 0, "buf": "", "start": _time.monotonic(), "phase": "starting"}
+    def _clean(text: str) -> str:
+        """Strip thinking-mode channel-switch tokens leaked by models (Gemma 4 etc.)."""
+        text = _THINK_TAG_RE.sub("", text)
+        text = _LEAK_RE.sub("", text)
+        # Strip role words concatenated with actual content (e.g. "thoughtAdd login")
+        text = re.sub(
+            r"^\s*(?:thought|user|assistant|system|tool)\s*(?=[A-Z])",
+            "", text, flags=re.IGNORECASE,
+        )
+        return text.strip()
 
     async def _stream(messages: list[dict], *, max_tokens: int, client=None, model: str = "") -> str:
         _client = client or primary_client
@@ -191,26 +263,25 @@ def cmd_commit(args, config):
             stream=True,
             extra_body={"reasoning_effort": "low"},
         )
-        parts: list[str] = []
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
         async for chunk in stream:
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
-            content = getattr(delta, "content", None)
-            reasoning = getattr(delta, "reasoning_content", None)
-            if content:
+            if delta.content:
+                content_parts.append(delta.content)
                 state["tokens"] += 1
-                state["buf"] += content
-                parts.append(content)
-            elif reasoning:
-                state["tokens"] += 1
-                # For reasoning, we only update the preview buffer, not the main parts list.
-                state["buf"] = ("…thinking: " + reasoning)[-120:]
-                # If no content has been received yet, we can use reasoning as a fallback
-                # to prevent returning an empty message if the model only outputs reasoning.
-                if not parts:
-                    parts.append(reasoning)
-        return "".join(parts)
+                state["buf"] += delta.content
+            if getattr(delta, "reasoning_content", None):
+                reasoning_parts.append(delta.reasoning_content)
+        raw_content = "".join(content_parts)
+        raw_reasoning = "".join(reasoning_parts)
+        state["raw_outputs"].append({"content": raw_content, "reasoning": raw_reasoning})
+        full = _clean(raw_content)
+        if not full:
+            full = _clean(raw_reasoning)
+        return full
 
     summary_system = (
         "You summarize a large git diff one chunk at a time. Goal: build a running "
@@ -274,9 +345,9 @@ def cmd_commit(args, config):
         "no preamble, no explanation, no markdown fences, no quotes. "
         "First line: imperative-mood summary, <=72 chars. "
         "Optional body after a blank line, wrapped at 72 chars."
-        f"\n\nIMPORTANT: You have a total budget of {config.token_limits.commit_message} tokens. "
-        f"Please reserve at least {config.token_limits.commit_message_reserved} tokens for the final commit message content "
-        f"to avoid being cut off by reasoning or other overhead."
+        f"\n\nIMPORTANT: You have a total budget of {config.token_limits.commit_message_max_tokens} tokens "
+        f"(target output: ~{config.token_limits.commit_message} tokens). "
+        f"Reserve at least {config.token_limits.commit_message_reserved} tokens for the final commit message content."
     )
 
     async def _final_message(diff_or_summary: str, *, from_summary: bool) -> str:
@@ -293,7 +364,7 @@ def cmd_commit(args, config):
                 {"role": "system", "content": final_system},
                 {"role": "user", "content": user_prompt},
             ],
-            max_tokens=config.token_limits.commit_message,
+            max_tokens=config.token_limits.commit_message_max_tokens,
             client=summ_client if summ_override else None,
             model=summ_model if summ_override else "",
         )).strip()
@@ -340,7 +411,21 @@ def cmd_commit(args, config):
         return
 
     console.print(Panel(message, title="Proposed commit message", border_style="cyan"))
-    choice = Prompt.ask("Commit with this message?", choices=["y", "n", "e"], default="y")
+    choice = Prompt.ask("Commit with this message?", choices=["y", "n", "e", "r"], default="y")
+
+    if choice == "r":
+        desc = Prompt.ask("[yellow]Describe the issue[/yellow]",
+                          default="leaked thinking/comments in output")
+        report_path = _save_bug_report(state, message, chunked, len(chunks),
+                                        diff_chars, config, primary_model,
+                                        summ_model, elapsed, path, desc)
+        if report_path:
+            console.print(f"[dim]Bug report saved: {report_path}[/dim]")
+        retry = Prompt.ask("Commit anyway?", choices=["y", "n", "e"], default="n")
+        if retry == "n":
+            console.print("[dim]Aborted. Bug report saved to .agent/bug-reports/[/dim]")
+            return
+        choice = retry
 
     if choice == "n":
         console.print("[dim]Aborted.[/dim]")

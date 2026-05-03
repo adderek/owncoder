@@ -41,6 +41,7 @@ build-backend = "setuptools.build_meta"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+pythonpath = [".."]
 markers = [
     "e2e: end-to-end tests requiring a live LLM server",
 ]
