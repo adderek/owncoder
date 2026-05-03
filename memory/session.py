@@ -46,6 +46,54 @@ class Session:
     _file_path: Path | None = field(default=None, repr=False, compare=False)
 
 
+# ── Preamble sidecar ──────────────────────────────────────────────────────────
+# System messages at the start of every conversation are identical across saves.
+# Store them once in a sidecar *system.json*; replace with a placeholder in
+# session.json so repetitive tool schemas / system text don't bloat disk.
+
+
+_PREAMBLE_PLACEHOLDER = {
+    "role": "system",
+    "content": "{system}",
+    "_system_placeholder": True,
+}
+_PREAMBLE_FILENAME = "system.json"
+
+
+def _extract_preamble(messages: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Split *messages* into (preamble, rest).
+
+    Preamble = leading ``role=system`` messages that are NOT notes markers.
+    """
+    preamble: list[dict] = []
+    rest = list(messages)
+    while rest and rest[0].get("role") == "system" and not rest[0].get("_notes_marker"):
+        preamble.append(rest.pop(0))
+    return preamble, rest
+
+
+def _write_preamble(session_dir: Path, preamble: list[dict]) -> None:
+    """Write preamble to sidecar *system.json*."""
+    path = session_dir / _PREAMBLE_FILENAME
+    path.write_text(json.dumps(preamble, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _read_preamble(session_dir: Path) -> list[dict] | None:
+    """Read preamble from sidecar, returns None if missing."""
+    path = session_dir / _PREAMBLE_FILENAME
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _needs_preamble_restore(messages: list[dict]) -> bool:
+    """Check if the first message is a preamble placeholder."""
+    return bool(messages and messages[0].get("_system_placeholder"))
+
+
 # ── Internal helpers ─────────────────────────────────────────────────────────
 
 _ASCII_SAFE = re.compile(r"[^a-zA-Z0-9._-]")
@@ -163,15 +211,23 @@ def new_session(
 
 
 def save_session(session: Session, messages: list[dict]) -> None:
-    """Persist session and messages to disk."""
+    """Persist session and messages to disk.
+
+    System preamble (repetitive tool rules, project context) is stripped into a
+    sidecar *system.json* sibling to avoid bloating session.json on every save.
+    """
     sdir = _get_session_dir()
 
+    # Strip preamble; write sidecar; replace with placeholder in messages.
+    preamble, stripped = _extract_preamble(messages)
+    if preamble:
+        stripped = [_PREAMBLE_PLACEHOLDER] + stripped
+
     session.updated_at = time.time()
-    data = _session_to_data(session, messages)
+    data = _session_to_data(session, stripped)
 
     # Determine file path
     if session._file_path is not None:
-        # If the short_name changed the filename would shift; handle rename.
         expected = sdir / _session_filename(session)
         if session._file_path != expected and session._file_path.exists():
             session._file_path.unlink()
@@ -185,11 +241,16 @@ def save_session(session: Session, messages: list[dict]) -> None:
         json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
     )
 
+    # Write preamble sidecar once per session (overwrite — same content each time)
+    if preamble:
+        _write_preamble(session._file_path.parent, preamble)
+
 
 def load_session(id_or_name: str) -> tuple[Session | None, list[dict]]:
     """Load a session by ID or short_name.
 
     Returns (session, messages).  If not found returns (None, []).
+    Automatically restores system preamble from sidecar when present.
     """
     sdir = _get_session_dir()
 
@@ -201,7 +262,13 @@ def load_session(id_or_name: str) -> tuple[Session | None, list[dict]]:
             data = json.loads(p.read_text(encoding="utf-8"))
             if data.get("id") == id_or_name or data.get("short_name") == id_or_name:
                 session = _session_from_data(data, file_path=p)
-                return session, data.get("messages", [])
+                messages = data.get("messages", [])
+                # Restore preamble from sidecar if placeholder detected
+                if _needs_preamble_restore(messages):
+                    preamble = _read_preamble(p.parent)
+                    if preamble:
+                        messages = preamble + messages[1:]
+                return session, messages
         except Exception:
             pass
 
