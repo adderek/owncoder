@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -20,11 +19,6 @@ _A_SYSTEM = (
     "Summarise the following agent response in one concise sentence that captures the outcome. "
     "Output only the summary sentence — no labels, no punctuation other than a period."
 )
-
-
-_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
-# Strip Gemma 4 / thinking-mode special tokens leaked into output
-_LEAK_RE = re.compile(r"<[^>]*\|[^>]*>")
 
 
 async def _call_llm_one_line(
@@ -61,20 +55,12 @@ async def _call_llm_one_line(
         _ms_dec("sum")
         await client.close()
 
-    def _clean(text: str) -> str:
-        """Strip Gemma 4 thinking-mode prefix artifacts from streamed output."""
-        text = _THINK_RE.sub("", text)
-        text = _LEAK_RE.sub("", text)
-        text = re.sub(
-            r"^(?:\s*(?:<[^>]*\|[^>]*>|\b(?:thought|user|assistant|system|tool)\b)\s*)+",
-            "", text, flags=re.IGNORECASE,
-        )
-        return text.strip()
+    from agent.core.streaming import _clean_output
 
     raw_content = "".join(content_parts)
-    full = _clean(raw_content)
+    full = _clean_output(raw_content)
     if not full:
-        full = _clean("".join(reasoning_parts))
+        full = _clean_output("".join(reasoning_parts))
     if not full:
         full = raw_content.strip()
     return full

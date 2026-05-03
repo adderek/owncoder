@@ -12,11 +12,6 @@ from pathlib import Path
 _REQUEST_PREV_RAW = "NEED_PREVIOUS_RAW"
 _REQUEST_PREV_SUMMARY = "NEED_PREVIOUS_SUMMARY"
 
-# Strip thinking-mode special tokens leaked into content by some models (Gemma 4 etc.)
-_LEAK_RE = re.compile(r"<[^>]*\|[^>]*>")
-_THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
-
-
 def _split_diff(diff: str, chunk_chars: int) -> list[str]:
     """Split a unified diff into chunks <= chunk_chars.
 
@@ -241,18 +236,8 @@ def cmd_commit(args, config):
         summ_client = primary_client
         summ_model = primary_model
 
-    def _clean(text: str) -> str:
-        """Strip thinking-mode channel-switch tokens leaked by models (Gemma 4 etc.)."""
-        text = _THINK_TAG_RE.sub("", text)
-        text = _LEAK_RE.sub("", text)
-        # Strip role words concatenated with actual content (e.g. "thoughtAdd login")
-        text = re.sub(
-            r"^\s*(?:thought|user|assistant|system|tool)\s*(?=[A-Z])",
-            "", text, flags=re.IGNORECASE,
-        )
-        return text.strip()
-
     async def _stream(messages: list[dict], *, max_tokens: int, client=None, model: str = "") -> str:
+        from agent.core.streaming import _clean_output
         _client = client or primary_client
         _model = model or primary_model
         stream = await _client.chat.completions.create(
@@ -278,9 +263,9 @@ def cmd_commit(args, config):
         raw_content = "".join(content_parts)
         raw_reasoning = "".join(reasoning_parts)
         state["raw_outputs"].append({"content": raw_content, "reasoning": raw_reasoning})
-        full = _clean(raw_content)
+        full = _clean_output(raw_content)
         if not full:
-            full = _clean(raw_reasoning)
+            full = _clean_output(raw_reasoning)
         return full
 
     summary_system = (
