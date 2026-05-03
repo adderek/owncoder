@@ -27,7 +27,7 @@ def get_schemas() -> list[dict]:
 
 def load_all_tools(config=None, store=None, embedder=None, asm_store=None, data_provider=None) -> None:
     global _tools_loaded
-    from agent.tools import files, shell, git, search, analyze_asm, edit_file, recall, notes, recall_sessions, rate_session, recall_history  # noqa: F401
+    from agent.tools import files, shell, git, search, analyze_asm, edit_file, recall, notes, recall_sessions, rate_session, recall_history, retrieve_output  # noqa: F401
     from agent.tools.rules import load_rules
 
     if config is not None and getattr(config.web_search, "enabled", False):
@@ -68,6 +68,7 @@ def load_all_tools(config=None, store=None, embedder=None, asm_store=None, data_
     notes.setup(config, embedder=data_provider.get_embedder() if data_provider else None)
     recall_sessions.setup(config, embedder=data_provider.get_embedder() if data_provider else None)
     rate_session.setup(config)
+    retrieve_output.setup(config)
 
     if config is not None and getattr(config.web_search, "enabled", False):
         web_search.setup(config)

@@ -205,14 +205,26 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
         serialised = json.dumps(result, ensure_ascii=False)
         logger.debug("execute_tool: %s  result_len=%d", name, len(serialised))
 
-        limit = _tool_result_char_limit(config) if config else 32_000
+        # Output-store truncation: store full result, return head+tail envelope
+        limit = _tool_result_char_limit(config) if config else 16_000
+        if config and config.output_store.truncation_threshold > 0:
+            limit = config.output_store.truncation_threshold
+
         if len(serialised) > limit:
             rules.record_tool_usage(name, True)
+            store = _get_output_store(config)
+            call_id = _make_call_id()
+            store.store(call_id, serialised)
+            truncated, _ = store.truncate(serialised)
             return json.dumps({
                 "truncated": True,
-                "partial_content": serialised[:limit],
+                "call_id": call_id,
+                "content": truncated,
                 "original_length": len(serialised),
-                "hint": "Use start_line/end_line or a more specific query to get smaller results.",
+                "original_lines": serialised.count("\n") + 1,
+                "head_chars": store.head_chars,
+                "tail_chars": store.tail_chars,
+                "note": "Output too large. Use retrieve_output(call_id='%s') to get full result or specific range." % call_id,
             }, ensure_ascii=False)
 
         rules.record_tool_usage(name, True)
@@ -228,3 +240,17 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
             "tool_call_id": getattr(tool_call, "id", None),
         }, config=config)
         return json.dumps({"error": str(e), "tool": name, "error_type": type(e).__name__})
+
+
+def _get_output_store(config: "Config | None" = None):
+    """Get or lazily init the global output store."""
+    from agent.core.output_store import get_store, init_store
+    try:
+        return get_store()
+    except RuntimeError:
+        cfg = config.output_store if (config and config.output_store) else None
+        return init_store(cfg)
+
+
+def _make_call_id() -> str:
+    return uuid.uuid4().hex[:12]

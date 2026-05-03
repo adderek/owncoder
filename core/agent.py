@@ -78,6 +78,9 @@ class Agent:
         self.last_round_peak_tokens: int = 0
         self._inject_queue: asyncio.Queue = asyncio.Queue()
 
+        from agent.core.output_store import init_store as _init_output_store
+        _init_output_store(config.output_store)
+
         load_all_tools(config=config, data_provider=data_provider)
 
         indexed_count = store.stats()["chunks"] if store else 0

@@ -382,6 +382,15 @@ class WebSearchConfig:
 
 
 @dataclass
+class OutputStoreConfig:
+    """In-memory store for full tool-call outputs referenced by truncated results."""
+    max_bytes: int = 10 * 1024 * 1024   # 10 MB — total store cap (FIFO eviction)
+    head_chars: int = 2000               # chars to show from start of truncated output
+    tail_chars: int = 1000               # chars to show from end of truncated output
+    truncation_threshold: int = 0        # 0 = auto (ctx_window * 0.30 * 4), or explicit char count
+
+
+@dataclass
 class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
@@ -404,3 +413,4 @@ class Config:
     recovery: RecoveryConfig = field(default_factory=RecoveryConfig)
     parallel: ParallelConfig = field(default_factory=ParallelConfig)
     web_search: WebSearchConfig = field(default_factory=WebSearchConfig)
+    output_store: OutputStoreConfig = field(default_factory=OutputStoreConfig)
