@@ -7,7 +7,7 @@ import time
 from typing import TYPE_CHECKING
 
 from .prompts import _inject_think_hint, _log_llm_request, _build_call_kwargs
-from .tool_calls import _FakeToolCall
+from .tool_calls import _FakeToolCall, _parse_text_tool_calls
 
 if TYPE_CHECKING:
     from agent.config import Config
@@ -39,8 +39,6 @@ def _clean_output(text: str) -> str:
     text = _THINK_TAG_RE.sub("", text)
     text = _LEAK_RE.sub("", text)
     text = _CHATML_TOKEN_RE.sub("", text)
-    # Strip trailing leaked tool-call fragments (curly-brace JSON args only)
-    text = re.sub(r"\s*call:\w+\s*\{[^}]*\}\s*$", "", text, flags=re.DOTALL)
     # Strip role words concatenated with actual content (e.g. "thoughtAdd login")
     text = re.sub(
         r"\b(?:thought|user|assistant|system|tool)\s*(?=[A-Z])",
@@ -139,7 +137,8 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
     finally:
         _ms_dec("main")
 
-    full_content = _clean_output("".join(content_parts))
+    raw_content = "".join(content_parts)
+    full_content = _clean_output(raw_content)
     if tc_acc:
         tool_calls = []
         for idx in sorted(tc_acc):
@@ -150,6 +149,13 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
                 args = {}
             tool_calls.append(_FakeToolCall(raw["function"]["name"], args))
             tool_calls[-1].id = raw["id"] or tool_calls[-1].id
+    elif raw_content:
+        # No native function calls — try text-based tool calls from raw content
+        text_calls = _parse_text_tool_calls(raw_content)
+        if text_calls:
+            tool_calls = [_FakeToolCall(c["name"], c["arguments"]) for c in text_calls]
+        else:
+            tool_calls = None
     else:
         tool_calls = None
 

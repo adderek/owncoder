@@ -102,7 +102,7 @@ def _apply_env_overrides(config: Config) -> None:
 
     # AGENT_LLM_SEED: manual because seed is int | None (None = unset)
     seed_val = os.environ.get("AGENT_LLM_SEED")
-    if seed_val is not None:
+    if seed_val is not None and seed_val.strip():
         config.llm.seed = int(seed_val)
 
     # Role overrides: AGENT_MODEL_ROLE_<ROLE> = model-entry-name

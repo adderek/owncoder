@@ -43,6 +43,69 @@ def _extract_json_objects(text: str) -> list[dict]:
     return objects
 
 
+# Maps model output parameter names → actual tool parameter names.
+# Local models (Gemma, Qwen, etc.) often use natural language names
+# that differ from terse tool definitions.
+_PARAM_ALIASES: dict[str, dict[str, str]] = {
+    "run_command": {"command": "cmd", "shell": "cmd"},
+    "run_argv": {"command": "argv", "args": "argv"},
+    "read_file": {"file_path": "path", "file": "path", "filename": "path"},
+    "write_file": {"file_path": "path", "file": "path", "filename": "path", "text": "content", "data": "content"},
+    "undo_file": {"file_path": "path", "file": "path"},
+    "replace_symbol": {"file_path": "path", "file": "path", "old": "symbol", "replacement": "new_source"},
+    "git_blame": {"file_path": "path", "file": "path", "filename": "path"},
+    "git_related_files": {"file_path": "path", "file": "path"},
+    "analyze_asm": {"file_path": "path", "file": "path"},
+    "search_code": {"q": "query", "pattern": "query", "term": "query", "search_term": "query"},
+    "search_archive": {"q": "query", "pattern": "query", "term": "query"},
+    "recall_facts": {"q": "query", "term": "query"},
+    "recall_sessions": {"q": "query", "term": "query"},
+    "save_note": {"name": "title", "heading": "title", "content": "body", "text": "body"},
+    "rate_session": {"rating": "outcome"},
+}
+
+
+def _remap_params(name: str, args: dict) -> dict:
+    """Rename params from model output names to actual tool param names."""
+    aliases = _PARAM_ALIASES.get(name, {})
+    if not aliases:
+        return args
+    remapped = {}
+    for k, v in args.items():
+        actual = aliases.get(k, k)
+        remapped[actual] = v
+    return remapped
+
+
+def _parse_text_tool_calls(text: str) -> list[dict] | None:
+    """Parse call:function_name{...} text-based tool calls (Gemma 4, some local models)."""
+    import json as _json
+    import re as _re
+    calls = []
+    for m in _re.finditer(r"call:(\w+)\s*\{", text):
+        start = m.start()
+        brace_start = text.index("{", start)
+        depth = 1
+        i = brace_start + 1
+        while depth > 0 and i < len(text):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+            i += 1
+        raw = text[brace_start:i]
+        try:
+            args = _json.loads(raw)
+        except _json.JSONDecodeError:
+            q = _re.sub(r'(?<=[{,])\s*(\w+)(?=\s*:)', r'"\1"', raw)
+            try:
+                args = _json.loads(q)
+            except _json.JSONDecodeError:
+                continue
+        calls.append({"name": m.group(1), "arguments": _remap_params(m.group(1), args)})
+    return calls if calls else None
+
+
 def _parse_raw_tool_calls(text: str) -> list[dict] | None:
     calls = []
     for m in _TAG_RE.finditer(text):
@@ -55,6 +118,9 @@ def _parse_raw_tool_calls(text: str) -> list[dict] | None:
             if "name" in obj and ("arguments" in obj or "parameters" in obj):
                 args = obj.get("arguments") or obj.get("parameters") or {}
                 calls.append({"name": obj["name"], "arguments": args})
+    # Fallback: try call:function_name{...} format
+    if not calls:
+        calls = _parse_text_tool_calls(text) or []
     return calls if calls else None
 
 

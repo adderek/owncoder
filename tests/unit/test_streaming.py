@@ -22,10 +22,10 @@ class TestCleanOutput:
         dirty = "Here's the fix.<think>I need to check edge cases</think> Added validation."
         assert _clean_output(dirty) == "Here's the fix. Added validation."
 
-    def test_tool_call_fragment_stripped(self):
-        """call:func{...} at end of output removed (leaked tool call)."""
+    def test_tool_call_fragment_preserved(self):
+        """call:func{...} preserved — parsed as text-based tool call."""
         dirty = "Looking at code.<|tool_call|>call:search_code{term: 'x'}"
-        assert _clean_output(dirty) == "Looking at code."
+        assert _clean_output(dirty) == "Looking at code.call:search_code{term: 'x'}"
 
     def test_orphaned_role_word_at_end_stripped(self):
         """Standalone 'thought' at end stripped after token cleanup."""
@@ -103,7 +103,7 @@ class TestStreamResponseClean:
 
     @pytest.mark.asyncio
     async def test_channel_tokens_cleaned_from_stream(self):
-        """Leaky stream chunks have channel tokens stripped from final content."""
+        """Leaky stream chunks have channel tokens stripped, text tool calls parsed."""
         client = self._make_client(
             self._mock_chunk(content="Add login"),
             self._mock_chunk(content=" button.\n"),
@@ -114,8 +114,12 @@ class TestStreamResponseClean:
         _, content, calls, _ = await _stream_response(
             client, self._make_config(), [], [], on_token=lambda t: tokens.append(t),
         )
-        assert content == "Add login button."
-        assert calls is None
+        # Content still has thought+tool call text (no longer stripped)
+        assert "Add login button" in content
+        # Text-based tool call detected
+        assert calls is not None
+        assert len(calls) == 1
+        assert calls[0].function.name == "search"
 
     @pytest.mark.asyncio
     async def test_think_blocks_cleaned_from_stream(self):
