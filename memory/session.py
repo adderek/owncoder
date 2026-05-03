@@ -16,13 +16,13 @@ _session_dir: Path | None = None
 def configure(working_dir: str, agent_dir: str = ".agent") -> None:
     """Set the session directory based on the project's working_dir and agent_dir."""
     global _session_dir
-    _session_dir = Path(working_dir) / agent_dir / "sessions"
+    _session_dir = Path(working_dir) / agent_dir
 
 
 def _get_session_dir() -> Path:
     if _session_dir is not None:
         return _session_dir
-    return Path(".agent") / "sessions"
+    return Path(".agent")
 
 
 # ── Session dataclass ────────────────────────────────────────────────────────

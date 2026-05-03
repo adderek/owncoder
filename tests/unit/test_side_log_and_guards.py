@@ -245,7 +245,7 @@ def test_sessions_split_command_extracts_tool_rounds(tmp_path, monkeypatch):
     from agent.memory import session as session_mod
     from agent.main import _split_sessions
 
-    sdir = tmp_path / "sessions" / "2026" / "04" / "18" / "20260418T120000.000Z"
+    sdir = tmp_path / "2026" / "04" / "18" / "20260418T120000.000Z"
     sdir.mkdir(parents=True)
     session_json = sdir / "session.json"
     session_json.write_text(_json.dumps({
@@ -266,7 +266,7 @@ def test_sessions_split_command_extracts_tool_rounds(tmp_path, monkeypatch):
         ],
     }, indent=2), encoding="utf-8")
 
-    monkeypatch.setattr(session_mod, "_session_dir", tmp_path / "sessions")
+    monkeypatch.setattr(session_mod, "_session_dir", tmp_path)
 
     class _C:
         def print(self, *a, **k): pass
