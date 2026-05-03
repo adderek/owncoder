@@ -158,7 +158,18 @@ def _build_call_kwargs(config: "Config") -> dict:
         "max_tokens": config.llm.max_output_tokens,
         "temperature": float(getattr(config.llm, "temperature", 0.7)),
     }
+    if config.llm.max_output_tokens > 8192:
+        logger.warning(
+            "_build_call_kwargs: max_output_tokens=%d > 8192 — high risk of endless generation",
+            config.llm.max_output_tokens,
+        )
+    seed = getattr(config.llm, "seed", None)
+    if seed is not None:
+        kw["seed"] = seed
     level = (getattr(config.llm, "think_level", "normal") or "normal").lower()
+    if level not in THINK_LEVELS:
+        logger.warning("_build_call_kwargs: invalid think_level=%r, falling back to 'normal'", level)
+        level = "normal"
     if level in _REASONING_EFFORT and level != "normal":
         kw["extra_body"] = {"reasoning_effort": _REASONING_EFFORT[level]}
     if level == "off":

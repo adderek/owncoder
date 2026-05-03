@@ -29,6 +29,8 @@ _NARRATION_PHRASES = [
 
 # Strip thinking-mode special tokens leaked into content by some models (Gemma 4, DeepSeek, etc.)
 _LEAK_RE = re.compile(r"<[^>]*\|[^>]*>")
+# ChatML-style tokens like <|im_start|>, <|im_end|>, <|imend>, <|imendend>
+_CHATML_TOKEN_RE = re.compile(r"<\|[^>]*>")
 _THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
 
@@ -36,6 +38,7 @@ def _clean_output(text: str) -> str:
     """Strip leaked control tokens and thinking artifacts from model output."""
     text = _THINK_TAG_RE.sub("", text)
     text = _LEAK_RE.sub("", text)
+    text = _CHATML_TOKEN_RE.sub("", text)
     # Strip trailing leaked tool-call fragments (curly-brace JSON args only)
     text = re.sub(r"\s*call:\w+\s*\{[^}]*\}\s*$", "", text, flags=re.DOTALL)
     # Strip role words concatenated with actual content (e.g. "thoughtAdd login")
@@ -152,6 +155,8 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
 
     t_end = time.monotonic()
     full_reasoning = "".join(reasoning_parts)
+    stream_seconds = max(1e-6, t_end - t_start)
+    gen_seconds = max(1e-6, t_end - (t_first_token or t_start))
     if on_usage is not None:
         content_tokens = count_tokens_approx(full_content) if full_content else 0
         reasoning_tokens = count_tokens_approx(full_reasoning) if full_reasoning else 0
@@ -166,8 +171,6 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
             if server_usage and server_usage["prompt_tokens"]
             else _count_tokens_approx(api_messages)
         )
-        stream_seconds = max(1e-6, t_end - t_start)
-        gen_seconds = max(1e-6, t_end - (t_first_token or t_start))
         on_usage({
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
@@ -178,5 +181,12 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
             "gen_seconds": gen_seconds,
             "ttft": (t_first_token - t_start) if t_first_token else None,
         })
+
+    n_tool_calls = len(tool_calls) if tool_calls else 0
+    logger.debug(
+        "_stream_response: finish=%r content=%dch reasoning=%dch tools=%d stream=%.1fs gen=%.1fs",
+        finish_reason, len(full_content), len(full_reasoning),
+        n_tool_calls, stream_seconds, gen_seconds,
+    )
 
     return finish_reason, full_content, tool_calls, full_reasoning

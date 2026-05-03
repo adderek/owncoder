@@ -54,6 +54,12 @@ class TestCleanOutput:
         text = "You can call:search() with a query."
         assert _clean_output(text) == text
 
+    def test_chatml_tokens_stripped(self):
+        """<|imend>, <|imendend> stripped from output."""
+        assert _clean_output("Done.<|imend>") == "Done."
+        assert _clean_output("Done.<|imendend>") == "Done."
+        assert _clean_output("Done.<|im_end|>") == "Done."
+
 
 class TestStreamResponseClean:
     """_stream_response returns cleaned full_content from leaky chunks."""

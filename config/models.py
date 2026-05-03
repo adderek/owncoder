@@ -16,6 +16,7 @@ class LLMConfig:
     max_output_tokens: int = 4096
     max_iterations: int | None = 10   # cap on tool-call rounds per user turn (None = infinity)
     temperature: float = 0.7
+    seed: int | None = None
     think_level: str = "normal"
     narration_fallback: bool = True
 
@@ -313,6 +314,7 @@ class ModelEntry:
     ctx_window: int = 16384
     max_output_tokens: int = 4096
     temperature: float = 0.7
+    seed: int | None = None
     dimensions: int = 0          # embeddings only
     tags: list = field(default_factory=list)
     extra: dict = field(default_factory=dict)

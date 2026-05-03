@@ -100,6 +100,11 @@ def _apply_env_overrides(config: Config) -> None:
         else:
             setattr(section_obj, attr, val)
 
+    # AGENT_LLM_SEED: manual because seed is int | None (None = unset)
+    seed_val = os.environ.get("AGENT_LLM_SEED")
+    if seed_val is not None:
+        config.llm.seed = int(seed_val)
+
     # Role overrides: AGENT_MODEL_ROLE_<ROLE> = model-entry-name
     for role in ("default", "summarizer", "embeddings"):
         env_key = f"AGENT_MODEL_ROLE_{role.upper()}"
@@ -186,6 +191,7 @@ def _apply_model_entry_to_llm(config: Config) -> None:
         config.llm.ctx_window = default_entry.ctx_window
         config.llm.max_output_tokens = default_entry.max_output_tokens
         config.llm.temperature = default_entry.temperature
+        config.llm.seed = default_entry.seed
 
     # Behavior settings from config.agent (sourced from [agent] TOML section)
     config.llm.max_iterations = config.agent.max_iterations
@@ -223,6 +229,7 @@ def _ensure_model_registry_keys(config: Config) -> None:
             ctx_window=llm.ctx_window,
             max_output_tokens=llm.max_output_tokens,
             temperature=llm.temperature,
+            seed=llm.seed,
         )
     if "embeddings" not in config.model_entries:
         emb = config.embeddings
