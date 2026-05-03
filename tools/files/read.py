@@ -47,9 +47,9 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
         return {"error": f"File not found: {path}"}
 
     if not fpath.exists():
-        return {"error": f"File not found: {path}"}
+        return {"error": f"File not found: {path}", "resolved": str(fpath)}
     if not fpath.is_file():
-        return {"error": f"Not a file: {path}"}
+        return {"error": f"Not a file: {path}", "resolved": str(fpath)}
 
     try:
         text = fpath.read_text(encoding="utf-8", errors="replace")
