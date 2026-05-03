@@ -56,50 +56,36 @@ def _sanitize_short_name(short_name: str) -> str:
     return _ASCII_SAFE.sub("", short_name)[:64]
 
 
+def _parse_ts(session_id: str) -> datetime:
+    """Parse session ID timestamp. Handles new (no-dash) and old (dash) formats.
+
+    new_session() produces IDs like ``20260414T222821.610Z_c11c``.  The ``_hex``
+    suffix is stripped before parsing.
+    """
+    # Strip the Z_<hex> suffix that new_session() appends
+    ts_part = session_id.split("Z_")[0] + "Z" if "Z_" in session_id else session_id
+    if "-" in ts_part:
+        return datetime.fromisoformat(ts_part.replace("Z", "+00:00"))
+    clean = ts_part.replace("Z", "")
+    return datetime.strptime(clean, "%Y%m%dT%H%M%S.%f").replace(tzinfo=timezone.utc)
+
+
 def _session_filename(session: Session) -> str:
     """Return relative path for a session (YYYY/MM/DD/TIMESTAMP/session.json)."""
     try:
-        # Try parsing basic ISO-8601 (e.g. "20260414T222821.610Z")
-        # First remove 'Z' and replace with '+00:00' for fromisoformat if needed,
-        # but fromisoformat doesn't like the lack of separators in many versions.
-        # Let's try strptime for the new format.
-        if "-" not in session.id:
-            # Format: 20260414T222821.610Z
-            # We need to handle the fractional seconds carefully.
-            # Using strptime with %f handles up to 6 digits.
-            # Since we have 3 digits (ms), it should work.
-            # Note: %f is microseconds, but it parses what's there.
-            clean_id = session.id.replace("Z", "")
-            # We need to handle the dot.
-            # For "20260414T222821.610", we can use %Y%m%dT%H%M%S.%f
-            dt = datetime.strptime(clean_id, "%Y%m%dT%H%M%S.%f").replace(
-                tzinfo=timezone.utc
-            )
-        else:
-            # Old format: 2026-04-14T222821.610Z
-            dt = datetime.fromisoformat(session.id.replace("Z", "+00:00"))
+        dt = _parse_ts(session.id)
     except Exception:
-        # Fallback if parsing fails
         dt = datetime.now(timezone.utc)
-
     return f"{dt.strftime('%Y/%m/%d')}/{session.id}/session.json"
 
 
 def get_session_subpath(session_id: str) -> Path:
     """Return the YYYY/MM/DD/session_id subpath for a given session_id."""
     try:
-        if "-" not in session_id:
-            # Format: 20260414T222821.610Z
-            clean_id = session_id.replace("Z", "")
-            dt = datetime.strptime(clean_id, "%Y%m%dT%H%M%S.%f").replace(
-                tzinfo=timezone.utc
-            )
-        else:
-            # Old format: 2026-04-14T222821.610Z
-            dt = datetime.fromisoformat(session_id.replace("Z", "+00:00"))
+        dt = _parse_ts(session_id)
         return Path(dt.strftime("%Y/%m/%d")) / session_id
     except Exception:
-        return Path(session_id)
+        return Path(datetime.now(timezone.utc).strftime("%Y/%m/%d")) / session_id
 
 
 def get_session_full_dir(session_id: str) -> Path:
