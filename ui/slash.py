@@ -59,7 +59,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
 
 def _apply_think(agent, arg: str) -> tuple[bool, str]:
     """Returns (ok, message)."""
-    from agent.agent import THINK_LEVELS
+    from agent.core.prompts import THINK_LEVELS
 
     v = arg.strip().lower()
     if not v:

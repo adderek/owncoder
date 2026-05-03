@@ -8,7 +8,7 @@ def cmd_run(args, config):
     import sys
     from agent.rag.store import VectorStore
     from agent.rag.embedder import Embedder
-    from agent.agent import Agent
+    from agent.core.agent import Agent
     from agent.data_provider import LocalDataProvider
     from rich.console import Console
 

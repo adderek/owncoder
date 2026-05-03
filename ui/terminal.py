@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from agent.agent import Agent
+    from agent.core.agent import Agent
 
 from agent.ui.slash import (
     _SLASH_COMMANDS,

@@ -14,7 +14,7 @@ from agent.ui.colors import _hex_to_ansi
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from agent.agent import Agent
+    from agent.core.agent import Agent
     from agent.config import ThemeConfig
     from agent.ui_server import UIServerProtocol
 
@@ -203,7 +203,7 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                 console.print(_render_models_table(agent.config))
 
             elif cmd == "/apply":
-                from agent.agent import extract_last_code_block
+                from agent.core.history_ops import extract_last_code_block
                 from agent.tools.files import write_file
 
                 result = extract_last_code_block(server.get_messages())

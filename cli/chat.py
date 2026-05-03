@@ -102,7 +102,7 @@ def _audit_crash(console, sentinel: Path, messages: list[dict]) -> None:
 def cmd_chat(args, config):
     from agent.rag.store import VectorStore
     from agent.rag.embedder import Embedder
-    from agent.agent import Agent
+    from agent.core.agent import Agent
     from agent.ui.terminal import run_ui
     from agent.memory.session import new_session, load_session, save_session
     from agent.data_provider import LocalDataProvider
