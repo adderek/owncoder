@@ -65,7 +65,7 @@ def _split_diff(diff: str, chunk_chars: int) -> list[str]:
     return merged
 
 
-def _save_bug_report(
+def _save_problem_report(
     state: dict,
     final_message: str,
     chunked: bool,
@@ -78,16 +78,45 @@ def _save_bug_report(
     repo_path: Path,
     user_description: str = "",
 ) -> Path | None:
-    """Save raw model outputs + metadata for user-reported bug.
+    """Save raw model outputs + diagnostics for problem report.
 
-    Creates {agent_dir}/bug-reports/{timestamp}.json for future automated analysis.
+    Creates {agent_dir}/problem/commit/{timestamp}/ for future automated analysis.
     Returns report path on success, None on failure.
     """
     import json
+    import os
+    import platform
+    import sys
     from datetime import datetime, timezone
 
     raw_outputs = state.get("raw_outputs", [])
+
+    # Git state at report time
+    git_info = {}
+    try:
+        branch = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=str(repo_path), capture_output=True, text=True,
+        ).stdout.strip()
+        sha = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(repo_path), capture_output=True, text=True,
+        ).stdout.strip()
+        has_changes = subprocess.run(
+            ["git", "diff", "--quiet"],
+            cwd=str(repo_path),
+        ).returncode != 0
+        git_info = {
+            "branch": branch,
+            "sha": sha,
+            "has_uncommitted_changes": has_changes,
+        }
+    except Exception:
+        pass
+
     report = {
+        "type": "problem-report",
+        "subtype": "commit",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "user_description": user_description,
         "model": primary_model,
@@ -105,19 +134,32 @@ def _save_bug_report(
             "ctx_window": config.llm.ctx_window,
             "commit_message_max_tokens": config.token_limits.commit_message_max_tokens,
         },
+        "environment": {
+            "python_version": sys.version.split()[0],
+            "platform": platform.system(),
+            "release": platform.release(),
+        },
+        "git": git_info,
     }
 
     agent_dir = Path(config.tools.agent_dir)
     if not agent_dir.is_absolute():
         agent_dir = repo_path / agent_dir
-    reports_dir = agent_dir / "bug-reports"
-    reports_dir.mkdir(parents=True, exist_ok=True)
-
     ts = datetime.now().strftime("%Y%m%dT%H%M%S")
-    report_path = reports_dir / f"{ts}.json"
+    report_dir = agent_dir / "problem" / "commit" / ts
+    report_dir.mkdir(parents=True, exist_ok=True)
+
+    report_path = report_dir / "meta.json"
     try:
         report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
-        return report_path
+        # Also save raw outputs as separate files for easy inspection
+        for i, ro in enumerate(raw_outputs):
+            raw_file = report_dir / f"raw_output_{i}.txt"
+            raw_file.write_text(ro.get("content", ""), encoding="utf-8")
+            if ro.get("reasoning"):
+                reason_file = report_dir / f"raw_reasoning_{i}.txt"
+                reason_file.write_text(ro["reasoning"], encoding="utf-8")
+        return report_dir
     except OSError:
         return None
 
@@ -396,21 +438,20 @@ def cmd_commit(args, config):
         return
 
     console.print(Panel(message, title="Proposed commit message", border_style="cyan"))
-    choice = Prompt.ask("Commit with this message?", choices=["y", "n", "e", "r"], default="y")
+    choice = Prompt.ask("Commit with this message?", choices=["y", "n", "e", "rpt"], default="y")
 
-    if choice == "r":
+    if choice == "rpt":
         desc = Prompt.ask("[yellow]Describe the issue[/yellow]",
                           default="leaked thinking/comments in output")
-        report_path = _save_bug_report(state, message, chunked, len(chunks),
-                                        diff_chars, config, primary_model,
-                                        summ_model, elapsed, path, desc)
-        if report_path:
-            console.print(f"[dim]Bug report saved: {report_path}[/dim]")
-        retry = Prompt.ask("Commit anyway?", choices=["y", "n", "e"], default="n")
-        if retry == "n":
-            console.print("[dim]Aborted. Bug report saved to .agent/bug-reports/[/dim]")
-            return
-        choice = retry
+        report_dir = _save_problem_report(state, message, chunked, len(chunks),
+                                          diff_chars, config, primary_model,
+                                          summ_model, elapsed, path, desc)
+        if report_dir:
+            console.print(f"[dim]Problem report saved: {report_dir}[/dim]")
+        else:
+            console.print("[red]Failed to save problem report.[/red]")
+        console.print("[dim]Aborted.[/dim]")
+        return
 
     if choice == "n":
         console.print("[dim]Aborted.[/dim]")
