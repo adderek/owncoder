@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import time
 from typing import TYPE_CHECKING
 
@@ -26,26 +25,6 @@ _NARRATION_PHRASES = [
     "i should write", "i should create", "i should modify", "i should patch",
     "using patch_file", "using write_file",
 ]
-
-# Strip thinking-mode special tokens leaked into content by some models (Gemma 4, DeepSeek, etc.)
-_LEAK_RE = re.compile(r"<[^>]*\|[^>]*>")
-_THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
-
-
-def _clean_output(text: str) -> str:
-    """Strip leaked control tokens and thinking artifacts from model output."""
-    text = _THINK_TAG_RE.sub("", text)
-    text = _LEAK_RE.sub("", text)
-    # Strip trailing leaked tool-call fragments (curly-brace JSON args only)
-    text = re.sub(r"\s*call:\w+\s*\{[^}]*\}\s*$", "", text, flags=re.DOTALL)
-    # Strip role words concatenated with actual content (e.g. "thoughtAdd login")
-    text = re.sub(
-        r"\b(?:thought|user|assistant|system|tool)\s*(?=[A-Z])",
-        " ", text, flags=re.IGNORECASE,
-    )
-    # Strip orphaned role word at end (remaining after token stripping)
-    text = re.sub(r"\s*\b(?:thought|user|assistant|system|tool)\s*$", "", text, flags=re.IGNORECASE)
-    return text.strip()
 
 
 def _is_narrating_tool_use(text: str) -> bool:
@@ -136,7 +115,7 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
     finally:
         _ms_dec("main")
 
-    full_content = _clean_output("".join(content_parts))
+    full_content = "".join(content_parts)
     if tc_acc:
         tool_calls = []
         for idx in sorted(tc_acc):
