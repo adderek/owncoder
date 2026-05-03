@@ -101,7 +101,6 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
 
         def __init__(self, agent: "Agent", session=None, server=None, **kwargs):
             super().__init__(**kwargs)
-            self.agent = agent
             self._server = server
             self._session = session
             self._t = t

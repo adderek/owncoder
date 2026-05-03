@@ -327,14 +327,6 @@ def build_widget_classes(t) -> SimpleNamespace:
                 self.write(
                     f"    [bold {t.agent_color}][Agent][/bold {t.agent_color}] {_escape(_one_line(a_text, wrap=self.app._wrap_enabled))}"
                 )
-                from agent.core.model_status import get_workers
-                workers = get_workers()
-                if workers:
-                    self.write(f"    [dim]Workers: {len(workers)}[/dim]")
-                from agent.core.model_status import get_workers
-                workers = get_workers()
-                if workers:
-                    self.write(f"    [dim]Workers: {len(workers)}[/dim]")
 
     # ── utility panels ────────────────────────────────────────────────────────
 
@@ -360,6 +352,9 @@ def build_widget_classes(t) -> SimpleNamespace:
 
     _MODEL_STATUS_ROLES = [("llm", "main"), ("emb", "emb"), ("sum", "sum")]
 
+    class ModelConfigScreen:
+        pass  # defined below after ModalScreen import
+
     from textual.screen import ModalScreen
     from textual.widgets import Button
     from textual.containers import Vertical
@@ -372,9 +367,9 @@ def build_widget_classes(t) -> SimpleNamespace:
             align: center middle;
         }
         #model-config-dialog {
-            width: 80;
+            width: 60;
             height: auto;
-            max-height: 36;
+            max-height: 30;
             border: solid $primary;
             background: $surface;
             padding: 1 2;
@@ -383,92 +378,30 @@ def build_widget_classes(t) -> SimpleNamespace:
             margin-top: 1;
             width: 100%;
         }
-        .role-container {
-            margin-bottom: 1;
-            border: solid $accent;
-            padding: 1;
-        }
         """
 
-        def __init__(self, agent, configs: dict) -> None:
+        def __init__(self, configs: dict) -> None:
             super().__init__()
-            self._agent = agent
             self._configs = configs
-            self._entries = agent.config.model_entries
 
         def compose(self):
-            from textual.containers import Vertical, Container
-            from textual.widgets import Button, Static, Select, Label
-            
-            role_labels = [("llm", "LLM (main)"), ("emb", "Embed"), ("sum", "Summarizer")]
-            
+            from textual.containers import Vertical
+            from textual.widgets import Button, Static, RichLog
+            lines = []
+            role_labels = [("llm", "LLM  (main)"), ("emb", "Embed"), ("sum", "Summarizer")]
+            for role, heading in role_labels:
+                cfg = self._configs.get(role, {})
+                lines.append(f"[bold]{heading}[/bold]")
+                for k, v in cfg.items():
+                    lines.append(f"  [{t.text_dim}]{k}[/{t.text_dim}]  {_escape(str(v))}")
+                lines.append("")
+            body = "\n".join(lines).rstrip()
             with Vertical(id="model-config-dialog"):
-                for role_key, role_display in role_labels:
-                    with Container(classes="role-container"):
-                        yield Label(f"[bold]{role_display}[/bold]")
-                        
-                        options = []
-                        for name, entry in self._entries.items():
-                            display_name = f"{name} ({entry.model})"
-                            options.append((display_name, name))
-                        
-                        current_model_name = self._resolve_entry_name(role_key)
-                        if current_model_name is None and options:
-                            current_model_name = options[0][0]
-                        yield Select(
-                            options,
-                            value=current_model_name,
-                            id=f"select-{role_key}"
-                        )
-                
+                yield Static(body, markup=True)
                 yield Button("Close  [ESC]", id="model-config-close")
 
-        def _resolve_entry_name(self, role_key: str):
-            """Resolve display role key ('llm','emb','sum') to a model_entries name."""
-            roles = self._agent.config.model_roles
-            # Direct match on the role key itself
-            if role_key in self._entries:
-                return role_key
-            if role_key in roles:
-                name = roles[role_key]
-                if isinstance(name, str) and name in self._entries:
-                    return name
-            # Canonical role name mapping
-            canonical = {"llm": "default", "emb": "embeddings", "sum": "summarizer"}
-            mapped = canonical.get(role_key)
-            if mapped and mapped in roles:
-                name = roles[mapped]
-                if isinstance(name, str) and name in self._entries:
-                    return name
-            # Fallback: match by model + base_url from display config
-            cfg = self._configs.get(role_key, {})
-            if isinstance(cfg, dict):
-                cfg_model = cfg.get("model", "")
-                cfg_url = cfg.get("base_url", "")
-                for ename, entry in self._entries.items():
-                    if entry.model == cfg_model and entry.base_url == cfg_url:
-                        return ename
-            return None
-
-        def on_select_changed(self, event) -> None:
-            from textual.widgets import Select
-            control = event.control
-            if not control.id.startswith("select-"):
-                return
-            
-            role_key = control.id.replace("select-", "")
-            new_model_name = event.value
-            
-            if new_model_name:
-                from agent.ui.slash import _apply_model
-                ok, msg = _apply_model(self._agent, f"{role_key}={new_model_name}")
-                if not ok:
-                    self.notify(f"Failed to update {role_key}: {msg}", severity="error")
-
         def on_button_pressed(self, event) -> None:
-            from textual.widgets import Button
-            if event.button.id == "model-config-close":
-                self.dismiss()
+            self.dismiss()
 
         def on_key(self, event) -> None:
             if event.key in ("escape", "q"):
@@ -575,8 +508,8 @@ def build_widget_classes(t) -> SimpleNamespace:
                 server = self.app._server
                 configs = server.get_model_configs()
             except Exception:
-                configs = self.app.agent.config.model_roles
-            self.app.push_screen(ModelConfigScreen(self.app.agent, configs))
+                configs = {}
+            self.app.push_screen(ModelConfigScreen(configs))
 
     class HintBar(Static):
         """Contextual hints shown during history navigation."""
