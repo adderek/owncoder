@@ -12,6 +12,7 @@ from openai import BadRequestError
 from .prompts import _build_call_kwargs, _inject_think_hint, _log_llm_request
 from .tool_calls import _tool_result_message, _FakeToolCall, execute_tool, _parse_raw_tool_calls
 from .streaming import _stream_response, _strip_tool_blocks, _is_narrating_tool_use
+from .cache_tracker import check_cache, mark_request
 from .history_ops import (
     _merge_trailing_assistants, _collapse_tool_rounds, _truncate_large_messages,
     _apply_code_from_history,
@@ -169,11 +170,18 @@ async def run_turn(
         turn_reasoning: str = ""
         try:
             if on_token is not None:
+                if config.llm.cache_ttl > 0:
+                    _warm, _rem, _cache_msg = check_cache(config.llm.base_url, config.llm.model, config.llm.cache_ttl)
+                    if _cache_msg:
+                        logger.info("%s", _cache_msg)
+                        _phase("cache", _cache_msg)
                 _phase("generating", f"iter {iter_count + 1}/{'∞' if max_iter is None else max_iter}")
                 finish_reason, full_content, raw_tool_calls, turn_reasoning = await _stream_response(
                     client, config, api_messages, tools, on_token,
                     on_usage=on_usage, on_reasoning=on_reasoning,
                 )
+                if config.llm.cache_ttl > 0:
+                    mark_request(config.llm.base_url, config.llm.model)
 
                 class _Msg:
                     pass
@@ -187,6 +195,11 @@ async def run_turn(
                 choice.message = msg
                 choice.finish_reason = finish_reason
             else:
+                if config.llm.cache_ttl > 0:
+                    _warm, _rem, _cache_msg = check_cache(config.llm.base_url, config.llm.model, config.llm.cache_ttl)
+                    if _cache_msg:
+                        logger.info("%s", _cache_msg)
+                        _phase("cache", _cache_msg)
                 api_messages_sent = _inject_think_hint(api_messages, config)
                 _log_llm_request(api_messages_sent, tools, config)
                 import time
@@ -214,6 +227,8 @@ async def run_turn(
                         "gen_seconds": max(1e-6, t_end - t_start),
                         "ttft": None,
                     })
+                if config.llm.cache_ttl > 0:
+                    mark_request(config.llm.base_url, config.llm.model)
         except BadRequestError as e:
             err_body = e.body or {}
             if isinstance(err_body, dict) and err_body.get("error", {}).get("type") == "exceed_context_size_error":

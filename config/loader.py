@@ -189,6 +189,7 @@ def _apply_model_entry_to_llm(config: Config) -> None:
         if default_entry.model:
             config.llm.model = default_entry.model
         config.llm.ctx_window = default_entry.ctx_window
+        config.llm.cache_ttl = default_entry.cache_ttl
         config.llm.max_output_tokens = default_entry.max_output_tokens
         config.llm.temperature = default_entry.temperature
         config.llm.seed = default_entry.seed

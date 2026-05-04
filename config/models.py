@@ -19,6 +19,7 @@ class LLMConfig:
     seed: int | None = None
     think_level: str = "normal"
     narration_fallback: bool = True
+    cache_ttl: int = 300         # prompt cache TTL in seconds; 0 = disable cache tracking
 
 
 @dataclass
@@ -322,6 +323,7 @@ class ModelEntry:
     params_b: float = 0.0        # model size in billions of parameters (0 = unknown)
     thinking: bool = False       # supports extended thinking / chain-of-thought
     local: bool = False          # runs locally (no network cost / latency)
+    cache_ttl: int = 300         # prompt cache TTL in seconds; 0 = disable cache tracking
     cost_in_per_1k: float = 0.0  # USD per 1k input tokens (0 = free/unknown)
     cost_out_per_1k: float = 0.0 # USD per 1k output tokens (0 = free/unknown)
     tokens_per_sec: float = 0.0  # estimated throughput (0 = unknown)
