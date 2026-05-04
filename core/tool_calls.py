@@ -62,6 +62,7 @@ _PARAM_ALIASES: dict[str, dict[str, str]] = {
     "recall_sessions": {"q": "query", "term": "query"},
     "save_note": {"name": "title", "heading": "title", "content": "body", "text": "body"},
     "rate_session": {"rating": "outcome"},
+    "edit_file": {"content": "replacement", "text": "replacement", "new_string": "replacement", "old_string": "anchor"},
 }
 
 
@@ -74,7 +75,35 @@ def _remap_params(name: str, args: dict) -> dict:
     for k, v in args.items():
         actual = aliases.get(k, k)
         remapped[actual] = v
+
+    # edit_file: auto-wrap flat path+anchor+replacement into chunks array
+    if name == "edit_file" and "chunks" not in remapped:
+        path_v = remapped.pop("path", None)
+        anchor_v = remapped.pop("anchor", None)
+        repl_v = remapped.pop("replacement", None)
+        if path_v and anchor_v and repl_v is not None:
+            chunk = {"path": path_v, "anchor": anchor_v, "replacement": repl_v}
+            # Carry over any other top-level fields the model might have set
+            for ch_field in ("range_hint", "anchor_sha256", "expect_removed", "expect_added"):
+                if ch_field in remapped:
+                    chunk[ch_field] = remapped.pop(ch_field)
+            remapped["chunks"] = [chunk]
+
     return remapped
+
+
+def _try_parse_flat_args(raw: str) -> dict | None:
+    """Fallback: parse {key=\"value\", key2=\"value2\"} when JSON fails.
+
+    Handles values with escaped chars (newlines, quotes) that break json.loads.
+    """
+    import re as _re
+    args = {}
+    # Match key=\"value\" pairs, allowing escaped \\\" inside values
+    for m in _re.finditer(r'(\w+)\s*=\s*\"((?:[^\"\\\\]|\\\\.)*)\"', raw):
+        args[m.group(1)] = m.group(2).replace('\\n', '\n').replace('\\t', '\t').replace('\\"', '"')
+        # Also handle Python-style \\n in the string (already literal by the time we get here)
+    return args if args else None
 
 
 def _parse_text_tool_calls(text: str) -> list[dict] | None:
@@ -103,7 +132,11 @@ def _parse_text_tool_calls(text: str) -> list[dict] | None:
             try:
                 args = _json.loads(q)
             except _json.JSONDecodeError:
-                continue
+                flat = _try_parse_flat_args(raw)
+                if flat is not None:
+                    args = flat
+                else:
+                    continue
         calls.append({"name": m.group(1), "arguments": _remap_params(m.group(1), args)})
     return calls if calls else None
 
