@@ -63,6 +63,32 @@ def _repetition_guard(content: str, threshold: int = _REPEAT_THRESHOLD) -> bool:
     return False
 
 
+def _strip_text_tool_calls(text: str) -> str:
+    """Strip call:function_name{...} fragments, keeping surrounding text.
+
+    Uses the same bracket-matching logic as _parse_text_tool_calls so nested
+    braces (rare in args) are handled correctly.
+    """
+    import re as _re
+    parts = []
+    last_end = 0
+    for m in _re.finditer(r"call:\w+\s*\{", text):
+        start = m.start()
+        brace_start = text.index("{", start)
+        depth = 1
+        i = brace_start + 1
+        while depth > 0 and i < len(text):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+            i += 1
+        parts.append(text[last_end:start])
+        last_end = i
+    parts.append(text[last_end:])
+    return "".join(parts).strip()
+
+
 def _clean_output(text: str) -> str:
     """Strip leaked control tokens and thinking artifacts from model output."""
     text = _THINK_TAG_RE.sub("", text)
@@ -189,6 +215,7 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
         text_calls = _parse_text_tool_calls(raw_content)
         if text_calls:
             tool_calls = [_FakeToolCall(c["name"], c["arguments"]) for c in text_calls]
+            full_content = _strip_text_tool_calls(full_content)
         else:
             tool_calls = None
     else:
