@@ -99,6 +99,7 @@ def _parse_text_tool_calls(text: str) -> list[dict] | None:
         except _json.JSONDecodeError:
             q = _re.sub(r'(?<=[{,])\s*(\w+)(?=\s*:)', r'"\1"', raw)
             q = q.replace("'", '"')
+            q = _re.sub(r'(?<=[{,])\s*(\w+)\s*=', r'"\1":', q)
             try:
                 args = _json.loads(q)
             except _json.JSONDecodeError:
