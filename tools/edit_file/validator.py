@@ -24,6 +24,29 @@ def _unescape_model_json(s: str) -> str:
     return re.sub(r"\\([ntr\"\\])", lambda m: _UNESCAPE_MAP[m.group(1)], s)
 
 
+def _structural_index(text: str, max_entries: int = 20) -> list[dict]:
+    """Extract file outline: class/function/method definitions with line numbers."""
+    lines = text.splitlines()
+    out: list[dict] = []
+    for lineno, line in enumerate(lines, 1):
+        stripped = line.strip()
+        # Class definitions
+        m = re.match(r"^(?:class\s+(\w+))", stripped)
+        if m:
+            indent = len(line) - len(line.lstrip())
+            out.append({"line": lineno, "kind": "class", "name": m.group(1), "indent": indent, "text": stripped[:80]})
+            continue
+        # Function/method definitions
+        m = re.match(r"^(?:async\s+)?def\s+(\w+)", stripped)
+        if m:
+            indent = len(line) - len(line.lstrip())
+            out.append({"line": lineno, "kind": "def", "name": m.group(1), "indent": indent, "text": stripped[:80]})
+    if len(out) > max_entries:
+        out = out[:max_entries]
+        out.append({"line": -1, "kind": "...", "name": f"... ({len(lines) - max_entries} more entries truncated)", "indent": 0, "text": ""})
+    return out
+
+
 @dataclass
 class _ValidatedChunk:
     chunk_index: int
@@ -189,11 +212,20 @@ def _validate_chunk(
     if not spans:
         fuzzy = _find_loose_v2(original, anchor, lo, hi)
         candidates = [_candidate(original, s, e, i) for i, (s, e) in enumerate(fuzzy[:_MAX_CANDIDATES])] if fuzzy else []
+        structure = _structural_index(original)
+        detail = (
+            "anchor not present in file (exact search%s). Re-read the file and re-quote."
+            % (" + loose fallback" if mode == "loose" else "")
+        )
+        if not candidates and structure:
+            detail += " File contains: " + ", ".join(
+                f"{s['kind']} {s['name']} (line {s['line']})" for s in structure if s['kind'] != '...'
+            )
         return None, err(
             "anchor_not_found",
-            "anchor not present in file (exact search%s). Re-read the file and re-quote."
-            % (" + loose fallback" if mode == "loose" else ""),
+            detail,
             fuzzy_candidates=candidates,
+            file_structure=structure,
         )
     if len(spans) > 1:
         cands = [_candidate(original, s, e, i) for i, (s, e) in enumerate(spans[:_MAX_CANDIDATES])]
