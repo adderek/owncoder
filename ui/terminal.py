@@ -306,6 +306,7 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                     self._server.cancel_background()
                 except Exception:
                     pass
+                os.system('echo -ne "\033]0;\007"')
                 self.exit()
                 return
             # Prompt for session rating before quitting if unrated and has turns.
@@ -325,6 +326,7 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             except Exception:
                 pending = 0
             if pending == 0:
+                os.system('echo -ne "\033]0;\007"')
                 self.exit()
                 return
             self._quit_requested = True
@@ -344,6 +346,7 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                 await self._server.wait_background(timeout=30.0)
             except Exception:
                 logger.exception("graceful_exit: wait_background error (ignored)")
+            os.system('echo -ne "\033]0;\007"')
             self.exit()
 
         def action_show_help(self) -> None:
