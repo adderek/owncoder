@@ -47,6 +47,47 @@ def _structural_index(text: str, max_entries: int = 20) -> list[dict]:
     return out
 
 
+def _adjust_replacement_indent(
+    replacement: str, match_offset: int, original: str, anchor: str,
+) -> tuple[str, bool]:
+    """Auto-adjust replacement continuation-line indentation when anchor
+    matched inside leading whitespace (substring match).
+
+    E.g. anchor='class Foo:' matching inside '    class Foo:' (offset 4)
+    means replacement's '\\n    def bar():' should become '\\n        def bar():'
+    to preserve correct nesting.
+
+    Returns (adjusted_replacement, was_adjusted).
+    """
+    if match_offset == 0:
+        return replacement, False
+    # Only adjust if the offset is all whitespace (leading indentation)
+    if not original[:match_offset].strip():
+        indent = original[:match_offset]
+        # Find every newline in replacement and increase indentation after it
+        parts = replacement.split("\n")
+        if len(parts) <= 1:
+            return replacement, False
+        # Don't adjust the first line (it's at the match position)
+        adjusted = [parts[0]]
+        for line in parts[1:]:
+            # Add the leading indent before whatever whitespace is already there
+            if line.strip():
+                # Preserve any existing whitespace + add context indent
+                adjusted.append(indent + line)
+            else:
+                adjusted.append(line)
+        result = "\n".join(adjusted)
+        if result != replacement:
+            logger.info(
+                "edit_file: auto-adjusted replacement indentation (+%d spaces) "
+                "for %d continuation lines (anchor matched inside leading whitespace)",
+                len(indent), len(parts) - 1,
+            )
+            return result, True
+    return replacement, False
+
+
 @dataclass
 class _ValidatedChunk:
     chunk_index: int
@@ -59,6 +100,7 @@ class _ValidatedChunk:
     removed_lines: int
     added_lines: int
     auto_unescaped: bool = False
+    indent_adjusted: bool = False
 
 
 def _validate_chunk(
@@ -234,6 +276,9 @@ def _validate_chunk(
         return None, err("anchor_ambiguous", f"anchor matched {len(spans)} locations; add range_hint or extend anchor for uniqueness", match_count=len(spans), candidates=cands)
 
     s, e = spans[0]
+    replacement, indent_adjusted = _adjust_replacement_indent(replacement, s, original, anchor)
+    if indent_adjusted:
+        repl_lines = _count_lines(replacement)
     return _ValidatedChunk(
         chunk_index=idx,
         path=path,
@@ -245,4 +290,5 @@ def _validate_chunk(
         removed_lines=anchor_lines,
         added_lines=repl_lines,
         auto_unescaped=auto_unescaped,
+        indent_adjusted=indent_adjusted,
     ), None
