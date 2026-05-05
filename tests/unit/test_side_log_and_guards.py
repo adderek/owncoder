@@ -88,7 +88,7 @@ def test_collapse_writes_full_detail_to_side_log(tmp_path):
     collapsed = _collapse_tool_rounds(messages, side_log=side_log, turn_id=7)
 
     # Summary message stays compact.
-    summary = next(m for m in collapsed if m.get("role") == "system" and "[tools:" in m.get("content", ""))
+    summary = next(m for m in collapsed if m.get("role") == "assistant" and "[tools:" in m.get("content", ""))
     assert long_content not in summary["content"], "full content must not appear in session summary"
     assert summary.get("_tool_refs") == [0], "summary must reference side-log seq"
 
@@ -120,7 +120,7 @@ def test_collapse_without_side_log_is_unchanged():
         {"role": "assistant", "content": "Done."},
     ]
     collapsed = _collapse_tool_rounds(messages)
-    summary = next(m for m in collapsed if m.get("role") == "system")
+    summary = next(m for m in collapsed if m.get("role") == "assistant")
     assert "_tool_refs" not in summary
 
 

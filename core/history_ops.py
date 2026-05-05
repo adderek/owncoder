@@ -113,7 +113,7 @@ def _collapse_tool_rounds(
                         logger.warning("side_log append failed: %s", e)
 
             summary = "[tools: " + " | ".join(parts) + "]"
-            summary_msg: dict = {"role": "system", "content": summary}
+            summary_msg: dict = {"role": "assistant", "content": summary}
             if refs:
                 summary_msg["_tool_refs"] = refs
             out.append(summary_msg)

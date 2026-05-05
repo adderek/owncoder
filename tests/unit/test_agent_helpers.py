@@ -107,7 +107,7 @@ class TestCollapseToolRounds:
             {"role": "assistant", "content": "Done."},
         ]
         collapsed = _collapse_tool_rounds(messages)
-        assert any("[tools:" in m.get("content", "") for m in collapsed if m.get("role") == "system")
+        assert any("[tools:" in m.get("content", "") for m in collapsed if m.get("role") == "assistant")
 
     def test_preserves_user_messages(self):
         messages = [
