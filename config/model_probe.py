@@ -30,6 +30,15 @@ if TYPE_CHECKING:
 
 MISMATCH_THRESHOLD = 0.10  # warn when server value differs by > 10 %
 _PARAMS_RE = re.compile(r"(\d+(?:\.\d+)?)\s*[bB]\b")
+_FILE_EXTS = (".gguf", ".bin", ".safetensors", ".pt", ".pth")
+
+
+def _strip_ext(name: str) -> str:
+    n = name.lower()
+    for ext in _FILE_EXTS:
+        if n.endswith(ext):
+            n = n[: -len(ext)]
+    return n
 
 
 # ── public entry point ────────────────────────────────────────────────────────
@@ -75,28 +84,23 @@ def _probe_endpoint(
             for sid, sm in server_models.items():
                 cfg_lower = entry.model.lower()
                 sid_lower = sid.lower()
-                # Strip common GGUF/file extensions
-                sid_stripped = sid_lower
-                for ext in (".gguf", ".bin", ".safetensors", ".pt", ".pth"):
-                    if sid_stripped.endswith(ext):
-                        sid_stripped = sid_stripped[: -len(ext)]
                 if (
                     sid_lower == cfg_lower
-                    or sid_stripped == cfg_lower
+                    or _strip_ext(sid_lower) == cfg_lower
                     or sid_lower.startswith(cfg_lower)
                     or cfg_lower in sid_lower
                 ):
                     server_info = sm
                     break
-        # Warn if probed model name differs from config
+        # Warn if probed model name differs from config (ignoring file extensions)
         matched_id = (server_info or {}).get("id", "")
-        if matched_id and matched_id.lower() != entry.model.lower():
-            entry_name = name  # model entry name
-            print(
-                f"[model-probe] {entry_name}: config model=\"{entry.model}\" "
-                f"but server has \"{matched_id}\" — using server metadata",
-                file=sys.stderr,
-            )
+        if matched_id:
+            if _strip_ext(matched_id) != _strip_ext(entry.model):
+                print(
+                    f"[model-probe] {name}: config model=\"{entry.model}\" "
+                    f"but server has \"{matched_id}\" — using server metadata",
+                    file=sys.stderr,
+                )
         _enrich_entry(name, entry, server_info, base_url, api_key, is_ollama, timeout)
 
 
