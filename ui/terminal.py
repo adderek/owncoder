@@ -29,6 +29,34 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
         server = LocalUIServer(agent)
     t = server.get_ui_config()["theme"]
 
+    import os
+    session_name = f'{session.id} {session.description}' if session else 'No Session'
+    os.system(f'echo -ne "\033]0;🌟 {session_name}\007"')
+
+    from textual.app import App, ComposeResult
+    from textual.widgets import (
+        Footer,
+        RichLog,
+        Static,
+        TextArea,
+        LoadingIndicator,
+        TabbedContent,
+        TabPane,
+    )
+    from textual.containers import Horizontal
+    from textual.binding import Binding
+    from textual.message import Message
+    from textual.worker import Worker, WorkerState
+    from textual import work
+    from rich.markup import escape as _escape
+    from rich.markdown import Markdown
+
+    from agent.ui.textual_widgets import build_widget_classes
+    from agent.ui_server import LocalUIServer
+    if server is None:
+        server = LocalUIServer(agent)
+    t = server.get_ui_config()["theme"]
+
     from textual.app import App, ComposeResult
     from textual.widgets import (
         Footer,
