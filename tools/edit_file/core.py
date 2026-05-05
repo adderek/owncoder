@@ -8,24 +8,21 @@ from .schema import _build_schema, _register_edit_file  # noqa: F401
 
 
 def edit_file(
-    chunks: list[dict],
+    chunks: list[dict] | None = None,
+    path: str | None = None,
+    anchor: str | None = None,
+    replacement: str | None = None,
     match: str | None = None,
     on_chunk_fail: str | None = None,
-    **kwargs: object,
 ) -> dict:
     from agent.tools.files import _resolve, _log_edit, _undo_stack
 
     rules = get_rules()
     ec = rules.config.edit
 
-    # Absorb top-level kwargs that LLMs sometimes emit outside of chunks.
-    # path: redundant when chunk already carries it — drop silently.
-    kwargs.pop("path", None)
-    # range_hint: model intends it as a global search hint — inject into chunks that lack one.
-    top_range_hint = kwargs.pop("range_hint", None)
-    # replacement: model collapsed schema, putting replacement outside chunks — inject into
-    # a single-chunk call where the chunk lacks its own replacement.
-    top_replacement = kwargs.pop("replacement", None)
+    # Accept flat path+anchor+replacement as alternative to chunks
+    if not chunks and path and anchor and replacement is not None:
+        chunks = [{"path": path, "anchor": anchor, "replacement": replacement}]
 
     if not isinstance(chunks, list) or not chunks:
         return {
@@ -33,14 +30,10 @@ def edit_file(
             "errors": [{"chunk_index": -1, "kind": "bad_input", "detail": "chunks must be a non-empty list"}],
         }
 
-    # Apply top-level aliases before processing.
-    if top_range_hint is not None:
-        chunks = [
-            dict(ch, range_hint=top_range_hint) if isinstance(ch, dict) and "range_hint" not in ch else ch
-            for ch in chunks
-        ]
-    if top_replacement is not None and len(chunks) == 1 and isinstance(chunks[0], dict) and "replacement" not in chunks[0]:
-        chunks = [dict(chunks[0], replacement=top_replacement)]
+    # Apply top-level range_hint into chunks that lack one.
+    # (path and replacement are now explicit params, handled by the flat-args path above)
+    # range_hint is left for a future signature expansion.
+    top_range_hint = None  # placeholder for future kwargs.pop("range_hint", None)
 
     attempted_paths = list(
         set(ch.get("path") for ch in chunks if isinstance(ch, dict) and "path" in ch)

@@ -33,10 +33,22 @@ def _build_schema() -> dict:
                 "required": ["path", "anchor", "replacement"],
                 "properties": chunk_props,
             },
-            "description": "One or more anchored edits. All applied atomically (default).",
+            "description": "One or more anchored edits (alternative to path+anchor+replacement below). All applied atomically.",
+        },
+        "path": {
+            "type": "string",
+            "description": "Alternative to chunks: file path (use with anchor+replacement).",
+        },
+        "anchor": {
+            "type": "string",
+            "description": "Alternative to chunks: exact text currently in the file (use with path+replacement).",
+        },
+        "replacement": {
+            "type": "string",
+            "description": "Alternative to chunks: new text to replace anchor (use with path+anchor).",
         },
     }
-
+    required: list[str] = []  # provide either chunks[] OR path+anchor+replacement
     if ec.match == "model":
         props["match"] = {
             "type": "string",
