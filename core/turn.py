@@ -104,7 +104,9 @@ async def run_turn(
     content_parts: list[str] = []
     iter_count = 0
     _read_path_counts: dict[str, int] = {}
+    _edit_file_fails: dict[str, int] = {}
     _READ_PATH_WARN_THRESHOLD = 3
+    _EDIT_FILE_FAIL_THRESHOLD = 2
     _max_iter_raw = getattr(config.llm, "max_iterations", 10)
     max_iter: int | None = None if _max_iter_raw is None else max(1, int(_max_iter_raw))
     loop_cfg = getattr(config, "loop_guard", None)
@@ -381,11 +383,44 @@ async def run_turn(
                                 if isinstance(r_parsed, dict):
                                     r_parsed["_loop_warning"] = (
                                         f"[loop-guard] '{rpath}' read {_read_path_counts[rpath]}× this turn. "
-                                        "If previous reads didn't give you the anchor, use search_code or "
+                                        "If previous reads didn't give you the anchor, use search_files or "
                                         "specify start_line/end_line to target a different section. "
                                         "Do not re-read the same range again."
                                     )
                                     result = json.dumps(r_parsed)
+                    except Exception:
+                        pass
+                if tc.function.name == "edit_file":
+                    try:
+                        e_parsed = json.loads(result)
+                        if isinstance(e_parsed, dict) and e_parsed.get("error") == "atomic_rollback":
+                            e_errors = e_parsed.get("errors", [])
+                            # Find the file path from the arguments
+                            a = json.loads(tc.function.arguments or "{}")
+                            e_path = str(a.get("path", "") or "")
+                            for e_chunk in e_errors:
+                                if isinstance(e_chunk, dict) and e_chunk.get("kind") == "anchor_not_found":
+                                    fail_key = f"{e_path}:{e_chunk.get('chunk_index', 0)}"
+                                    _edit_file_fails[fail_key] = _edit_file_fails.get(fail_key, 0) + 1
+                                    if _edit_file_fails[fail_key] >= _EDIT_FILE_FAIL_THRESHOLD:
+                                        structure = e_chunk.get("file_structure") or []
+                                        def_names = [s["name"] for s in structure if s["kind"] == "def"]
+                                        class_names = [s["name"] for s in structure if s["kind"] == "class"]
+                                        hint_parts = []
+                                        if class_names:
+                                            hint_parts.append(f"classes: {', '.join(class_names[:5])}")
+                                        if def_names:
+                                            hint_parts.append(f"methods: {', '.join(def_names[:10])}")
+                                        hint = (
+                                            f"[loop-guard] The anchor you used is not in this file "
+                                            f"({_edit_file_fails[fail_key]}×). "
+                                        )
+                                        if hint_parts:
+                                            hint += "File has " + "; ".join(hint_parts) + ". "
+                                        hint += "Search the file with search_files or read different sections to find the right anchor."
+                                        e_parsed["_error_hint"] = hint
+                                        result = json.dumps(e_parsed)
+                            break  # only process first anchor_not_found per call
                     except Exception:
                         pass
                 patched_results.append(result)

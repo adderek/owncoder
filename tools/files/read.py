@@ -59,11 +59,16 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
     lines = text.splitlines()
     total = len(lines)
 
+    def _make_header(sl_show: int, el_show: int) -> str:
+        if sl_show == 1 and el_show >= total:
+            return f"[{fpath.name} · {total} lines]"
+        return f"[{fpath.name} · {total} lines · showing lines {sl_show}-{el_show} · read offset={el_show + 1} for more]"
+
     if start_line is None and end_line is None and total > 500:
-        head = "\n".join(f"{i + 1}:{l}" for i, l in enumerate(lines[:200]))
+        head_lines = lines[:200]
+        numbered = "\n".join(f"{i + 1}:{l}" for i, l in enumerate(head_lines))
         return {
-            "warning": f"File has {total} lines; showing first 200. Use start_line/end_line for other ranges.",
-            "content": head,
+            "content": _make_header(1, 200) + "\n" + numbered,
         }
 
     sl = (start_line or 1) - 1
@@ -79,10 +84,10 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
             if path in _undo_stack:
                 return {
                     "warning": f"File has syntax error: {e}. It was recently modified. Use undo_file to revert.",
-                    "content": numbered,
+                    "content": _make_header(sl + 1, el) + "\n" + numbered,
                 }
 
-    return {"content": numbered}
+    return {"content": _make_header(sl + 1, el) + "\n" + numbered}
 
 
 @register(

@@ -221,6 +221,8 @@ def _validate_chunk(
             detail += " File contains: " + ", ".join(
                 f"{s['kind']} {s['name']} (line {s['line']})" for s in structure if s['kind'] != '...'
             )
+            if len(structure) > 15:
+                detail += " Use search_files('def ', path='...') to find the right method."
         return None, err(
             "anchor_not_found",
             detail,

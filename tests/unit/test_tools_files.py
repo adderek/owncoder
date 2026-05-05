@@ -61,7 +61,7 @@ class TestReadFile:
         content = "\n".join(f"line {i}" for i in range(1, 600))
         write_file("big.txt", content)
         r = read_file("big.txt")
-        assert "warning" in r
+        assert "lines" in r.get("content", "") and "showing lines" in r.get("content", "")
 
 
 class TestPathEscape:
