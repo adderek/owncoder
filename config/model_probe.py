@@ -114,14 +114,22 @@ def _enrich_entry(
     timeout: int,
 ) -> None:
     # --- ctx_window ---
+    # Runtime context sources: reflect actual server configuration.
     server_ctx = (
         server_info.get("context_length")
         or server_info.get("max_model_len")
         or server_info.get("n_ctx")
-        or server_info.get("meta", {}).get("n_ctx_train")
     )
     if isinstance(server_ctx, int) and server_ctx > 0:
         _fill_or_warn(name, "ctx_window", entry, server_ctx)
+    else:
+        # Fallback: n_ctx_train is the model's architectural max, not the
+        # server's runtime value (llama.cpp returns it even when the user
+        # constrained the server with -c). Only fill when config is unset;
+        # never warn — a smaller explicit config is expected.
+        train_ctx = server_info.get("meta", {}).get("n_ctx_train")
+        if isinstance(train_ctx, int) and train_ctx > 0 and not getattr(entry, "ctx_window", 0):
+            setattr(entry, "ctx_window", train_ctx)
 
     # --- cost fields (OpenRouter exposes pricing per token) ---
     pricing = server_info.get("pricing", {})

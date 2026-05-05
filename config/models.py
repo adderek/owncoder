@@ -20,6 +20,7 @@ class LLMConfig:
     think_level: str = "normal"
     narration_fallback: bool = True
     cache_ttl: int = 300         # prompt cache TTL in seconds; 0 = disable cache tracking
+    gpu: bool = False             # True when resolved default entry is in [concurrency].gpu_pool
 
 
 @dataclass
@@ -393,6 +394,17 @@ class OutputStoreConfig:
 
 
 @dataclass
+class ConcurrencyConfig:
+    """Resource limits for GPU model calls.
+
+    gpu_pool: list of model entry names that share GPU VRAM.
+    gpu_slots: max concurrent requests to GPU models (default 1).
+    """
+    gpu_pool: list[str] = field(default_factory=list)
+    gpu_slots: int = 1
+
+
+@dataclass
 class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
@@ -416,3 +428,4 @@ class Config:
     parallel: ParallelConfig = field(default_factory=ParallelConfig)
     web_search: WebSearchConfig = field(default_factory=WebSearchConfig)
     output_store: OutputStoreConfig = field(default_factory=OutputStoreConfig)
+    concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)

@@ -157,6 +157,39 @@ def test_no_override_explicit_params_b():
     assert entries["m"].params_b == 7.0  # unchanged
 
 
+def test_no_warn_when_n_ctx_train_fallback_with_explicit_config():
+    """llama.cpp only returns n_ctx_train (model max) not n_ctx (runtime).
+    When config has an explicit value, n_ctx_train should NOT trigger a warning."""
+    e = _entry(model="qwen2.5-14b", base_url="http://localhost:8080/v1", ctx_window=32768)
+    entries = {"gpu-qwen-14b-q8": e}
+    cfg = _FakeConfig(entries)
+    server_response = {
+        "data": [{
+            "id": "qwen2.5-14b",
+            "meta": {"n_ctx_train": 131072},
+        }]
+    }
+    with patch("urllib.request.urlopen", return_value=_mock_urlopen(server_response)):
+        enrich_model_entries(cfg)
+    assert entries["gpu-qwen-14b-q8"].ctx_window == 32768  # unchanged, no warning
+
+
+def test_fill_ctx_from_n_ctx_train_when_unset():
+    """When config ctx_window=0 (unset), n_ctx_train should fill it."""
+    e = _entry(model="qwen2.5-14b", base_url="http://localhost:8080/v1", ctx_window=0)
+    entries = {"qwen": e}
+    cfg = _FakeConfig(entries)
+    server_response = {
+        "data": [{
+            "id": "qwen2.5-14b",
+            "meta": {"n_ctx_train": 131072},
+        }]
+    }
+    with patch("urllib.request.urlopen", return_value=_mock_urlopen(server_response)):
+        enrich_model_entries(cfg)
+    assert entries["qwen"].ctx_window == 131072
+
+
 def test_unreachable_endpoint_silently_skipped():
     entries = {"m": _entry(model="x", base_url="http://nowhere:9999/v1")}
     cfg = _FakeConfig(entries)

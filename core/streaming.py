@@ -115,6 +115,18 @@ def _strip_tool_blocks(text: str) -> str:
     return text.strip()
 
 
+def _gpu_slot(config):
+    """Context manager: acquire GPU semaphore only when the model is GPU-bound."""
+    from agent.core.model_status import gpu_slot as _gs
+    if config.llm.gpu:
+        return _gs()
+    from contextlib import asynccontextmanager
+    @asynccontextmanager
+    async def _noop():
+        yield
+    return _noop()
+
+
 async def _stream_response(client, config: "Config", api_messages, tools, on_token, on_usage=None, on_reasoning=None):
     from agent._tokens import count_tokens_approx
     from agent.memory.compactor import _count_tokens_approx
@@ -134,7 +146,8 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
 
     _ms_inc("main")
     try:
-        stream = await client.chat.completions.create(
+        async with _gpu_slot(config):
+            stream = await client.chat.completions.create(
             messages=api_messages,
             tools=tools if tools else None,
             stream=True,

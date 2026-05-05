@@ -5,6 +5,7 @@ Thread-safe via a lock; safe to call from async contexts.
 """
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from contextlib import asynccontextmanager, contextmanager
@@ -12,6 +13,10 @@ from contextlib import asynccontextmanager, contextmanager
 _lock = threading.Lock()
 _counts: dict[str, int] = {}
 _listeners: list = []
+
+# GPU concurrency semaphore — limits parallel calls to GPU models.
+# Initialized by init_gpu_semaphore() during agent startup.
+_gpu_sem: asyncio.Semaphore | None = None
 
 # Per-worker detail records for parallel agent fan-out.
 _worker_seq: int = 0
@@ -77,6 +82,31 @@ def track_sync(role: str):
         yield
     finally:
         _dec(role)
+
+
+# ── GPU concurrency semaphore ────────────────────────────────────────────────
+
+def init_gpu_semaphore(slots: int) -> None:
+    """Initialise (or re-init) the GPU request semaphore with *slots* permits."""
+    global _gpu_sem
+    _gpu_sem = asyncio.Semaphore(slots)
+
+
+def get_gpu_semaphore() -> asyncio.Semaphore | None:
+    """Return the GPU semaphore, or None if not initialised (no GPU pool)."""
+    return _gpu_sem
+
+
+@asynccontextmanager
+async def gpu_slot():
+    """Acquire a GPU request slot, blocking until one is free. No-op if no
+    GPU semaphore is configured (pure CPU setup)."""
+    sem = _gpu_sem
+    if sem is None:
+        yield
+        return
+    async with sem:
+        yield
 
 
 # ── Parallel worker registry ──────────────────────────────────────────────────

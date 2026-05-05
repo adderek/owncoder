@@ -21,6 +21,59 @@ _A_SYSTEM = (
 )
 
 
+def _pick_summarizer_entry(config: "Config", content: str) -> tuple:
+    """Smart summarizer routing: GPU when free+fits, CPU fallback otherwise.
+
+    Returns (entry, used_gpu) where entry is the chosen ModelEntry and
+    used_gpu indicates whether it's the GPU pool model.
+    """
+    from agent.config import make_registry
+    from agent.core.model_status import get_counts
+
+    cpu_entry = make_registry(config).summarizer
+    gpu_pool = config.concurrency.gpu_pool
+
+    # If no GPU pool configured, always use CPU
+    if not gpu_pool:
+        return cpu_entry, False
+
+    # Find the default model entry — it's the primary GPU model
+    default_name = config.model_roles.get("default", "default")
+    if default_name not in gpu_pool:
+        return cpu_entry, False  # default is not GPU, nothing to route
+
+    default_entry = config.model_entries.get(default_name)
+    if default_entry is None:
+        return cpu_entry, False
+
+    # Check if GPU is currently busy (main role is running)
+    counts = get_counts()
+    if counts.get("main", 0) > 0:
+        return cpu_entry, False  # GPU busy with main chat
+
+    # Estimate whether the content fits in GPU context (leave 25% headroom)
+    from agent.memory.compactor import _count_tokens_approx
+    total_tokens = _count_tokens_approx([
+        {"role": "system", "content": _Q_SYSTEM},
+        {"role": "user", "content": content[:4000]},
+    ])
+    # Add some margin for the second summary if both run in parallel
+    total_tokens = total_tokens * 2 + 200
+    ctx = default_entry.ctx_window
+    if ctx and total_tokens < ctx * 0.75:
+        return default_entry, True  # fits on GPU
+
+    return cpu_entry, False
+
+
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def _noop():
+    yield
+
+
 async def _call_llm_one_line(
     config: "Config",
     system_prompt: str,
@@ -29,30 +82,31 @@ async def _call_llm_one_line(
     """Stream a one-line summary using the summarizer model (falls back to default LLM)."""
     from openai import AsyncOpenAI
     from agent.config import make_registry
-    from agent.core.model_status import _inc as _ms_inc, _dec as _ms_dec
-    entry = make_registry(config).summarizer
+    from agent.core.model_status import _inc as _ms_inc, _dec as _ms_dec, gpu_slot as _gpu_slot
+    entry, used_gpu = _pick_summarizer_entry(config, content)
     client = AsyncOpenAI(base_url=entry.base_url, api_key=entry.api_key)
-    _ms_inc("sum")
+    _ms_inc("sum" if not used_gpu else "main")
     try:
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
-        stream = await client.chat.completions.create(
-            model=entry.model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": content[:4000]},
-            ],
-            stream=True,
-        )
-        async for chunk in stream:
-            delta = chunk.choices[0].delta if chunk.choices else None
-            if delta:
-                if delta.content:
-                    content_parts.append(delta.content)
-                if getattr(delta, "reasoning_content", None):
-                    reasoning_parts.append(delta.reasoning_content)
+        async with _gpu_slot() if used_gpu else _noop():
+            stream = await client.chat.completions.create(
+                model=entry.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": content[:4000]},
+                ],
+                stream=True,
+            )
+            async for chunk in stream:
+                delta = chunk.choices[0].delta if chunk.choices else None
+                if delta:
+                    if delta.content:
+                        content_parts.append(delta.content)
+                    if getattr(delta, "reasoning_content", None):
+                        reasoning_parts.append(delta.reasoning_content)
     finally:
-        _ms_dec("sum")
+        _ms_dec("sum" if not used_gpu else "main")
         await client.close()
 
     from agent.core.streaming import _clean_output

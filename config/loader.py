@@ -149,6 +149,7 @@ def _merge(config: Config, data: dict) -> None:
         ("recovery", config.recovery),
         ("parallel", config.parallel),
         ("web_search", config.web_search),
+        ("concurrency", config.concurrency),
     ):
         section_data = data.get(section_name, {})
         _merge_obj(obj, section_data)
@@ -193,6 +194,7 @@ def _apply_model_entry_to_llm(config: Config) -> None:
         config.llm.max_output_tokens = default_entry.max_output_tokens
         config.llm.temperature = default_entry.temperature
         config.llm.seed = default_entry.seed
+        config.llm.gpu = default_name in config.concurrency.gpu_pool
 
     # Behavior settings from config.agent (sourced from [agent] TOML section)
     config.llm.max_iterations = config.agent.max_iterations

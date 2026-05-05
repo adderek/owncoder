@@ -81,6 +81,15 @@ class Agent:
         from agent.core.output_store import init_store as _init_output_store
         _init_output_store(config.output_store)
 
+        # Initialise GPU concurrency semaphore from config
+        if config.concurrency.gpu_pool and config.concurrency.gpu_slots > 0:
+            from agent.core.model_status import init_gpu_semaphore
+            init_gpu_semaphore(config.concurrency.gpu_slots)
+            logger.info(
+                "gpu_semaphore: initialised with %d slot(s) for pool %r",
+                config.concurrency.gpu_slots, config.concurrency.gpu_pool,
+            )
+
         load_all_tools(config=config, data_provider=data_provider)
 
         indexed_count = store.stats()["chunks"] if store else 0
