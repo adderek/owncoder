@@ -215,6 +215,9 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
 
     logger.debug("execute_tool: %s  args=%s", name, args)
 
+    # Remap args for all calls (not just text-based) — handles aliases, auto-wrapping
+    args = _remap_params(name, args)
+
     fn = get_tool(name)
     if fn is None:
         logger.warning("execute_tool: unknown tool %r", name)
