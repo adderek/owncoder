@@ -195,3 +195,82 @@ def test_unreachable_endpoint_silently_skipped():
     cfg = _FakeConfig(entries)
     with patch("urllib.request.urlopen", side_effect=OSError("refused")):
         enrich_model_entries(cfg)  # must not raise
+
+
+# ── llama.cpp /props probing tests ────────────────────────────────────────────
+
+def _mock_llamacpp(v1_models: dict, props: dict | None = None, props_raises: bool = False):
+    """Return a urlopen side_effect that serves /v1/models and optionally /props."""
+    def _side_effect(req, **kw):
+        url = req.full_url if hasattr(req, 'full_url') else req.get_full_url() if hasattr(req, 'get_full_url') else str(req)
+        if "/props" in url and props_raises:
+            raise OSError("404 Not Found")
+        mock = MagicMock()
+        mock.__enter__ = lambda s: s
+        mock.__exit__ = MagicMock(return_value=False)
+        if "/props" in url:
+            data = props if props is not None else {}
+            mock.read.return_value = json.dumps(data).encode()
+        else:
+            mock.read.return_value = json.dumps(v1_models).encode()
+        return mock
+    return _side_effect
+
+
+def test_llamacpp_props_fills_ctx_when_unset():
+    """llama.cpp /props should fill ctx_window when config=0."""
+    e = _entry(model="qwen2.5-14b", base_url="http://localhost:8081/v1", ctx_window=0)
+    entries = {"gpu-qwen-14b-q8": e}
+    cfg = _FakeConfig(entries)
+    v1_response = {"data": [{"id": "qwen2.5-14b", "meta": {"n_ctx_train": 131072}}]}
+    props_response = {"n_ctx": 32768}
+    with patch("urllib.request.urlopen", side_effect=_mock_llamacpp(v1_response, props_response)):
+        enrich_model_entries(cfg)
+    # Should fill from /props (32768), not n_ctx_train (131072)
+    assert entries["gpu-qwen-14b-q8"].ctx_window == 32768
+
+
+def test_llamacpp_props_no_warn_when_matching_config():
+    """llama.cpp /props matching config should not warn."""
+    e = _entry(model="qwen2.5-14b", base_url="http://localhost:8081/v1", ctx_window=32768)
+    entries = {"m": e}
+    cfg = _FakeConfig(entries)
+    v1_response = {"data": [{"id": "qwen2.5-14b", "meta": {"n_ctx_train": 131072}}]}
+    props_response = {"n_ctx": 32768}
+    with patch("urllib.request.urlopen", side_effect=_mock_llamacpp(v1_response, props_response)):
+        enrich_model_entries(cfg)
+    assert entries["m"].ctx_window == 32768  # unchanged
+
+
+def test_llamacpp_props_warns_on_mismatch():
+    """llama.cpp /props with different value should warn via _fill_or_warn."""
+    e = _entry(model="qwen2.5-14b", base_url="http://localhost:8081/v1", ctx_window=16384)
+    entries = {"m": e}
+    cfg = _FakeConfig(entries)
+    v1_response = {"data": [{"id": "qwen2.5-14b", "meta": {"n_ctx_train": 131072}}]}
+    props_response = {"n_ctx": 32768}
+    with patch("urllib.request.urlopen", side_effect=_mock_llamacpp(v1_response, props_response)):
+        enrich_model_entries(cfg)
+    assert entries["m"].ctx_window == 16384  # config wins
+
+
+def test_llamacpp_props_404_falls_through_to_n_ctx_train():
+    """If /props returns 404, should fall through to n_ctx_train fill."""
+    e = _entry(model="qwen2.5-14b", base_url="http://localhost:8080/v1", ctx_window=0)
+    entries = {"m": e}
+    cfg = _FakeConfig(entries)
+    v1_response = {"data": [{"id": "qwen2.5-14b", "meta": {"n_ctx_train": 131072}}]}
+    with patch("urllib.request.urlopen", side_effect=_mock_llamacpp(v1_response, props_raises=True)):
+        enrich_model_entries(cfg)
+    assert entries["m"].ctx_window == 131072  # n_ctx_train fallback
+
+
+def test_ollama_does_not_query_props():
+    """Ollama servers (port 11434) should skip /props probe."""
+    e = _entry(model="qwen2.5-14b", base_url="http://localhost:11434/v1", ctx_window=0)
+    entries = {"m": e}
+    cfg = _FakeConfig(entries)
+    v1_response = {"data": [{"id": "qwen2.5-14b", "meta": {"n_ctx_train": 131072}}]}
+    with patch("urllib.request.urlopen", side_effect=_mock_llamacpp(v1_response, None)):
+        enrich_model_entries(cfg)
+    assert entries["m"].ctx_window == 131072  # n_ctx_train fallback, no /props

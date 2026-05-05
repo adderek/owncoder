@@ -123,13 +123,15 @@ def _enrich_entry(
     if isinstance(server_ctx, int) and server_ctx > 0:
         _fill_or_warn(name, "ctx_window", entry, server_ctx)
     else:
-        # Fallback: n_ctx_train is the model's architectural max, not the
-        # server's runtime value (llama.cpp returns it even when the user
-        # constrained the server with -c). Only fill when config is unset;
-        # never warn — a smaller explicit config is expected.
-        train_ctx = server_info.get("meta", {}).get("n_ctx_train")
-        if isinstance(train_ctx, int) and train_ctx > 0 and not getattr(entry, "ctx_window", 0):
-            setattr(entry, "ctx_window", train_ctx)
+        # Llama.cpp /props has the real n_ctx (runtime -c value, not model max).
+        # Skip Ollama — it has its own probe path.
+        if not is_ollama:
+            _probe_llamacpp_props(name, entry, base_url, timeout)
+        # n_ctx_train fallback: only when config remains unset, never warns.
+        if not getattr(entry, "ctx_window", 0):
+            train_ctx = server_info.get("meta", {}).get("n_ctx_train")
+            if isinstance(train_ctx, int) and train_ctx > 0:
+                setattr(entry, "ctx_window", train_ctx)
 
     # --- cost fields (OpenRouter exposes pricing per token) ---
     pricing = server_info.get("pricing", {})
@@ -182,6 +184,38 @@ def _ollama_enrich(name: str, entry: "ModelEntry", base_url: str, timeout: int) 
     if any("thinking" in f.lower() or "reason" in f.lower() for f in families):
         if not entry.thinking:
             entry.thinking = True
+
+
+# ── llama.cpp /props probe ─────────────────────────────────────────────────────
+
+def _probe_llamacpp_props(
+    name: str,
+    entry: "ModelEntry",
+    base_url: str,
+    timeout: int,
+) -> int | None:
+    """Query llama.cpp /props endpoint for the actual runtime n_ctx.
+
+    llama.cpp's /v1/models response only includes ``meta.n_ctx_train``
+    (the model's native max), not the user-constrained runtime value set
+    via ``-c``.  The ``/props`` endpoint exposes the real ``n_ctx``.
+
+    Returns the runtime n_ctx, or None if the server doesn't support it.
+    Uses _fill_or_warn internally when a value is found, so the entry
+    is updated and mismatches are warned about here.
+    """
+    props_url = base_url.rstrip("/").removesuffix("/v1") + "/props"
+    try:
+        req = urllib.request.Request(props_url, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read())
+    except Exception:
+        return None
+    n_ctx = data.get("n_ctx")
+    if isinstance(n_ctx, int) and n_ctx > 0:
+        _fill_or_warn(name, "ctx_window", entry, n_ctx)
+        return n_ctx
+    return None
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
