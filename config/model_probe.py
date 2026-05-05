@@ -69,7 +69,34 @@ def _probe_endpoint(
     is_ollama = _looks_like_ollama(base_url)
 
     for name, entry in entries:
+        # Fuzzy model name matching: try exact, then strip extensions, then substring
         server_info = server_models.get(entry.model) or {}
+        if not server_info:
+            for sid, sm in server_models.items():
+                cfg_lower = entry.model.lower()
+                sid_lower = sid.lower()
+                # Strip common GGUF/file extensions
+                sid_stripped = sid_lower
+                for ext in (".gguf", ".bin", ".safetensors", ".pt", ".pth"):
+                    if sid_stripped.endswith(ext):
+                        sid_stripped = sid_stripped[: -len(ext)]
+                if (
+                    sid_lower == cfg_lower
+                    or sid_stripped == cfg_lower
+                    or sid_lower.startswith(cfg_lower)
+                    or cfg_lower in sid_lower
+                ):
+                    server_info = sm
+                    break
+        # Warn if probed model name differs from config
+        matched_id = (server_info or {}).get("id", "")
+        if matched_id and matched_id.lower() != entry.model.lower():
+            entry_name = name  # model entry name
+            print(
+                f"[model-probe] {entry_name}: config model=\"{entry.model}\" "
+                f"but server has \"{matched_id}\" — using server metadata",
+                file=sys.stderr,
+            )
         _enrich_entry(name, entry, server_info, base_url, api_key, is_ollama, timeout)
 
 
