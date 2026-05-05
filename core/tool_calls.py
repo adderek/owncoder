@@ -62,7 +62,7 @@ _PARAM_ALIASES: dict[str, dict[str, str]] = {
     "recall_sessions": {"q": "query", "term": "query"},
     "save_note": {"name": "title", "heading": "title", "content": "body", "text": "body"},
     "rate_session": {"rating": "outcome"},
-    "edit_file": {"content": "replacement", "text": "replacement", "new_string": "replacement", "old_string": "anchor"},
+    "edit_file": {"content": "replacement", "text": "replacement", "new_string": "replacement", "old_string": "anchor", "file_path": "path", "file": "path", "filename": "path"},
 }
 
 
@@ -88,6 +88,22 @@ def _remap_params(name: str, args: dict) -> dict:
                 if ch_field in remapped:
                     chunk[ch_field] = remapped.pop(ch_field)
             remapped["chunks"] = [chunk]
+
+    # edit_file: remap fields inside chunks (model uses content, file_path etc.)
+    if name == "edit_file" and "chunks" in remapped:
+        chunk_aliases = {
+            "content": "replacement", "text": "replacement", "new_string": "replacement",
+            "old_string": "anchor",
+            "file_path": "path", "file": "path", "filename": "path",
+        }
+        # Inject top-level path into chunks that lack it
+        top_path = remapped.pop("path", None)
+        remapped["chunks"] = [
+            dict({} if top_path is None or "path" in ch else {"path": top_path},
+                 **{chunk_aliases.get(k, k): v for k, v in ch.items()})
+            if isinstance(ch, dict) else ch
+            for ch in remapped["chunks"]
+        ]
 
     return remapped
 
