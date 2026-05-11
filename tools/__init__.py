@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from typing import Any, Callable
 
 _registry: dict[str, Callable] = {}
@@ -27,11 +29,27 @@ def get_schemas() -> list[dict]:
 
 def load_all_tools(config=None, store=None, embedder=None, asm_store=None, data_provider=None) -> None:
     global _tools_loaded
+
+    # ── Explicit imports (known tool modules) ──────────────────────────────
+    # ADD NEW TOOL MODULES HERE if they are standalone packages:
     from agent.tools import files, shell, git, search, analyze_asm, edit_file, recall, notes, recall_sessions, rate_session, recall_history, retrieve_output  # noqa: F401
     from agent.tools.rules import load_rules
 
     if config is not None and getattr(config.web_search, "enabled", False):
         from agent.tools import web_search  # noqa: F401
+
+    # ── Auto-discovery (catches model-created tools, new .py modules, etc.) ─
+    # Any module under agent.tools/ that uses @register is picked up here,
+    # so model-created tools work without manual wiring.
+    import importlib as _il
+    import pkgutil as _pu
+    _pkg_path = str(Path(__file__).parent)
+    for _importer, _modname, _ispkg in _pu.walk_packages(path=[_pkg_path], prefix="agent.tools."):
+        if _modname not in sys.modules:
+            try:
+                _il.import_module(_modname)
+            except Exception:
+                pass
 
     # Wrap raw objects in DataProvider when caller hasn't provided one.
     if data_provider is None:
