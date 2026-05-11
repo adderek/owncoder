@@ -340,33 +340,6 @@ async def run_turn(
                     a = {}
                 purposes.append(str(a.get("purpose", "")) if compaction_on else "")
                 parsed_args.append(a)
-            results = await asyncio.gather(*[execute_tool(tc, config) for tc in tool_calls])
-            if compaction_on:
-                from agent.tool_compactor import compact_result
-
-                async def _maybe_compact(idx: int, raw: str) -> str:
-                    tc = tool_calls[idx]
-                    compacted, info = await compact_result(
-                        tc.function.name, parsed_args[idx], purposes[idx],
-                        raw, config, client,
-                    )
-                    if side_log is not None and not info.get("skipped"):
-                        try:
-                            side_log.append("tool_compactions.jsonl", {
-                                "turn": turn_index,
-                                "tool_call_id": tc.id,
-                                "tool": tc.function.name,
-                                "purpose": purposes[idx],
-                                "original_len": info["original_len"],
-                                "compacted_len": info["compacted_len"],
-                                "seconds": info["seconds"],
-                            })
-                        except Exception as e:
-                            logger.warning("side_log append failed (compaction): %s", e)
-                    return compacted
-
-                results = list(await asyncio.gather(*[_maybe_compact(i, r) for i, r in enumerate(results)]))
-
             from agent import prompt_compiler
 
             # Deduplicate identical tool calls within a single batch
@@ -389,8 +362,37 @@ async def run_turn(
                 logger.warning("dedup: %d duplicate tool call(s) in batch (unique: %d, total: %d)",
                                dedup_count, len(unique_tool_calls), len(tool_calls))
 
-            # Map unique results back to all positions
+            # Execute only unique calls (once); duplicates share the same result
             unique_results = await asyncio.gather(*[execute_tool(tc, config) for tc in unique_tool_calls])
+
+            if compaction_on:
+                from agent.tool_compactor import compact_result
+
+                async def _maybe_compact(unique_idx: int, raw: str) -> str:
+                    original_idx = unique_indices[unique_idx]
+                    tc = tool_calls[original_idx]
+                    compacted, info = await compact_result(
+                        tc.function.name, parsed_args[original_idx], purposes[original_idx],
+                        raw, config, client,
+                    )
+                    if side_log is not None and not info.get("skipped"):
+                        try:
+                            side_log.append("tool_compactions.jsonl", {
+                                "turn": turn_index,
+                                "tool_call_id": tc.id,
+                                "tool": tc.function.name,
+                                "purpose": purposes[original_idx],
+                                "original_len": info["original_len"],
+                                "compacted_len": info["compacted_len"],
+                                "seconds": info["seconds"],
+                            })
+                        except Exception as e:
+                            logger.warning("side_log append failed (compaction): %s", e)
+                    return compacted
+
+                unique_results = list(await asyncio.gather(*[_maybe_compact(i, r) for i, r in enumerate(unique_results)]))
+
+            # Map unique results back to all positions
             results_map: dict[int, str] = {}
             for ui, result in zip(unique_indices, unique_results):
                 for idx in dedup_groups[_tc_sig(tool_calls[ui])]:
