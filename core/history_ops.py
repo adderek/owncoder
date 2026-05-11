@@ -17,18 +17,51 @@ _FILE_RE = re.compile(
 
 
 def _merge_trailing_assistants(api_messages: list[dict]) -> list[dict]:
+    """Merge consecutive assistant messages at the end of the list.
+    
+    Handles three cases:
+    1. Neither message has tool_calls — merge content (existing behaviour).
+    2. One message has tool_calls — merge content into the one with tool_calls,
+       preserving tool_calls and reasoning_content from that message.
+    3. Both have tool_calls — merge content and combine both tool_calls lists.
+    
+    Stops at the first non-assistant pair.
+    """
     if len(api_messages) < 2:
         return api_messages
     out = list(api_messages)
     while len(out) >= 2:
         a, b = out[-2], out[-1]
-        if (
-            a.get("role") == "assistant"
-            and b.get("role") == "assistant"
-            and not a.get("tool_calls")
-            and not b.get("tool_calls")
-        ):
-            merged: dict = {"role": "assistant", "content": (a.get("content") or "") + (b.get("content") or "")}
+        if not (a.get("role") == "assistant" and b.get("role") == "assistant"):
+            break
+        a_tc = a.get("tool_calls")
+        b_tc = b.get("tool_calls")
+
+        # Merge content always, with a trailing newline for separation
+        a_content = a.get("content") or ""
+        b_content = b.get("content") or ""
+        merged_content = a_content + ("\n\n" if a_content and b_content else "") + b_content
+
+        if a_tc or b_tc:
+            # One or both have tool_calls — keep tool_calls, merge content into
+            # whichever message has them. If both have tool_calls, combine.
+            merged: dict = {"role": "assistant", "content": merged_content}
+            if a_tc and b_tc:
+                merged["tool_calls"] = a_tc + b_tc
+            elif a_tc:
+                merged["tool_calls"] = a_tc
+            else:
+                merged["tool_calls"] = b_tc
+            # Keep reasoning from whichever message has the most meaningful content
+            rc_a = a.get("reasoning_content") or ""
+            rc_b = b.get("reasoning_content") or ""
+            rc = rc_a if len(rc_a) >= len(rc_b) else rc_b
+            if rc:
+                merged["reasoning_content"] = rc
+            out = out[:-2] + [merged]
+        elif not a_tc and not b_tc:
+            # Neither has tool_calls — plain content merge (original behaviour)
+            merged: dict = {"role": "assistant", "content": merged_content}
             rc = (a.get("reasoning_content") or "") + (b.get("reasoning_content") or "")
             if rc:
                 merged["reasoning_content"] = rc
@@ -55,12 +88,6 @@ def _collapse_tool_rounds(
             while j < len(messages) and messages[j].get("role") == "tool":
                 result_msgs.append(messages[j])
                 j += 1
-
-            if m.get("content") and str(m["content"]).strip():
-                extracted: dict = {"role": "assistant", "content": m["content"]}
-                if rc := m.get("_reasoning_content"):
-                    extracted["_reasoning_content"] = rc
-                out.append(extracted)
 
             parts: list[str] = []
             refs: list[int] = []
@@ -113,10 +140,22 @@ def _collapse_tool_rounds(
                         logger.warning("side_log append failed: %s", e)
 
             summary = "[tools: " + " | ".join(parts) + "]"
-            summary_msg: dict = {"role": "assistant", "content": summary}
-            if refs:
-                summary_msg["_tool_refs"] = refs
-            out.append(summary_msg)
+
+            if m.get("content") and str(m["content"]).strip():
+                # Combine text content and tool summary into ONE assistant message
+                # (avoids consecutive assistant messages that strict APIs reject)
+                combined_content = m["content"].rstrip() + "\n\n" + summary
+                combined: dict = {"role": "assistant", "content": combined_content}
+                if rc := m.get("_reasoning_content"):
+                    combined["_reasoning_content"] = rc
+                if refs:
+                    combined["_tool_refs"] = refs
+                out.append(combined)
+            else:
+                summary_msg: dict = {"role": "assistant", "content": summary}
+                if refs:
+                    summary_msg["_tool_refs"] = refs
+                out.append(summary_msg)
             i = j
         else:
             out.append(m)
