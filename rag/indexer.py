@@ -86,7 +86,8 @@ def index_directory(
         ".git", "__pycache__", "node_modules", "build", "dist",
         ".agent", ".venv", "venv", ".env",
     }
-    all_exclude = default_exclude | set(exclude)
+    # Strip trailing slashes so "results/" matches os.walk's bare "results"
+    all_exclude = default_exclude | {e.rstrip("/") for e in exclude}
 
     allowed_exts: set[str] | None = None
     if languages:
@@ -97,7 +98,16 @@ def index_directory(
 
     files = []
     for dirpath, dirnames, filenames in os.walk(root_path):
+        # Prune excluded dirs (static list)
         dirnames[:] = [d for d in dirnames if d not in all_exclude]
+        # Also prune dirs matching .agent.ignore patterns
+        if not rules.ignore.empty:
+            filtered = []
+            for d in dirnames:
+                rel = str((Path(dirpath) / d).relative_to(root_path))
+                if not rules.ignore.matches(rel):
+                    filtered.append(d)
+            dirnames[:] = filtered
         for fname in filenames:
             fpath = Path(dirpath) / fname
             if allowed_exts and fpath.suffix.lower() not in allowed_exts:

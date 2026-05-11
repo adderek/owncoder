@@ -12,6 +12,7 @@ def cmd_init(args, config):
     from agent.rag.indexer import index_directory, LANGUAGE_MAP
     from agent.rag.store import VectorStore
     from agent.rag.embedder import Embedder
+    from agent.tools.rules import load_rules
     from rich.console import Console
     from rich.progress import Progress, SpinnerColumn, TextColumn
 
@@ -22,6 +23,9 @@ def cmd_init(args, config):
     languages = args.languages.split(",") if args.languages else None
     exclude = args.exclude.split(",") if args.exclude else []
     working_dir = config.tools.working_dir
+
+    # Load .agent.ignore et al so index_directory respects them
+    load_rules(working_dir)
 
     console.print(f"[bold]Indexing[/bold] {Path(working_dir).resolve()}")
     if languages:
