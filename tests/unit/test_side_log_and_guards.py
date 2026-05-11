@@ -88,7 +88,7 @@ def test_collapse_writes_full_detail_to_side_log(tmp_path):
     collapsed = _collapse_tool_rounds(messages, side_log=side_log, turn_id=7)
 
     # Summary message stays compact.
-    summary = next(m for m in collapsed if m.get("role") == "assistant" and "[tools:" in m.get("content", ""))
+    summary = next(m for m in collapsed if m.get("role") == "assistant" and "<agent_exec " in m.get("content", ""))
     assert long_content not in summary["content"], "full content must not appear in session summary"
     assert summary.get("_tool_refs") == [0], "summary must reference side-log seq"
 
@@ -146,7 +146,7 @@ def test_apply_code_refuses_to_shrink_existing_file(tmp_path, monkeypatch, reset
     assert result is not None
     human, summary = result
     assert "Refused" in human
-    assert summary["role"] == "system"
+    assert summary["role"] == "assistant"
     assert "refused" in summary["content"].lower()
     # File untouched.
     assert target.read_text(encoding="utf-8") == original
@@ -172,7 +172,7 @@ def test_apply_code_allows_full_rewrite(tmp_path, monkeypatch, reset_file_tool_s
     human, summary = result
     assert "Refused" not in human
     assert "new line" in target.read_text(encoding="utf-8")
-    assert summary["role"] == "system"
+    assert summary["role"] == "assistant"
     assert "ok" in summary["content"]
 
 
@@ -282,7 +282,7 @@ def test_sessions_split_command_extracts_tool_rounds(tmp_path, monkeypatch):
     assert "huge file content" in rows[0]["result"]
 
     rewritten = _json.loads(session_json.read_text(encoding="utf-8"))
-    summaries = [m for m in rewritten["messages"] if m.get("role") == "system" and "[tools:" in m.get("content", "")]
+    summaries = [m for m in rewritten["messages"] if m.get("role") == "assistant" and "<agent_exec " in m.get("content", "")]
     assert summaries and summaries[0].get("_tool_refs") == [0]
     assert (sdir / "session.json.bak").exists()
 

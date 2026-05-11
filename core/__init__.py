@@ -2,7 +2,7 @@ from .agent import Agent
 from .turn import run_turn, _post_turn_capture_and_summarize
 from .loop_detector import LoopDetector
 from .history_ops import (
-    _merge_trailing_assistants,
+    _merge_consecutive_assistants,
     _collapse_tool_rounds,
     _truncate_large_messages,
     _apply_code_from_history,
@@ -34,7 +34,7 @@ __all__ = [
     "LoopDetector",
     "execute_tool",
     "extract_last_code_block",
-    "_merge_trailing_assistants",
+    "_merge_consecutive_assistants",
     "_collapse_tool_rounds",
     "_truncate_large_messages",
     "_apply_code_from_history",

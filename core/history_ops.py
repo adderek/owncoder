@@ -16,58 +16,54 @@ _FILE_RE = re.compile(
 )
 
 
-def _merge_trailing_assistants(api_messages: list[dict]) -> list[dict]:
-    """Merge consecutive assistant messages at the end of the list.
+def _merge_consecutive_assistants(messages: list[dict]) -> list[dict]:
+    """Merge ALL consecutive assistant messages anywhere in the list.
+    
+    Some APIs (Qwen 1M, DeepSeek) reject any pair of consecutive assistant
+    messages, not just at the end. This scans the full list and merges every
+    adjacent pair of assistant messages.
     
     Handles three cases:
-    1. Neither message has tool_calls — merge content (existing behaviour).
+    1. Neither message has tool_calls — merge content.
     2. One message has tool_calls — merge content into the one with tool_calls,
        preserving tool_calls and reasoning_content from that message.
     3. Both have tool_calls — merge content and combine both tool_calls lists.
-    
-    Stops at the first non-assistant pair.
     """
-    if len(api_messages) < 2:
-        return api_messages
-    out = list(api_messages)
-    while len(out) >= 2:
-        a, b = out[-2], out[-1]
-        if not (a.get("role") == "assistant" and b.get("role") == "assistant"):
-            break
-        a_tc = a.get("tool_calls")
-        b_tc = b.get("tool_calls")
+    if len(messages) < 2:
+        return messages
+    out: list[dict] = []
+    for m in messages:
+        if out and out[-1].get("role") == "assistant" and m.get("role") == "assistant":
+            a, b = out[-1], m
+            a_tc = a.get("tool_calls")
+            b_tc = b.get("tool_calls")
 
-        # Merge content always, with a trailing newline for separation
-        a_content = a.get("content") or ""
-        b_content = b.get("content") or ""
-        merged_content = a_content + ("\n\n" if a_content and b_content else "") + b_content
+            a_content = a.get("content") or ""
+            b_content = b.get("content") or ""
+            merged_content = a_content + ("\n\n" if a_content and b_content else "") + b_content
 
-        if a_tc or b_tc:
-            # One or both have tool_calls — keep tool_calls, merge content into
-            # whichever message has them. If both have tool_calls, combine.
-            merged: dict = {"role": "assistant", "content": merged_content}
-            if a_tc and b_tc:
-                merged["tool_calls"] = a_tc + b_tc
-            elif a_tc:
-                merged["tool_calls"] = a_tc
+            if a_tc or b_tc:
+                merged: dict = {"role": "assistant", "content": merged_content}
+                if a_tc and b_tc:
+                    merged["tool_calls"] = a_tc + b_tc
+                elif a_tc:
+                    merged["tool_calls"] = a_tc
+                else:
+                    merged["tool_calls"] = b_tc
+                rc_a = a.get("reasoning_content") or ""
+                rc_b = b.get("reasoning_content") or ""
+                rc = rc_a if len(rc_a) >= len(rc_b) else rc_b
+                if rc:
+                    merged["reasoning_content"] = rc
+                out[-1] = merged
             else:
-                merged["tool_calls"] = b_tc
-            # Keep reasoning from whichever message has the most meaningful content
-            rc_a = a.get("reasoning_content") or ""
-            rc_b = b.get("reasoning_content") or ""
-            rc = rc_a if len(rc_a) >= len(rc_b) else rc_b
-            if rc:
-                merged["reasoning_content"] = rc
-            out = out[:-2] + [merged]
-        elif not a_tc and not b_tc:
-            # Neither has tool_calls — plain content merge (original behaviour)
-            merged: dict = {"role": "assistant", "content": merged_content}
-            rc = (a.get("reasoning_content") or "") + (b.get("reasoning_content") or "")
-            if rc:
-                merged["reasoning_content"] = rc
-            out = out[:-2] + [merged]
+                merged: dict = {"role": "assistant", "content": merged_content}
+                rc = (a.get("reasoning_content") or "") + (b.get("reasoning_content") or "")
+                if rc:
+                    merged["reasoning_content"] = rc
+                out[-1] = merged
         else:
-            break
+            out.append(m)
     return out
 
 
@@ -89,19 +85,18 @@ def _collapse_tool_rounds(
                 result_msgs.append(messages[j])
                 j += 1
 
-            parts: list[str] = []
+            exec_parts: list[str] = []
             refs: list[int] = []
             for tc in tool_calls:
                 if not isinstance(tc, dict):
                     continue
-                name = tc.get("function", {}).get("name", "?")
+                tc_name = tc.get("function", {}).get("name", "?")
                 args_raw = tc.get("function", {}).get("arguments", "{}")
                 try:
-                    args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
-                    arg_str = ", ".join(f"{k}={repr(v)[:40]}" for k, v in list(args.items())[:2])
+                    t_args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+                    t_arg_str = ", ".join(f"{k}={repr(v)[:40]}" for k, v in list(t_args.items())[:2])
                 except Exception:
-                    args = args_raw
-                    arg_str = str(args_raw)[:60]
+                    t_arg_str = str(args_raw)[:60]
 
                 raw_result = ""
                 result_content = ""
@@ -124,22 +119,24 @@ def _collapse_tool_rounds(
                             result_content = raw[:result_preview]
                         break
 
-                parts.append(f"{name}({arg_str}) → {result_content}")
+                safe_args = t_arg_str.replace('"', '&quot;').replace('>', '&gt;').replace('<', '&lt;')
+                safe_result = result_content.replace('"', '&quot;').replace('>', '&gt;').replace('<', '&lt;')
+                exec_parts.append(f'<agent_exec tool="{tc_name}" args="{safe_args}">{safe_result}</agent_exec>')
 
                 if side_log is not None:
                     try:
                         seq = side_log.append("tool_calls.jsonl", {
                             "turn": turn_id,
                             "tool_call_id": tc.get("id"),
-                            "tool": name,
-                            "arguments": args,
+                            "tool": tc_name,
+                            "arguments": t_args,
                             "result": raw_result,
                         })
                         refs.append(seq)
                     except Exception as e:
                         logger.warning("side_log append failed: %s", e)
 
-            summary = "[tools: " + " | ".join(parts) + "]"
+            summary = "\n".join(exec_parts)
 
             if m.get("content") and str(m["content"]).strip():
                 # Combine text content and tool summary into ONE assistant message
@@ -200,8 +197,9 @@ def _build_extracted_summary(filename: str, code: str, outcome: str, err: str | 
     else:
         arrow = f"ERROR: {err}"
 
-    summary_text = f"[tools: write_file (extracted)(path={filename!r}) → {arrow}]"
-    summary_msg: dict = {"role": "system", "content": summary_text}
+    safe_path = filename.replace('"', '&quot;').replace('>', '&gt;').replace('<', '&lt;')
+    summary_text = f"<agent_exec tool=\"write_file (extracted)\" args=\"path={safe_path}\">{arrow}</agent_exec>"
+    summary_msg: dict = {"role": "assistant", "content": summary_text}
 
     if side_log is not None:
         try:

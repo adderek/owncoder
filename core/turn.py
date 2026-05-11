@@ -14,7 +14,7 @@ from .tool_calls import _tool_result_message, _FakeToolCall, execute_tool, _pars
 from .streaming import _stream_response, _strip_tool_blocks, _is_narrating_tool_use, _gpu_slot
 from .cache_tracker import check_cache, mark_request
 from .history_ops import (
-    _merge_trailing_assistants, _collapse_tool_rounds, _truncate_large_messages,
+    _merge_consecutive_assistants, _collapse_tool_rounds, _truncate_large_messages,
     _apply_code_from_history,
 )
 from .loop_detector import LoopDetector
@@ -153,7 +153,7 @@ async def run_turn(
                 result["reasoning_content"] = rc
             return result
         api_messages = [_to_api_msg(m) for m in messages]
-        api_messages = _merge_trailing_assistants(api_messages)
+        api_messages = _merge_consecutive_assistants(api_messages)
         # Trailing assistant without tool_calls = unintentional prefill; reject by
         # most APIs (and always incompatible with enable_thinking). Strip it.
         if api_messages and api_messages[-1].get("role") == "assistant" and not api_messages[-1].get("tool_calls"):
@@ -368,6 +368,34 @@ async def run_turn(
                 results = list(await asyncio.gather(*[_maybe_compact(i, r) for i, r in enumerate(results)]))
 
             from agent import prompt_compiler
+
+            # Deduplicate identical tool calls within a single batch
+            # Model may issue the same call N times in confusion (e.g. file not found).
+            # Only execute unique calls, broadcast result to all duplicates.
+            def _tc_sig(tc) -> str:
+                try:
+                    a = json.loads(tc.function.arguments or "{}") if isinstance(tc.function.arguments, str) else tc.function.arguments
+                    return f"{tc.function.name}:{json.dumps(a, sort_keys=True)}"
+                except Exception:
+                    return f"{tc.function.name}:{tc.function.arguments}"
+
+            dedup_groups: dict[str, list[int]] = {}
+            for i, tc in enumerate(tool_calls):
+                dedup_groups.setdefault(_tc_sig(tc), []).append(i)
+            unique_indices = [group[0] for group in dedup_groups.values()]
+            unique_tool_calls = [tool_calls[i] for i in unique_indices]
+            dedup_count = len(tool_calls) - len(unique_tool_calls)
+            if dedup_count > 0:
+                logger.warning("dedup: %d duplicate tool call(s) in batch (unique: %d, total: %d)",
+                               dedup_count, len(unique_tool_calls), len(tool_calls))
+
+            # Map unique results back to all positions
+            unique_results = await asyncio.gather(*[execute_tool(tc, config) for tc in unique_tool_calls])
+            results_map: dict[int, str] = {}
+            for ui, result in zip(unique_indices, unique_results):
+                for idx in dedup_groups[_tc_sig(tool_calls[ui])]:
+                    results_map[idx] = result
+            results = [results_map[i] for i in range(len(tool_calls))]
             patched_results: list[str] = []
             for tc, result in zip(tool_calls, results):
                 if tc.function.name == "read_file":
@@ -519,5 +547,6 @@ async def run_turn(
         content_parts.append(content)
         messages = messages + [stamp_reasoning({"role": "assistant", "content": content})]
         messages = _collapse_tool_rounds(messages, side_log=side_log, turn_id=turn_index)
+        messages = _merge_consecutive_assistants(messages)
 
         return "".join(content_parts), messages

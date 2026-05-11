@@ -97,10 +97,12 @@ def _split_sessions(target: str, console, dry_run: bool = False) -> None:
         while i < len(messages):
             m = messages[i]
             if (
-                m.get("role") == "system"
-                and isinstance(m.get("content"), str)
-                and m["content"].startswith("[tools:")
+                isinstance(m.get("content"), str)
                 and "_tool_refs" not in m
+                and (
+                    (m.get("role") == "system" and m["content"].startswith("[tools:"))
+                    or ("<agent_exec " in m.get("content", ""))
+                )
             ):
                 if not dry_run:
                     seq = writer.append("tool_calls.jsonl", {
@@ -159,7 +161,12 @@ def _split_sessions(target: str, console, dry_run: bool = False) -> None:
 
                 if m.get("content") and str(m["content"]).strip():
                     new_messages.append({"role": "assistant", "content": m["content"]})
-                summary_msg: dict = {"role": "system", "content": "[tools: " + " | ".join(parts) + "]"}
+                # Build <agent_exec> tags for each tool call in the summary
+                exec_tags = "\n".join(
+                    f'<agent_exec tool="(retro)" args="{p}">(old-session)</agent_exec>'
+                    for p in parts
+                ) if parts else "(no tools)"
+                summary_msg: dict = {"role": "assistant", "content": exec_tags}
                 if refs:
                     summary_msg["_tool_refs"] = refs
                 new_messages.append(summary_msg)

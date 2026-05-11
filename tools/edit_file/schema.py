@@ -69,7 +69,9 @@ def _build_schema() -> dict:
             "Anchor must match exactly once; use range_hint to disambiguate. "
             "Fails loudly on any mismatch — no silent changes. "
             "Use write_file only to create a new file or fully overwrite one. "
-            "Example: chunks=[{'path': 'foo.py', 'anchor': 'def bar():', 'replacement': 'def bar(x):'}]"
+            "Specify file using 'path' parameter (NOT 'match'). "
+            "Example: chunks=[{'path': 'foo.py', 'anchor': 'def bar():', 'replacement': 'def bar(x):'}] "
+            "Or flat: path='foo.py', anchor='def bar():', replacement='def bar(x):'"
         ),
         "parameters": {
             "type": "object",
