@@ -183,4 +183,14 @@ def _inject_think_hint(api_messages: list[dict], config: "Config") -> list[dict]
     hint = _THINK_HINTS.get(level, "")
     if not hint:
         return api_messages
-    return api_messages + [{"role": "system", "content": f"[think_level={level}] {hint}"}]
+    # Append hint to the first system message rather than adding a trailing system
+    # message — some model templates (e.g. Qwen3.6) require system messages to
+    # appear only at the beginning and raise a Jinja exception otherwise.
+    hint_text = f"[think_level={level}] {hint}"
+    for i, msg in enumerate(api_messages):
+        if msg.get("role") == "system":
+            updated = dict(msg)
+            updated["content"] = msg["content"] + "\n" + hint_text
+            return api_messages[:i] + [updated] + api_messages[i + 1:]
+    # No system message found — prepend one.
+    return [{"role": "system", "content": hint_text}] + api_messages
