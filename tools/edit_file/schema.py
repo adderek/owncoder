@@ -75,7 +75,7 @@ def _build_schema() -> dict:
         ),
         "parameters": {
             "type": "object",
-            "required": required,
+            **({"required": required} if required else {}),
             "properties": props,
         },
     }
