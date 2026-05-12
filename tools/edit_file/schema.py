@@ -48,7 +48,7 @@ def _build_schema() -> dict:
             "description": "Alternative to chunks: new text to replace anchor (use with path+anchor).",
         },
     }
-    required: list[str] = []  # provide either chunks[] OR path+anchor+replacement
+    required: list[str] = []  # either chunks[] OR flat path+anchor+replacement — both valid
     if ec.match == "model":
         props["match"] = {
             "type": "string",
@@ -75,7 +75,7 @@ def _build_schema() -> dict:
         ),
         "parameters": {
             "type": "object",
-            "required": ["chunks"],
+            "required": required,
             "properties": props,
         },
     }

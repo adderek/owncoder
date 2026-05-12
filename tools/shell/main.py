@@ -166,10 +166,11 @@ def run_command(cmd: str, cwd: str | None = None, timeout: int | None = None) ->
             return result
         return {
             "error": (
-                "Legacy shell string execution is disabled. "
-                "Use run_argv with an explicit argv list, or shell_script "
-                "for scripts that need shell features."
+                "run_command with shell operators (pipes, redirects, heredocs) is disabled. "
+                "Use run_argv(['sh', '-c', 'your command']) for shell features, "
+                "or run_argv(['cmd', 'arg1', 'arg2']) for simple commands."
             ),
+            "hint": "Examples: run_argv(['sh', '-c', 'echo hello > out.txt']) or run_argv(['python3', 'script.py'])",
             "cmd": cmd,
         }
 
