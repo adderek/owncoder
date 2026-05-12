@@ -154,6 +154,19 @@ async def run_turn(
             return result
         api_messages = [_to_api_msg(m) for m in messages]
         api_messages = _merge_consecutive_assistants(api_messages)
+        # Merge consecutive leading system messages into one — some models (e.g.
+        # Qwen3.6 with --jinja) raise a Jinja exception if any system message has
+        # loop.first=False, meaning only the very first message may be a system msg.
+        leading_sys = []
+        rest: list[dict] = []
+        for _m in api_messages:
+            if not rest and _m.get("role") == "system":
+                leading_sys.append(_m)
+            else:
+                rest.append(_m)
+        if len(leading_sys) > 1:
+            merged_content = "\n\n".join(m["content"] for m in leading_sys if m.get("content"))
+            api_messages = [{**leading_sys[0], "content": merged_content}] + rest
         # Trailing assistant without tool_calls = unintentional prefill; reject by
         # most APIs (and always incompatible with enable_thinking). Strip it.
         if api_messages and api_messages[-1].get("role") == "assistant" and not api_messages[-1].get("tool_calls"):
