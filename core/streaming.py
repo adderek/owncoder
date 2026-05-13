@@ -7,7 +7,7 @@ import time
 from typing import TYPE_CHECKING
 
 from .prompts import _inject_think_hint, _log_llm_request, _build_call_kwargs
-from .tool_calls import _FakeToolCall, _parse_text_tool_calls, _parse_qwen_function_xml
+from .tool_calls import _FakeToolCall, _parse_text_tool_calls, _parse_qwen_function_xml, _parse_agent_exec_xml
 
 if TYPE_CHECKING:
     from agent.config import Config
@@ -242,7 +242,13 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
                 tool_calls = [_FakeToolCall(c["name"], c["arguments"]) for c in text_calls]
                 full_content = _strip_qwen_function_xml(full_content)
             else:
-                tool_calls = None
+                # Fallback: <agent_exec tool="name" args="key='val', ..."> format
+                text_calls = _parse_agent_exec_xml(raw_content)
+                if text_calls:
+                    tool_calls = [_FakeToolCall(c["name"], c["arguments"]) for c in text_calls]
+                    full_content = _strip_qwen_function_xml(full_content)
+                else:
+                    tool_calls = None
     else:
         tool_calls = None
 

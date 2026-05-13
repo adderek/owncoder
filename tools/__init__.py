@@ -32,7 +32,7 @@ def load_all_tools(config=None, store=None, embedder=None, asm_store=None, data_
 
     # ── Explicit imports (known tool modules) ──────────────────────────────
     # ADD NEW TOOL MODULES HERE if they are standalone packages:
-    from agent.tools import files, shell, git, search, analyze_asm, edit_file, recall, notes, recall_sessions, rate_session, recall_history, retrieve_output  # noqa: F401
+    from agent.tools import files, shell, git, search, analyze_asm, edit_file, recall, notes, recall_sessions, rate_session, recall_history, retrieve_output, project_file_stats  # noqa: F401
     from agent.tools.rules import load_rules
 
     if config is not None and getattr(config.web_search, "enabled", False):
@@ -87,6 +87,7 @@ def load_all_tools(config=None, store=None, embedder=None, asm_store=None, data_
     recall_sessions.setup(config, embedder=data_provider.get_embedder() if data_provider else None)
     rate_session.setup(config)
     retrieve_output.setup(config)
+    project_file_stats.setup(config)
 
     if config is not None and getattr(config.web_search, "enabled", False):
         web_search.setup(config)

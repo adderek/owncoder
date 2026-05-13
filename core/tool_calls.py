@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_TOOL_WRAP_TAGS = ["tool_call", "tools", "function_calls"]
+_TOOL_WRAP_TAGS = ["tool_call", "tools", "function_calls", "agent_exec"]
 _TAG_RE = re.compile(r"<(" + "|".join(_TOOL_WRAP_TAGS) + r")>(.*?)</\1>", re.DOTALL)
 _DECODER = json.JSONDecoder()
 
@@ -172,6 +172,37 @@ def _parse_qwen_function_xml(text: str) -> list[dict] | None:
     return calls if calls else None
 
 
+def _parse_agent_exec_xml(text: str) -> list[dict] | None:
+    """Parse <agent_exec tool="name" args="key='val', ...">...</agent_exec> format."""
+    import re as _re
+    calls = []
+    for m in _re.finditer(
+        r'<agent_exec\s+tool="(\w+)"\s+args="([^"]*)"\s*>',
+        text,
+    ):
+        name = m.group(1)
+        raw_args = m.group(2)
+        # Parse key=value pairs: quoted strings, integers, bare words
+        args = {}
+        for pm in _re.finditer(r"""(\w+)\s*=\s*'([^']*)'""", raw_args):
+            args[pm.group(1)] = pm.group(2)
+        for pm in _re.finditer(r'(\w+)\s*=\s*"([^"]*)"', raw_args):
+            if pm.group(1) not in args:
+                args[pm.group(1)] = pm.group(2)
+        for pm in _re.finditer(r"""(\w+)\s*=\s*(\d+)""", raw_args):
+            key = pm.group(1)
+            if key not in args:
+                val = pm.group(2)
+                args[key] = int(val) if val.isdigit() else val
+        for pm in _re.finditer(r"""(\w+)\s*=\s*(\w+)""", raw_args):
+            key = pm.group(1)
+            if key not in args:
+                args[key] = pm.group(2)
+        if args:
+            calls.append({"name": name, "arguments": _remap_params(name, args)})
+    return calls if calls else None
+
+
 def _parse_raw_tool_calls(text: str) -> list[dict] | None:
     calls = []
     for m in _TAG_RE.finditer(text):
@@ -190,6 +221,9 @@ def _parse_raw_tool_calls(text: str) -> list[dict] | None:
     # Fallback: Qwen3 <function=name><parameter>...</parameter></function> XML
     if not calls:
         calls = _parse_qwen_function_xml(text) or []
+    # Fallback: <agent_exec tool="name" args="key='val', ..."> format
+    if not calls:
+        calls = _parse_agent_exec_xml(text) or []
     return calls if calls else None
 
 

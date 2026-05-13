@@ -7,6 +7,20 @@ from agent.tools.rules import get_rules
 from .paths import _resolve, _working_dir, _undo_stack
 
 
+def _format_size(bytes_val: int) -> str:
+    for unit in ["B", "KB", "MB", "GB"]:
+        if bytes_val < 1024:
+            return f"{bytes_val:.0f}{unit}"
+        bytes_val /= 1024
+    return f"{bytes_val:.0f}TB"
+
+
+def _count_lines_fast(fpath: Path) -> int:
+    """Count lines without reading full file into memory."""
+    with open(fpath, "rb") as f:
+        return sum(1 for _ in f)
+
+
 def _build_gitignore_spec(base):
     try:
         import pathspec  # type: ignore
@@ -26,7 +40,12 @@ def _build_gitignore_spec(base):
 @register(
     "read_file",
     {
-        "description": "Read file contents, optionally limited to a line range. Always use start_line/end_line for large files.",
+        "description": (
+            "Read file contents, optionally limited to a line range. "
+            "Always use start_line/end_line for large files. "
+            "When a line range exceeds the file, the range is auto-clamped and "
+            "end_of_file=true is returned so you know you've reached the end."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -58,23 +77,61 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
 
     lines = text.splitlines()
     total = len(lines)
+    filesize = fpath.stat().st_size
 
-    def _make_header(sl_show: int, el_show: int) -> str:
+    def _make_header(sl_show: int, el_show: int, clamped: bool = False, past_eof: bool = False) -> str:
+        size_str = f" · {_format_size(filesize)}"
+        if past_eof:
+            return (
+                f"[{fpath.name} · {total} lines{size_str} · "
+                f"END OF FILE — requested line {sl_show} beyond file's {total} lines. "
+                f"Last {el_show - sl_show + 1} lines shown for reference below.]"
+            )
+        if clamped:
+            return (
+                f"[{fpath.name} · {total} lines{size_str} · "
+                f"showing lines {sl_show}-{el_show}"
+                f" · read offset={el_show + 1} for more · "
+                f"note: requested up to line {end_line} but file has {total}]"
+            )
         if sl_show == 1 and el_show >= total:
-            return f"[{fpath.name} · {total} lines]"
-        return f"[{fpath.name} · {total} lines · showing lines {sl_show}-{el_show} · read offset={el_show + 1} for more]"
+            return f"[{fpath.name} · {total} lines{size_str}]"
+        return (
+            f"[{fpath.name} · {total} lines{size_str} · "
+            f"showing lines {sl_show}-{el_show} · "
+            f"read offset={el_show + 1} for more]"
+        )
 
     if start_line is None and end_line is None and total > 500:
         head_lines = lines[:200]
         numbered = "\n".join(f"{i + 1}:{l}" for i, l in enumerate(head_lines))
         return {
             "content": _make_header(1, 200) + "\n" + numbered,
+            "metadata": {"total_lines": total, "file_size": filesize},
         }
 
-    sl = (start_line or 1) - 1
-    el = end_line if end_line else total
+    past_eof = False
+    clamped = False
+
+    if start_line is not None and start_line > total:
+        # Model requested past EOF — show last 50 lines as reference
+        sl = max(0, total - 50)
+        el = total
+        past_eof = True
+    else:
+        sl = max(0, (start_line or 1) - 1)
+        clamped = end_line is not None and end_line > total
+        el = min(end_line if end_line else total, total)
+
     selected = lines[sl:el]
     numbered = "\n".join(f"{sl + i + 1}:{line}" for i, line in enumerate(selected))
+
+    result: dict = {
+        "content": _make_header(sl + 1, el, clamped, past_eof) + "\n" + numbered,
+        "metadata": {"total_lines": total, "file_size": filesize},
+    }
+    if past_eof:
+        result["end_of_file"] = True
 
     if fpath.suffix == ".py":
         try:
@@ -82,12 +139,11 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
             ast.parse(text)
         except SyntaxError as e:
             if path in _undo_stack:
-                return {
-                    "warning": f"File has syntax error: {e}. It was recently modified. Use undo_file to revert.",
-                    "content": _make_header(sl + 1, el) + "\n" + numbered,
-                }
+                result["warning"] = (
+                    f"File has syntax error: {e}. It was recently modified. Use undo_file to revert."
+                )
 
-    return {"content": _make_header(sl + 1, el) + "\n" + numbered}
+    return result
 
 
 @register(
@@ -96,7 +152,8 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
         "description": (
             "List files in a directory, respecting .gitignore. Returns relative paths with size. "
             "Capped at max_results (default 500) to keep responses small — narrow with `pattern` "
-            "(e.g. 'src/**/*.py') if you need more."
+            "(e.g. 'src/**/*.py') if you need more. "
+            "Set include_lines=true to also get line counts (slower for large trees)."
         ),
         "parameters": {
             "type": "object",
@@ -105,6 +162,7 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
                 "pattern": {"type": "string", "description": "Glob pattern", "default": "**/*"},
                 "ignore_patterns": {"type": "array", "items": {"type": "string"}, "description": "Patterns to ignore"},
                 "max_results": {"type": "integer", "description": "Max entries to return (default 500). On overflow, a directory-grouped summary is returned instead of paths."},
+                "include_lines": {"type": "boolean", "description": "Include line count per file (default: false)", "default": False},
             },
             "required": [],
         },
@@ -115,6 +173,7 @@ def list_files(
     pattern: str = "**/*",
     ignore_patterns: list[str] | None = None,
     max_results: int = 500,
+    include_lines: bool = False,
 ) -> dict:
     import fnmatch
 
@@ -162,7 +221,10 @@ def list_files(
         dir_counts[top] = dir_counts.get(top, 0) + 1
         if len(results) < cap:
             stat = fpath.stat()
-            results.append({"path": rel, "size": stat.st_size})
+            entry = {"path": rel, "size": stat.st_size}
+            if include_lines:
+                entry["lines"] = _count_lines_fast(fpath)
+            results.append(entry)
 
     if total_kept > cap:
         summary = sorted(
