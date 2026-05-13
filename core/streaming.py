@@ -7,7 +7,7 @@ import time
 from typing import TYPE_CHECKING
 
 from .prompts import _inject_think_hint, _log_llm_request, _build_call_kwargs
-from .tool_calls import _FakeToolCall, _parse_text_tool_calls
+from .tool_calls import _FakeToolCall, _parse_text_tool_calls, _parse_qwen_function_xml
 
 if TYPE_CHECKING:
     from agent.config import Config
@@ -87,6 +87,12 @@ def _strip_text_tool_calls(text: str) -> str:
         last_end = i
     parts.append(text[last_end:])
     return "".join(parts).strip()
+
+
+def _strip_qwen_function_xml(text: str) -> str:
+    """Strip <function=name>...</function> blocks, keeping surrounding text."""
+    import re as _re
+    return _re.sub(r"<function=\w+>.*?</function>", "", text, flags=_re.DOTALL).strip()
 
 
 def _clean_output(text: str) -> str:
@@ -230,7 +236,13 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
             tool_calls = [_FakeToolCall(c["name"], c["arguments"]) for c in text_calls]
             full_content = _strip_text_tool_calls(full_content)
         else:
-            tool_calls = None
+            # Fallback: Qwen3 <function=name>...<parameter>...</parameter> XML
+            text_calls = _parse_qwen_function_xml(raw_content)
+            if text_calls:
+                tool_calls = [_FakeToolCall(c["name"], c["arguments"]) for c in text_calls]
+                full_content = _strip_qwen_function_xml(full_content)
+            else:
+                tool_calls = None
     else:
         tool_calls = None
 

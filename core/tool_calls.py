@@ -157,6 +157,21 @@ def _parse_text_tool_calls(text: str) -> list[dict] | None:
     return calls if calls else None
 
 
+def _parse_qwen_function_xml(text: str) -> list[dict] | None:
+    """Parse Qwen3 <function=name>...<parameter=key>val</parameter>...</function> XML."""
+    import re as _re
+    calls = []
+    for m in _re.finditer(r"<function=(\w+)>(.*?)</function>", text, _re.DOTALL):
+        name = m.group(1)
+        inner = m.group(2)
+        args = {}
+        for pm in _re.finditer(r"<parameter=(\w+)>(.*?)</parameter>", inner, _re.DOTALL):
+            args[pm.group(1)] = pm.group(2).strip()
+        if args:
+            calls.append({"name": name, "arguments": _remap_params(name, args)})
+    return calls if calls else None
+
+
 def _parse_raw_tool_calls(text: str) -> list[dict] | None:
     calls = []
     for m in _TAG_RE.finditer(text):
@@ -172,6 +187,9 @@ def _parse_raw_tool_calls(text: str) -> list[dict] | None:
     # Fallback: try call:function_name{...} format
     if not calls:
         calls = _parse_text_tool_calls(text) or []
+    # Fallback: Qwen3 <function=name><parameter>...</parameter></function> XML
+    if not calls:
+        calls = _parse_qwen_function_xml(text) or []
     return calls if calls else None
 
 

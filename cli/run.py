@@ -41,8 +41,12 @@ def cmd_run(args, config):
     def on_tool(name: str, args_str: str) -> None:
         console.print(f"  [dim]→ {name}[/dim]")
 
+    def on_tool_result(name: str, ok: bool) -> None:
+        if not ok:
+            console.print(f"  [dim]✗ {name}[/dim]")
+
     async def _run():
-        response = await agent.chat(args.prompt_text, on_tool_call=on_tool)
+        response = await agent.chat(args.prompt_text, on_tool_call=on_tool, on_tool_result=on_tool_result)
         console.print(response)
         if config.ui.show_token_count:
             console.print(f"[dim][tokens: {agent.token_estimate()}/{config.llm.ctx_window}][/dim]")
