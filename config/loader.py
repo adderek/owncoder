@@ -285,6 +285,11 @@ def load_config(extra_path: Path | None = None) -> Config:
     _apply_model_entry_to_llm(config)
     # Env overrides have highest priority (run after bridge)
     _apply_env_overrides(config)
+    # Re-sync fields that env overrides on config.agent but bridge already copied to config.llm
+    config.llm.max_iterations = config.agent.max_iterations
+    config.llm.think_level = config.agent.think_level
+    config.llm.auto_detect_ctx = config.agent.auto_detect_ctx
+    config.llm.narration_fallback = config.agent.narration_fallback
     # Ensure registry fallback keys exist (uses now-correct config.llm values)
     _ensure_model_registry_keys(config)
     return config
