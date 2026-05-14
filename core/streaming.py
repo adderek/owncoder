@@ -31,6 +31,15 @@ _NARRATION_PHRASES = [
     "using patch_file", "using write_file",
 ]
 
+# Models that output bare Python-style function calls as text instead of invoking the tool API.
+# Matched against the stripped start of the response (first non-whitespace line).
+_BARE_TOOL_CALL_RE = re.compile(
+    r"^(write_file|edit_file|patch_file|read_file|list_files|run_command|run_argv"
+    r"|search_code|search_archive|web_fetch|web_search|git_diff|git_log|git_status"
+    r"|git_blame|git_related_files|replace_symbol|undo_file|save_note)\s*\(",
+    re.MULTILINE,
+)
+
 # Strip thinking-mode special tokens leaked into content by some models (Gemma 4, DeepSeek, etc.)
 _LEAK_RE = re.compile(r"<[^>]*\|[^>]*>")
 # ChatML-style tokens like <|im_start|>, <|im_end|>, <|imend>, <|imendend>
@@ -112,7 +121,11 @@ def _clean_output(text: str) -> str:
 
 def _is_narrating_tool_use(text: str) -> bool:
     lower = text.lower()
-    return any(phrase in lower for phrase in _NARRATION_PHRASES)
+    if any(phrase in lower for phrase in _NARRATION_PHRASES):
+        return True
+    # Bare function-call syntax: model outputs `write_file(...)` as text instead of API call.
+    # Seen on Qwen2.5-14B-Instruct-1M K_M quants — correct task understanding, wrong output format.
+    return bool(_BARE_TOOL_CALL_RE.search(text))
 
 
 def _strip_tool_blocks(text: str) -> str:
