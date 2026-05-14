@@ -50,7 +50,7 @@ def _build_schema() -> dict:
     }
     required: list[str] = []  # either chunks[] OR flat path+anchor+replacement — both valid
     if ec.match == "model":
-        props["match"] = {
+        props["match_mode"] = {
             "type": "string",
             "enum": ["exact", "loose"],
             "description": "Match mode: 'exact' (default) or 'loose' (whitespace-tolerant fallback).",
@@ -64,12 +64,11 @@ def _build_schema() -> dict:
 
     return {
         "description": (
-            "Edit an existing file by replacing one or more anchored regions. "
+            "Modifies an EXISTING file by replacing one or more anchored regions. "
+            "Does NOT create new files — use write_file(path, content) for that. "
             "Always read_file first, then quote the anchor EXACTLY (whitespace matters). "
             "Anchor must match exactly once; use range_hint to disambiguate. "
             "Fails loudly on any mismatch — no silent changes. "
-            "Use write_file only to create a new file or fully overwrite one. "
-            "Specify file using 'path' parameter (NOT 'match'). "
             "Example: chunks=[{'path': 'foo.py', 'anchor': 'def bar():', 'replacement': 'def bar(x):'}] "
             "Or flat: path='foo.py', anchor='def bar():', replacement='def bar(x):'"
         ),

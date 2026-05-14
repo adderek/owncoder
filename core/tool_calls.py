@@ -47,7 +47,6 @@ def _extract_json_objects(text: str) -> list[dict]:
 # Local models (Gemma, Qwen, etc.) often use natural language names
 # that differ from terse tool definitions.
 _PARAM_ALIASES: dict[str, dict[str, str]] = {
-    "run_command": {"command": "cmd", "shell": "cmd"},
     "run_argv": {"command": "argv", "args": "argv"},
     "read_file": {"file_path": "path", "file": "path", "filename": "path"},
     "write_file": {"file_path": "path", "file": "path", "filename": "path", "text": "content", "data": "content"},
@@ -62,7 +61,7 @@ _PARAM_ALIASES: dict[str, dict[str, str]] = {
     "recall_sessions": {"q": "query", "term": "query"},
     "save_note": {"name": "title", "heading": "title", "content": "body", "text": "body"},
     "rate_session": {"rating": "outcome"},
-    "edit_file": {"content": "replacement", "text": "replacement", "new_string": "replacement", "old_string": "anchor", "file_path": "path", "file": "path", "filename": "path"},
+    "edit_file": {"content": "replacement", "text": "replacement", "new_string": "replacement", "old_string": "anchor", "file_path": "path", "file": "path", "filename": "path", "match": "match_mode"},
 }
 
 

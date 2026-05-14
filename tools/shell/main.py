@@ -117,32 +117,6 @@ def _try_translate_to_argv(cmd: str) -> list[str] | None:
         return None
 
 
-@register(
-    "run_command",
-    {
-        "description": (
-            "Deprecated: use run_argv instead. "
-            "Accepts a shell string for backwards compatibility; "
-            "simple commands are auto-translated to run_argv. "
-            "Use run_command only when you need pipes, redirects, or other shell features."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "cmd": {"type": "string", "description": "Shell command to execute"},
-                "cwd": {
-                    "type": "string",
-                    "description": "Working directory (default: config working_dir)",
-                },
-                "timeout": {
-                    "type": "integer",
-                    "description": "Timeout in seconds (default: 30)",
-                },
-            },
-            "required": ["cmd"],
-        },
-    },
-)
 def run_command(cmd: str, cwd: str | None = None, timeout: int | None = None) -> dict:
     if _config and not _config.tools.allow_shell:
         raise ToolDisabledError(
@@ -286,8 +260,8 @@ def get_transcript() -> list[dict]:
     {
         "description": (
             "Run a command as an explicit argv list (no shell interpretation). "
-            "Preferred over run_command — safe from shell injection, still sandboxed. "
-            "Use run_command only when you genuinely need pipes or redirects."
+            "Safe from shell injection, sandboxed. "
+            "For pipes/redirects/heredocs, use run_argv(['sh', '-c', 'your command'])."
         ),
         "parameters": {
             "type": "object",

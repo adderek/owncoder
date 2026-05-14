@@ -12,7 +12,7 @@ def edit_file(
     path: str | None = None,
     anchor: str | None = None,
     replacement: str | None = None,
-    match: str | None = None,
+    match_mode: str | None = None,
     on_chunk_fail: str | None = None,
 ) -> dict:
     from agent.tools.files import _resolve, _log_edit, _undo_stack
@@ -24,12 +24,16 @@ def edit_file(
     if not chunks and path and anchor and replacement is not None:
         chunks = [{"path": path, "anchor": anchor, "replacement": replacement}]
 
+    # Detect empty/missing args — models often call edit_file({}) for new files
     if not isinstance(chunks, list) or not chunks:
         return {
-            "error": "bad_input",
-            "errors": [{"chunk_index": -1, "kind": "bad_input", "detail": "chunks must be a non-empty list"}],
+            "error": "empty_args",
+            "hint": "edit_file modifies EXISTING files. To CREATE a new file use write_file(path, content). "
+                    "edit_file requires one or more anchored edits: "
+                    "chunks=[{'path': '...', 'anchor': '...', 'replacement': '...'}] "
+                    "or flat path + anchor + replacement.",
         }
-
+    
     # Apply top-level range_hint into chunks that lack one.
     # (path and replacement are now explicit params, handled by the flat-args path above)
     # range_hint is left for a future signature expansion.
@@ -39,7 +43,7 @@ def edit_file(
         set(ch.get("path") for ch in chunks if isinstance(ch, dict) and "path" in ch)
     )
 
-    match_override = match if ec.match == "model" else None
+    match_override = match_mode if ec.match == "model" else None
     fail_mode = on_chunk_fail if ec.on_chunk_fail == "model" else None
     fail_mode = (fail_mode or ec.on_chunk_fail or "abort").lower()
     if fail_mode not in ("abort", "skip"):

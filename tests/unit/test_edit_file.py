@@ -337,7 +337,7 @@ class TestMatchModel:
             from agent.tools.edit_file import _build_schema
 
             schema = _build_schema()
-            assert "match" in schema["parameters"]["properties"]
+            assert "match_mode" in schema["parameters"]["properties"]
         finally:
             rules_mod.set_rules(old_rules)
 

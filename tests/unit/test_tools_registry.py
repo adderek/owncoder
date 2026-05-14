@@ -10,7 +10,6 @@ class TestToolRegistry:
         # At least read_file and write_file should exist.
         assert get_tool("read_file") is not None
         assert get_tool("write_file") is not None
-        assert get_tool("run_command") is not None
 
     def test_unknown_tool(self):
         assert get_tool("nonexistent_tool_xyz") is None
@@ -21,7 +20,7 @@ class TestToolRegistry:
         names = {s["function"]["name"] for s in schemas}
         assert "read_file" in names
         assert "write_file" in names
-        assert "run_command" in names
+        assert "run_command" not in names  # deprecated — use run_argv
 
     def test_schema_structure(self):
         schemas = get_schemas()
