@@ -34,7 +34,10 @@ def load_base_rules() -> str:
     return content
 
 
-THINK_LEVELS = ("off", "low", "normal", "high", "max")
+THINK_LEVELS = ("off", "low", "normal", "med", "medium", "high", "max")
+
+# Aliases normalised before lookup in _THINK_HINTS / _REASONING_EFFORT.
+_THINK_LEVEL_ALIASES = {"med": "high", "medium": "high"}
 
 _THINK_HINTS = {
     "off":    "Answer directly. Do NOT produce any <think> block or chain-of-thought. /no_think",
@@ -170,6 +173,7 @@ def _build_call_kwargs(config: "Config") -> dict:
     if level not in THINK_LEVELS:
         logger.warning("_build_call_kwargs: invalid think_level=%r, falling back to 'normal'", level)
         level = "normal"
+    level = _THINK_LEVEL_ALIASES.get(level, level)
     if level in _REASONING_EFFORT and level != "normal":
         kw["extra_body"] = {"reasoning_effort": _REASONING_EFFORT[level]}
     if level == "off":
@@ -180,6 +184,7 @@ def _build_call_kwargs(config: "Config") -> dict:
 
 def _inject_think_hint(api_messages: list[dict], config: "Config") -> list[dict]:
     level = (getattr(config.llm, "think_level", "normal") or "normal").lower()
+    level = _THINK_LEVEL_ALIASES.get(level, level)
     hint = _THINK_HINTS.get(level, "")
     if not hint:
         return api_messages
