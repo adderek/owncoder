@@ -45,14 +45,14 @@ def _strip_ext(name: str) -> str:
 
 def enrich_model_entries(config: "Config", timeout: int = 3) -> None:
     """Probe all unique endpoints and enrich model_entries in-place."""
-    # Group entries by base_url so we make one request per server.
+    global_max_ctx = getattr(config.llm, "global_max_ctx", 0)
     by_url: dict[str, list[tuple[str, "ModelEntry"]]] = {}
     for name, entry in config.model_entries.items():
         by_url.setdefault(entry.base_url, []).append((name, entry))
 
     for base_url, entries in by_url.items():
         api_key = entries[0][1].api_key  # all entries on same url share key
-        _probe_endpoint(base_url, api_key, entries, timeout)
+        _probe_endpoint(base_url, api_key, entries, timeout, global_max_ctx)
 
 
 # ── endpoint probing ──────────────────────────────────────────────────────────
@@ -62,6 +62,7 @@ def _probe_endpoint(
     api_key: str,
     entries: list[tuple[str, "ModelEntry"]],
     timeout: int,
+    global_max_ctx: int = 0,
 ) -> None:
     url = base_url.rstrip("/") + "/models"
     try:
@@ -101,7 +102,7 @@ def _probe_endpoint(
                     f"but server has \"{matched_id}\" — using server metadata",
                     file=sys.stderr,
                 )
-        _enrich_entry(name, entry, server_info, base_url, api_key, is_ollama, timeout)
+        _enrich_entry(name, entry, server_info, base_url, api_key, is_ollama, timeout, global_max_ctx)
 
 
 def _enrich_entry(
@@ -112,12 +113,15 @@ def _enrich_entry(
     api_key: str,
     is_ollama: bool,
     timeout: int,
+    global_max_ctx: int = 0,
 ) -> None:
     # --- ctx_window ---
     # Runtime context sources: reflect actual server configuration.
-    # 1. Try to get runtime n_ctx directly from /v1/models (if provided)
+    # 1. Runtime n_ctx: llama.cpp puts it in meta{}; others expose it top-level or as context_length
+    _meta = server_info.get("meta", {}) or {}
     server_ctx = (
-        server_info.get("n_ctx")
+        _meta.get("n_ctx")
+        or server_info.get("n_ctx")
         or server_info.get("context_length")
         or server_info.get("max_model_len")
     )
@@ -125,15 +129,14 @@ def _enrich_entry(
     # 2. If not found, try /props (for llama.cpp) or other probes
     if not isinstance(server_ctx, int) or server_ctx <= 0:
         if not is_ollama:
-            # _probe_llamacpp_props returns the runtime n_ctx from /props
-            server_ctx = _probe_llamacpp_props(name, entry, base_url, timeout)
+            server_ctx = _probe_llamacpp_props(name, base_url, timeout)
 
     # 3. Fallback to n_ctx_train (model capacity) if still not found
     if not isinstance(server_ctx, int) or server_ctx <= 0:
         server_ctx = server_info.get("meta", {}).get("n_ctx_train")
 
     if isinstance(server_ctx, int) and server_ctx > 0:
-        _fill_or_warn(name, "ctx_window", entry, server_ctx)
+        _fill_or_warn(name, "ctx_window", entry, server_ctx, global_max_ctx)
 
     # --- cost fields (OpenRouter exposes pricing per token) ---
     pricing = server_info.get("pricing", {})
@@ -190,21 +193,10 @@ def _ollama_enrich(name: str, entry: "ModelEntry", base_url: str, timeout: int) 
 
 # ── llama.cpp /props probe ─────────────────────────────────────────────────────
 
-def _probe_llamacpp_props(
-    name: str,
-    entry: "ModelEntry",
-    base_url: str,
-    timeout: int,
-) -> int | None:
-    """Query llama.cpp /props endpoint for the actual runtime n_ctx.
+def _probe_llamacpp_props(name: str, base_url: str, timeout: int) -> int | None:
+    """Query llama.cpp /props for the runtime n_ctx (-c value, not model max).
 
-    llama.cpp's /v1/models response only includes ``meta.n_ctx_train``
-    (the model's native max), not the user-constrained runtime value set
-    via ``-c``.  The ``/props`` endpoint exposes the real ``n_ctx``.
-
-    Returns the runtime n_ctx, or None if the server doesn't support it.
-    Uses _fill_or_warn internally when a value is found, so the entry
-    is updated and mismatches are warned about here.
+    Returns the value; caller is responsible for updating the entry.
     """
     props_url = base_url.rstrip("/").removesuffix("/v1") + "/props"
     try:
@@ -214,10 +206,7 @@ def _probe_llamacpp_props(
     except Exception:
         return None
     n_ctx = data.get("n_ctx")
-    if isinstance(n_ctx, int) and n_ctx > 0:
-        _fill_or_warn(name, "ctx_window", entry, n_ctx)
-        return n_ctx
-    return None
+    return n_ctx if isinstance(n_ctx, int) and n_ctx > 0 else None
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -227,7 +216,10 @@ def _fill_or_warn(
     field: str,
     entry: "ModelEntry",
     server_val: float | int,
+    global_max_ctx: int = 0,
 ) -> None:
+    if field == "ctx_window" and global_max_ctx > 0 and isinstance(server_val, int):
+        server_val = min(server_val, global_max_ctx)
     current = getattr(entry, field, 0)
     if not current:
         setattr(entry, field, server_val)

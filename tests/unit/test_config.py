@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 import pytest
 from agent.config import Config, _apply_env_overrides, _merge_obj, load_config
+from agent.config.loader import _try_auto_select_model, _resolve_default_entry
+from agent.config.models import ModelEntry
 
 
 class TestDefaults:
@@ -11,7 +13,7 @@ class TestDefaults:
         c = Config()
         assert c.llm.model == "qwen3-coder-30b"
         assert c.tools.allow_shell is True
-        assert c.llm.ctx_window == 16384
+        assert c.llm.ctx_window == 0  # 0 = auto; probe fills at startup
         assert c.tools.working_dir == "."
 
     def test_nested_defaults(self):
@@ -57,6 +59,135 @@ class TestMergeObj:
         c = Config()
         _merge_obj(c.llm, {"nonexistent_field": "value"})
         assert not hasattr(c.llm, "nonexistent_field")
+
+
+def _make_config_with_entries(entries: dict, default: str, base_url: str = "http://localhost:8081/v1") -> Config:
+    c = Config()
+    c.model_roles["default"] = default
+    c.model_entries.update(entries)
+    c.llm.base_url = base_url
+    c.llm.model = entries[default].model
+    return c
+
+
+def _entry(model: str, base_url: str = "http://localhost:8081/v1", ctx_window: int = 0) -> ModelEntry:
+    e = ModelEntry()
+    e.model = model
+    e.base_url = base_url
+    e.ctx_window = ctx_window
+    return e
+
+
+class TestAutoSelectModel:
+    def _data(self, *model_ids):
+        return {"data": [{"id": mid} for mid in model_ids]}
+
+    def test_switches_to_matching_entry(self):
+        entries = {
+            "gpu-gemma4": _entry("gemma-4-27b-q4"),
+            "gpu-qwen-14b": _entry("qwen2.5-14b-q8"),
+        }
+        c = _make_config_with_entries(entries, "gpu-qwen-14b")
+        _try_auto_select_model(c, self._data("gemma-4-27b-q4"))
+        assert c.model_roles["default"] == "gpu-gemma4"
+        assert c.llm.model == "gemma-4-27b-q4"
+
+    def test_no_switch_when_already_correct(self):
+        entries = {
+            "gpu-gemma4": _entry("gemma-4-27b-q4"),
+            "gpu-qwen-14b": _entry("qwen2.5-14b-q8"),
+        }
+        c = _make_config_with_entries(entries, "gpu-qwen-14b")
+        _try_auto_select_model(c, self._data("qwen2.5-14b-q8"))
+        assert c.model_roles["default"] == "gpu-qwen-14b"
+
+    def test_fuzzy_match_substring(self):
+        entries = {
+            "gpu-gemma4": _entry("gemma-4-27b"),
+            "gpu-qwen": _entry("qwen2.5"),
+        }
+        c = _make_config_with_entries(entries, "gpu-qwen")
+        # server reports a quantized variant; "gemma-4-27b" is substring of "gemma-4-27b-q4_k_m"
+        _try_auto_select_model(c, self._data("gemma-4-27b-q4_k_m"))
+        assert c.model_roles["default"] == "gpu-gemma4"
+
+    def test_no_switch_when_only_one_candidate(self):
+        entries = {"only": _entry("gemma-4-27b-q4")}
+        c = _make_config_with_entries(entries, "only")
+        _try_auto_select_model(c, self._data("qwen2.5-14b-q8"))
+        assert c.model_roles["default"] == "only"
+
+    def test_no_switch_on_empty_data(self):
+        entries = {
+            "gpu-gemma4": _entry("gemma-4-27b-q4"),
+            "gpu-qwen": _entry("qwen2.5-14b-q8"),
+        }
+        c = _make_config_with_entries(entries, "gpu-qwen")
+        _try_auto_select_model(c, {})
+        assert c.model_roles["default"] == "gpu-qwen"
+
+    def test_ignores_entries_on_different_endpoint(self):
+        entries = {
+            "gpu-gemma4": _entry("gemma-4-27b-q4", base_url="http://localhost:8082/v1"),
+            "gpu-qwen": _entry("qwen2.5-14b-q8", base_url="http://localhost:8081/v1"),
+        }
+        c = _make_config_with_entries(entries, "gpu-qwen")
+        # gemma is on a different endpoint — should not match
+        _try_auto_select_model(c, self._data("gemma-4-27b-q4"))
+        assert c.model_roles["default"] == "gpu-qwen"
+
+
+class TestModelPool:
+    def test_pool_parsed_from_toml(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        toml = (
+            b'[models]\n'
+            b'default.candidates = ["gpu-gemma4", "gpu-qwen"]\n'
+            b'[models.gpu-gemma4]\nbase_url="http://localhost:8081/v1"\nmodel="gemma-4-27b-q4"\n'
+            b'[models.gpu-qwen]\nbase_url="http://localhost:8081/v1"\nmodel="qwen2.5-14b-q8"\n'
+        )
+        (tmp_path / "agent.toml").write_bytes(toml)
+        c = load_config(tmp_path / "agent.toml")
+        assert c.model_pools["default"] == ["gpu-gemma4", "gpu-qwen"]
+
+    def test_pool_resolve_picks_first_available(self):
+        c = Config()
+        c.model_pools["default"] = ["gpu-gemma4", "gpu-qwen"]
+        c.model_entries["gpu-gemma4"] = _entry("gemma-4-27b-q4")
+        c.model_entries["gpu-qwen"] = _entry("qwen2.5-14b-q8")
+        assert _resolve_default_entry(c) == "gpu-gemma4"
+
+    def test_pool_resolve_skips_missing_entry(self):
+        c = Config()
+        c.model_pools["default"] = ["gpu-missing", "gpu-qwen"]
+        c.model_entries["gpu-qwen"] = _entry("qwen2.5-14b-q8")
+        assert _resolve_default_entry(c) == "gpu-qwen"
+
+    def test_pool_resolve_falls_back_to_model_roles(self):
+        c = Config()
+        c.model_roles["default"] = "my-model"
+        c.model_entries["my-model"] = _entry("my-model-id")
+        assert _resolve_default_entry(c) == "my-model"
+
+    def test_pool_auto_select_uses_pool_candidates(self):
+        entries = {
+            "gpu-gemma4": _entry("gemma-4-27b-q4"),
+            "gpu-qwen": _entry("qwen2.5-14b-q8"),
+            "unrelated": _entry("some-other-model"),
+        }
+        c = _make_config_with_entries(entries, "gpu-qwen")
+        c.model_pools["default"] = ["gpu-gemma4", "gpu-qwen"]
+        data = {"data": [{"id": "gemma-4-27b-q4"}, {"id": "some-other-model"}]}
+        _try_auto_select_model(c, data)
+        # should match gpu-gemma4 from pool, not "unrelated" even though it also matches
+        assert c.model_roles["default"] == "gpu-gemma4"
+
+    def test_pool_invalid_candidates_raises(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        toml = b'[models]\ndefault.candidates = [1, 2]\n'
+        (tmp_path / "agent.toml").write_bytes(toml)
+        with pytest.raises(ValueError, match="candidates must be a list of strings"):
+            load_config(tmp_path / "agent.toml")
 
 
 class TestLoadConfig:

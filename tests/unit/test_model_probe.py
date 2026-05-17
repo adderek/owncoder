@@ -91,9 +91,14 @@ def _mock_urlopen(response_data: dict):
     return mock_resp
 
 
+class _FakeLLM:
+    global_max_ctx: int = 0
+
+
 class _FakeConfig:
     def __init__(self, entries):
         self.model_entries = entries
+        self.llm = _FakeLLM()
 
 
 def test_enrich_ctx_from_vllm():

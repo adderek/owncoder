@@ -58,8 +58,8 @@ def pick_model(
         if entry is None:
             continue
 
-        # Hard filters
-        if est_in > 0 and est_in > entry.ctx_window:
+        # Hard filters (ctx_window=0 means auto/unknown — skip size filter)
+        if est_in > 0 and entry.ctx_window > 0 and est_in > entry.ctx_window:
             continue
         if needs_thinking and not entry.thinking:
             continue

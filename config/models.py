@@ -10,7 +10,9 @@ class LLMConfig:
     base_url: str = "http://localhost:8080/v1"
     api_key: str = "local"
     model: str = "qwen3-coder-30b"
-    global_max_ctx: int = 131072  # Safety ceiling (e.g., 128k) to prevent runaway memory usage
+    ctx_window: int = 0           # 0 = auto (filled by probe); set explicitly to cap usage
+    global_max_ctx: int = 0       # hard ceiling applied after probe (0 = no global cap)
+    auto_detect_ctx: bool = True  # query server for actual context size on startup
     compaction_threshold: float = 0.75
     compaction_message_threshold: int = 15
     max_output_tokens: int = 4096
@@ -21,8 +23,6 @@ class LLMConfig:
     narration_fallback: bool = True
     cache_ttl: int = 300         # prompt cache TTL in seconds; 0 = disable cache tracking
     gpu: bool = False             # True when resolved default entry is in [concurrency].gpu_pool
-    # Map of model names to their specific configurations
-    model_entries: dict[str, ModelEntry] = field(default_factory=dict)
 
 
 @dataclass
@@ -426,6 +426,8 @@ class Config:
     model_entries: dict = field(default_factory=dict)
     # role → model entry name (e.g. {"summarizer": "deepseek-r1"})
     model_roles: dict = field(default_factory=dict)
+    # role → ordered list of candidate entry names (e.g. {"default": ["gpu-gemma4", "gpu-qwen"]})
+    model_pools: dict = field(default_factory=dict)
     rag: RAGConfig = field(default_factory=RAGConfig)
     summarization: SummarizationConfig = field(default_factory=SummarizationConfig)
     tools: ToolsConfig = field(default_factory=ToolsConfig)

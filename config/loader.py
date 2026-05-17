@@ -159,23 +159,60 @@ _KNOWN_ROLES = {"default", "summarizer", "embeddings"}
 
 
 def _merge_models(config: Config, data: dict) -> None:
-    """Parse [models] section: scalar strings are role mappings, dicts are entries."""
+    """Parse [models] section: scalar strings are role mappings, dicts are entries or pools."""
     models_section = data.get("models", {})
     for name, entry_data in models_section.items():
         if isinstance(entry_data, str):
             # e.g. summarizer = "deepseek-r1"
             config.model_roles[name] = entry_data
         elif isinstance(entry_data, dict):
-            existing = config.model_entries.get(name)
-            if existing is None:
-                existing = ModelEntry()
-                config.model_entries[name] = existing
-            for fld, val in entry_data.items():
-                if hasattr(existing, fld):
-                    # Strict check for ctx_window to prevent "auto" string usage
-                    if fld == "ctx_window" and isinstance(val, str) and val == "auto":
-                        raise ValueError(f"Invalid value for model '{name}' ctx_window: use 0 instead of 'auto'")
-                    setattr(existing, fld, val)
+            if "candidates" in entry_data:
+                # Pool definition: default.candidates = ["gpu-gemma4", "gpu-qwen"]
+                candidates = entry_data["candidates"]
+                if not isinstance(candidates, list) or not all(isinstance(c, str) for c in candidates):
+                    raise ValueError(f"model pool '{name}': candidates must be a list of strings")
+                config.model_pools[name] = candidates
+            else:
+                existing = config.model_entries.get(name)
+                if existing is None:
+                    existing = ModelEntry()
+                    config.model_entries[name] = existing
+                for fld, val in entry_data.items():
+                    if hasattr(existing, fld):
+                        # Strict check for ctx_window to prevent "auto" string usage
+                        if fld == "ctx_window" and isinstance(val, str) and val == "auto":
+                            raise ValueError(f"Invalid value for model '{name}' ctx_window: use 0 instead of 'auto'")
+                        setattr(existing, fld, val)
+
+
+def _apply_entry_to_llm(config: Config, name: str, entry: "ModelEntry") -> None:
+    """Copy connection/model fields from a ModelEntry onto config.llm."""
+    config.llm.base_url = entry.base_url
+    config.llm.api_key = entry.api_key
+    if entry.model:
+        config.llm.model = entry.model
+    config.llm.ctx_window = entry.ctx_window
+    config.llm.cache_ttl = entry.cache_ttl
+    config.llm.max_output_tokens = entry.max_output_tokens
+    config.llm.temperature = entry.temperature
+    config.llm.seed = entry.seed
+    config.llm.gpu = name in config.concurrency.gpu_pool
+
+
+def _resolve_default_entry(config: Config) -> str:
+    """Return the entry name to use as default.
+
+    Explicit model_roles["default"] wins (pinned model).
+    Pool is used when no explicit role is set — auto-select refines it at startup.
+    """
+    if "default" in config.model_roles:
+        return config.model_roles["default"]
+    pool = config.model_pools.get("default")
+    if pool:
+        for name in pool:
+            if name in config.model_entries:
+                return name
+    return "default"
 
 
 def _apply_model_entry_to_llm(config: Config) -> None:
@@ -185,19 +222,10 @@ def _apply_model_entry_to_llm(config: Config) -> None:
     so they can still override individual fields.
     """
     # Connection/model settings from the resolved default model entry
-    default_name = config.model_roles.get("default", "default")
+    default_name = _resolve_default_entry(config)
     default_entry = config.model_entries.get(default_name)
     if default_entry is not None:
-        config.llm.base_url = default_entry.base_url
-        config.llm.api_key = default_entry.api_key
-        if default_entry.model:
-            config.llm.model = default_entry.model
-        config.llm.ctx_window = default_entry.ctx_window
-        config.llm.cache_ttl = default_entry.cache_ttl
-        config.llm.max_output_tokens = default_entry.max_output_tokens
-        config.llm.temperature = default_entry.temperature
-        config.llm.seed = default_entry.seed
-        config.llm.gpu = default_name in config.concurrency.gpu_pool
+        _apply_entry_to_llm(config, default_name, default_entry)
 
     # Behavior settings from config.agent (sourced from [agent] TOML section)
     config.llm.max_iterations = config.agent.max_iterations
@@ -299,6 +327,7 @@ def load_config(extra_path: Path | None = None) -> Config:
 
 
 def check_reachability(config: Config) -> None:
+    import json
     import sys
     url = config.llm.base_url.rstrip("/") + "/models"
     print(f"Checking model endpoint {config.llm.base_url} ...", end=" ", flush=True)
@@ -306,8 +335,13 @@ def check_reachability(config: Config) -> None:
         req = urllib.request.Request(url, method="GET")
         req.add_header("Authorization", f"Bearer {config.llm.api_key}")
         with urllib.request.urlopen(req, timeout=3) as resp:
-            if config.llm.auto_detect_ctx:
-                _try_detect_ctx_window(config, resp)
+            try:
+                data = json.loads(resp.read())
+            except Exception:
+                data = {}
+        if config.llm.auto_detect_ctx:
+            _try_auto_select_model(config, data)
+            _try_detect_ctx_window(config, data)
         print("ok", flush=True)
     except (urllib.error.URLError, OSError) as e:
         print("unreachable", flush=True)
@@ -327,12 +361,61 @@ def check_reachability(config: Config) -> None:
         print("done", flush=True)
 
 
-def _try_detect_ctx_window(config: Config, resp) -> None:
-    """Try to detect context window size from the /models endpoint response."""
-    import json
+def _try_auto_select_model(config: Config, data: dict) -> None:
+    """Promote a configured entry to default if its model is actually loaded at the endpoint.
+
+    Useful when multiple entries share one endpoint (e.g. two llama.cpp model
+    configs for the same GPU server) and only one is loaded at a time.  The
+    live model id reported by /v1/models is matched against each entry's
+    `model` field using the same fuzzy logic as model_probe.
+    """
+    import sys
+    from agent.config.model_probe import _strip_ext
+    live_ids = [m.get("id", "") for m in data.get("data", []) if isinstance(m, dict) and m.get("id")]
+    if not live_ids:
+        return
+
+    # Prefer explicit pool; fall back to all entries at the same endpoint
+    pool = config.model_pools.get("default")
+    if pool:
+        candidates = {n: config.model_entries[n] for n in pool if n in config.model_entries}
+    else:
+        base_url = config.llm.base_url
+        candidates = {
+            name: entry
+            for name, entry in config.model_entries.items()
+            if entry.base_url == base_url
+        }
+    if len(candidates) <= 1:
+        return  # nothing to disambiguate
+
+    current_default = config.model_roles.get("default", "default")
+
+    for live_id in live_ids:
+        live_lower = live_id.lower()
+        for name, entry in candidates.items():
+            cfg_lower = (entry.model or name).lower()
+            if (
+                live_lower == cfg_lower
+                or _strip_ext(live_lower) == cfg_lower
+                or live_lower.startswith(cfg_lower)
+                or cfg_lower in live_lower
+            ):
+                if name != current_default:
+                    print(
+                        f"[auto-model] live model \"{live_id}\" matches entry \"{name}\" "
+                        f"— switching default from \"{current_default}\" to \"{name}\"",
+                        file=sys.stderr,
+                    )
+                    config.model_roles["default"] = name
+                    _apply_entry_to_llm(config, name, entry)
+                return  # matched; stop searching
+
+
+def _try_detect_ctx_window(config: Config, data: dict) -> None:
+    """Detect context window size from already-parsed /models response."""
     import sys
     try:
-        data = json.loads(resp.read())
         models = data.get("data", [])
         if not models:
             return
@@ -341,18 +424,32 @@ def _try_detect_ctx_window(config: Config, resp) -> None:
             if m.get("id") == config.llm.model:
                 model_info = m
                 break
+        # n_ctx first: llama.cpp puts it in meta{}; others expose it top-level or as context_length
+        meta = model_info.get("meta", {}) or {}
         ctx_size = (
-            model_info.get("context_length")
-            or model_info.get("max_model_len")
+            meta.get("n_ctx")
             or model_info.get("n_ctx")
+            or model_info.get("context_length")
+            or model_info.get("max_model_len")
         )
-        if ctx_size and isinstance(ctx_size, int) and ctx_size > 0:
-            if ctx_size < config.llm.ctx_window:
-                print(
-                    f"Auto-detected context window: {ctx_size} tokens "
-                    f"(config had {config.llm.ctx_window} — reducing to match server)",
-                    file=sys.stderr,
-                )
-                config.llm.ctx_window = ctx_size
+        if not isinstance(ctx_size, int) or ctx_size <= 0:
+            # llama.cpp: runtime n_ctx is in /props, not in /v1/models per-model data
+            from agent.config.model_probe import _probe_llamacpp_props
+            ctx_size = _probe_llamacpp_props("default", config.llm.base_url, timeout=3)
+        if not isinstance(ctx_size, int) or ctx_size <= 0:
+            return
+        # Apply global cap if set
+        if config.llm.global_max_ctx > 0:
+            ctx_size = min(ctx_size, config.llm.global_max_ctx)
+        current = config.llm.ctx_window
+        if current == 0:
+            config.llm.ctx_window = ctx_size
+        elif ctx_size < current:
+            print(
+                f"Auto-detected context window: {ctx_size} tokens "
+                f"(config had {current} — reducing to match server)",
+                file=sys.stderr,
+            )
+            config.llm.ctx_window = ctx_size
     except Exception:
         pass
