@@ -26,11 +26,15 @@ Rules:
   * The <summary> is one or two tight paragraphs — what was done, where it
     stands, what matters next. Name files, functions, and decisions
     explicitly; skip conversational texture.
-  * The <q> is ONE paragraph capturing the user's still-active goals. If the
-    knowledge draft contains a "[PREVIOUS Q_VIEW]" section, preserve it
-    verbatim unless the new transcript contains an explicit new instruction
-    that clearly supersedes it. Only rephrase when the previous q_view
-    conflicts with `original_request` or new user instructions.
+  * The <q> is ONE paragraph capturing the user's still-active goals.
+    * If the user provides short, conversational confirmations (e.g., 'yes',
+      'ok', 'tak', 'proceed', 'continue'), DO NOT include the raw word in <q>.
+      Instead, interpret the intent and describe it (e.g., 'user confirmed the
+      implementation of X' or 'user agreed to proceed with Y').
+    * If the knowledge draft contains a "[PREVIOUS Q_VIEW]" section, preserve it
+      verbatim unless the new transcript contains an explicit new instruction
+      that clearly supersedes it. Only rephrase when the previous q_view
+      conflicts with `original_request` or new user instructions.
   * Under context pressure, drop execution details before dropping intent.
     `original_request` and `<q>` must survive even the most aggressive
     compaction.

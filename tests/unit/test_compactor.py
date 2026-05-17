@@ -289,6 +289,45 @@ class TestCompactionRobustness:
             await _synthesize_summary("draft", cfg, client)
 
     @pytest.mark.asyncio
+    async def test_analyze_transcript_stage1_failure_returns_placeholder(self, cfg):
+        """Stage 1 failure must return a safe placeholder, not the raw transcript."""
+        from agent.memory.compactor import _analyze_transcript
+
+        raw_transcript = "user: hello\nassistant: hi there"
+        client = make_client()
+        client.chat.completions.create = AsyncMock(side_effect=Exception("conn error"))
+
+        # Use a long transcript so the short-transcript shortcut doesn't fire.
+        long_transcript = raw_transcript + (" x" * 2000)
+        result = await _analyze_transcript(long_transcript, None, cfg, client)
+
+        assert "[COMPACTION_ERROR" in result
+        assert long_transcript not in result
+
+    @pytest.mark.asyncio
+    async def test_analyze_transcript_stage1_failure_preserves_prev_knowledge(self, cfg):
+        """Previous round's knowledge_draft is kept as prefix even when Stage 1 fails."""
+        from agent.memory.compactor import _analyze_transcript
+        from agent.memory.facts_store import FactsRound
+
+        prev = FactsRound(
+            round_id=1,
+            timestamp="2026-01-01T00:00:00Z",
+            from_turn=0,
+            to_turn=5,
+            knowledge_draft="Previous knowledge here.",
+        )
+        client = make_client()
+        client.chat.completions.create = AsyncMock(side_effect=Exception("conn error"))
+
+        long_transcript = "user: new turn\n" + ("x " * 2000)
+        result = await _analyze_transcript(long_transcript, prev, cfg, client)
+
+        assert result.startswith("Previous knowledge here.")
+        assert "[COMPACTION_ERROR" in result
+        assert long_transcript not in result
+
+    @pytest.mark.asyncio
     async def test_compact_fallback_on_compaction_error(self, cfg, tmp_path):
         from agent.memory.compactor import compact, CompactionError
         from agent.memory.facts_store import FactsStore
