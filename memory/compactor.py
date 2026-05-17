@@ -56,7 +56,9 @@ ANALYZE_PROMPT = _read_prompt("analyze.txt") or (
 )
 
 SYNTHESIZE_PROMPT = _read_prompt("synthesize.txt") or (
-    "Compress the knowledge draft. Output <facts>{...}</facts><summary>...</summary><q>...</q>."
+    "Compress the knowledge draft. Output <facts>{...}</facts><summary>...</summary><q>...</q>.\n"
+    "IMPORTANT: If the draft contains error markers like [COMPACTION_ERROR] or looks like "
+    "broken JSON/HTTP errors, IGNORE them. Do not extract facts from errors."
 )
 
 # Retained for backward compatibility with tests importing COMPACTION_PROMPT.
@@ -239,12 +241,13 @@ async def _analyze_transcript(
         return (response.choices[0].message.content or "").strip()
     except Exception as e:
         logger.warning("analyze_transcript: stage 1 failed: %s", e)
-        # Fallback: return a degraded draft made of the transcript itself
-        # so Stage 2 still has something to work with.
+        # Fallback: return a safe error placeholder to prevent poisoning Stage 2.
+        # We avoid returning raw transcript_text because it might contain 
+        # connection errors, partial JSONs, or other "dirty" data.
         prefix = ""
         if prev_round is not None:
             prefix = prev_round.knowledge_draft.rstrip() + "\n\n"
-        return prefix + transcript_text
+        return prefix + "[COMPACTION_ERROR: Stage 1 failed. Raw transcript omitted to prevent context poisoning.]"
 
 
 def _looks_complete(text: str) -> bool:
