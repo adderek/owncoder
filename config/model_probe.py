@@ -115,23 +115,25 @@ def _enrich_entry(
 ) -> None:
     # --- ctx_window ---
     # Runtime context sources: reflect actual server configuration.
+    # 1. Try to get runtime n_ctx directly from /v1/models (if provided)
     server_ctx = (
-        server_info.get("context_length")
+        server_info.get("n_ctx")
+        or server_info.get("context_length")
         or server_info.get("max_model_len")
-        or server_info.get("n_ctx")
     )
+
+    # 2. If not found, try /props (for llama.cpp) or other probes
+    if not isinstance(server_ctx, int) or server_ctx <= 0:
+        if not is_ollama:
+            # _probe_llamacpp_props returns the runtime n_ctx from /props
+            server_ctx = _probe_llamacpp_props(name, entry, base_url, timeout)
+
+    # 3. Fallback to n_ctx_train (model capacity) if still not found
+    if not isinstance(server_ctx, int) or server_ctx <= 0:
+        server_ctx = server_info.get("meta", {}).get("n_ctx_train")
+
     if isinstance(server_ctx, int) and server_ctx > 0:
         _fill_or_warn(name, "ctx_window", entry, server_ctx)
-    else:
-        # Llama.cpp /props has the real n_ctx (runtime -c value, not model max).
-        # Skip Ollama — it has its own probe path.
-        if not is_ollama:
-            _probe_llamacpp_props(name, entry, base_url, timeout)
-        # n_ctx_train fallback: only when config remains unset, never warns.
-        if not getattr(entry, "ctx_window", 0):
-            train_ctx = server_info.get("meta", {}).get("n_ctx_train")
-            if isinstance(train_ctx, int) and train_ctx > 0:
-                setattr(entry, "ctx_window", train_ctx)
 
     # --- cost fields (OpenRouter exposes pricing per token) ---
     pricing = server_info.get("pricing", {})

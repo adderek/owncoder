@@ -104,6 +104,22 @@ def _strip_qwen_function_xml(text: str) -> str:
     return _re.sub(r"<function=\w+>.*?</function>", "", text, flags=_re.DOTALL).strip()
 
 
+def _strip_agent_exec_xml(text: str) -> str:
+    """Strip <agent_exec .../> and <agent_exec ...>...</agent_exec> blocks.
+
+    Also handles malformed tags where args attribute is unclosed (no terminating ">)
+    and tags whose attribute values contain > (e.g. Python -> syntax).
+    """
+    import re as _re
+    # Attribute content: handles quoted values that may contain >
+    _AV = r'(?:"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|[^>\'"])*'
+    text = _re.sub(r'<agent_exec\s+' + _AV + r'\s*/>', "", text, flags=_re.DOTALL)
+    text = _re.sub(r'<agent_exec\s+' + _AV + r'\s*>.*?</agent_exec>', "", text, flags=_re.DOTALL)
+    # Malformed: args=" is never closed — strip from tag start to end of string
+    text = _re.sub(r'<agent_exec\s+tool="\w+"\s+args="(?:[^"\\]|\\.)*$', "", text, flags=_re.DOTALL)
+    return text.strip()
+
+
 def _clean_output(text: str) -> str:
     """Strip leaked control tokens and thinking artifacts from model output."""
     text = _THINK_TAG_RE.sub("", text)
@@ -255,11 +271,11 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
                 tool_calls = [_FakeToolCall(c["name"], c["arguments"]) for c in text_calls]
                 full_content = _strip_qwen_function_xml(full_content)
             else:
-                # Fallback: <agent_exec tool="name" args="key='val', ..."> format
+                # Fallback: <agent_exec tool="name" args="key='val', ..."/> format
                 text_calls = _parse_agent_exec_xml(raw_content)
                 if text_calls:
                     tool_calls = [_FakeToolCall(c["name"], c["arguments"]) for c in text_calls]
-                    full_content = _strip_qwen_function_xml(full_content)
+                    full_content = _strip_agent_exec_xml(full_content)
                 else:
                     tool_calls = None
     else:

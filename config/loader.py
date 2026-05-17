@@ -172,6 +172,9 @@ def _merge_models(config: Config, data: dict) -> None:
                 config.model_entries[name] = existing
             for fld, val in entry_data.items():
                 if hasattr(existing, fld):
+                    # Strict check for ctx_window to prevent "auto" string usage
+                    if fld == "ctx_window" and isinstance(val, str) and val == "auto":
+                        raise ValueError(f"Invalid value for model '{name}' ctx_window: use 0 instead of 'auto'")
                     setattr(existing, fld, val)
 
 

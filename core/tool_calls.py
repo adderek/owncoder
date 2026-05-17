@@ -171,34 +171,63 @@ def _parse_qwen_function_xml(text: str) -> list[dict] | None:
     return calls if calls else None
 
 
+def _parse_agent_exec_args(raw: str) -> dict:
+    """Extract key=value pairs from agent_exec args content."""
+    import re as _re
+    args: dict = {}
+    # Single-quoted values (handle escaped single-quotes and backslash sequences)
+    for pm in _re.finditer(r"""(\w+)\s*=\s*'((?:[^'\\]|\\.)*)'""", raw):
+        args[pm.group(1)] = pm.group(2)
+    # Double-quoted values (handle escaped double-quotes)
+    for pm in _re.finditer(r'(\w+)\s*=\s*"((?:[^"\\]|\\.)*)"', raw):
+        if pm.group(1) not in args:
+            args[pm.group(1)] = pm.group(2)
+    # Integer values
+    for pm in _re.finditer(r"""(\w+)\s*=\s*(\d+)""", raw):
+        key = pm.group(1)
+        if key not in args:
+            val = pm.group(2)
+            args[key] = int(val) if val.isdigit() else val
+    # Bare-word values
+    for pm in _re.finditer(r"""(\w+)\s*=\s*(\w+)""", raw):
+        key = pm.group(1)
+        if key not in args:
+            args[key] = pm.group(2)
+    return args
+
+
 def _parse_agent_exec_xml(text: str) -> list[dict] | None:
-    """Parse <agent_exec tool="name" args="key='val', ...">...</agent_exec> format."""
+    """Parse <agent_exec tool="name" args="..."/> (self-closing) or open-tag format.
+
+    Also handles malformed tags where the args attribute is unclosed (no terminating ")
+    — common when args contain complex code with embedded escaped double-quotes.
+    """
     import re as _re
     calls = []
+    seen_starts: set[int] = set()
+
+    # Primary: properly closed args="..." attribute
     for m in _re.finditer(
-        r'<agent_exec\s+tool="(\w+)"\s+args="([^"]*)"\s*>',
+        r'<agent_exec\s+tool="(\w+)"\s+args="((?:[^"\\]|\\.)*?)"\s*/?>',
         text,
     ):
         name = m.group(1)
-        raw_args = m.group(2)
-        # Parse key=value pairs: quoted strings, integers, bare words
-        args = {}
-        for pm in _re.finditer(r"""(\w+)\s*=\s*'([^']*)'""", raw_args):
-            args[pm.group(1)] = pm.group(2)
-        for pm in _re.finditer(r'(\w+)\s*=\s*"([^"]*)"', raw_args):
-            if pm.group(1) not in args:
-                args[pm.group(1)] = pm.group(2)
-        for pm in _re.finditer(r"""(\w+)\s*=\s*(\d+)""", raw_args):
-            key = pm.group(1)
-            if key not in args:
-                val = pm.group(2)
-                args[key] = int(val) if val.isdigit() else val
-        for pm in _re.finditer(r"""(\w+)\s*=\s*(\w+)""", raw_args):
-            key = pm.group(1)
-            if key not in args:
-                args[key] = pm.group(2)
+        args = _parse_agent_exec_args(m.group(2))
         if args:
             calls.append({"name": name, "arguments": _remap_params(name, args)})
+        seen_starts.add(m.start())
+
+    # Fallback: malformed — args=" present but attribute is never closed with "
+    # (e.g. new_source contains escaped \" throughout and the closing "> is missing)
+    for m in _re.finditer(r'<agent_exec\s+tool="(\w+)"\s+args="', text):
+        if m.start() in seen_starts:
+            continue
+        name = m.group(1)
+        raw_content = text[m.end():]
+        args = _parse_agent_exec_args(raw_content)
+        if args:
+            calls.append({"name": name, "arguments": _remap_params(name, args)})
+
     return calls if calls else None
 
 
