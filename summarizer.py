@@ -12,12 +12,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _Q_SYSTEM = (
-    "Summarise the following user message in one concise sentence that captures the intent. "
-    "Output only the summary sentence — no labels, no punctuation other than a period."
+    "Summarise the following user message to capture the intent. "
+    "Length limits: keep text between tool calls to ≤25 words. Keep final responses to ≤100 words unless the task requires more detail. "
+    "Output only the summary — no labels, no extra punctuation."
 )
 _A_SYSTEM = (
-    "Summarise the following agent response in one concise sentence that captures the outcome. "
-    "Output only the summary sentence — no labels, no punctuation other than a period."
+    "Summarise the following agent response to capture the outcome. "
+    "Length limits: keep text between tool calls to ≤25 words. Keep final responses to ≤100 words unless the task requires more detail. "
+    "Output only the summary — no labels, no extra punctuation."
 )
 
 
@@ -166,5 +168,5 @@ async def summarize_turn_background(
     except asyncio.CancelledError:
         logger.debug("summarize_turn_background: cancelled")
         raise
-    except Exception:
-        logger.exception("summarize_turn_background: unexpected error (ignored)")
+    except Exception as _exc:
+        logger.warning("summarize_turn_background: error (ignored): %s", _exc)
