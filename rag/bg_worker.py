@@ -1,0 +1,170 @@
+"""Background summarization worker.
+
+Drains pending units (leaf → describe) and stale units (parent → rollup).
+Propagates changes up the hierarchy via Judge.
+"""
+from __future__ import annotations
+
+import hashlib
+import logging
+import threading
+import time
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from agent.rag.code_store import CodeStore
+    from agent.rag.describer import Describer
+    from agent.rag.judge import Judge
+    from agent.rag.embedder import Embedder
+
+logger = logging.getLogger(__name__)
+
+_POLL = 5.0  # seconds between queue-empty polls
+
+
+class BgWorker:
+    def __init__(
+        self,
+        store: "CodeStore",
+        describer: "Describer",
+        judge: "Judge",
+        embedder: "Embedder | None" = None,
+        on_progress: Callable[[str, dict], None] | None = None,
+    ) -> None:
+        self._store = store
+        self._describer = describer
+        self._judge = judge
+        self._embedder = embedder
+        self._on_progress = on_progress or (lambda _e, _d: None)
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name="bg-summarizer"
+        )
+        self._thread.start()
+        logger.debug("BgWorker started")
+
+    def stop(self, timeout: float = 10.0) -> None:
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=timeout)
+
+    def is_alive(self) -> bool:
+        return bool(self._thread and self._thread.is_alive())
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                did_work = self._tick()
+            except Exception as e:
+                logger.error("BgWorker error: %s", e, exc_info=True)
+                did_work = False
+            if not did_work:
+                self._stop.wait(timeout=_POLL)
+
+    def _tick(self) -> bool:
+        pending = self._store.get_pending_units(limit=10)
+        if pending:
+            for unit in pending:
+                if self._stop.is_set():
+                    break
+                self._describe(unit)
+            return True
+
+        stale = self._store.get_stale_units(limit=5)
+        if stale:
+            for unit in stale:
+                if self._stop.is_set():
+                    break
+                self._rollup(unit)
+            return True
+
+        return False
+
+    # ── leaf description ──────────────────────────────────────────────────────
+
+    def _describe(self, unit: dict) -> None:
+        path, level = unit["path"], unit.get("level", 0)
+
+        siblings = self._store.get_units_for_file(path, level=level)
+        idx = {u["id"]: i for i, u in enumerate(siblings)}
+        i = idx.get(unit["id"], -1)
+        prev_desc = siblings[i - 1].get("description") if i > 0 else None
+        next_desc  = siblings[i + 1].get("description") if i < len(siblings) - 1 else None
+
+        old_desc = unit.get("description") or ""
+        fields = self._describer.describe_chunk(unit, prev_desc, next_desc)
+        new_desc = fields.get("description", "")
+
+        obj_cs = unit.get("object_checksum") or ""
+        node_cs = hashlib.sha256((obj_cs + new_desc).encode()).hexdigest()[:16]
+
+        unit.update(fields)
+        unit["status"] = "described"
+        unit["node_checksum"] = node_cs
+        unit["analysis_date"] = time.time()
+        unit["analysis_model"] = self._describer._model
+
+        if self._embedder and new_desc:
+            try:
+                unit["embedding"] = self._embedder.embed_one(new_desc)
+            except Exception as e:
+                logger.warning("Summary embed failed for %s: %s", unit["id"], e)
+
+        self._store.upsert_unit(unit)
+        self._on_progress("described", {"id": unit["id"], "path": path, "name": unit.get("name")})
+
+        # Propagate if meaningful change
+        if unit.get("parent_id"):
+            if not old_desc or self._judge.has_changed(old_desc, new_desc):
+                self._store.mark_parent_stale(unit["id"])
+
+    # ── parent rollup ─────────────────────────────────────────────────────────
+
+    def _rollup(self, unit: dict) -> None:
+        children = self._store.get_children(unit["id"])
+        if not children:
+            unit["status"] = "described"
+            self._store.upsert_unit(unit)
+            return
+
+        described = [c for c in children if c.get("description")]
+        # Wait until at least half are described before rolling up
+        if len(described) < max(1, len(children) // 2):
+            return
+
+        language  = unit.get("language") or (described[0].get("language") if described else "code")
+        node_type = unit.get("node_type") or "chunk"
+
+        old_desc = unit.get("description") or ""
+        fields = self._describer.summarize_group(described, language=language, node_type=node_type)
+        new_desc = fields.get("description", "")
+
+        child_cs = "".join(c.get("node_checksum") or "" for c in described)
+        edge_set_cs = hashlib.sha256(child_cs.encode()).hexdigest()[:16]
+        node_cs = hashlib.sha256((edge_set_cs + new_desc).encode()).hexdigest()[:16]
+
+        unit.update(fields)
+        unit["status"] = "described"
+        unit["edge_set_checksum"] = edge_set_cs
+        unit["node_checksum"] = node_cs
+        unit["analysis_date"] = time.time()
+        unit["analysis_model"] = self._describer._model
+
+        if self._embedder and new_desc:
+            try:
+                unit["embedding"] = self._embedder.embed_one(new_desc)
+            except Exception as e:
+                logger.warning("Rollup embed failed for %s: %s", unit["id"], e)
+
+        self._store.upsert_unit(unit)
+        self._on_progress("rolled_up", {"id": unit["id"], "path": unit["path"], "level": unit.get("level")})
+
+        if unit.get("parent_id"):
+            if not old_desc or self._judge.has_changed(old_desc, new_desc):
+                self._store.mark_parent_stale(unit["id"])

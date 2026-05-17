@@ -79,6 +79,7 @@ def index_directory(
     force: bool = False,
     git_hash: str | None = None,
     progress_cb=None,
+    code_store=None,
 ) -> dict:
     root_path = Path(root).resolve()
     exclude = exclude or []
@@ -157,7 +158,47 @@ def index_directory(
         total_chunks += len(chunks)
         indexed += 1
 
+        if code_store is not None:
+            _enqueue_for_summarization(code_store, chunks, rel, mtime, git_hash, force)
+
         if progress_cb:
             progress_cb(rel, len(chunks))
 
     return {"indexed": indexed, "skipped": skipped, "chunks": total_chunks, "files": len(files)}
+
+
+def _enqueue_for_summarization(code_store, chunks: list[dict], path: str, mtime: float, git_hash, force: bool) -> None:
+    """Upsert changed chunks into code_store with status='pending'."""
+    import hashlib
+
+    file_checksum = hashlib.sha256(path.encode()).hexdigest()[:16]
+    existing_file = code_store.get_file_record(path)
+
+    # Build per-chunk checksums and detect which ones changed
+    for chunk in chunks:
+        content = chunk.get("content", "")
+        obj_cs = hashlib.sha256(content.encode()).hexdigest()[:16]
+        chunk_id = chunk["id"]
+
+        if not force:
+            existing = code_store.get_unit(chunk_id)
+            if existing and existing.get("object_checksum") == obj_cs:
+                continue  # content unchanged — keep existing description
+
+        code_store.upsert_unit({
+            "id": chunk_id,
+            "path": path,
+            "language": chunk.get("language"),
+            "node_type": chunk.get("node_type"),
+            "name": chunk.get("name"),
+            "level": 0,
+            "start_line": chunk.get("start_line"),
+            "end_line": chunk.get("end_line"),
+            "object_checksum": obj_cs,
+            "parent_id": chunk.get("parent_chunk_id"),
+            "status": "pending",
+            "mtime": mtime,
+            "git_hash": git_hash,
+        })
+
+    code_store.set_file_record(path, file_checksum)

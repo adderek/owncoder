@@ -8,17 +8,35 @@ def _open_archive(config):
     return ArchiveStore(config.rag.archive_db_path)
 
 
+def _make_bg_worker(config, code_store, embedder):
+    """Build a BgWorker from config. Returns None if summarization disabled."""
+    if not config.summarization.enabled:
+        return None
+    from openai import OpenAI
+    from agent.rag.describer import Describer
+    from agent.rag.judge import Judge
+    from agent.rag.bg_worker import BgWorker
+
+    scfg = config.summarization
+    model = scfg.describer_model or config.llm.model
+    client = OpenAI(base_url=config.llm.base_url, api_key=config.llm.api_key)
+    describer = Describer(client, model=model, ctx_tokens=scfg.ctx_tokens, max_output_tokens=scfg.max_output_tokens)
+    judge = Judge(client, model=model, store=code_store)
+    return BgWorker(store=code_store, describer=describer, judge=judge, embedder=embedder)
+
+
 def cmd_init(args, config):
     from agent.rag.indexer import index_directory, LANGUAGE_MAP
     from agent.rag.store import VectorStore
     from agent.rag.embedder import Embedder
+    from agent.rag.code_store import CodeStore
     from agent.tools.rules import load_rules
     from rich.console import Console
-    from rich.progress import Progress, SpinnerColumn, TextColumn
 
     console = Console()
     store = VectorStore(config.rag)
     embedder = Embedder(config.embeddings)
+    code_store = CodeStore(config.summarization.db_path)
 
     languages = args.languages.split(",") if args.languages else None
     exclude = args.exclude.split(",") if args.exclude else []
@@ -43,6 +61,7 @@ def cmd_init(args, config):
         exclude=exclude,
         force=getattr(args, "force", False),
         progress_cb=progress_cb,
+        code_store=code_store,
     )
 
     store.close()
@@ -51,6 +70,30 @@ def cmd_init(args, config):
         f"skipped {stats['skipped']}, "
         f"created {stats['chunks']} chunks."
     )
+
+    if config.summarization.enabled and stats["indexed"] > 0:
+        pending = code_store.stats().get("by_status", {}).get("pending", 0)
+        if pending:
+            console.print(f"  {pending} chunks queued for summarization (running in background…)")
+            worker = _make_bg_worker(config, code_store, embedder)
+            if worker:
+                worker.start()
+                import signal, time as _time
+                console.print("  [dim]Press Ctrl+C to stop early (queue persists).[/dim]")
+                try:
+                    while worker.is_alive():
+                        remaining = code_store.stats().get("by_status", {})
+                        r_pending = remaining.get("pending", 0)
+                        r_stale = remaining.get("stale", 0)
+                        if r_pending == 0 and r_stale == 0:
+                            break
+                        console.print(f"  [dim]pending={r_pending} stale={r_stale}[/dim]", end="\r")
+                        _time.sleep(2)
+                except KeyboardInterrupt:
+                    pass
+                worker.stop()
+                final = code_store.stats().get("by_status", {})
+                console.print(f"\n  Summarization: {final}")
 
     if getattr(args, "watch", False):
         _watch_and_reindex(config, console, languages=languages, exclude=exclude)

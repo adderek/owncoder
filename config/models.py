@@ -55,6 +55,17 @@ class AsmAnalysisConfig:
 
 
 @dataclass
+class SummarizationConfig:
+    enabled: bool = True
+    db_path: str = ".agent/summaries.db"
+    describer_model: str = ""      # empty = inherit llm.model
+    ctx_tokens: int = 4096
+    max_output_tokens: int = 256
+    group_size: int = 10
+    max_levels: int = 3
+
+
+@dataclass
 class ToolsConfig:
     allow_shell: bool = True
     shell_timeout: int = 30
@@ -414,6 +425,7 @@ class Config:
     # role → model entry name (e.g. {"summarizer": "deepseek-r1"})
     model_roles: dict = field(default_factory=dict)
     rag: RAGConfig = field(default_factory=RAGConfig)
+    summarization: SummarizationConfig = field(default_factory=SummarizationConfig)
     tools: ToolsConfig = field(default_factory=ToolsConfig)
     ui: UIConfig = field(default_factory=UIConfig)
     asm: AsmAnalysisConfig = field(default_factory=AsmAnalysisConfig)

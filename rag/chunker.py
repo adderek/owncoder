@@ -122,42 +122,47 @@ def _parse_with_tree_sitter(content: str, language: str, path: str, cfg: "RAGCon
         return content[node.start_byte:node.end_byte]
 
     # Iterative DFS to avoid Python recursion limits on deeply nested ASTs.
-    stack = [(root, 0)]
+    # Stack carries (node, depth, parent_chunk_id) so methods know their class.
+    stack = [(root, 0, None)]
     while stack:
-        node, depth = stack.pop()
+        node, depth, parent_chunk_id = stack.pop()
         if node.type in target_types and depth <= 2:
             text = node_text(node)
             token_count = _count_tokens_approx(text)
             if token_count < cfg.chunk_min_tokens:
                 continue
             name = _extract_name(node, language)
+            chunk_id = _chunk_id(path, node.start_byte)
             if "class" in node.type:
-                header_lines = []
                 method_children = []
+                # Body nodes (block/class_body) contain methods as grandchildren
+                _body_types = {"block", "body", "class_body", "declaration_list"}
                 for child in node.children:
                     if child.type in target_types:
                         method_children.append(child)
-                    else:
-                        header_lines.append(node_text(child))
-                header = "\n".join(header_lines[:5])
-                if _count_tokens_approx(header) >= cfg.chunk_min_tokens:
-                    chunks.append({
-                        "id": _chunk_id(path, node.start_byte),
-                        "path": path,
-                        "language": language,
-                        "node_type": node.type + "_header",
-                        "name": name,
-                        "start_line": node.start_point[0] + 1,
-                        "end_line": node.end_point[0] + 1,
-                        "content": text[:cfg.chunk_max_tokens * 4],
-                    })
+                    elif child.type in _body_types:
+                        for grandchild in child.children:
+                            if grandchild.type in target_types:
+                                method_children.append(grandchild)
+                chunks.append({
+                    "id": chunk_id,
+                    "path": path,
+                    "language": language,
+                    "node_type": node.type + "_header",
+                    "name": name,
+                    "start_line": node.start_point[0] + 1,
+                    "end_line": node.end_point[0] + 1,
+                    "content": text[:cfg.chunk_max_tokens * 4],
+                    "parent_chunk_id": parent_chunk_id,
+                })
+                # Methods belong to this class chunk
                 for child in reversed(method_children):
-                    stack.append((child, depth + 1))
+                    stack.append((child, depth + 1, chunk_id))
                 continue
             if token_count > cfg.chunk_max_tokens:
                 text = text[:cfg.chunk_max_tokens * 4]
             chunks.append({
-                "id": _chunk_id(path, node.start_byte),
+                "id": chunk_id,
                 "path": path,
                 "language": language,
                 "node_type": node.type,
@@ -165,10 +170,11 @@ def _parse_with_tree_sitter(content: str, language: str, path: str, cfg: "RAGCon
                 "start_line": node.start_point[0] + 1,
                 "end_line": node.end_point[0] + 1,
                 "content": text,
+                "parent_chunk_id": parent_chunk_id,
             })
         else:
             for child in reversed(node.children):
-                stack.append((child, depth))
+                stack.append((child, depth, parent_chunk_id))
 
     covered_lines: set[int] = set()
     for c in chunks:
