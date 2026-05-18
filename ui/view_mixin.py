@@ -84,28 +84,8 @@ class ViewMixin:
             self.query_one("#q-log", self._wt.QView).load_history(entries)
             self.query_one("#a-log", self._wt.AView).load_history(entries)
             self.query_one("#sparse-log", self._wt.SparseView).load_history(entries)
-            
-            # Populate summary views if they exist
-            try:
-                q_summary = self.query_one("#q-summary-log", self._wt.QSummaryView)
-                a_summary = self.query_one("#a-summary-log", self._wt.ASummaryView)
-                
-                # Extract summaries from entries
-                q_summaries = [e[1].get("summary_q") for e in entries if e[1].get("summary_q")]
-                a_summaries = [e[2].get("summary_a") for e in entries if e[2].get("summary_a")]
-                
-                if q_summaries:
-                    q_summary.set_summary("\n\n".join(q_summaries))
-                else:
-                    q_summary.set_summary("[dim]No question summaries available.[/dim]")
-                    
-                if a_summaries:
-                    a_summary.set_summary("\n\n".join(a_summaries))
-                else:
-                    a_summary.set_summary("[dim]No answer summaries available.[/dim]")
-            except Exception:
-                # If summary views aren't in the current UI layout, just ignore
-                pass
+            self.query_one("#q-summary-log", self._wt.QSummaryView).load_history(entries)
+            self.query_one("#a-summary-log", self._wt.ASummaryView).load_history(entries)
         except Exception:
             logger.exception("_reload_qa_views: view update failed (ignored)")
 
@@ -146,5 +126,7 @@ class ViewMixin:
             self.query_one("#q-log", self._wt.QView).add_turn(turn_id, q_data, a_data)
             self.query_one("#a-log", self._wt.AView).add_turn(turn_id, q_data, a_data)
             self.query_one("#sparse-log", self._wt.SparseView).add_turn(turn_id, q_data, a_data)
+            self.query_one("#q-summary-log", self._wt.QSummaryView).add_turn(turn_id, q_data, a_data)
+            self.query_one("#a-summary-log", self._wt.ASummaryView).add_turn(turn_id, q_data, a_data)
         except Exception:
             logger.exception("_append_qa_turn: failed (ignored)")

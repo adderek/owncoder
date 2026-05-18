@@ -23,12 +23,14 @@ def build_widget_classes(t) -> SimpleNamespace:
     from textual.widgets import Static, RichLog, TextArea
     from textual.message import Message
     from rich.markup import escape as _escape
+    from rich.markdown import Markdown
 
     from agent.ui.textual_events import build_event_classes
     from agent.ui.render import (
         _CTX_SEGMENT_COLORS, _CTX_SEGMENT_LABELS,
         _OUT_SEGMENT_COLORS, _OUT_SEGMENT_LABELS,
         _labeled_bar_segment,
+        _delatex,
     )
     from agent.ui.slash import _match_commands
 
@@ -338,14 +340,65 @@ def build_widget_classes(t) -> SimpleNamespace:
         def set_status(self, text: str) -> None:
             self.update(text)
 
-    class QSummaryView(RichLog):
-        """View for summarized user questions."""
+    class QSummaryView(_QALineTrackingMixin, RichLog):
+        """Full question content per turn."""
+
+        def load_history(self, entries: "list[tuple[int, dict, dict]]") -> None:
+            self.clear()
+            self._reset_line_map()
+            for ordinal, (tid, q, _a) in enumerate(entries):
+                self._write_entry(ordinal, tid, q)
+            self._entry_count = len(entries)
+
+        def add_turn(self, turn_id: int, q_data: dict, _a_data: dict) -> None:
+            ordinal = getattr(self, "_entry_count", 0)
+            self._entry_count = ordinal + 1
+            self._write_entry(ordinal, turn_id, q_data)
+
+        def _write_entry(self, ordinal: int, turn_id: int, q: dict) -> None:
+            if not q:
+                return
+            text = q.get("content") or ""
+            if not text:
+                return
+            self._track_line(ordinal)
+            self.write(
+                f"[{t.text_dim}]{turn_id:>3}[/{t.text_dim}] [bold {t.user_color}]Q:[/bold {t.user_color}] {_escape(text)}"
+            )
+
         def set_summary(self, text: str) -> None:
             self.clear()
             self.write(text)
 
-    class ASummaryView(RichLog):
-        """View for summarized agent answers."""
+    class ASummaryView(_QALineTrackingMixin, RichLog):
+        """Full answer content per turn."""
+
+        def load_history(self, entries: "list[tuple[int, dict, dict]]") -> None:
+            self.clear()
+            self._reset_line_map()
+            for ordinal, (tid, _q, a) in enumerate(entries):
+                self._write_entry(ordinal, tid, a)
+            self._entry_count = len(entries)
+
+        def add_turn(self, turn_id: int, _q_data: dict, a_data: dict) -> None:
+            ordinal = getattr(self, "_entry_count", 0)
+            self._entry_count = ordinal + 1
+            self._write_entry(ordinal, turn_id, a_data)
+
+        def _write_entry(self, ordinal: int, turn_id: int, a: dict) -> None:
+            if not a:
+                return
+            text = a.get("content") or ""
+            if not text:
+                return
+            tools = a.get("tool_calls") or []
+            self._track_line(ordinal)
+            header = f"[{t.text_dim}]{turn_id:>3}[/{t.text_dim}] [bold {t.agent_color}]A:[/bold {t.agent_color}]"
+            if tools:
+                tool_names = ", ".join(str(tc) for tc in tools[:6])
+                self.write(f"{header} [{t.text_dim}]⚙ {_escape(tool_names)}[/{t.text_dim}]")
+            self.write(Markdown(_delatex(text.strip())))
+
         def set_summary(self, text: str) -> None:
             self.clear()
             self.write(text)
