@@ -181,10 +181,33 @@ class LocalUIServer:
             "reasoning_fold": getattr(cfg.ui, "reasoning_fold", "end_of_round"),
             "bell_on_input_request": bool(getattr(cfg.ui, "bell_on_input_request", True)),
             "terminal_title": getattr(cfg.ui, "terminal_title", "auto"),
+            "qa_summary_mode": getattr(cfg.ui, "qa_summary_mode", "lazy"),
         }
 
     def get_turn_id(self, session_id: str = "") -> int:
         return getattr(self._agent, "_turn_id", 0)
+
+    async def summarize_session_qa(
+        self,
+        entries: list,
+        session_id: str = "",
+        force: bool = False,
+    ) -> "tuple[str, str]":
+        """Generate Q and A session-level summaries. Returns (q_text, a_text)."""
+        import asyncio
+        from agent.memory.session import _get_session_dir, get_session_subpath
+        from agent.memory.session_summarizer import generate
+
+        sid = session_id or getattr(self._agent, "_session_id", "") or ""
+        if not sid or not entries:
+            return "", ""
+        session_dir = _get_session_dir() / get_session_subpath(sid)
+        config = self._agent.config
+        q_text, a_text = await asyncio.gather(
+            generate(session_dir, entries, "q", config, force=force),
+            generate(session_dir, entries, "a", config, force=force),
+        )
+        return q_text, a_text
 
     def get_peak_tokens(self, session_id: str = "") -> "tuple[int, int]":
         return (

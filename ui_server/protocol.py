@@ -106,6 +106,15 @@ class UIServerProtocol(Protocol):
         """Current turn counter (for Q/A tab display)."""
         ...
 
+    async def summarize_session_qa(
+        self,
+        entries: list,
+        session_id: str = "",
+        force: bool = False,
+    ) -> "tuple[str, str]":
+        """Generate Q and A session-level summaries. Returns (q_text, a_text)."""
+        ...
+
     def get_peak_tokens(self, session_id: str = "") -> "tuple[int, int]":
         """Returns (round_peak_tokens, last_round_peak_tokens)."""
         ...

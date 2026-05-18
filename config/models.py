@@ -132,6 +132,7 @@ class UIConfig:
     reasoning_fold: str = "end_of_round"  # "immediate" | "end_of_round" | "never"
     bell_on_input_request: bool = True  # BEL when agent finishes/fails and waits for input
     terminal_title: str = "auto"  # "auto" = animated spinner+activity | "off" = no title mgmt
+    qa_summary_mode: str = "lazy"  # "lazy" (on tab open) | "background" (after each turn) | "off"
     theme: ThemeConfig = field(default_factory=ThemeConfig)
 
 

@@ -84,10 +84,32 @@ class ViewMixin:
             self.query_one("#q-log", self._wt.QView).load_history(entries)
             self.query_one("#a-log", self._wt.AView).load_history(entries)
             self.query_one("#sparse-log", self._wt.SparseView).load_history(entries)
-            self.query_one("#q-summary-log", self._wt.QSummaryView).load_history(entries)
-            self.query_one("#a-summary-log", self._wt.ASummaryView).load_history(entries)
         except Exception:
             logger.exception("_reload_qa_views: view update failed (ignored)")
+        # Load cached summaries from disk (no LLM call); mark dirty if new turns since last summary
+        self._load_cached_qa_summaries(entries)
+        # Background mode: kick off summarization immediately
+        mode = self._server.get_ui_config().get("qa_summary_mode", "lazy")
+        if mode == "background" and entries:
+            self._start_qa_summary_worker(entries)
+
+    def _load_cached_qa_summaries(self, entries: list) -> None:
+        if not self._session:
+            return
+        try:
+            from agent.memory.session import _get_session_dir, get_session_subpath
+            from agent.memory.session_summarizer import load_stored
+            session_dir = _get_session_dir() / get_session_subpath(self._session.id)
+            for scope, wid, cls in (
+                ("q", "#q-summary-log", self._wt.QSummaryView),
+                ("a", "#a-summary-log", self._wt.ASummaryView),
+            ):
+                stored = load_stored(session_dir, scope)
+                content = stored.get("content", "")
+                if content:
+                    self.query_one(wid, cls).set_summary(content)
+        except Exception:
+            logger.exception("_load_cached_qa_summaries: failed (ignored)")
 
     def _write_round_summary(self, user_text: str, response: str) -> None:
         t = self._t
@@ -126,7 +148,59 @@ class ViewMixin:
             self.query_one("#q-log", self._wt.QView).add_turn(turn_id, q_data, a_data)
             self.query_one("#a-log", self._wt.AView).add_turn(turn_id, q_data, a_data)
             self.query_one("#sparse-log", self._wt.SparseView).add_turn(turn_id, q_data, a_data)
-            self.query_one("#q-summary-log", self._wt.QSummaryView).add_turn(turn_id, q_data, a_data)
-            self.query_one("#a-summary-log", self._wt.ASummaryView).add_turn(turn_id, q_data, a_data)
         except Exception:
             logger.exception("_append_qa_turn: failed (ignored)")
+        # Invalidate or immediately re-summarize depending on mode
+        mode = self._server.get_ui_config().get("qa_summary_mode", "lazy")
+        if mode == "background":
+            self._start_qa_summary_worker()
+        elif mode == "lazy":
+            self._qa_summary_dirty = True
+
+    def _start_qa_summary_worker(self, entries: list | None = None) -> None:
+        """Launch or re-launch the async Q/A summary worker."""
+        self.run_worker(
+            self._run_qa_summary(entries),
+            exclusive=True,
+            group="qa-summary",
+            name="qa-summary",
+        )
+
+    async def _run_qa_summary(self, entries: list | None = None) -> None:
+        """Async worker: call server to generate Q+A session summaries."""
+        if not self._session:
+            return
+        try:
+            if entries is None:
+                import asyncio as _asyncio
+                from agent.memory.qa_log import read_history_sync
+                entries = await _asyncio.get_event_loop().run_in_executor(
+                    None, read_history_sync, self._session.id
+                )
+        except Exception:
+            logger.exception("_run_qa_summary: read_history_sync failed (ignored)")
+            return
+
+        if not entries:
+            return
+
+        try:
+            self.query_one("#q-summary-log", self._wt.QSummaryView).set_loading()
+            self.query_one("#a-summary-log", self._wt.ASummaryView).set_loading()
+        except Exception:
+            pass
+
+        try:
+            q_text, a_text = await self._server.summarize_session_qa(
+                entries, session_id=self._session.id
+            )
+            self._qa_summary_dirty = False
+        except Exception:
+            logger.exception("_run_qa_summary: summarize_session_qa failed (ignored)")
+            return
+
+        try:
+            self.query_one("#q-summary-log", self._wt.QSummaryView).set_summary(q_text)
+            self.query_one("#a-summary-log", self._wt.ASummaryView).set_summary(a_text)
+        except Exception:
+            logger.exception("_run_qa_summary: widget update failed (ignored)")

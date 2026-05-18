@@ -312,3 +312,26 @@ class EventHandlerMixin:
 
         self._refresh_token_bar()
         self.call_later(self._refresh_git)
+
+    def on_tabbed_content_tab_activated(self, event) -> None:
+        mode = self._server.get_ui_config().get("qa_summary_mode", "lazy")
+        if mode != "lazy":
+            return
+        # ContentTab IDs are prefixed: "--content-tab-<pane-id>"
+        from textual.widgets._tabbed_content import ContentTab
+        pane_id = ContentTab.sans_prefix(getattr(event.tab, "id", "") or "")
+        if pane_id not in ("tab-q-summary", "tab-a-summary"):
+            return
+        if getattr(self, "_qa_summary_dirty", False) or not self._any_cached_summary():
+            self._start_qa_summary_worker()
+
+    def _any_cached_summary(self) -> bool:
+        try:
+            from agent.memory.session import _get_session_dir, get_session_subpath
+            from agent.memory.session_summarizer import load_stored
+            if not self._session:
+                return False
+            sd = _get_session_dir() / get_session_subpath(self._session.id)
+            return bool(load_stored(sd, "q").get("content") or load_stored(sd, "a").get("content"))
+        except Exception:
+            return False

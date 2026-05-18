@@ -340,68 +340,33 @@ def build_widget_classes(t) -> SimpleNamespace:
         def set_status(self, text: str) -> None:
             self.update(text)
 
-    class QSummaryView(_QALineTrackingMixin, RichLog):
-        """Full question content per turn."""
+    class QSummaryView(RichLog):
+        """AI-generated session-level summary of all user questions."""
 
-        def load_history(self, entries: "list[tuple[int, dict, dict]]") -> None:
+        def set_loading(self) -> None:
             self.clear()
-            self._reset_line_map()
-            for ordinal, (tid, q, _a) in enumerate(entries):
-                self._write_entry(ordinal, tid, q)
-            self._entry_count = len(entries)
-
-        def add_turn(self, turn_id: int, q_data: dict, _a_data: dict) -> None:
-            ordinal = getattr(self, "_entry_count", 0)
-            self._entry_count = ordinal + 1
-            self._write_entry(ordinal, turn_id, q_data)
-
-        def _write_entry(self, ordinal: int, turn_id: int, q: dict) -> None:
-            if not q:
-                return
-            text = q.get("content") or ""
-            if not text:
-                return
-            self._track_line(ordinal)
-            self.write(
-                f"[{t.text_dim}]{turn_id:>3}[/{t.text_dim}] [bold {t.user_color}]Q:[/bold {t.user_color}] {_escape(text)}"
-            )
+            self.write(f"[{t.text_dim}]Summarizing questions…[/{t.text_dim}]")
 
         def set_summary(self, text: str) -> None:
             self.clear()
-            self.write(text)
+            if text:
+                self.write(Markdown(text))
+            else:
+                self.write(f"[{t.text_dim}]No questions to summarize yet.[/{t.text_dim}]")
 
-    class ASummaryView(_QALineTrackingMixin, RichLog):
-        """Full answer content per turn."""
+    class ASummaryView(RichLog):
+        """AI-generated session-level summary of all agent responses."""
 
-        def load_history(self, entries: "list[tuple[int, dict, dict]]") -> None:
+        def set_loading(self) -> None:
             self.clear()
-            self._reset_line_map()
-            for ordinal, (tid, _q, a) in enumerate(entries):
-                self._write_entry(ordinal, tid, a)
-            self._entry_count = len(entries)
-
-        def add_turn(self, turn_id: int, _q_data: dict, a_data: dict) -> None:
-            ordinal = getattr(self, "_entry_count", 0)
-            self._entry_count = ordinal + 1
-            self._write_entry(ordinal, turn_id, a_data)
-
-        def _write_entry(self, ordinal: int, turn_id: int, a: dict) -> None:
-            if not a:
-                return
-            text = a.get("content") or ""
-            if not text:
-                return
-            tools = a.get("tool_calls") or []
-            self._track_line(ordinal)
-            header = f"[{t.text_dim}]{turn_id:>3}[/{t.text_dim}] [bold {t.agent_color}]A:[/bold {t.agent_color}]"
-            if tools:
-                tool_names = ", ".join(str(tc) for tc in tools[:6])
-                self.write(f"{header} [{t.text_dim}]⚙ {_escape(tool_names)}[/{t.text_dim}]")
-            self.write(Markdown(_delatex(text.strip())))
+            self.write(f"[{t.text_dim}]Summarizing responses…[/{t.text_dim}]")
 
         def set_summary(self, text: str) -> None:
             self.clear()
-            self.write(text)
+            if text:
+                self.write(Markdown(text))
+            else:
+                self.write(f"[{t.text_dim}]No responses to summarize yet.[/{t.text_dim}]")
 
     _MODEL_STATUS_ROLES = [("llm", "main"), ("emb", "emb"), ("sum", "sum")]
 

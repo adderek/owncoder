@@ -169,6 +169,7 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             else:
                 self._wrap_enabled = False
 
+            self._qa_summary_dirty: bool = False
             self._rating_prompted: bool = False
             self._bell_on_input_request: bool = ui_cfg.get("bell_on_input_request", True)
             self._terminal_title: str = ui_cfg.get("terminal_title", "auto")
