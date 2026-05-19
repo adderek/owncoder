@@ -35,6 +35,7 @@ def main() -> None:
     idx_p = sub.add_parser("index", help="Manage index")
     idx_p.add_argument("--update", action="store_true", help="Re-index changed files (also prunes stale & purges expired archive)")
     idx_p.add_argument("--stats", action="store_true", help="Show index statistics")
+    idx_p.add_argument("--list-pending", action="store_true", help="With --stats, list files not yet indexed")
     idx_p.add_argument("--prune", action="store_true", help="Archive chunks for files that are missing or now match .agent.ignore")
     idx_p.add_argument("--restore", type=str, metavar="PATH", help="Restore a previously archived path back into the live index")
     idx_p.add_argument("--purge-archive", action="store_true", help="Permanently delete archive rows older than archive_ttl_days")

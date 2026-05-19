@@ -36,6 +36,7 @@ class VectorStore:
 
     def _setup(self) -> None:
         conn = self._get_conn()
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS chunks (
                 id TEXT PRIMARY KEY,
@@ -320,6 +321,13 @@ class VectorStore:
         row = conn.execute("SELECT COUNT(*) as cnt FROM chunks").fetchone()
         paths = conn.execute("SELECT COUNT(DISTINCT path) as cnt FROM chunks").fetchone()
         return {"chunks": row["cnt"], "files": paths["cnt"]}
+
+    def get_indexed_mtimes(self) -> dict[str, float]:
+        """Return {path: mtime} for all indexed files."""
+        rows = self._get_conn().execute(
+            "SELECT path, mtime FROM chunks GROUP BY path"
+        ).fetchall()
+        return {r["path"]: r["mtime"] for r in rows}
 
     def close(self) -> None:
         if hasattr(self._local, "conn"):

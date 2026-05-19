@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 # Re-exported for callers using `from agent.rag.indexer import LANGUAGE_MAP`
 __all__ = [
     "chunk_file", "LANGUAGE_MAP", "TREE_SITTER_LANG", "CHUNK_NODE_TYPES",
-    "prune_index", "restore_paths", "index_directory",
+    "prune_index", "restore_paths", "index_directory", "pending_files",
 ]
 
 
@@ -67,6 +67,62 @@ def restore_paths(store: "VectorStore", archive_store, paths: list[str]) -> dict
         store.insert_raw(r)
     restored_paths = sorted({r["path"] for r in rows})
     return {"restored": len(rows), "paths": restored_paths}
+
+
+def pending_files(
+    root: str,
+    store: "VectorStore",
+    languages: list[str] | None = None,
+    exclude: list[str] | None = None,
+) -> dict:
+    """Walk disk and compare against indexed mtimes. Returns counts without embedding."""
+    root_path = Path(root).resolve()
+    exclude = exclude or []
+    default_exclude = {
+        ".git", "__pycache__", "node_modules", "build", "dist",
+        ".agent", ".venv", "venv", ".env",
+    }
+    all_exclude = default_exclude | {e.rstrip("/") for e in exclude}
+
+    allowed_exts: set[str] | None = None
+    if languages:
+        allowed_exts = {ext for ext, lang in LANGUAGE_MAP.items() if lang in languages}
+
+    from agent.tools.rules import get_rules
+    rules = get_rules()
+
+    indexed_mtimes = store.get_indexed_mtimes()
+    total = 0
+    pending = 0
+    stale_paths: list[str] = []
+
+    for dirpath, dirnames, filenames in os.walk(root_path):
+        dirnames[:] = [d for d in dirnames if d not in all_exclude]
+        if not rules.ignore.empty:
+            filtered = []
+            for d in dirnames:
+                rel = str((Path(dirpath) / d).relative_to(root_path))
+                if not rules.ignore.matches(rel):
+                    filtered.append(d)
+            dirnames[:] = filtered
+        for fname in filenames:
+            fpath = Path(dirpath) / fname
+            if allowed_exts and fpath.suffix.lower() not in allowed_exts:
+                continue
+            if fpath.suffix.lower() not in LANGUAGE_MAP:
+                continue
+            rel = str(fpath.relative_to(root_path))
+            if rules.ignore.matches(rel):
+                continue
+            total += 1
+            mtime = fpath.stat().st_mtime
+            # Stored paths may be absolute (old indexes) or relative (new indexes)
+            stored_mtime = indexed_mtimes.get(rel) or indexed_mtimes.get(str(fpath.resolve()))
+            if stored_mtime is None or abs(stored_mtime - mtime) >= 0.001:
+                pending += 1
+                stale_paths.append(rel)
+
+    return {"total": total, "indexed": total - pending, "pending": pending, "paths": stale_paths}
 
 
 def index_directory(
@@ -139,6 +195,10 @@ def index_directory(
         if not chunks:
             continue
 
+        # Normalize stored path to relative so get_mtime(rel) matches on next run
+        for chunk in chunks:
+            chunk["path"] = rel
+
         batch_size = 32
         for i in range(0, len(chunks), batch_size):
             batch = chunks[i:i + batch_size]
@@ -153,8 +213,8 @@ def index_directory(
                 for chunk in batch:
                     chunk["mtime"] = mtime
                     chunk["git_hash"] = git_hash
+            store.upsert_many(batch)
 
-        store.upsert_many(chunks)
         total_chunks += len(chunks)
         indexed += 1
 

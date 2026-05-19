@@ -261,11 +261,16 @@ def cmd_index_purge_archive(args, config):
 
 def cmd_index_stats(args, config):
     from agent.rag.store import VectorStore
+    from agent.rag.indexer import pending_files
+    from agent.tools.rules import load_rules
     from rich.console import Console
     import datetime as _dt
 
     store = VectorStore(config.rag)
     stats = store.stats()
+
+    load_rules(config.tools.working_dir)
+    pending = pending_files(root=config.tools.working_dir, store=store)
     store.close()
 
     archive = _open_archive(config)
@@ -274,7 +279,14 @@ def cmd_index_stats(args, config):
 
     console = Console()
     console.print("[bold]Index stats:[/bold]")
-    console.print(f"  Files:  {stats['files']}")
+    console.print(f"  Files indexed: {stats['files']} / {pending['total']} on disk")
+    if pending['pending']:
+        console.print(f"  [yellow]Pending:  {pending['pending']} file(s) not yet indexed[/yellow]")
+        if getattr(args, "list_pending", False):
+            for p in pending["paths"]:
+                console.print(f"    [dim]- {p}[/dim]")
+    else:
+        console.print("  [green]Index is up to date.[/green]")
     console.print(f"  Chunks: {stats['chunks']}")
     console.print(f"  DB:     {config.rag.db_path}")
     console.print("[bold]Archive stats:[/bold]")
