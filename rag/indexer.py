@@ -223,7 +223,10 @@ def index_directory(
                     continue
 
             store.delete_by_path(rel)
-            chunks = chunk_file(str(fpath), cfg)
+            abs_path = str(fpath)
+            if abs_path != rel:
+                store.delete_by_path(abs_path)  # clean up legacy absolute-path entries
+            chunks = chunk_file(abs_path, cfg)
             if not chunks:
                 continue
 
@@ -258,28 +261,31 @@ def index_directory(
         # Chunking + embedding runs in the thread pool; SQLite writes stay on main thread.
         from concurrent.futures import ThreadPoolExecutor
 
-        work: list[tuple[str, float, object]] = []  # (rel, mtime, future | None=skip)
+        work: list[tuple[str, str, float, object]] = []  # (rel, abs_path, mtime, future|None)
         executor = ThreadPoolExecutor(max_workers=embed_workers)
         try:
             for fpath in files:
                 rel = str(fpath.relative_to(root_path))
+                abs_path = str(fpath)
                 mtime = fpath.stat().st_mtime
                 if not force:
                     stored_mtime = store.get_mtime(rel)
                     if stored_mtime is not None and abs(stored_mtime - mtime) < 0.001:
                         skipped += 1
-                        work.append((rel, mtime, None))
+                        work.append((rel, abs_path, mtime, None))
                         continue
                 future = executor.submit(_chunk_and_embed, fpath, rel, mtime, embedder, cfg, git_hash)
-                work.append((rel, mtime, future))
+                work.append((rel, abs_path, mtime, future))
 
-            for rel, mtime, future in work:
+            for rel, abs_path, mtime, future in work:
                 if future is None:
                     continue
                 _, chunks, _ = future.result()
                 if not chunks:
                     continue
                 store.delete_by_path(rel)
+                if abs_path != rel:
+                    store.delete_by_path(abs_path)  # clean up legacy absolute-path entries
                 for i in range(0, len(chunks), _BATCH_SIZE):
                     store.upsert_many(chunks[i:i + _BATCH_SIZE], fresh=True)
                 total_chunks += len(chunks)

@@ -157,8 +157,9 @@ class VectorStore:
                 emb = chunk["embedding"]
                 dims = len(emb)
                 self._ensure_vec_table(dims)
-                if not fresh:
-                    conn.execute("DELETE FROM vec_chunks WHERE chunk_id = ?", (chunk["id"],))
+                # Always delete before insert — cheap primary-key lookup, prevents
+                # UNIQUE violations when legacy absolute-path chunks share the same id.
+                conn.execute("DELETE FROM vec_chunks WHERE chunk_id = ?", (chunk["id"],))
                 conn.execute(
                     "INSERT INTO vec_chunks(chunk_id, embedding) VALUES (?, ?)",
                     (chunk["id"], sqlite_vec.serialize_float32(emb)),
