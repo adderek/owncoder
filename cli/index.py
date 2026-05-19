@@ -26,12 +26,13 @@ def _make_bg_worker(config, code_store, embedder):
 
 
 def cmd_init(args, config):
-    from agent.rag.indexer import index_directory, LANGUAGE_MAP
+    from agent.rag.indexer import index_directory, pending_files, LANGUAGE_MAP
     from agent.rag.store import VectorStore
     from agent.rag.embedder import Embedder
     from agent.rag.code_store import CodeStore
     from agent.tools.rules import load_rules
     from rich.console import Console
+    from rich.progress import Progress, SpinnerColumn, BarColumn, MofNCompleteColumn, TimeElapsedColumn, TimeRemainingColumn, TextColumn
 
     console = Console()
     store = VectorStore(config.rag)
@@ -42,31 +43,50 @@ def cmd_init(args, config):
     exclude = args.exclude.split(",") if args.exclude else []
     working_dir = config.tools.working_dir
 
-    # Load .agent.ignore et al so index_directory respects them
     load_rules(working_dir)
 
     console.print(f"[bold]Indexing[/bold] {Path(working_dir).resolve()}")
     if languages:
         console.print(f"Languages: {', '.join(languages)}")
+    workers = config.embeddings.embed_workers
+    if workers > 1:
+        console.print(f"[dim]Embedding workers: {workers}[/dim]")
 
-    def progress_cb(path: str, chunk_count: int) -> None:
-        console.print(f"  [dim]{path}[/dim] → {chunk_count} chunks")
+    # Pre-scan disk to get an accurate total for the progress bar.
+    pre = pending_files(root=working_dir, store=store, languages=languages, exclude=exclude)
+    total_to_index = pre["pending"] if not getattr(args, "force", False) else pre["total"]
 
-    stats = index_directory(
-        root=working_dir,
-        store=store,
-        embedder=embedder,
-        cfg=config.rag,
-        languages=languages,
-        exclude=exclude,
-        force=getattr(args, "force", False),
-        progress_cb=progress_cb,
-        code_store=code_store,
-    )
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        TimeRemainingColumn(),
+        console=console,
+        transient=False,
+    ) as progress:
+        task = progress.add_task("Indexing…", total=max(total_to_index, 1))
+
+        def progress_cb(path: str, chunk_count: int) -> None:
+            progress.advance(task)
+            progress.update(task, description=f"[dim]{Path(path).name}[/dim]")
+
+        stats = index_directory(
+            root=working_dir,
+            store=store,
+            embedder=embedder,
+            cfg=config.rag,
+            languages=languages,
+            exclude=exclude,
+            force=getattr(args, "force", False),
+            progress_cb=progress_cb,
+            code_store=code_store,
+        )
 
     store.close()
     console.print(
-        f"\n[green]Done.[/green] Indexed {stats['indexed']} files, "
+        f"[green]Done.[/green] Indexed {stats['indexed']} files, "
         f"skipped {stats['skipped']}, "
         f"created {stats['chunks']} chunks."
     )

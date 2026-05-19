@@ -125,6 +125,38 @@ def pending_files(
     return {"total": total, "indexed": total - pending, "pending": pending, "paths": stale_paths}
 
 
+_BATCH_SIZE = 32
+
+
+def _chunk_and_embed(
+    fpath: Path,
+    rel: str,
+    mtime: float,
+    embedder: "Embedder",
+    cfg: "RAGConfig",
+    git_hash: str | None,
+) -> tuple[str, list[dict], float]:
+    """Chunk a file and embed all batches. Safe to call from a worker thread."""
+    chunks = chunk_file(str(fpath), cfg)
+    if not chunks:
+        return rel, [], mtime
+    for chunk in chunks:
+        chunk["path"] = rel
+    for i in range(0, len(chunks), _BATCH_SIZE):
+        batch = chunks[i:i + _BATCH_SIZE]
+        texts = [c["content"] for c in batch]
+        try:
+            embeddings = embedder.embed(texts)
+            for chunk, emb in zip(batch, embeddings):
+                chunk["embedding"] = emb
+        except Exception:
+            pass
+        for chunk in batch:
+            chunk["mtime"] = mtime
+            chunk["git_hash"] = git_hash
+    return rel, chunks, mtime
+
+
 def index_directory(
     root: str,
     store: "VectorStore",
@@ -143,7 +175,6 @@ def index_directory(
         ".git", "__pycache__", "node_modules", "build", "dist",
         ".agent", ".venv", "venv", ".env",
     }
-    # Strip trailing slashes so "results/" matches os.walk's bare "results"
     all_exclude = default_exclude | {e.rstrip("/") for e in exclude}
 
     allowed_exts: set[str] | None = None
@@ -155,9 +186,7 @@ def index_directory(
 
     files = []
     for dirpath, dirnames, filenames in os.walk(root_path):
-        # Prune excluded dirs (static list)
         dirnames[:] = [d for d in dirnames if d not in all_exclude]
-        # Also prune dirs matching .agent.ignore patterns
         if not rules.ignore.empty:
             filtered = []
             for d in dirnames:
@@ -179,50 +208,88 @@ def index_directory(
     indexed = 0
     skipped = 0
     total_chunks = 0
+    embed_workers: int = getattr(getattr(embedder, "_cfg", None), "embed_workers", 1)
 
-    for fpath in files:
-        rel = str(fpath.relative_to(root_path))
-        mtime = fpath.stat().st_mtime
+    if embed_workers <= 1:
+        # Serial path: embed per batch → commit per batch (best crash recovery).
+        for fpath in files:
+            rel = str(fpath.relative_to(root_path))
+            mtime = fpath.stat().st_mtime
 
-        if not force:
-            stored_mtime = store.get_mtime(rel)
-            if stored_mtime is not None and abs(stored_mtime - mtime) < 0.001:
-                skipped += 1
+            if not force:
+                stored_mtime = store.get_mtime(rel)
+                if stored_mtime is not None and abs(stored_mtime - mtime) < 0.001:
+                    skipped += 1
+                    continue
+
+            store.delete_by_path(rel)
+            chunks = chunk_file(str(fpath), cfg)
+            if not chunks:
                 continue
 
-        store.delete_by_path(rel)
-        chunks = chunk_file(str(fpath), cfg)
-        if not chunks:
-            continue
+            for chunk in chunks:
+                chunk["path"] = rel
 
-        # Normalize stored path to relative so get_mtime(rel) matches on next run
-        for chunk in chunks:
-            chunk["path"] = rel
+            for i in range(0, len(chunks), _BATCH_SIZE):
+                batch = chunks[i:i + _BATCH_SIZE]
+                texts = [c["content"] for c in batch]
+                try:
+                    embeddings = embedder.embed(texts)
+                    for chunk, emb in zip(batch, embeddings):
+                        chunk["embedding"] = emb
+                        chunk["mtime"] = mtime
+                        chunk["git_hash"] = git_hash
+                except Exception:
+                    for chunk in batch:
+                        chunk["mtime"] = mtime
+                        chunk["git_hash"] = git_hash
+                store.upsert_many(batch, fresh=True)
 
-        batch_size = 32
-        for i in range(0, len(chunks), batch_size):
-            batch = chunks[i:i + batch_size]
-            texts = [c["content"] for c in batch]
-            try:
-                embeddings = embedder.embed(texts)
-                for chunk, emb in zip(batch, embeddings):
-                    chunk["embedding"] = emb
-                    chunk["mtime"] = mtime
-                    chunk["git_hash"] = git_hash
-            except Exception:
-                for chunk in batch:
-                    chunk["mtime"] = mtime
-                    chunk["git_hash"] = git_hash
-            store.upsert_many(batch)
+            total_chunks += len(chunks)
+            indexed += 1
 
-        total_chunks += len(chunks)
-        indexed += 1
+            if code_store is not None:
+                _enqueue_for_summarization(code_store, chunks, rel, mtime, git_hash, force)
+            if progress_cb:
+                progress_cb(rel, len(chunks))
 
-        if code_store is not None:
-            _enqueue_for_summarization(code_store, chunks, rel, mtime, git_hash, force)
+    else:
+        # Parallel path: embed_workers concurrent embed requests, writes on main thread.
+        # Chunking + embedding runs in the thread pool; SQLite writes stay on main thread.
+        from concurrent.futures import ThreadPoolExecutor
 
-        if progress_cb:
-            progress_cb(rel, len(chunks))
+        work: list[tuple[str, float, object]] = []  # (rel, mtime, future | None=skip)
+        executor = ThreadPoolExecutor(max_workers=embed_workers)
+        try:
+            for fpath in files:
+                rel = str(fpath.relative_to(root_path))
+                mtime = fpath.stat().st_mtime
+                if not force:
+                    stored_mtime = store.get_mtime(rel)
+                    if stored_mtime is not None and abs(stored_mtime - mtime) < 0.001:
+                        skipped += 1
+                        work.append((rel, mtime, None))
+                        continue
+                future = executor.submit(_chunk_and_embed, fpath, rel, mtime, embedder, cfg, git_hash)
+                work.append((rel, mtime, future))
+
+            for rel, mtime, future in work:
+                if future is None:
+                    continue
+                _, chunks, _ = future.result()
+                if not chunks:
+                    continue
+                store.delete_by_path(rel)
+                for i in range(0, len(chunks), _BATCH_SIZE):
+                    store.upsert_many(chunks[i:i + _BATCH_SIZE], fresh=True)
+                total_chunks += len(chunks)
+                indexed += 1
+                if code_store is not None:
+                    _enqueue_for_summarization(code_store, chunks, rel, mtime, git_hash, force)
+                if progress_cb:
+                    progress_cb(rel, len(chunks))
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     return {"indexed": indexed, "skipped": skipped, "chunks": total_chunks, "files": len(files)}
 

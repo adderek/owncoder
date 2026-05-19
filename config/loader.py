@@ -28,6 +28,7 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_EMBEDDINGS_MODEL": ("embeddings", "model"),
         "AGENT_EMBEDDINGS_DIMENSIONS": ("embeddings", "dimensions"),
         "AGENT_EMBEDDINGS_MAX_TOKENS": ("embeddings", "max_tokens"),
+        "AGENT_EMBEDDINGS_WORKERS": ("embeddings", "embed_workers"),
         "AGENT_RAG_DB_PATH": ("rag", "db_path"),
         "AGENT_RAG_ARCHIVE_DB_PATH": ("rag", "archive_db_path"),
         "AGENT_RAG_ARCHIVE_TTL_DAYS": ("rag", "archive_ttl_days"),

@@ -126,14 +126,17 @@ class VectorStore:
 
         conn.commit()
 
-    def upsert_many(self, chunks: list[dict]) -> None:
+    def upsert_many(self, chunks: list[dict], fresh: bool = False) -> None:
+        """Insert chunks. Set fresh=True when delete_by_path was already called for
+        these chunks' path — skips the per-chunk rowid lookup and stale FTS/vec cleanup."""
         conn = self._get_conn()
         for chunk in chunks:
-            existing = conn.execute(
-                "SELECT rowid FROM chunks WHERE id = ?", (chunk["id"],)
-            ).fetchone()
-            if existing:
-                conn.execute("DELETE FROM chunks_fts WHERE rowid = ?", (existing["rowid"],))
+            if not fresh:
+                existing = conn.execute(
+                    "SELECT rowid FROM chunks WHERE id = ?", (chunk["id"],)
+                ).fetchone()
+                if existing:
+                    conn.execute("DELETE FROM chunks_fts WHERE rowid = ?", (existing["rowid"],))
 
             cur = conn.execute("""
                 INSERT OR REPLACE INTO chunks
@@ -154,7 +157,8 @@ class VectorStore:
                 emb = chunk["embedding"]
                 dims = len(emb)
                 self._ensure_vec_table(dims)
-                conn.execute("DELETE FROM vec_chunks WHERE chunk_id = ?", (chunk["id"],))
+                if not fresh:
+                    conn.execute("DELETE FROM vec_chunks WHERE chunk_id = ?", (chunk["id"],))
                 conn.execute(
                     "INSERT INTO vec_chunks(chunk_id, embedding) VALUES (?, ?)",
                     (chunk["id"], sqlite_vec.serialize_float32(emb)),
