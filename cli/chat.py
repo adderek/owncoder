@@ -1,8 +1,42 @@
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
+import threading
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+
+def _bg_update_index(store, embedder, config, result: dict) -> None:
+    """Re-index changed files and prune deleted ones. Runs in a daemon thread."""
+    try:
+        from agent.rag.indexer import index_directory, prune_index
+        from agent.rag.archive import ArchiveStore
+        from agent.tools.rules.core import load_rules
+
+        working_dir = config.tools.working_dir
+        load_rules(working_dir)
+
+        stats = index_directory(
+            root=working_dir,
+            store=store,
+            embedder=embedder,
+            cfg=config.rag,
+            force=False,
+        )
+        result["indexed"] = stats["indexed"]
+        result["chunks"] = stats["chunks"]
+
+        archive = ArchiveStore(config.rag.archive_db_path)
+        pruned = prune_index(working_dir, store, archive)
+        archive.purge_expired(config.rag.archive_ttl_days)
+        archive.close()
+        result["pruned_files"] = len(pruned["paths"])
+    except Exception as exc:
+        logger.debug("bg index update failed: %s", exc)
+        result["error"] = str(exc)
 
 
 _UI_MODES = {
@@ -131,6 +165,8 @@ def cmd_chat(args, config):
     store = None
     embedder = None
     asm_store = None
+    _bg_thread: threading.Thread | None = None
+    _bg_result: dict = {}
     db_path = Path(config.rag.db_path)
     if db_path.exists():
         try:
@@ -139,6 +175,13 @@ def cmd_chat(args, config):
             if config.asm.enabled:
                 from agent.rag.asm_store import AsmStore
                 asm_store = AsmStore(config.rag)
+            _bg_thread = threading.Thread(
+                target=_bg_update_index,
+                args=(store, embedder, config, _bg_result),
+                daemon=True,
+                name="bg-index-update",
+            )
+            _bg_thread.start()
         except Exception as e:
             console.print(f"[yellow]Warning: could not load index: {e}[/yellow]")
     else:
@@ -222,6 +265,15 @@ def cmd_chat(args, config):
             )
         except Exception:
             pass
+        if _bg_thread and _bg_thread.is_alive():
+            _bg_thread.join(timeout=5)
+        if _bg_result.get("indexed", 0) > 0:
+            console.print(
+                f"[dim]Index updated: {_bg_result['indexed']} file(s) re-indexed "
+                f"({_bg_result.get('chunks', 0)} chunks)"
+                + (f", {_bg_result['pruned_files']} file(s) pruned" if _bg_result.get("pruned_files") else "")
+                + "[/dim]"
+            )
         if store:
             store.close()
         if asm_store:

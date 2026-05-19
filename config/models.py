@@ -38,7 +38,7 @@ class EmbeddingsConfig:
 class RAGConfig:
     db_path: str = ".agent/index.db"
     archive_db_path: str = ".agent/index-archive.db"
-    archive_ttl_days: int = 30   # 0 disables expiration (archive kept forever)
+    archive_ttl_days: int = 14   # 0 disables expiration (archive kept forever)
     chunk_min_tokens: int = 20
     chunk_max_tokens: int = 400
     top_k: int = 8
