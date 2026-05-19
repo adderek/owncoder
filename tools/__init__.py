@@ -49,7 +49,10 @@ def load_all_tools(config=None, store=None, embedder=None, asm_store=None, data_
             try:
                 _il.import_module(_modname)
             except Exception:
-                pass
+                import logging as _log
+                _log.getLogger(__name__).debug(
+                    "auto-discover: failed to import %s", _modname, exc_info=True
+                )
 
     # Wrap raw objects in DataProvider when caller hasn't provided one.
     if data_provider is None:

@@ -6,10 +6,13 @@ dependency. One SQLite DB per project (.agent/summaries.db by default).
 from __future__ import annotations
 
 import hashlib
+import logging
 import sqlite3
 import threading
 import time
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def _checksum(text: str) -> str:
@@ -208,7 +211,7 @@ class CodeStore:
             try:
                 conn.execute(f"DELETE FROM vec_units WHERE unit_id IN ({ph})", ids)
             except Exception:
-                pass
+                logger.warning("vec_units delete failed — search index may be inconsistent", exc_info=True)
         conn.execute(f"DELETE FROM units WHERE id IN ({ph})", ids)
         conn.commit()
 

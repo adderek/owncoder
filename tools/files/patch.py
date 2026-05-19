@@ -29,11 +29,12 @@ def _apply_unified_diff(original: str, patch: str) -> str:
 
         return Path(orig_path).read_text(encoding="utf-8")
     finally:
-        os.unlink(orig_path)
-        os.unlink(patch_path)
-        backup = orig_path + ".orig"
-        if os.path.exists(backup):
-            os.unlink(backup)
+        for _p in (orig_path, patch_path, orig_path + ".orig"):
+            try:
+                if os.path.exists(_p):
+                    os.unlink(_p)
+            except OSError:
+                pass
 
 
 def patch_file(path: str, unified_diff: str) -> dict:
