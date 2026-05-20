@@ -7,40 +7,25 @@ import re
 
 logger = logging.getLogger(__name__)
 
-_DESCRIBE_PROMPT = """\
-Analyze this {language} {node_singular} and describe what it does.
+_SYSTEM = "Code indexer. Output terse JSON only. Descriptions: ≤12 words, fragments OK, no articles, no filler."
 
-{prev_context}{next_context}\
-{lang_hint}{node_cap} (lines {start_line}–{end_line} of {path}):
+_DESCRIBE_PROMPT = """\
+{lang_hint}{prev_context}{next_context}\
+{path} L{start_line}–{end_line} ({language} {node_singular}):
 ```{fence_lang}
 {content}
 ```
-
-Reply with JSON:
-{{
-  "purpose": "<one sentence>",
-  "inferred_name": "<snake_case name or {fallback_name}>",
-  "confidence": "low|medium|high"
-}}
-"""
+{{"description":"<≤12 words what it does>","inferred_name":"<snake_case or {fallback_name}>","confidence":"low|medium|high"}}"""
 
 _ROLLUP_PROMPT = """\
-Summarize the following {n} {language} {node_plural} as a group.
-
+{n} {language} {node_plural}:
 {children_list}
-
-Reply with JSON:
-{{
-  "purpose": "<2-3 sentences describing what this group collectively does>",
-  "inferred_name": "<group name>",
-  "confidence": "low|medium|high"
-}}
-"""
+{{"description":"<1-2 sentences; more if complexity warrants>","inferred_name":"<name>","confidence":"low|medium|high"}}"""
 
 _LANG_HINTS = {
-    "asm": "Note: describe registers, syscalls, and calling conventions where relevant.\n\n",
-    "c":   "Note: mention pointer arithmetic, memory allocation, or error paths.\n\n",
-    "cpp": "Note: mention templates, RAII, or ownership semantics where relevant.\n\n",
+    "asm": "Note registers/syscalls/calling conventions.\n",
+    "c":   "Note pointers/alloc/error paths.\n",
+    "cpp": "Note templates/RAII/ownership.\n",
 }
 
 _NODE_LABELS: dict[str, tuple[str, str]] = {
@@ -117,8 +102,8 @@ class Describer:
         node_type = chunk.get("node_type") or "chunk"
         node_singular, _ = _node_labels(node_type)
 
-        prev_context = f'The {node_singular} before this: "{prev_desc}"\n\n' if prev_desc else ""
-        next_context  = f'The {node_singular} after this: "{next_desc}"\n\n'  if next_desc  else ""
+        prev_context = f'Prev: {prev_desc}\n' if prev_desc else ""
+        next_context  = f'Next: {next_desc}\n'  if next_desc  else ""
 
         content = chunk.get("content", "")
         max_chars = self._ctx_tokens * 4
@@ -129,7 +114,6 @@ class Describer:
         prompt = _DESCRIBE_PROMPT.format(
             language=language,
             node_singular=node_singular,
-            node_cap=node_singular.capitalize(),
             prev_context=prev_context,
             next_context=next_context,
             lang_hint=_LANG_HINTS.get(language, ""),
@@ -149,7 +133,7 @@ class Describer:
                 "confidence": "low",
             }
         return {
-            "description": result.get("purpose", ""),
+            "description": result.get("description", ""),
             "inferred_name": result.get("inferred_name") or chunk.get("name") or fallback,
             "confidence": result.get("confidence", "low"),
         }
@@ -180,7 +164,7 @@ class Describer:
                 "confidence": "low",
             }
         return {
-            "description": result.get("purpose", ""),
+            "description": result.get("description", ""),
             "inferred_name": result.get("inferred_name", ""),
             "confidence": result.get("confidence", "low"),
         }
@@ -189,7 +173,10 @@ class Describer:
         try:
             response = self._client.chat.completions.create(
                 model=self._model,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[
+                    {"role": "system", "content": _SYSTEM},
+                    {"role": "user", "content": prompt},
+                ],
                 max_tokens=self._max_output_tokens,
                 temperature=0,
                 extra_body={"chat_template_kwargs": {"enable_thinking": False}},

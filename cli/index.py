@@ -22,7 +22,8 @@ def _make_bg_worker(config, code_store, embedder):
     client = OpenAI(base_url=config.llm.base_url, api_key=config.llm.api_key)
     describer = Describer(client, model=model, ctx_tokens=scfg.ctx_tokens, max_output_tokens=scfg.max_output_tokens)
     judge = Judge(client, model=model, store=code_store)
-    return BgWorker(store=code_store, describer=describer, judge=judge, embedder=embedder)
+    return BgWorker(store=code_store, describer=describer, judge=judge, embedder=embedder,
+                    working_dir=config.tools.working_dir)
 
 
 def cmd_init(args, config):

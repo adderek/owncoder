@@ -18,103 +18,224 @@ _HTML = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <title>Chunk Browser</title>
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: monospace; font-size: 13px; display: flex; height: 100vh; background: #1e1e1e; color: #d4d4d4; }
-  #sidebar { width: 300px; min-width: 180px; border-right: 1px solid #333; display: flex; flex-direction: column; overflow: hidden; }
-  #search-box { padding: 6px; border-bottom: 1px solid #333; }
-  #search-box input { width: 100%; background: #252526; border: 1px solid #3e3e42; color: #d4d4d4; padding: 4px 6px; border-radius: 3px; }
-  #file-tree { flex: 1; overflow-y: auto; padding: 4px 0; }
-  .dir-node { cursor: pointer; padding: 2px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; user-select: none; }
-  .dir-node:hover { background: #2a2d2e; }
-  .dir-label { color: #569cd6; }
-  .dir-label::before { content: "▼ "; font-size: 10px; }
-  .dir-node.closed .dir-label::before { content: "▶ "; }
-  .file-entry { cursor: pointer; padding: 2px 8px 2px 20px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .file-entry:hover { background: #2a2d2e; }
-  .file-entry.active { background: #094771; }
-  .file-badge { float: right; background: #3c3c3c; border-radius: 10px; padding: 0 5px; font-size: 11px; color: #888; }
-  .file-badge.has-asm { background: #1e3a5f; color: #7eb3d4; }
-  #main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-  #breadcrumb { padding: 6px 10px; border-bottom: 1px solid #333; color: #888; font-size: 12px; min-height: 28px; }
-  #breadcrumb a { color: #569cd6; cursor: pointer; text-decoration: none; }
-  #breadcrumb a:hover { text-decoration: underline; }
-  #tabs { display: flex; border-bottom: 1px solid #333; background: #252526; }
-  .tab { padding: 6px 14px; cursor: pointer; color: #888; border-bottom: 2px solid transparent; }
-  .tab:hover { color: #d4d4d4; }
-  .tab.active { color: #d4d4d4; border-bottom-color: #007acc; }
-  #content { flex: 1; display: flex; overflow: hidden; }
-  #chunk-list { width: 260px; min-width: 160px; border-right: 1px solid #333; overflow-y: auto; padding: 4px 0; }
-  .chunk-item { padding: 5px 10px; cursor: pointer; border-bottom: 1px solid #2a2a2a; }
-  .chunk-item:hover { background: #2a2d2e; }
-  .chunk-item.active { background: #094771; }
-  .chunk-name { color: #4ec9b0; font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .chunk-meta { color: #888; font-size: 11px; }
-  .chunk-desc { color: #ce9178; font-size: 11px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .chunk-children { padding-left: 12px; border-left: 2px solid #333; display: none; }
-  .chunk-item.has-children > .chunk-children { display: block; }
-  #detail { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-  #detail-header { padding: 8px 12px; border-bottom: 1px solid #333; background: #252526; }
-  #detail-title { color: #4ec9b0; font-size: 14px; font-weight: bold; }
-  #detail-meta { color: #888; font-size: 11px; margin-top: 3px; }
-  #detail-desc { color: #ce9178; font-size: 12px; margin-top: 4px; padding: 6px; background: #2d2d30; border-radius: 3px; white-space: pre-wrap; display: none; }
-  #detail-body { flex: 1; overflow-y: auto; padding: 10px 12px; }
-  #detail-code { white-space: pre; color: #d4d4d4; background: #1e1e1e; font-size: 12px; line-height: 1.5; }
-  #nav-bar { padding: 4px 12px; border-top: 1px solid #333; display: flex; gap: 8px; align-items: center; }
-  #nav-bar button { background: #3c3c3c; border: 1px solid #555; color: #d4d4d4; padding: 3px 10px; border-radius: 3px; cursor: pointer; font-size: 12px; }
-  #nav-bar button:hover { background: #4c4c4c; }
-  #nav-bar button:disabled { opacity: 0.4; cursor: default; }
-  .empty { color: #555; padding: 20px; text-align: center; }
-  .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
-  .status-done { background: #4caf50; }
-  .status-pending { background: #ff9800; }
-  .status-other { background: #888; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: monospace; font-size: 13px; display: flex; height: 100vh; background: #1e1e1e; color: #d4d4d4; overflow: hidden; }
+
+/* Panels */
+.panel { display: flex; flex-direction: column; overflow: hidden; min-width: 0; flex-shrink: 0; }
+.panel.folded { width: 28px !important; min-width: 28px; max-width: 28px; }
+.panel-hdr { display: flex; align-items: center; padding: 0 6px; height: 28px; background: #252526; border-bottom: 1px solid #333; flex-shrink: 0; gap: 4px; }
+.panel-hdr-title { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 0.05em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.fold-btn { background: none; border: none; color: #555; cursor: pointer; font-size: 13px; padding: 2px 3px; flex-shrink: 0; line-height: 1; }
+.fold-btn:hover { color: #d4d4d4; }
+.panel-body { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.panel.folded .panel-body { display: none; }
+.folded-label { display: none; writing-mode: vertical-rl; color: #555; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; padding: 10px 8px; cursor: pointer; user-select: none; }
+.folded-label:hover { color: #888; }
+.panel.folded .folded-label { display: block; }
+
+/* Dividers */
+.divider { width: 4px; background: #252525; cursor: col-resize; flex-shrink: 0; transition: background 0.1s; }
+.divider:hover, .divider.dragging { background: #007acc; }
+
+/* Sidebar */
+#sidebar { width: 250px; }
+#search-box { padding: 5px 6px; border-bottom: 1px solid #2a2a2a; flex-shrink: 0; }
+#search-box input { width: 100%; background: #1e1e1e; border: 1px solid #3e3e42; color: #d4d4d4; padding: 3px 6px; border-radius: 3px; font-family: inherit; font-size: 12px; }
+#search-box input:focus { outline: 1px solid #007acc; }
+#file-tree { flex: 1; overflow-y: auto; padding: 4px 0; }
+
+.dir-node { cursor: pointer; padding: 2px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; user-select: none; }
+.dir-node:hover { background: #2a2d2e; }
+.dir-label { color: #569cd6; }
+.dir-label::before { content: "▼ "; font-size: 9px; }
+.dir-node.closed .dir-label::before { content: "▶ "; }
+.file-entry { cursor: pointer; padding: 2px 8px 2px 20px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.file-entry:hover { background: #2a2d2e; }
+.file-entry.active { background: #094771; }
+.file-badge { float: right; background: #3c3c3c; border-radius: 10px; padding: 0 5px; font-size: 11px; color: #888; }
+.file-badge.has-asm { background: #1e3a5f; color: #7eb3d4; }
+
+/* Chunk panel */
+#chunk-panel { width: 230px; }
+#tabs { display: flex; border-bottom: 1px solid #333; background: #252526; flex-shrink: 0; }
+.tab { padding: 5px 12px; cursor: pointer; color: #666; border-bottom: 2px solid transparent; font-size: 12px; }
+.tab:hover { color: #d4d4d4; }
+.tab.active { color: #d4d4d4; border-bottom-color: #007acc; }
+#chunk-list { flex: 1; overflow-y: auto; }
+.chunk-item { padding: 5px 8px; cursor: pointer; border-bottom: 1px solid #252525; }
+.chunk-item:hover { background: #2a2d2e; }
+.chunk-item.active { background: #094771; }
+.chunk-name { color: #4ec9b0; font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chunk-meta { color: #666; font-size: 11px; }
+.chunk-desc { color: #ce9178; font-size: 11px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chunk-children { padding-left: 10px; border-left: 2px solid #2a2a2a; }
+
+/* Description panel */
+#desc-panel { width: 340px; }
+#breadcrumb { padding: 5px 10px; border-bottom: 1px solid #2a2a2a; color: #666; font-size: 11px; min-height: 24px; background: #252526; flex-shrink: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#breadcrumb a { color: #569cd6; cursor: pointer; text-decoration: none; }
+#breadcrumb a:hover { text-decoration: underline; }
+#desc-body { flex: 1; overflow-y: auto; padding: 12px; }
+.desc-placeholder { color: #444; text-align: center; padding: 30px 12px; }
+.desc-name { color: #4ec9b0; font-size: 14px; font-weight: bold; margin-bottom: 5px; }
+.desc-meta { color: #666; font-size: 11px; margin-bottom: 8px; }
+.desc-status { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; margin-bottom: 10px; }
+.desc-status.described { background: #1a3a1a; color: #4caf50; }
+.desc-status.pending { background: #3a2a0a; color: #ff9800; }
+.desc-status.other { background: #3c3c3c; color: #888; }
+.desc-text { color: #d4d4d4; font-size: 13px; line-height: 1.65; white-space: pre-wrap; background: #252526; border-left: 3px solid #007acc; padding: 10px 12px; border-radius: 0 3px 3px 0; }
+.desc-no-desc { color: #555; font-size: 12px; margin-top: 10px; font-style: italic; }
+#nav-bar { padding: 5px 10px; border-top: 1px solid #2a2a2a; display: none; flex-shrink: 0; gap: 5px; align-items: center; }
+#nav-bar button { background: #3c3c3c; border: 1px solid #555; color: #d4d4d4; padding: 2px 9px; border-radius: 3px; cursor: pointer; font-size: 12px; font-family: inherit; }
+#nav-bar button:hover { background: #4c4c4c; }
+#nav-bar button:disabled { opacity: 0.35; cursor: default; }
+
+/* Source panel */
+#source-panel { flex: 1; min-width: 0; }
+#source-body { flex: 1; overflow: auto; }
+#source-code { color: #d4d4d4; font-size: 12px; line-height: 1.5; padding: 10px 14px; display: block; white-space: pre; }
+
+.empty { color: #444; padding: 20px; text-align: center; }
+.status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+.status-done { background: #4caf50; }
+.status-pending { background: #ff9800; }
+.status-other { background: #666; }
 </style>
 </head>
 <body>
-<div id="sidebar">
-  <div id="search-box"><input id="search" placeholder="Filter files..." oninput="filterFiles(this.value)"></div>
-  <div id="file-tree"></div>
-</div>
-<div id="main">
-  <div id="breadcrumb">Select a file from the tree</div>
-  <div id="tabs" style="display:none">
-    <div class="tab active" data-tab="asm">Semantic (ASM)</div>
-    <div class="tab" data-tab="flat">Flat Chunks</div>
+
+<div id="sidebar" class="panel">
+  <div class="panel-hdr">
+    <span class="panel-hdr-title">Files</span>
+    <button class="fold-btn" onclick="togglePanel('sidebar')" title="Collapse">◀</button>
   </div>
-  <div id="content">
+  <div class="folded-label" onclick="togglePanel('sidebar')">Files</div>
+  <div class="panel-body">
+    <div id="search-box"><input id="search" placeholder="Filter files…" oninput="filterFiles(this.value)" autocomplete="off"></div>
+    <div id="file-tree"></div>
+  </div>
+</div>
+
+<div class="divider" id="div-1"></div>
+
+<div id="chunk-panel" class="panel">
+  <div class="panel-hdr">
+    <button class="fold-btn" onclick="togglePanel('chunk-panel')" title="Collapse">◀</button>
+    <span class="panel-hdr-title">Chunks</span>
+  </div>
+  <div class="folded-label" onclick="togglePanel('chunk-panel')">Chunks</div>
+  <div class="panel-body">
+    <div id="tabs" style="display:none">
+      <div class="tab active" data-tab="asm">Semantic</div>
+      <div class="tab" data-tab="flat">Flat</div>
+    </div>
     <div id="chunk-list"><div class="empty">No file selected</div></div>
-    <div id="detail">
-      <div id="detail-header" style="display:none">
-        <div id="detail-title"></div>
-        <div id="detail-meta"></div>
-        <div id="detail-desc"></div>
-      </div>
-      <div id="detail-body"><div class="empty">Select a chunk to view its content</div></div>
-      <div id="nav-bar" style="display:none">
-        <button id="btn-parent" disabled>&#8593; Parent</button>
-        <button id="btn-prev" disabled>&#8592; Prev</button>
-        <button id="btn-next" disabled>Next &#8594;</button>
-      </div>
+  </div>
+</div>
+
+<div class="divider" id="div-2"></div>
+
+<div id="desc-panel" class="panel">
+  <div class="panel-hdr">
+    <button class="fold-btn" onclick="togglePanel('desc-panel')" title="Collapse">◀</button>
+    <span class="panel-hdr-title">Description</span>
+  </div>
+  <div class="folded-label" onclick="togglePanel('desc-panel')">Description</div>
+  <div class="panel-body">
+    <div id="breadcrumb">Select a file</div>
+    <div id="desc-body"><div class="desc-placeholder">Select a chunk to view its description</div></div>
+    <div id="nav-bar">
+      <button id="btn-parent" disabled>↑ Parent</button>
+      <button id="btn-prev" disabled>← Prev</button>
+      <button id="btn-next" disabled>Next →</button>
     </div>
   </div>
 </div>
+
+<div class="divider" id="div-3"></div>
+
+<div id="source-panel" class="panel">
+  <div class="panel-hdr">
+    <button class="fold-btn" onclick="togglePanel('source-panel')" title="Collapse">▶</button>
+    <span class="panel-hdr-title">Source</span>
+  </div>
+  <div class="folded-label" onclick="togglePanel('source-panel')">Source</div>
+  <div class="panel-body">
+    <div id="source-body"><div class="empty">Select a chunk to view source</div></div>
+  </div>
+</div>
+
 <script>
-var allFiles = [];
-var currentFile = null;
-var currentTab = 'asm';
-var fileData = null;
+var allFiles = [], currentFile = null, currentTab = 'asm', fileData = null;
+var _units = {}, _chunks = [];
 
-// Data registries — avoids embedding JSON in onclick attributes
-var _units = {};   // id -> unit object
-var _chunks = [];  // indexed array of chunk objects
-var _filePaths = []; // indexed array of file paths (matches allFiles order)
+// --- Panel fold/unfold ---
+var _savedWidths = {};
 
-// --- Tree ---
+function togglePanel(id) {
+  var p = document.getElementById(id);
+  if (p.classList.contains('folded')) {
+    p.classList.remove('folded');
+    if (_savedWidths[id]) { p.style.width = _savedWidths[id]; p.style.flex = 'none'; }
+    // restore flex for source-panel
+    if (id === 'source-panel' && !_savedWidths[id]) { p.style.flex = '1'; p.style.width = ''; }
+    var btn = p.querySelector('.fold-btn');
+    if (btn) btn.textContent = id === 'source-panel' ? '▶' : '◀';
+  } else {
+    _savedWidths[id] = p.offsetWidth + 'px';
+    p.classList.add('folded');
+    var btn = p.querySelector('.fold-btn');
+    if (btn) btn.textContent = id === 'source-panel' ? '◀' : '▶';
+  }
+}
+
+// --- Divider drag-to-resize ---
+var _drag = null;
+
+document.querySelectorAll('.divider').forEach(function(div) {
+  div.addEventListener('mousedown', function(e) {
+    var left = div.previousElementSibling;
+    var right = div.nextElementSibling;
+    if (!left || !right) return;
+    e.preventDefault();
+    div.classList.add('dragging');
+    _drag = { div: div, left: left, right: right,
+               startX: e.clientX, lw: left.offsetWidth, rw: right.offsetWidth };
+  });
+});
+
+document.addEventListener('mousemove', function(e) {
+  if (!_drag) return;
+  var dx = e.clientX - _drag.startX;
+  var nl = Math.max(28, _drag.lw + dx);
+  var nr = Math.max(28, _drag.rw - dx);
+  _drag.left.style.width = nl + 'px';
+  _drag.left.style.flex = 'none';
+  _drag.right.style.width = nr + 'px';
+  _drag.right.style.flex = 'none';
+  // Auto-unfold if dragged out of folded state
+  if (nl > 35 && _drag.left.classList.contains('folded')) {
+    _drag.left.classList.remove('folded');
+    var btn = _drag.left.querySelector('.fold-btn');
+    if (btn) btn.textContent = '◀';
+  }
+  if (nr > 35 && _drag.right.classList.contains('folded')) {
+    _drag.right.classList.remove('folded');
+    var btn = _drag.right.querySelector('.fold-btn');
+    if (btn) btn.textContent = _drag.right.id === 'source-panel' ? '▶' : '◀';
+  }
+});
+
+document.addEventListener('mouseup', function() {
+  if (_drag) { _drag.div.classList.remove('dragging'); _drag = null; }
+});
+
+// --- File tree ---
 
 async function loadTree() {
   var r = await fetch('/api/tree');
   allFiles = await r.json();
-  _filePaths = allFiles.map(function(f){ return f.path; });
   renderTree(allFiles);
 }
 
@@ -138,7 +259,7 @@ function renderTree(files, flat) {
   var html = '';
   Object.keys(dirs).sort().forEach(function(dir) {
     if (dir) {
-      html += '<div class="dir-node" data-dir="1"><span class="dir-label">' + esc(dir) + '/</span></div>';
+      html += '<div class="dir-node"><span class="dir-label">' + esc(dir) + '/</span></div>';
       html += '<div class="dir-children">' + dirs[dir].map(fileHtml).join('') + '</div>';
     } else {
       html += dirs[dir].map(fileHtml).join('');
@@ -152,10 +273,9 @@ function renderTree(files, flat) {
 }
 
 function fileHtml(f) {
-  var idx = _filePaths.indexOf(f.path);
   var badge = '<span class="file-badge' + (f.has_asm ? ' has-asm' : '') + '">' + f.chunks + '</span>';
   var fname = esc(f.path.split('/').pop());
-  return '<div class="file-entry" data-path="' + esc(f.path) + '" data-idx="' + idx + '">' + badge + fname + '</div>';
+  return '<div class="file-entry" data-path="' + esc(f.path) + '">' + badge + fname + '</div>';
 }
 
 function bindFileClicks(container) {
@@ -167,32 +287,33 @@ function bindFileClicks(container) {
 function toggleDir(el) {
   el.classList.toggle('closed');
   var next = el.nextElementSibling;
-  if (next && next.classList.contains('dir-children')) {
+  if (next && next.classList.contains('dir-children'))
     next.style.display = el.classList.contains('closed') ? 'none' : '';
-  }
 }
 
 // --- File selection ---
 
 async function selectFile(path) {
   document.querySelectorAll('.file-entry').forEach(function(e){ e.classList.remove('active'); });
-  document.querySelectorAll('.file-entry[data-path="' + esc(path) + '"]').forEach(function(e){ e.classList.add('active'); });
+  document.querySelectorAll('.file-entry[data-path]').forEach(function(e){
+    if (e.getAttribute('data-path') === path) e.classList.add('active');
+  });
   currentFile = path;
   document.getElementById('breadcrumb').textContent = path;
   var r = await fetch('/api/file?path=' + encodeURIComponent(path));
   fileData = await r.json();
-
-  // Populate registry
   _units = {};
   fileData.asm_units.forEach(function(u){ _units[u.id] = u; });
   _chunks = fileData.chunks;
-
-  document.getElementById('tabs').style.display = 'flex';
   currentTab = fileData.asm_units.length ? 'asm' : 'flat';
-  document.querySelectorAll('.tab').forEach(function(t) {
+  document.getElementById('tabs').style.display = 'flex';
+  document.querySelectorAll('.tab').forEach(function(t){
     t.classList.toggle('active', t.getAttribute('data-tab') === currentTab);
   });
   renderChunkList();
+  document.getElementById('desc-body').innerHTML = '<div class="desc-placeholder">Select a chunk</div>';
+  document.getElementById('source-body').innerHTML = '<div class="empty">Select a chunk</div>';
+  document.getElementById('nav-bar').style.display = 'none';
 }
 
 document.getElementById('tabs').addEventListener('click', function(e) {
@@ -208,140 +329,124 @@ document.getElementById('tabs').addEventListener('click', function(e) {
 function renderChunkList() {
   var el = document.getElementById('chunk-list');
   if (currentTab === 'asm') {
-    var units = fileData.asm_units;
-    if (!units.length) { el.innerHTML = '<div class="empty">No ASM units for this file</div>'; return; }
-    var roots = units.filter(function(u){ return !u.parent_id || !_units[u.parent_id]; });
-    el.innerHTML = roots.map(function(u){ return renderUnitHtml(u); }).join('');
+    if (!fileData.asm_units.length) { el.innerHTML = '<div class="empty">No semantic units</div>'; return; }
+    var roots = fileData.asm_units.filter(function(u){ return !u.parent_id || !_units[u.parent_id]; });
+    el.innerHTML = roots.map(renderUnitHtml).join('');
     bindUnitClicks(el);
   } else {
     if (!_chunks.length) { el.innerHTML = '<div class="empty">No chunks</div>'; return; }
     el.innerHTML = _chunks.map(function(c, i) {
-      return '<div class="chunk-item" data-chunk-idx="' + i + '">' +
+      return '<div class="chunk-item" data-ci="' + i + '">' +
         '<div class="chunk-name">' + esc(c.name || c.node_type || 'chunk') + '</div>' +
         '<div class="chunk-meta">L' + c.start_line + '–' + c.end_line + ' · ' + esc(c.node_type||'') + '</div>' +
         '</div>';
     }).join('');
-    el.querySelectorAll('.chunk-item').forEach(function(item) {
-      item.addEventListener('click', function() {
-        var idx = parseInt(item.getAttribute('data-chunk-idx'), 10);
-        showChunk(_chunks[idx], item);
-      });
+    el.querySelectorAll('[data-ci]').forEach(function(item) {
+      item.addEventListener('click', function() { showChunk(_chunks[+item.getAttribute('data-ci')], item); });
     });
   }
 }
 
 function renderUnitHtml(u) {
   var children = fileData.asm_units.filter(function(c){ return c.parent_id === u.id; });
-  var statusCls = u.status === 'done' ? 'status-done' : u.status === 'pending' ? 'status-pending' : 'status-other';
-  var dot = '<span class="status-dot ' + statusCls + '"></span>';
-  var html = '<div class="chunk-item' + (children.length ? ' has-children' : '') + '" data-unit-id="' + esc(u.id) + '">' +
-    '<div class="chunk-name">' + dot + esc(u.inferred_name || u.id.slice(-8)) + '</div>' +
+  var sc = u.status === 'described' ? 'status-done' : u.status === 'pending' ? 'status-pending' : 'status-other';
+  var html = '<div class="chunk-item" data-uid="' + esc(u.id) + '">' +
+    '<div class="chunk-name"><span class="status-dot ' + sc + '"></span>' + esc(u.inferred_name || u.name || u.id.slice(-8)) + '</div>' +
     '<div class="chunk-meta">L' + u.start_line + '–' + u.end_line + ' · lvl ' + u.level + '</div>' +
-    (u.description ? '<div class="chunk-desc">' + esc(u.description) + '</div>' : '');
-  if (children.length) {
-    html += '<div class="chunk-children">' + children.map(function(c){ return renderUnitHtml(c); }).join('') + '</div>';
-  }
-  html += '</div>';
-  return html;
+    (u.description ? '<div class="chunk-desc">' + esc(u.description.slice(0, 80)) + '</div>' : '');
+  if (children.length)
+    html += '<div class="chunk-children">' + children.map(renderUnitHtml).join('') + '</div>';
+  return html + '</div>';
 }
 
 function bindUnitClicks(container) {
-  container.querySelectorAll('.chunk-item').forEach(function(item) {
-    item.addEventListener('click', function(evt) {
-      evt.stopPropagation();
-      var id = item.getAttribute('data-unit-id');
-      if (id) showUnit(_units[id], item);
+  container.querySelectorAll('[data-uid]').forEach(function(item) {
+    item.addEventListener('click', function(e) {
+      e.stopPropagation();
+      showUnit(_units[item.getAttribute('data-uid')], item);
     });
   });
 }
 
-// --- Detail pane ---
+// --- Detail panels ---
 
 function showUnit(u, activeEl) {
   if (!u) return;
   document.querySelectorAll('.chunk-item').forEach(function(e){ e.classList.remove('active'); });
   if (activeEl) activeEl.classList.add('active');
 
-  document.getElementById('detail-header').style.display = '';
-  document.getElementById('detail-title').textContent = u.inferred_name || u.id.slice(-12);
-  document.getElementById('detail-meta').textContent =
-    'Level ' + u.level + ' · Lines ' + u.start_line + '–' + u.end_line + ' · Status: ' + u.status +
-    (u.confidence ? ' · Confidence: ' + u.confidence : '') +
-    (u.calls ? ' · Calls: ' + u.calls : '');
-  var descEl = document.getElementById('detail-desc');
-  if (u.description) { descEl.textContent = u.description; descEl.style.display = ''; }
-  else { descEl.style.display = 'none'; }
-
-  fetchContent(u.path, u.start_line, u.end_line, null);
+  // Description panel
+  var sc = u.status === 'described' ? 'described' : u.status === 'pending' ? 'pending' : 'other';
+  var html = '<div class="desc-name">' + esc(u.inferred_name || u.name || u.id.slice(-12)) + '</div>' +
+    '<div class="desc-meta">Level ' + u.level + ' · Lines ' + u.start_line + '–' + u.end_line + '</div>' +
+    '<span class="desc-status ' + sc + '">' + esc(u.status) + '</span>';
+  if (u.description)
+    html += '<div class="desc-text">' + esc(u.description) + '</div>';
+  else
+    html += '<div class="desc-no-desc">No description yet (status: ' + esc(u.status) + ')</div>';
+  document.getElementById('desc-body').innerHTML = html;
 
   // Nav buttons
-  document.getElementById('nav-bar').style.display = 'flex';
   var all = fileData.asm_units;
   var parent = u.parent_id ? _units[u.parent_id] : null;
   var siblings = all.filter(function(s){ return s.parent_id === u.parent_id; });
   var idx = siblings.findIndex(function(s){ return s.id === u.id; });
-
-  var btnParent = document.getElementById('btn-parent');
-  var btnPrev = document.getElementById('btn-prev');
-  var btnNext = document.getElementById('btn-next');
-  btnParent.disabled = !parent;
-  btnParent.onclick = parent ? function(){ showUnit(parent, null); } : null;
-  btnPrev.disabled = idx <= 0;
-  btnPrev.onclick = idx > 0 ? function(){ showUnit(siblings[idx-1], null); } : null;
-  btnNext.disabled = idx >= siblings.length - 1;
-  btnNext.onclick = idx < siblings.length - 1 ? function(){ showUnit(siblings[idx+1], null); } : null;
+  document.getElementById('nav-bar').style.display = 'flex';
+  var bP = document.getElementById('btn-parent'), bPr = document.getElementById('btn-prev'), bN = document.getElementById('btn-next');
+  bP.disabled = !parent; bP.onclick = parent ? function(){ showUnit(parent, null); } : null;
+  bPr.disabled = idx <= 0; bPr.onclick = idx > 0 ? function(){ showUnit(siblings[idx-1], null); } : null;
+  bN.disabled = idx >= siblings.length-1; bN.onclick = idx < siblings.length-1 ? function(){ showUnit(siblings[idx+1], null); } : null;
 
   // Breadcrumb
-  var chain = [u];
-  var cur = u;
+  var chain = [u], cur = u;
   while (cur && cur.parent_id && _units[cur.parent_id]) { cur = _units[cur.parent_id]; chain.unshift(cur); }
   var crumb = document.getElementById('breadcrumb');
   crumb.textContent = '';
-  var fileSpan = document.createTextNode(currentFile + ' › ');
-  crumb.appendChild(fileSpan);
+  crumb.appendChild(document.createTextNode(currentFile + ' › '));
   chain.forEach(function(c, i) {
     if (i < chain.length - 1) {
       var a = document.createElement('a');
-      a.textContent = c.inferred_name || c.id.slice(-8);
+      a.textContent = c.inferred_name || c.name || c.id.slice(-8);
       a.addEventListener('click', function(){ showUnit(c, null); });
       crumb.appendChild(a);
       crumb.appendChild(document.createTextNode(' › '));
     } else {
-      crumb.appendChild(document.createTextNode(c.inferred_name || c.id.slice(-8)));
+      crumb.appendChild(document.createTextNode(c.inferred_name || c.name || c.id.slice(-8)));
     }
   });
+
+  // Source panel
+  fetchSource(u.path, u.start_line, u.end_line, null);
 }
 
 function showChunk(c, activeEl) {
   document.querySelectorAll('.chunk-item').forEach(function(e){ e.classList.remove('active'); });
   if (activeEl) activeEl.classList.add('active');
-  document.getElementById('detail-header').style.display = '';
-  document.getElementById('detail-title').textContent = c.name || c.node_type || 'chunk';
-  document.getElementById('detail-meta').textContent = 'Lines ' + c.start_line + '–' + c.end_line + ' · ' + (c.language||'') + ' · ' + (c.node_type||'');
-  document.getElementById('detail-desc').style.display = 'none';
-  document.getElementById('nav-bar').style.display = 'none';
   document.getElementById('breadcrumb').textContent = currentFile;
-  fetchContent(c.path, c.start_line, c.end_line, c.content);
+  document.getElementById('desc-body').innerHTML =
+    '<div class="desc-name">' + esc(c.name || c.node_type || 'chunk') + '</div>' +
+    '<div class="desc-meta">Lines ' + c.start_line + '–' + c.end_line + ' · ' + esc(c.language||'') + ' · ' + esc(c.node_type||'') + '</div>' +
+    '<div class="desc-no-desc">Flat chunk — switch to Semantic tab for descriptions</div>';
+  document.getElementById('nav-bar').style.display = 'none';
+  fetchSource(c.path, c.start_line, c.end_line, c.content);
 }
 
-async function fetchContent(path, start, end, fallback) {
-  var body = document.getElementById('detail-body');
+async function fetchSource(path, start, end, fallback) {
+  var body = document.getElementById('source-body');
   if (fallback !== null && fallback !== undefined) {
-    body.innerHTML = '<pre id="detail-code">' + esc(fallback) + '</pre>';
+    body.innerHTML = '<pre id="source-code">' + esc(fallback) + '</pre>';
     return;
   }
   body.innerHTML = '<div class="empty">Loading…</div>';
   try {
     var r = await fetch('/api/content?path=' + encodeURIComponent(path) + '&start=' + start + '&end=' + end);
     var d = await r.json();
-    body.innerHTML = '<pre id="detail-code">' + esc(d.content) + '</pre>';
-  } catch(e) {
-    body.innerHTML = '<div class="empty">Could not load content</div>';
-  }
+    body.innerHTML = '<pre id="source-code">' + esc(d.content) + '</pre>';
+  } catch(e) { body.innerHTML = '<div class="empty">Could not load source</div>'; }
 }
 
 function esc(s) {
-  if (s === null || s === undefined) return '';
+  if (s == null) return '';
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 

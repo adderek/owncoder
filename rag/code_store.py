@@ -97,6 +97,13 @@ class CodeStore:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA foreign_keys=ON")
+            conn.enable_load_extension(True)
+            try:
+                import sqlite_vec
+                sqlite_vec.load(conn)
+            except Exception:
+                pass
+            conn.enable_load_extension(False)
             self._local.conn = conn
             self._run_ddl(conn)
         return self._local.conn
@@ -116,14 +123,6 @@ class CodeStore:
 
     def _ensure_vec_table(self, dims: int) -> None:
         conn = self._conn
-        conn.enable_load_extension(True)
-        try:
-            import sqlite_vec
-            sqlite_vec.load(conn)
-        except Exception as e:
-            conn.enable_load_extension(False)
-            raise RuntimeError(f"sqlite-vec unavailable: {e}") from e
-        conn.enable_load_extension(False)
         conn.execute(f"""
             CREATE VIRTUAL TABLE IF NOT EXISTS vec_units USING vec0(
                 unit_id   TEXT PRIMARY KEY,

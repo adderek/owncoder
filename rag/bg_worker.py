@@ -9,6 +9,7 @@ import hashlib
 import logging
 import threading
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
@@ -30,12 +31,14 @@ class BgWorker:
         judge: "Judge",
         embedder: "Embedder | None" = None,
         on_progress: Callable[[str, dict], None] | None = None,
+        working_dir: str | None = None,
     ) -> None:
         self._store = store
         self._describer = describer
         self._judge = judge
         self._embedder = embedder
         self._on_progress = on_progress or (lambda _e, _d: None)
+        self._working_dir = Path(working_dir).resolve() if working_dir else None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -86,10 +89,30 @@ class BgWorker:
 
         return False
 
+    def _read_content(self, unit: dict) -> str:
+        """Read source lines for a unit from disk. Returns empty string on failure."""
+        raw_path = unit.get("path", "")
+        if not raw_path:
+            return ""
+        fpath = Path(raw_path)
+        if not fpath.is_absolute() and self._working_dir:
+            fpath = self._working_dir / fpath
+        start = unit.get("start_line") or 1
+        end = unit.get("end_line") or start
+        try:
+            lines = fpath.read_text(errors="replace").splitlines()
+            return "\n".join(lines[max(0, start - 1):end])
+        except Exception as e:
+            logger.debug("Could not read content for %s: %s", raw_path, e)
+            return ""
+
     # ── leaf description ──────────────────────────────────────────────────────
 
     def _describe(self, unit: dict) -> None:
         path, level = unit["path"], unit.get("level", 0)
+
+        if not unit.get("content"):
+            unit["content"] = self._read_content(unit)
 
         siblings = self._store.get_units_for_file(path, level=level)
         idx = {u["id"]: i for i, u in enumerate(siblings)}
