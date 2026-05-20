@@ -94,7 +94,9 @@ def cmd_init(args, config):
     if config.summarization.enabled and stats["indexed"] > 0:
         pending = code_store.stats().get("by_status", {}).get("pending", 0)
         if pending:
-            console.print(f"  {pending} chunks queued for summarization (running in background…)")
+            depth = code_store.max_level()
+            rounds_hint = f", ~{depth + 1} rollup round(s)" if depth > 0 else ""
+            console.print(f"  {pending} chunks queued for summarization{rounds_hint} (running in background…)")
             worker = _make_bg_worker(config, code_store, embedder)
             if worker:
                 worker.start()
@@ -107,7 +109,7 @@ def cmd_init(args, config):
                         r_stale = remaining.get("stale", 0)
                         if r_pending == 0 and r_stale == 0:
                             break
-                        console.print(f"  [dim]pending={r_pending} stale={r_stale}[/dim]", end="\r")
+                        console.print(f"  [dim]remaining={r_pending + r_stale}[/dim]", end="\r")
                         _time.sleep(2)
                 except KeyboardInterrupt:
                     pass
@@ -214,7 +216,9 @@ def cmd_index_update(args, config):
         pending = by_status.get("pending", 0) + by_status.get("stale", 0)
         if pending:
             import time as _time
-            console.print(f"  {pending} chunks pending summarization (resuming…)")
+            depth = code_store.max_level()
+            rounds_hint = f", ~{depth + 1} rollup round(s)" if depth > 0 else ""
+            console.print(f"  {pending} chunks pending summarization{rounds_hint} (resuming…)")
             worker = _make_bg_worker(config, code_store, embedder)
             if worker:
                 worker.start()
@@ -226,7 +230,7 @@ def cmd_index_update(args, config):
                         r_stale = remaining.get("stale", 0)
                         if r_pending == 0 and r_stale == 0:
                             break
-                        console.print(f"  [dim]pending={r_pending} stale={r_stale}[/dim]", end="\r")
+                        console.print(f"  [dim]remaining={r_pending + r_stale}[/dim]", end="\r")
                         _time.sleep(2)
                 except KeyboardInterrupt:
                     pass

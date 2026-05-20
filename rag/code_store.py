@@ -324,6 +324,10 @@ class CodeStore:
         files = conn.execute("SELECT COUNT(*) FROM indexed_files").fetchone()[0]
         return {"total": total, "by_status": by_status, "files": files}
 
+    def max_level(self) -> int:
+        row = self._conn.execute("SELECT MAX(level) FROM units").fetchone()
+        return row[0] or 0
+
     def close(self) -> None:
         if hasattr(self._local, "conn"):
             self._local.conn.close()
