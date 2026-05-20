@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import os
 import pytest
-from agent.config import Config, _apply_env_overrides, _merge_obj, load_config
-from agent.config.loader import _try_auto_select_model, _resolve_default_entry
+from agent.config import Config, _apply_env_overrides, _merge_obj, load_config, make_registry
+from agent.config.loader import _try_auto_select_model, _resolve_default_entry, _resolve_role_pools
 from agent.config.models import ModelEntry
 
 
@@ -188,6 +188,101 @@ class TestModelPool:
         (tmp_path / "agent.toml").write_bytes(toml)
         with pytest.raises(ValueError, match="candidates must be a list of strings"):
             load_config(tmp_path / "agent.toml")
+
+
+class TestSummarizerPool:
+    def test_list_syntax_parsed_as_pool(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        toml = (
+            b'[models]\nsummarizer = ["cpu-qwen1m", "gpu-summ"]\n'
+            b'[models.cpu-qwen1m]\nbase_url="http://localhost:8083/v1"\nmodel="qwen-1m"\n'
+            b'[models.gpu-summ]\nbase_url="http://localhost:8081/v1"\nmodel="qwen-fast"\n'
+        )
+        (tmp_path / "agent.toml").write_bytes(toml)
+        c = load_config(tmp_path / "agent.toml")
+        assert c.model_pools["summarizer"] == ["cpu-qwen1m", "gpu-summ"]
+        assert "summarizer" not in c.model_roles
+
+    def test_invalid_list_raises(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        toml = b'[models]\nsummarizer = [1, 2]\n'
+        (tmp_path / "agent.toml").write_bytes(toml)
+        with pytest.raises(ValueError, match="must be a list of strings"):
+            load_config(tmp_path / "agent.toml")
+
+    def test_resolve_picks_first_reachable(self, monkeypatch):
+        c = Config()
+        c.model_pools["summarizer"] = ["cpu-qwen1m", "gpu-summ"]
+        c.model_entries["cpu-qwen1m"] = _entry("qwen-1m", "http://localhost:8083/v1")
+        c.model_entries["gpu-summ"] = _entry("qwen-fast", "http://localhost:8081/v1")
+
+        def fake_urlopen(req, timeout):
+            if "8083" in req.full_url:
+                raise OSError("down")
+            return _FakeResponse()
+
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        _resolve_role_pools(c)
+        assert c.model_roles["summarizer"] == "gpu-summ"
+
+    def test_resolve_leaves_unset_when_all_down(self, monkeypatch):
+        c = Config()
+        c.model_pools["summarizer"] = ["cpu-qwen1m", "gpu-summ"]
+        c.model_entries["cpu-qwen1m"] = _entry("qwen-1m", "http://localhost:8083/v1")
+        c.model_entries["gpu-summ"] = _entry("qwen-fast", "http://localhost:8081/v1")
+
+        monkeypatch.setattr("urllib.request.urlopen", lambda *a, **kw: (_ for _ in ()).throw(OSError("down")))
+        _resolve_role_pools(c)
+        assert "summarizer" not in c.model_roles
+
+    def test_registry_raises_when_pool_configured_but_none_resolved(self):
+        c = Config()
+        c.model_pools["summarizer"] = ["cpu-qwen1m", "gpu-summ"]
+        c.model_entries["cpu-qwen1m"] = _entry("qwen-1m")
+        c.model_entries["default"] = _entry("default-model")
+        registry = make_registry(c)
+        with pytest.raises(RuntimeError, match="No summarizer available"):
+            _ = registry.summarizer
+
+    def test_registry_returns_resolved_entry(self):
+        c = Config()
+        c.model_pools["summarizer"] = ["cpu-qwen1m", "gpu-summ"]
+        c.model_roles["summarizer"] = "cpu-qwen1m"
+        c.model_entries["cpu-qwen1m"] = _entry("qwen-1m", "http://localhost:8083/v1")
+        registry = make_registry(c)
+        assert registry.summarizer.model == "qwen-1m"
+
+    def test_registry_falls_back_to_default_when_no_pool(self):
+        c = Config()
+        c.model_entries["default"] = _entry("default-model")
+        registry = make_registry(c)
+        assert registry.summarizer.model == "default-model"
+
+    def test_resolve_skips_missing_entries(self, monkeypatch):
+        c = Config()
+        c.model_pools["summarizer"] = ["nonexistent", "cpu-qwen1m"]
+        c.model_entries["cpu-qwen1m"] = _entry("qwen-1m", "http://localhost:8083/v1")
+
+        monkeypatch.setattr("urllib.request.urlopen", lambda *a, **kw: _FakeResponse())
+        _resolve_role_pools(c)
+        assert c.model_roles["summarizer"] == "cpu-qwen1m"
+
+    def test_resolve_does_not_override_explicit_role(self, monkeypatch):
+        c = Config()
+        c.model_pools["summarizer"] = ["cpu-qwen1m", "gpu-summ"]
+        c.model_roles["summarizer"] = "gpu-summ"
+        c.model_entries["cpu-qwen1m"] = _entry("qwen-1m", "http://localhost:8083/v1")
+        c.model_entries["gpu-summ"] = _entry("qwen-fast", "http://localhost:8081/v1")
+
+        monkeypatch.setattr("urllib.request.urlopen", lambda *a, **kw: _FakeResponse())
+        _resolve_role_pools(c)
+        assert c.model_roles["summarizer"] == "gpu-summ"  # unchanged
+
+
+class _FakeResponse:
+    def __enter__(self): return self
+    def __exit__(self, *a): pass
+    def read(self): return b"{}"
 
 
 class TestLoadConfig:

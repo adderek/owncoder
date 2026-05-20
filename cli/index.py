@@ -206,6 +206,34 @@ def cmd_index_update(args, config):
         stats = index_directory(root=config.tools.working_dir, store=store, embedder=embedder, cfg=config.rag)
         console.print(f"Updated: {stats['indexed']} files re-indexed, {stats['skipped']} unchanged.")
 
+    # Resume any pending summarization left over from an interrupted run.
+    if config.summarization.enabled:
+        from agent.rag.code_store import CodeStore
+        code_store = CodeStore(config.summarization.db_path)
+        by_status = code_store.stats().get("by_status", {})
+        pending = by_status.get("pending", 0) + by_status.get("stale", 0)
+        if pending:
+            import time as _time
+            console.print(f"  {pending} chunks pending summarization (resuming…)")
+            worker = _make_bg_worker(config, code_store, embedder)
+            if worker:
+                worker.start()
+                console.print("  [dim]Press Ctrl+C to stop early (queue persists).[/dim]")
+                try:
+                    while worker.is_alive():
+                        remaining = code_store.stats().get("by_status", {})
+                        r_pending = remaining.get("pending", 0)
+                        r_stale = remaining.get("stale", 0)
+                        if r_pending == 0 and r_stale == 0:
+                            break
+                        console.print(f"  [dim]pending={r_pending} stale={r_stale}[/dim]", end="\r")
+                        _time.sleep(2)
+                except KeyboardInterrupt:
+                    pass
+                worker.stop()
+                final = code_store.stats().get("by_status", {})
+                console.print(f"\n  Summarization: {final}")
+
     pruned = prune_index(config.tools.working_dir, store, archive, reason="stale")
     if pruned["archived"]:
         console.print(f"Archived {pruned['archived']} chunks from {len(pruned['paths'])} file(s):")

@@ -166,6 +166,12 @@ def _merge_models(config: Config, data: dict) -> None:
         if isinstance(entry_data, str):
             # e.g. summarizer = "deepseek-r1"
             config.model_roles[name] = entry_data
+        elif isinstance(entry_data, list):
+            # e.g. summarizer = ["cpu-qwen1m", "gpu-summarizer"]
+            if not all(isinstance(c, str) for c in entry_data):
+                raise ValueError(f"role pool '{name}': must be a list of strings")
+            config.model_pools[name] = entry_data
+            config.model_roles.pop(name, None)  # list overrides any prior string assignment
         elif isinstance(entry_data, dict):
             if "candidates" in entry_data:
                 # Pool definition: default.candidates = ["gpu-gemma4", "gpu-qwen"]
@@ -327,6 +333,29 @@ def load_config(extra_path: Path | None = None) -> Config:
     return config
 
 
+def _resolve_role_pools(config: Config, timeout: int = 3) -> None:
+    """Probe ordered candidates for each non-default role pool; pin first reachable to model_roles."""
+    for role, candidates in config.model_pools.items():
+        if role == "default":
+            continue  # handled by _try_auto_select_model
+        if role in config.model_roles:
+            continue  # already pinned (explicit string assignment or env override)
+        for name in candidates:
+            entry = config.model_entries.get(name)
+            if entry is None:
+                continue
+            url = entry.base_url.rstrip("/") + "/models"
+            try:
+                req = urllib.request.Request(url, method="GET")
+                req.add_header("Authorization", f"Bearer {entry.api_key}")
+                with urllib.request.urlopen(req, timeout=timeout):
+                    pass
+                config.model_roles[role] = name
+                break
+            except (urllib.error.URLError, OSError):
+                continue
+
+
 def check_reachability(config: Config) -> None:
     import json
     import sys
@@ -353,6 +382,8 @@ def check_reachability(config: Config) -> None:
             f"  Continuing anyway — chat will fail until the server is available.\n",
             file=sys.stderr,
         )
+
+    _resolve_role_pools(config)
 
     decision_cfg = getattr(config.parallel, "decision", None)
     if decision_cfg is not None and getattr(decision_cfg, "verify_on_startup", False):

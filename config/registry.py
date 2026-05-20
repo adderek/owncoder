@@ -10,9 +10,15 @@ if TYPE_CHECKING:
 class ModelRegistry:
     """Thin wrapper around the `model_entries` dict from Config."""
 
-    def __init__(self, entries: dict[str, "ModelEntry"], roles: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        entries: dict[str, "ModelEntry"],
+        roles: dict[str, str] | None = None,
+        pools: dict[str, list[str]] | None = None,
+    ) -> None:
         self._entries = entries
         self._roles: dict[str, str] = roles or {}
+        self._pools: dict[str, list[str]] = pools or {}
 
     # ── Role-based access ──────────────────────────────────────────────────
 
@@ -37,9 +43,20 @@ class ModelRegistry:
 
     @property
     def summarizer(self) -> "ModelEntry":
-        """Return the configured summarizer entry, falling back to default."""
+        """Return the configured summarizer entry.
+
+        If a pool is configured and no candidate was resolved (all unreachable),
+        raises RuntimeError instead of silently falling back to the default model.
+        """
         entry = self.for_role("summarizer")
-        return entry if entry is not None else self.default
+        if entry is not None:
+            return entry
+        if "summarizer" in self._pools:
+            candidates = self._pools["summarizer"]
+            raise RuntimeError(
+                f"No summarizer available: all candidates unreachable {candidates}"
+            )
+        return self.default
 
     # ── Lookup ─────────────────────────────────────────────────────────────
 
@@ -63,4 +80,4 @@ class ModelRegistry:
         return list(self._entries.keys())
 
     def __repr__(self) -> str:
-        return f"ModelRegistry({list(self._entries)}, roles={self._roles})"
+        return f"ModelRegistry({list(self._entries)}, roles={self._roles}, pools={self._pools})"

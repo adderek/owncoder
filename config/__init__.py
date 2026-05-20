@@ -29,7 +29,7 @@ from .registry import ModelRegistry
 
 
 def make_registry(config: Config) -> ModelRegistry:
-    return ModelRegistry(config.model_entries, config.model_roles)
+    return ModelRegistry(config.model_entries, config.model_roles, config.model_pools)
 
 
 __all__ = [
