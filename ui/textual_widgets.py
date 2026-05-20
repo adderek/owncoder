@@ -607,6 +607,9 @@ def build_widget_classes(t) -> SimpleNamespace:
                 self.matches = matches
                 self.selected_idx = selected_idx
 
+        _HISTORY_PREFS_KEY = "input_history"
+        _MAX_SAVED_HISTORY = 200
+
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
             self._history: list[str] = []
@@ -617,6 +620,24 @@ def build_widget_classes(t) -> SimpleNamespace:
             self._comp_matches: list[tuple[str, str, bool]] = []
             self._comp_idx: int = -1  # -1 = no item highlighted
             self._comp_suppress_update: bool = False
+
+        def on_mount(self) -> None:
+            try:
+                from agent.ui.prefs import load_prefs
+                saved = load_prefs().get(self._HISTORY_PREFS_KEY, [])
+                if isinstance(saved, list):
+                    self._history = [str(h) for h in saved if h]
+            except Exception:
+                pass
+
+        def on_unmount(self) -> None:
+            try:
+                from agent.ui.prefs import load_prefs, save_prefs
+                prefs = load_prefs()
+                prefs[self._HISTORY_PREFS_KEY] = self._history[-self._MAX_SAVED_HISTORY:]
+                save_prefs(prefs)
+            except Exception:
+                pass
 
         def add_to_history(self, text: str) -> None:
             if not self._history or self._history[-1] != text:

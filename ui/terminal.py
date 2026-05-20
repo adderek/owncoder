@@ -101,6 +101,13 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             Binding("ctrl+r", "continue_turn", "Continue"),
             Binding("ctrl+c", "interrupt_turn", "Stop", show=False),
             Binding("ctrl+tab", "focus_next", "Switch focus", show=False),
+            Binding("ctrl+1", "activate_tab('tab-chat')", "Chat", show=False),
+            Binding("ctrl+2", "activate_tab('tab-q')", "Q", show=False),
+            Binding("ctrl+3", "activate_tab('tab-q-summary')", "Q Sum", show=False),
+            Binding("ctrl+4", "activate_tab('tab-a')", "A", show=False),
+            Binding("ctrl+5", "activate_tab('tab-a-summary')", "A Sum", show=False),
+            Binding("ctrl+6", "activate_tab('tab-sparse')", "Sparse", show=False),
+            Binding("ctrl+7", "activate_tab('tab-sys')", "Sys", show=False),
         ]
 
         def __init__(self, agent: "Agent", session=None, server=None, **kwargs):
@@ -329,6 +336,10 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
         def action_show_help(self) -> None:
             from agent.ui.readline_loop import _make_help_text
             self._write_sys(_make_help_text(t))
+
+        def action_activate_tab(self, tab_id: str) -> None:
+            from textual.widgets import TabbedContent
+            self.query_one(TabbedContent).active = tab_id
 
         def action_continue_turn(self) -> None:
             if self._agent_running:
@@ -584,25 +595,22 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             except Exception as exc:
                 logger.warning("rate_session failed: %s", exc)
 
+        def _finish_rating(self) -> None:
+            self._hide_rating_bar()
+            if getattr(self, "_rating_prompted", False):
+                self._rating_prompted = False
+                self.action_quit()
+
         def on_button_pressed(self, event) -> None:
             bid = event.button.id
             if bid == "btn-rate-good":
-                self._hide_rating_bar()
                 self._do_rate_session("good")
-                if getattr(self, "_rating_prompted", False):
-                    self._rating_prompted = False
-                    self.action_quit()
+                self._finish_rating()
             elif bid == "btn-rate-bad":
-                self._hide_rating_bar()
                 self._do_rate_session("bad")
-                if getattr(self, "_rating_prompted", False):
-                    self._rating_prompted = False
-                    self.action_quit()
+                self._finish_rating()
             elif bid == "btn-rate-skip":
-                self._hide_rating_bar()
-                if getattr(self, "_rating_prompted", False):
-                    self._rating_prompted = False
-                    self.action_quit()
+                self._finish_rating()
 
     return CodeAgentApp(agent, session=session, server=server)
 

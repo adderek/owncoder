@@ -35,13 +35,22 @@ def cmd_init(args, config):
     from rich.progress import Progress, SpinnerColumn, BarColumn, MofNCompleteColumn, TimeElapsedColumn, TimeRemainingColumn, TextColumn
 
     console = Console()
-    store = VectorStore(config.rag)
-    embedder = Embedder(config.embeddings)
-    code_store = CodeStore(config.summarization.db_path)
 
     languages = args.languages.split(",") if args.languages else None
     exclude = args.exclude.split(",") if args.exclude else []
     working_dir = config.tools.working_dir
+    _agent_dir = Path(working_dir) / config.tools.agent_dir
+    _agent_dir.mkdir(parents=True, exist_ok=True)
+    _in_progress = _agent_dir / ".init_in_progress"
+    _initialized = _agent_dir / ".initialized"
+
+    if _in_progress.exists() and not _initialized.exists():
+        console.print("[yellow]Warning: previous 'agent init' was interrupted. Re-running.[/yellow]")
+    _in_progress.touch()
+
+    store = VectorStore(config.rag)
+    embedder = Embedder(config.embeddings)
+    code_store = CodeStore(config.summarization.db_path)
 
     load_rules(working_dir)
 
@@ -91,8 +100,8 @@ def cmd_init(args, config):
         f"created {stats['chunks']} chunks."
     )
     try:
-        marker = Path(working_dir) / config.tools.agent_dir / ".initialized"
-        marker.touch()
+        _in_progress.unlink(missing_ok=True)
+        _initialized.touch()
     except Exception:
         pass
 

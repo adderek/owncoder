@@ -119,16 +119,7 @@ class EventHandlerMixin:
     _STREAM_RENDER_INTERVAL = 0.05  # 50ms throttle
 
     def _stream_tail(self, buf: list) -> str:
-        total = sum(len(s) for s in buf)
-        if total <= 800:
-            return "".join(buf)
-        result, acc = [], 0
-        for chunk in reversed(buf):
-            acc += len(chunk)
-            result.append(chunk)
-            if acc >= 800:
-                break
-        return "".join(reversed(result))[-800:]
+        return "".join(buf)[-800:]
 
     def _flush_reasoning(self) -> None:
         """Write folded reasoning summary to chat log and clear stream-view."""
@@ -185,18 +176,9 @@ class EventHandlerMixin:
         content = Text.assemble(("Agent:", f"bold {t.agent_color}"), (f" {tail}▌",))
         stream_view.update(content)
 
-    def on_worker_state_changed(self, event) -> None:
+    def _turn_cleanup(self, event) -> None:
         from textual.worker import WorkerState
-        from rich.markdown import Markdown as _Markdown
-        from agent.ui.render import _delatex
-
-        if event.worker.name != "chat":
-            return
-        if event.state not in (WorkerState.SUCCESS, WorkerState.ERROR, WorkerState.CANCELLED):
-            return
-
         t = self._t
-
         if self._loading_timer is not None:
             self._loading_timer.stop()
             self._loading_timer = None
@@ -204,11 +186,8 @@ class EventHandlerMixin:
             self._title_spinner_timer.stop()
             self._title_spinner_timer = None
         self.query_one("#loading-row").remove_class("active")
-
         self._agent_running = False
-        input_widget = self.query_one("#input-bar", self._wt.PromptInput)
-        input_widget.focus()
-
+        self.query_one("#input-bar", self._wt.PromptInput).focus()
         if getattr(self, "_terminal_title", "auto") != "off":
             if event.state == WorkerState.ERROR:
                 self.title = "agent — error, waiting for input"
@@ -220,6 +199,9 @@ class EventHandlerMixin:
             if getattr(self, "_bell_on_input_request", True):
                 self.bell()
 
+    def _turn_extract_response(self, event) -> "tuple[str | None, bool]":
+        from textual.worker import WorkerState
+        t = self._t
         empty_response = False
         if event.state == WorkerState.SUCCESS:
             response = event.worker.result
@@ -231,8 +213,7 @@ class EventHandlerMixin:
             err = event.worker.error
             tb = (
                 "".join(traceback.format_exception(type(err), err, err.__traceback__))
-                if err
-                else ""
+                if err else ""
             )
             logger.error("chat worker error: %s\n%s", err, tb)
             response = f"[{t.error}]Error: {err}[/{t.error}]"
@@ -244,7 +225,10 @@ class EventHandlerMixin:
                     self._server.save_session(self._session)
                 except Exception:
                     logger.exception("save_session on cancel failed")
+        return response, empty_response
 
+    def _turn_update_context_panel(self) -> None:
+        t = self._t
         tokens_after = self._server.token_estimate()
         delta = tokens_after - self._tokens_before
         tools_line = self._render_tool_summary()
@@ -269,6 +253,7 @@ class EventHandlerMixin:
             f"{tools_line}\n{token_line}" if tools_line else token_line
         )
 
+    def _turn_flush_streaming(self) -> None:
         fold_mode = self._server.get_ui_config()["reasoning_fold"]
         if self._reasoning_buffer and fold_mode != "never":
             self._flush_reasoning()
@@ -280,6 +265,10 @@ class EventHandlerMixin:
             self._stream_buffer = []
             self._stream_last_render = 0.0
 
+    def _turn_write_chat(self, response: "str | None", empty_response: bool) -> None:
+        from rich.markdown import Markdown as _Markdown
+        from agent.ui.render import _delatex
+        t = self._t
         if self._last_tool_calls:
             tool_part = self._render_tool_summary()
             if self._modified_files:
@@ -290,22 +279,31 @@ class EventHandlerMixin:
         elif self._modified_files:
             files_part = f"[{t.success}]{_escape('  '.join(self._modified_files))}[/{t.success}]"
             self._write_chat(f"  {files_part}")
-
         if response:
             if empty_response:
-                body = _escape(response)
                 self._write_chat(
-                    f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] [{t.text_dim}]{body}[/{t.text_dim}]"
+                    f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] "
+                    f"[{t.text_dim}]{_escape(response)}[/{t.text_dim}]"
                 )
             else:
                 self._write_chat(f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}]")
                 self._write_chat(_Markdown(_delatex(response)))
 
+    def on_worker_state_changed(self, event) -> None:
+        from textual.worker import WorkerState
+        if event.worker.name != "chat":
+            return
+        if event.state not in (WorkerState.SUCCESS, WorkerState.ERROR, WorkerState.CANCELLED):
+            return
+        self._turn_cleanup(event)
+        response, empty_response = self._turn_extract_response(event)
+        self._turn_update_context_panel()
+        self._turn_flush_streaming()
+        self._turn_write_chat(response, empty_response)
         if event.state == WorkerState.SUCCESS:
             if self._round_summary_enabled:
                 self._write_round_summary(getattr(self, "_current_user_text", ""), response or "")
             self._append_qa_turn(getattr(self, "_current_user_text", ""), response or "")
-
         self._refresh_token_bar()
         self.call_later(self._refresh_git)
 

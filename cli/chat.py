@@ -165,27 +165,27 @@ def cmd_chat(args, config):
     import sys as _sys
     _marker = Path(config.tools.working_dir) / config.tools.agent_dir / ".initialized"
     _db_path_check = Path(config.rag.db_path)
+    _reuse_store = None
     if not _marker.exists():
+        _ERR_MSG = (
+            "[red]Index not initialized.[/red] Run [bold]agent init[/bold] first.\n"
+            "  The agent will not work correctly without a completed index."
+        )
         if _db_path_check.exists():
             try:
-                _chk = VectorStore(config.rag)
-                _chk_stats = _chk.stats()
-                _chk.close()
-                if _chk_stats["files"] > 0:
+                _guard = VectorStore(config.rag)
+                if _guard.stats()["files"] > 0:
                     _marker.touch()
+                    _reuse_store = _guard
                 else:
-                    raise ValueError("empty index")
+                    _guard.close()
+                    console.print(_ERR_MSG)
+                    _sys.exit(1)
             except Exception:
-                console.print(
-                    "[red]Index not initialized.[/red] Run [bold]agent init[/bold] first.\n"
-                    "  The agent will not work correctly without a completed index."
-                )
+                console.print(_ERR_MSG)
                 _sys.exit(1)
         else:
-            console.print(
-                "[red]Index not initialized.[/red] Run [bold]agent init[/bold] first.\n"
-                "  The agent will not work correctly without a completed index."
-            )
+            console.print(_ERR_MSG)
             _sys.exit(1)
 
     store = None
@@ -196,7 +196,8 @@ def cmd_chat(args, config):
     db_path = Path(config.rag.db_path)
     if db_path.exists():
         try:
-            store = VectorStore(config.rag)
+            store = _reuse_store or VectorStore(config.rag)
+            _reuse_store = None
             embedder = Embedder(config.embeddings)
             if config.asm.enabled:
                 from agent.rag.asm_store import AsmStore
