@@ -500,7 +500,7 @@ def build_widget_classes(t) -> SimpleNamespace:
         """Compact inline indicator of model request states (idle/running). Click to view config."""
 
         def on_mount(self) -> None:
-            self.set_interval(0.15, self._refresh)
+            self.set_interval(0.5, self._refresh)
             self.tooltip = "Click to view model config / worker status"
 
         def _refresh(self) -> None:
@@ -739,20 +739,25 @@ def build_widget_classes(t) -> SimpleNamespace:
                         self.clear()
 
             elif self._mode == "browsing":
-                event.prevent_default()
                 if event.key == "up":
+                    event.prevent_default()
                     if self._history_idx is not None and self._history_idx > 0:
                         self._enter_browsing(self._history_idx - 1)
                 elif event.key == "down":
+                    event.prevent_default()
                     if self._history_idx is not None:
                         if self._history_idx < len(self._history) - 1:
                             self._enter_browsing(self._history_idx + 1)
                         else:
                             self._exit_browsing()
                 elif event.key == "escape":
+                    event.prevent_default()
                     self._exit_browsing()
                 elif event.key == "enter":
+                    event.prevent_default()
                     self._enter_editing()
+                else:
+                    self._exit_browsing()
 
             elif self._mode == "editing":
                 if event.key == "escape":

@@ -52,30 +52,6 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
     from rich.markdown import Markdown
 
     from agent.ui.textual_widgets import build_widget_classes
-    from agent.ui_server import LocalUIServer
-    if server is None:
-        server = LocalUIServer(agent)
-    t = server.get_ui_config()["theme"]
-
-    from textual.app import App, ComposeResult
-    from textual.widgets import (
-        Footer,
-        RichLog,
-        Static,
-        TextArea,
-        LoadingIndicator,
-        TabbedContent,
-        TabPane,
-    )
-    from textual.containers import Horizontal
-    from textual.binding import Binding
-    from textual.message import Message
-    from textual.worker import Worker, WorkerState
-    from textual import work
-    from rich.markup import escape as _escape
-    from rich.markdown import Markdown
-
-    from agent.ui.textual_widgets import build_widget_classes
     _w = build_widget_classes(t)
 
     # Import mixins inside factory so ImportError propagates if Textual absent
@@ -370,12 +346,13 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                 self._server.stop_after_iteration()
                 self._write_sys(
                     f"[{t.warning}]Stopping after current iteration… "
-                    f"Press Ctrl+C again to cancel immediately.[/{t.warning}]"
+                    f"Press Ctrl+C again to cancel immediately.[/{t.warning}]",
+                    switch_tab=False,
                 )
             else:
                 if self._chat_worker is not None:
                     self._chat_worker.cancel()
-                self._write_sys(f"[{t.error}]Cancelled.[/{t.error}]")
+                self._write_sys(f"[{t.error}]Cancelled.[/{t.error}]", switch_tab=False)
 
         # ── git refresh ──────────────────────────────────────────────────────
 
@@ -418,7 +395,8 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                 if user_text.startswith("/") or user_text.lower() == "continue":
                     self._write_sys(
                         f"[{t.warning}]Agent running — slash commands and 'continue' "
-                        f"not accepted mid-turn. Text messages are injected.[/{t.warning}]"
+                        f"not accepted mid-turn. Text messages are injected.[/{t.warning}]",
+                        switch_tab=False,
                     )
                     return
                 self._server.inject(user_text)

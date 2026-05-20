@@ -90,6 +90,11 @@ def cmd_init(args, config):
         f"skipped {stats['skipped']}, "
         f"created {stats['chunks']} chunks."
     )
+    try:
+        marker = Path(working_dir) / config.tools.agent_dir / ".initialized"
+        marker.touch()
+    except Exception:
+        pass
 
     if config.summarization.enabled and stats["indexed"] > 0:
         pending = code_store.stats().get("by_status", {}).get("pending", 0)

@@ -162,6 +162,32 @@ def cmd_chat(args, config):
             "  Create [bold]agent.toml[/bold] in this directory to customise settings.\n"
         )
 
+    import sys as _sys
+    _marker = Path(config.tools.working_dir) / config.tools.agent_dir / ".initialized"
+    _db_path_check = Path(config.rag.db_path)
+    if not _marker.exists():
+        if _db_path_check.exists():
+            try:
+                _chk = VectorStore(config.rag)
+                _chk_stats = _chk.stats()
+                _chk.close()
+                if _chk_stats["files"] > 0:
+                    _marker.touch()
+                else:
+                    raise ValueError("empty index")
+            except Exception:
+                console.print(
+                    "[red]Index not initialized.[/red] Run [bold]agent init[/bold] first.\n"
+                    "  The agent will not work correctly without a completed index."
+                )
+                _sys.exit(1)
+        else:
+            console.print(
+                "[red]Index not initialized.[/red] Run [bold]agent init[/bold] first.\n"
+                "  The agent will not work correctly without a completed index."
+            )
+            _sys.exit(1)
+
     store = None
     embedder = None
     asm_store = None

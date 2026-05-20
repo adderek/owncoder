@@ -19,11 +19,12 @@ logger = logging.getLogger(__name__)
 class ViewMixin:
     """Chat/sys/QA view write helpers."""
 
-    def _write_sys(self, text: str) -> None:
+    def _write_sys(self, text: str, switch_tab: bool = True) -> None:
         from textual.widgets import TabbedContent
         self._sys_messages.append(text)
         self.query_one("#sys-log", self._wt.SysView).write(text)
-        self.query_one(TabbedContent).active = "tab-sys"
+        if switch_tab:
+            self.query_one(TabbedContent).active = "tab-sys"
 
     def _write_chat(self, text) -> None:
         self.query_one("#chat-log", self._wt.ConversationView).write(text)

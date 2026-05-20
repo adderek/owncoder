@@ -305,10 +305,6 @@ class EventHandlerMixin:
             if self._round_summary_enabled:
                 self._write_round_summary(getattr(self, "_current_user_text", ""), response or "")
             self._append_qa_turn(getattr(self, "_current_user_text", ""), response or "")
-            try:
-                self._show_rating_bar("Rate:")
-            except Exception:
-                pass
 
         self._refresh_token_bar()
         self.call_later(self._refresh_git)
