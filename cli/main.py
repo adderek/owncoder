@@ -40,6 +40,9 @@ def main() -> None:
     idx_p.add_argument("--restore", type=str, metavar="PATH", help="Restore a previously archived path back into the live index")
     idx_p.add_argument("--purge-archive", action="store_true", help="Permanently delete archive rows older than archive_ttl_days")
     idx_p.add_argument("--archive-ttl", type=int, metavar="DAYS", help="Override archive_ttl_days for this run (0 = disable expiration)")
+    idx_p.add_argument("--daemon", action="store_true", help="Start background index watcher daemon")
+    idx_p.add_argument("--stop", action="store_true", help="Stop background index watcher daemon")
+    idx_p.add_argument("--watch", action="store_true", help="Watch for file changes and re-index (foreground; used internally by daemon)")
 
     # chat
     chat_p = sub.add_parser("chat", help="Start interactive session")
@@ -100,6 +103,10 @@ def main() -> None:
     dbg_p.add_argument("--context", action="store_true", help="Show full context of current session")
     dbg_p.add_argument("--session", type=str, help="Session name")
 
+    # serve
+    serve_p = sub.add_parser("serve", help="Start chunk browser web UI")
+    serve_p.add_argument("--port", type=int, default=8765, help="Port (default 8765; auto-increments if busy)")
+
     args = parser.parse_args()
 
     from agent.config import load_config, check_reachability, Config, ToolsConfig
@@ -142,6 +149,8 @@ def main() -> None:
             from agent.cli.index import (
                 cmd_index_update, cmd_index_stats, cmd_index_prune,
                 cmd_index_restore, cmd_index_purge_archive,
+                cmd_index_daemon_start, cmd_index_daemon_stop,
+                _daemon_watch_entry,
             )
             if args.update:
                 cmd_index_update(args, config)
@@ -153,6 +162,17 @@ def main() -> None:
                 cmd_index_restore(args, config)
             elif getattr(args, "purge_archive", False):
                 cmd_index_purge_archive(args, config)
+            elif getattr(args, "daemon", False):
+                cmd_index_daemon_start(args, config)
+            elif getattr(args, "stop", False):
+                cmd_index_daemon_stop(args, config)
+            elif getattr(args, "watch", False):
+                # Foreground watcher — also the path taken by the daemon subprocess.
+                _daemon_watch_entry(
+                    config,
+                    languages=getattr(args, "languages", None),
+                    exclude=getattr(args, "exclude", None),
+                )
             else:
                 parser.parse_args(["index", "--help"])
         elif args.command == "chat":
@@ -187,6 +207,9 @@ def main() -> None:
         elif args.command == "diag":
             from agent.cli.diag import cmd_diag
             cmd_diag(args, config)
+        elif args.command == "serve":
+            from agent.cli.serve import cmd_serve
+            cmd_serve(args, config)
         elif args.command == "exec":
             from agent.tools.exec_command import handle_exec_command
             handle_exec_command(args, config)

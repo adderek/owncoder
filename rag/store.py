@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from agent.config import RAGConfig
@@ -63,20 +66,60 @@ class VectorStore:
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS file_mtimes (
+                path TEXT PRIMARY KEY,
+                mtime REAL NOT NULL
+            );
         """)
         conn.commit()
 
     def _read_vec_dims(self) -> int | None:
-        row = self._get_conn().execute(
+        conn = self._get_conn()
+        row = conn.execute(
             "SELECT value FROM _meta WHERE key = 'embedding_dims'"
         ).fetchone()
-        return int(row["value"]) if row else None
+        if not row:
+            return None
+        meta_dims = int(row["value"])
+        # Verify the actual table schema matches _meta — they can diverge when the
+        # embedding model changes (table created at old dims, meta updated separately).
+        ddl = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='vec_chunks'"
+        ).fetchone()
+        if ddl is None:
+            # Table missing; reset so _ensure_vec_table recreates it.
+            conn.execute("DELETE FROM _meta WHERE key='embedding_dims'")
+            conn.commit()
+            return None
+        if f"float[{meta_dims}]" not in (ddl["sql"] or ""):
+            # Schema mismatch: drop stale table and clear meta so it gets rebuilt.
+            actual = (ddl["sql"] or "").split("float[")[-1].split("]")[0] if "float[" in (ddl["sql"] or "") else "?"
+            logger.warning(
+                "Embedding dimension mismatch: index.db has float[%s] but config expects %d dims. "
+                "Dropping stale vec_chunks table. Run `agent init --force` to rebuild all embeddings; "
+                "`agent index --update` will only re-embed files changed since last index.",
+                actual, meta_dims,
+            )
+            conn.executescript("DROP TABLE IF EXISTS vec_chunks;")
+            conn.execute("DELETE FROM _meta WHERE key='embedding_dims'")
+            conn.commit()
+            return None
+        return meta_dims
 
     def _ensure_vec_table(self, dims: int) -> None:
         """Create the vec0 KNN table if it doesn't exist for the given dimensions."""
         if self._vec_dims == dims:
             return
         conn = self._get_conn()
+        # Drop any stale table with the wrong dims before creating the new one.
+        if self._vec_dims is not None:
+            logger.warning(
+                "Embedding dimensions changed (%d → %d); dropping vec_chunks. "
+                "Run `agent init --force` to rebuild all embeddings.",
+                self._vec_dims, dims,
+            )
+            conn.executescript("DROP TABLE IF EXISTS vec_chunks;")
         conn.execute(f"""
             CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
                 chunk_id TEXT PRIMARY KEY,
@@ -169,8 +212,10 @@ class VectorStore:
 
     def delete_by_path(self, path: str) -> None:
         conn = self._get_conn()
+        conn.execute("DELETE FROM file_mtimes WHERE path = ?", (path,))
         rows = conn.execute("SELECT id, rowid FROM chunks WHERE path = ?", (path,)).fetchall()
         if not rows:
+            conn.commit()
             return
         ids = [r["id"] for r in rows]
         rowids = [r["rowid"] for r in rows]
@@ -252,7 +297,20 @@ class VectorStore:
         row = self._get_conn().execute(
             "SELECT mtime FROM chunks WHERE path = ? LIMIT 1", (path,)
         ).fetchone()
+        if row:
+            return row["mtime"]
+        row = self._get_conn().execute(
+            "SELECT mtime FROM file_mtimes WHERE path = ? LIMIT 1", (path,)
+        ).fetchone()
         return row["mtime"] if row else None
+
+    def set_file_mtime(self, path: str, mtime: float) -> None:
+        conn = self._get_conn()
+        conn.execute(
+            "INSERT OR REPLACE INTO file_mtimes(path, mtime) VALUES (?, ?)",
+            (path, mtime),
+        )
+        conn.commit()
 
     def vector_search(self, embedding: list[float], top_k: int = 20) -> list[dict]:
         import sqlite_vec
@@ -328,11 +386,15 @@ class VectorStore:
         return {"chunks": row["cnt"], "files": paths["cnt"]}
 
     def get_indexed_mtimes(self) -> dict[str, float]:
-        """Return {path: mtime} for all indexed files."""
-        rows = self._get_conn().execute(
-            "SELECT path, mtime FROM chunks GROUP BY path"
-        ).fetchall()
-        return {r["path"]: r["mtime"] for r in rows}
+        """Return {path: mtime} for all indexed files (including chunk-less visited files)."""
+        conn = self._get_conn()
+        result: dict[str, float] = {}
+        for r in conn.execute("SELECT path, mtime FROM file_mtimes").fetchall():
+            result[r["path"]] = r["mtime"]
+        # chunks entries override file_mtimes (chunks are authoritative when present)
+        for r in conn.execute("SELECT path, mtime FROM chunks GROUP BY path").fetchall():
+            result[r["path"]] = r["mtime"]
+        return result
 
     def close(self) -> None:
         if hasattr(self._local, "conn"):

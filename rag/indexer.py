@@ -228,6 +228,7 @@ def index_directory(
                 store.delete_by_path(abs_path)  # clean up legacy absolute-path entries
             chunks = chunk_file(abs_path, cfg)
             if not chunks:
+                store.set_file_mtime(rel, mtime)
                 continue
 
             for chunk in chunks:
@@ -282,6 +283,7 @@ def index_directory(
                     continue
                 _, chunks, _ = future.result()
                 if not chunks:
+                    store.set_file_mtime(rel, mtime)
                     continue
                 store.delete_by_path(rel)
                 if abs_path != rel:
@@ -303,6 +305,10 @@ def index_directory(
 def _enqueue_for_summarization(code_store, chunks: list[dict], path: str, mtime: float, git_hash, force: bool) -> None:
     """Upsert changed chunks into code_store with status='pending'."""
     import hashlib
+
+    # Wipe old summarization units for this file to avoid orphan accumulation
+    # when chunk boundaries shift between indexing runs.
+    code_store.delete_units_for_file(path)
 
     file_checksum = hashlib.sha256(path.encode()).hexdigest()[:16]
     existing_file = code_store.get_file_record(path)

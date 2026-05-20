@@ -325,6 +325,135 @@ def cmd_index_purge_archive(args, config):
     archive.close()
 
 
+def _daemon_pid_file(config) -> Path:
+    return Path(config.tools.working_dir) / config.tools.agent_dir / "index-daemon.pid"
+
+
+def _daemon_log_file(config) -> Path:
+    return Path(config.tools.working_dir) / config.tools.agent_dir / "index-daemon.log"
+
+
+def _read_daemon_pid(config) -> int | None:
+    pid_file = _daemon_pid_file(config)
+    if not pid_file.exists():
+        return None
+    try:
+        return int(pid_file.read_text().strip())
+    except Exception:
+        return None
+
+
+def _daemon_running(pid: int) -> bool:
+    import os
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Process exists but we can't signal it — still running.
+        return True
+
+
+def cmd_index_daemon_start(args, config):
+    import sys
+    import subprocess
+    from rich.console import Console
+
+    console = Console()
+    pid_file = _daemon_pid_file(config)
+    log_file = _daemon_log_file(config)
+
+    existing_pid = _read_daemon_pid(config)
+    if existing_pid is not None:
+        if _daemon_running(existing_pid):
+            console.print(f"[yellow]Daemon already running (pid {existing_pid}).[/yellow]")
+            console.print(f"  Log: {log_file}")
+            return
+        # Stale PID — clean it up.
+        pid_file.unlink(missing_ok=True)
+
+    cmd = [sys.executable, "-m", "agent.main", "index", "--watch"]
+    if getattr(args, "languages", None):
+        cmd += ["--languages", args.languages]
+
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_file, "a") as log_fh:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=config.tools.working_dir,
+            stdout=log_fh,
+            stderr=log_fh,
+            start_new_session=True,
+        )
+    pid_file.write_text(str(proc.pid))
+    console.print(f"[green]Index daemon started[/green] (pid {proc.pid})")
+    console.print(f"  Log:  {log_file}")
+    console.print(f"  Stop: agent index --stop")
+    console.print(f"  [dim]Note: only one writer should index at a time.[/dim]")
+
+
+def cmd_index_daemon_stop(args, config):
+    import os
+    from rich.console import Console
+
+    console = Console()
+    pid_file = _daemon_pid_file(config)
+    pid = _read_daemon_pid(config)
+
+    if pid is None:
+        console.print("No daemon PID file found — daemon not running.")
+        return
+
+    if not _daemon_running(pid):
+        console.print(f"[yellow]Daemon (pid {pid}) not running. Removing stale PID file.[/yellow]")
+        pid_file.unlink(missing_ok=True)
+        return
+
+    try:
+        os.kill(pid, 15)  # SIGTERM
+    except ProcessLookupError:
+        console.print(f"[yellow]Daemon (pid {pid}) already gone.[/yellow]")
+    except Exception as e:
+        console.print(f"[red]Failed to stop daemon: {e}[/red]")
+        return
+
+    # Wait up to 5 seconds for it to exit.
+    import time
+    for _ in range(10):
+        time.sleep(0.5)
+        if not _daemon_running(pid):
+            break
+
+    pid_file.unlink(missing_ok=True)
+    console.print(f"[green]Index daemon stopped[/green] (pid {pid})")
+
+
+def _daemon_watch_entry(config, languages=None, exclude=None):
+    """Entry point for the detached daemon process.
+
+    Installs a SIGTERM handler so the watchdog loop shuts down cleanly,
+    writes the PID file, then delegates to _watch_and_reindex().
+    """
+    import os
+    import signal
+    from rich.console import Console
+
+    pid_file = _daemon_pid_file(config)
+    pid_file.write_text(str(os.getpid()))
+
+    # Convert SIGTERM to KeyboardInterrupt so the watchdog loop catches it.
+    def _sigterm(*_):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, _sigterm)
+
+    console = Console(stderr=True)
+    try:
+        _watch_and_reindex(config, console, languages=languages, exclude=exclude)
+    finally:
+        pid_file.unlink(missing_ok=True)
+
+
 def cmd_index_stats(args, config):
     from agent.rag.store import VectorStore
     from agent.rag.indexer import pending_files
@@ -364,3 +493,12 @@ def cmd_index_stats(args, config):
     if oldest:
         ts = _dt.datetime.fromtimestamp(oldest).isoformat(timespec="seconds")
         console.print(f"  Oldest: {ts}")
+
+    daemon_pid = _read_daemon_pid(config)
+    if daemon_pid is not None and _daemon_running(daemon_pid):
+        console.print(f"[bold]Daemon:[/bold] [green]running[/green] (pid {daemon_pid})")
+        console.print(f"  Log: {_daemon_log_file(config)}")
+    else:
+        if daemon_pid is not None:
+            _daemon_pid_file(config).unlink(missing_ok=True)
+        console.print("[bold]Daemon:[/bold] not running  (start with [bold]agent index --daemon[/bold])")
