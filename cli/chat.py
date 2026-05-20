@@ -46,6 +46,12 @@ _UI_MODES = {
 
 
 def _pick_ui_mode(current: str) -> str:
+    from agent.ui.prefs import load_prefs, save_prefs
+    prefs = load_prefs()
+    saved = prefs.get("ui_mode")
+    if saved in {m for m, _ in _UI_MODES.values()}:
+        return saved
+
     from rich.console import Console
     console = Console()
     console.print("\n[bold]Choose UI mode[/bold]")
@@ -57,7 +63,13 @@ def _pick_ui_mode(current: str) -> str:
         choice = input("  Mode [1/2]: ").strip()
     except (EOFError, KeyboardInterrupt):
         return current
-    return _UI_MODES.get(choice, (current,))[0]
+    chosen = _UI_MODES.get(choice, (current,))[0]
+    try:
+        prefs["ui_mode"] = chosen
+        save_prefs(prefs)
+    except Exception:
+        pass
+    return chosen
 
 
 def _is_first_run() -> bool:
@@ -66,17 +78,6 @@ def _is_first_run() -> bool:
         Path("agent.toml"),
     ]
     return not any(p.exists() for p in paths)
-
-
-def _find_project_root(start_dir: Path, search_parents: bool) -> Path | None:
-    curr = start_dir.resolve()
-    while True:
-        if (curr / ".agent").is_dir():
-            return curr
-        if not search_parents or curr == curr.parent:
-            break
-        curr = curr.parent
-    return None
 
 
 def _extract_written_files(messages: list[dict]) -> list[str]:
@@ -197,7 +198,6 @@ def cmd_chat(args, config):
     if db_path.exists():
         try:
             store = _reuse_store or VectorStore(config.rag)
-            _reuse_store = None
             embedder = Embedder(config.embeddings)
             if config.asm.enabled:
                 from agent.rag.asm_store import AsmStore
@@ -294,7 +294,9 @@ def cmd_chat(args, config):
             pass
         if _bg_thread and _bg_thread.is_alive():
             _bg_thread.join(timeout=5)
-        if _bg_result.get("indexed", 0) > 0:
+        if _bg_result.get("error"):
+            console.print(f"[yellow]Background index update failed: {_bg_result['error']}[/yellow]")
+        elif _bg_result.get("indexed", 0) > 0:
             console.print(
                 f"[dim]Index updated: {_bg_result['indexed']} file(s) re-indexed "
                 f"({_bg_result.get('chunks', 0)} chunks)"

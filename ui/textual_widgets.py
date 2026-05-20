@@ -640,8 +640,8 @@ def build_widget_classes(t) -> SimpleNamespace:
                 pass
 
         def add_to_history(self, text: str) -> None:
-            if not self._history or self._history[-1] != text:
-                self._history.append(text)
+            self._history = [h for h in self._history if h != text]
+            self._history.append(text)
 
         def _remove_count_for(self, idx: int) -> int:
             """How many interactions are removed when editing history[idx]."""

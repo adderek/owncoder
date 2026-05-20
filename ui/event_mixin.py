@@ -312,8 +312,7 @@ class EventHandlerMixin:
         if mode != "lazy":
             return
         # ContentTab IDs are prefixed: "--content-tab-<pane-id>"
-        from textual.widgets._tabbed_content import ContentTab
-        pane_id = ContentTab.sans_prefix(getattr(event.tab, "id", "") or "")
+        pane_id = (getattr(event.tab, "id", "") or "").removeprefix("--content-tab-")
         if pane_id not in ("tab-q-summary", "tab-a-summary"):
             return
         if getattr(self, "_qa_summary_dirty", False) or not self._any_cached_summary():
