@@ -252,7 +252,7 @@ def test_search_code_includes_asm_results(monkeypatch):
     assert asm_hits[0]["path"] == "boot.asm"
 
 
-def test_search_code_no_store_returns_error(monkeypatch):
+def test_search_code_no_store_falls_back_to_grep(monkeypatch):
     from agent.tools.search import main as search_mod
     from types import SimpleNamespace
 
@@ -261,7 +261,10 @@ def test_search_code_no_store_returns_error(monkeypatch):
     search_mod.setup(cfg, dp)
 
     out = search_mod.search_code("anything")
-    assert "error" in out
+    # No index → grep fallback; result should have results list and a note, no error key
+    assert "results" in out
+    assert "note" in out
+    assert "error" not in out
 
 
 def test_agent_accepts_data_provider(monkeypatch):

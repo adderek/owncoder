@@ -25,7 +25,12 @@ def setup(config, data_provider) -> None:
 @register(
     "search_code",
     {
-        "description": "Search the codebase using semantic + keyword search. Always call this before read_file to find relevant code.",
+        "description": (
+            "Search the codebase index using semantic + keyword search. "
+            "Results are excerpts from a summarized index — use them to locate files and line ranges, "
+            "then verify with read_file before making changes. "
+            "Falls back to grep when the index is not ready."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -44,15 +49,21 @@ def setup(config, data_provider) -> None:
 )
 def search_code(query: str, top_k: int | None = None) -> dict:
     if _data_provider is None or not _data_provider.is_available():
-        return {"error": "Index not loaded. Run 'agent init' first."}
+        from agent.tools.search.grep import grep_code as _grep_code
+        result = _grep_code(query, fixed_string=False)
+        result["note"] = "Index not ready — results are from grep fallback. Run 'agent index' to build the semantic index."
+        return result
 
     k = top_k or (_config.rag.top_k if _config else 8)
 
     results = _data_provider.search(query, top_k=k)
 
     # Clean up results for LLM consumption
+    _CONTENT_LIMIT = 800
     cleaned = []
     for r in results:
+        raw = r.get("content", "")
+        truncated = len(raw) > _CONTENT_LIMIT
         cleaned.append(
             {
                 "path": r.get("path"),
@@ -61,7 +72,8 @@ def search_code(query: str, top_k: int | None = None) -> dict:
                 "node_type": r.get("node_type"),
                 "start_line": r.get("start_line"),
                 "end_line": r.get("end_line"),
-                "content": r.get("content", "")[:800],  # trim for context
+                "content": raw[:_CONTENT_LIMIT],
+                "truncated": truncated,
             }
         )
 

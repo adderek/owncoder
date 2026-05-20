@@ -106,7 +106,13 @@ def _log_llm_request(messages: list, tools, config: "Config") -> None:
     logger.info("llm.request preamble=%s msgs=%d tail_roles=[%s]", h, len(dynamic), last_roles)
 
 
-def _build_system_prompt(config: "Config", project_name: str = "", indexed_count: int = 0) -> str:
+def _build_system_prompt(
+    config: "Config",
+    project_name: str = "",
+    indexed_count: int = 0,
+    total_files: int = 0,
+    index_percent: int = 100,
+) -> str:
     from agent import prompt_compiler
     template = SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
     template = prompt_compiler.load("system.txt", template, config)
@@ -128,11 +134,28 @@ def _build_system_prompt(config: "Config", project_name: str = "", indexed_count
     except Exception:
         branch = "unknown"
 
+    if total_files > 0:
+        index_status_line = f"Index: {indexed_count}/{total_files} files ({index_percent}% complete)"
+    elif indexed_count > 0:
+        index_status_line = f"Index: {indexed_count} files indexed"
+    else:
+        index_status_line = "Index: not built — run 'agent index' to build"
+
+    if index_percent < 80:
+        index_warning = (
+            f"WARNING: Index is only {index_percent}% complete. "
+            "Prefer grep_code over search_code until indexing finishes.\n"
+        )
+    else:
+        index_warning = ""
+
     prompt = template.format(
         project_name=project_name or Path(config.tools.working_dir).resolve().name,
         working_dir=config.tools.working_dir,
         git_branch=branch,
         indexed_count=indexed_count,
+        index_status_line=index_status_line,
+        index_warning=index_warning,
     )
 
     if preamble:

@@ -92,8 +92,25 @@ class Agent:
 
         load_all_tools(config=config, data_provider=data_provider)
 
-        indexed_count = store.stats()["chunks"] if store else 0
-        system_content = _build_system_prompt(config, indexed_count=indexed_count)
+        indexed_stats = store.stats() if store else {"chunks": 0, "files": 0}
+        indexed_count = indexed_stats["files"]
+        total_files = indexed_count
+        index_percent = 100
+        if store and indexed_count > 0:
+            try:
+                from agent.rag.indexer import pending_files as _pending_files
+                pf = _pending_files(config.tools.working_dir, store)
+                total_files = pf["total"]
+                if total_files > 0:
+                    index_percent = round(100 * pf["indexed"] / total_files)
+            except Exception:
+                pass
+        system_content = _build_system_prompt(
+            config,
+            indexed_count=indexed_count,
+            total_files=total_files,
+            index_percent=index_percent,
+        )
 
         from agent.context import ensure_context_files, load_always_context, load_project_doc
         ensure_context_files(config, system_content)
