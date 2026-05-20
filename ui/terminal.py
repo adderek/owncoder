@@ -30,8 +30,14 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
     t = server.get_ui_config()["theme"]
 
     import os
+    import re
+    import sys
     session_name = f'{session.id} {session.description}' if session else 'No Session'
-    os.system(f'echo -ne "\033]0;🌟 {session_name}\007"')
+    # Strip control characters to prevent terminal escape injection, then write
+    # the OSC title sequence directly — avoids shell injection via os.system.
+    _safe_name = re.sub(r'[\x00-\x1f\x7f]', '', session_name)
+    sys.stdout.write(f'\033]0;\U0001f31f {_safe_name}\007')
+    sys.stdout.flush()
 
     from textual.app import App, ComposeResult
     from textual.widgets import (
