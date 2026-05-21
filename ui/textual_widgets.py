@@ -77,6 +77,55 @@ def build_widget_classes(t) -> SimpleNamespace:
         def on_resize(self, _event) -> None:
             self._redraw()
 
+        def on_mouse_move(self, event) -> None:
+            self.tooltip = self._tooltip_at(event.x)
+
+        def _bar_geometry(self) -> tuple[int, int, int]:
+            """Return (label_len, bar_start, bar_len) for current width."""
+            ctx = max(1, self._ctx)
+            used = max(0, self._used)
+            width = int(getattr(self.size, "width", 0) or 0)
+            if width < 20:
+                width = 80
+            label = f"tokens: {used:,}/{ctx:,}"
+            bar_len = max(10, width - len(label) - 2)
+            return len(label), len(label) + 1, bar_len
+
+        def hover_data_at(self, x_fraction: float) -> dict:
+            """Return structured hover data for x_fraction in [0,1]. HTML-UI ready."""
+            ctx = max(1, self._ctx)
+            used = max(0, self._used)
+            peak = max(0, self._peak)
+            compact_frac = max(0.0, min(1.0, self._compact_frac))
+            compact_tokens = int(compact_frac * ctx)
+            _, bar_start_col, bar_len = self._bar_geometry()
+            # x_fraction maps to bar position after label
+            bar_frac = x_fraction  # caller maps raw x to fraction
+            peak_frac = min(1.0, peak / ctx) if peak > 0 else -1.0
+            compact_bar_frac = compact_frac
+            peak_tol = 1.5 / max(1, bar_len)
+            compact_tol = 1.5 / max(1, bar_len)
+            if peak_frac >= 0 and abs(bar_frac - peak_frac) <= peak_tol:
+                return {"type": "marker", "name": "peak", "tokens": peak,
+                        "pct": peak / ctx * 100, "label": f"Peak this round: {peak:,} ({peak/ctx*100:.1f}%)"}
+            if abs(bar_frac - compact_bar_frac) <= compact_tol:
+                return {"type": "marker", "name": "compaction_threshold",
+                        "tokens": compact_tokens, "pct": compact_frac * 100,
+                        "label": f"Compaction threshold: {compact_frac*100:.0f}% ({compact_tokens:,} tokens)"}
+            if bar_frac <= used / ctx:
+                free = ctx - used
+                return {"type": "fill", "tokens": used, "pct": used / ctx * 100,
+                        "free": free, "label": f"Used: {used:,} / {ctx:,}  ({used/ctx*100:.1f}%)  free: {free:,}"}
+            free = ctx - used
+            return {"type": "empty", "tokens": free, "pct": free / ctx * 100,
+                    "label": f"Free: {free:,} ({free/ctx*100:.1f}%)  used: {used:,}/{ctx:,}"}
+
+        def _tooltip_at(self, x: int) -> str:
+            _, bar_start, bar_len = self._bar_geometry()
+            bar_x = x - bar_start
+            bar_frac = max(0.0, min(1.0, bar_x / max(1, bar_len)))
+            return self.hover_data_at(bar_frac)["label"]
+
         def _redraw(self) -> None:
             ctx = max(1, self._ctx)
             used = max(0, self._used)
@@ -136,6 +185,42 @@ def build_widget_classes(t) -> SimpleNamespace:
         def on_resize(self, _event) -> None:
             self._redraw()
 
+        def on_mouse_move(self, event) -> None:
+            self.tooltip = self._tooltip_at(event.x)
+
+        def hover_data_at(self, x_fraction: float) -> dict:
+            """Return structured hover data for x_fraction in [0,1]. HTML-UI ready."""
+            ctx = max(1, self._ctx)
+            total_used = sum(max(0, s.get("tokens", 0)) for s in self._segments)
+            if total_used <= 0:
+                return {"type": "empty", "label": f"Context empty  (window: {ctx:,})"}
+            cumulative = 0.0
+            for seg in self._segments:
+                tok = max(0, seg.get("tokens", 0))
+                seg_frac = tok / total_used
+                cumulative += seg_frac
+                if x_fraction <= cumulative:
+                    pct = tok / ctx * 100
+                    return {"type": "segment", "label_key": seg["label"],
+                            "tokens": tok, "pct": pct,
+                            "label": f"{seg['label']}: {tok:,} ({pct:.1f}% of ctx)"}
+            free = ctx - total_used
+            return {"type": "free", "tokens": free, "pct": free / ctx * 100,
+                    "label": f"Free: {free:,} ({free/ctx*100:.1f}%)"}
+
+        def _tooltip_at(self, x: int) -> str:
+            ctx = max(1, self._ctx)
+            total_used = sum(max(0, s.get("tokens", 0)) for s in self._segments)
+            width = int(getattr(self.size, "width", 0) or 0)
+            if width < 20:
+                width = 80
+            label = f"ctx: {total_used:,}/{ctx:,}"
+            bar_start = len(label) + 1
+            bar_len = max(10, width - len(label) - 2)
+            bar_x = x - bar_start
+            bar_frac = max(0.0, min(1.0, bar_x / max(1, bar_len)))
+            return self.hover_data_at(bar_frac)["label"]
+
         def _redraw(self) -> None:
             ctx = max(1, self._ctx)
             width = int(getattr(self.size, "width", 0) or 0)
@@ -188,6 +273,37 @@ def build_widget_classes(t) -> SimpleNamespace:
 
         def on_resize(self, _event) -> None:
             self._redraw()
+
+        def on_mouse_move(self, event) -> None:
+            self.tooltip = self._tooltip_at(event.x)
+
+        def hover_data_at(self, x_fraction: float) -> dict:
+            """Return structured hover data for x_fraction in [0,1]. HTML-UI ready."""
+            total = sum(max(0, s.get("tokens", 0)) for s in self._segments)
+            if total <= 0:
+                return {"type": "empty", "label": "No output yet"}
+            cumulative = 0.0
+            for seg in self._segments:
+                tok = max(0, seg.get("tokens", 0))
+                cumulative += tok / total
+                if x_fraction <= cumulative:
+                    pct = tok / total * 100
+                    return {"type": "segment", "label_key": seg["label"],
+                            "tokens": tok, "pct": pct,
+                            "label": f"{seg['label']}: {tok:,} ({pct:.1f}%)"}
+            return {"type": "empty", "label": "No output"}
+
+        def _tooltip_at(self, x: int) -> str:
+            total = sum(max(0, s.get("tokens", 0)) for s in self._segments)
+            width = int(getattr(self.size, "width", 0) or 0)
+            if width < 20:
+                width = 80
+            label = f"{self._scope_label}: {total:,}"
+            bar_start = len(label) + 1
+            bar_len = max(10, width - len(label) - 2)
+            bar_x = x - bar_start
+            bar_frac = max(0.0, min(1.0, bar_x / max(1, bar_len)))
+            return self.hover_data_at(bar_frac)["label"]
 
         def _redraw(self) -> None:
             width = int(getattr(self.size, "width", 0) or 0)
