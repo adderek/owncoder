@@ -41,6 +41,7 @@ class BgWorker:
         self._working_dir = Path(working_dir).resolve() if working_dir else None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self.dedup_count: int = 0  # chunks skipped via content dedup
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -114,6 +115,29 @@ class BgWorker:
         if not unit.get("content"):
             unit["content"] = self._read_content(unit)
 
+        # Cross-path dedup: if another file already has a description for identical content, reuse it.
+        obj_cs = unit.get("object_checksum")
+        if obj_cs:
+            donor = self._store.find_described_unit_by_object_checksum(obj_cs)
+            if donor and donor["id"] != unit["id"]:
+                unit["description"] = donor["description"]
+                unit["inferred_name"] = donor.get("inferred_name")
+                unit["node_checksum"] = donor.get("node_checksum")
+                unit["status"] = "described"
+                unit["analysis_date"] = time.time()
+                unit["analysis_model"] = donor.get("analysis_model")
+                if self._embedder and unit["description"]:
+                    try:
+                        unit["embedding"] = self._embedder.embed_one(unit["description"])
+                    except Exception as e:
+                        logger.warning("Dedup embed failed for %s: %s", unit["id"], e)
+                self._store.upsert_unit(unit)
+                self.dedup_count += 1
+                self._on_progress("deduped", {"id": unit["id"], "path": path})
+                if unit.get("parent_id"):
+                    self._store.mark_parent_stale(unit["id"])
+                return
+
         siblings = self._store.get_units_for_file(path, level=level)
         idx = {u["id"]: i for i, u in enumerate(siblings)}
         i = idx.get(unit["id"], -1)
@@ -165,11 +189,35 @@ class BgWorker:
         node_type = unit.get("node_type") or "chunk"
 
         old_desc = unit.get("description") or ""
-        fields = self._describer.summarize_group(described, language=language, node_type=node_type)
-        new_desc = fields.get("description", "")
-
         child_cs = "".join(c.get("node_checksum") or "" for c in described)
         edge_set_cs = hashlib.sha256(child_cs.encode()).hexdigest()[:16]
+
+        # Cross-path rollup dedup: if an identical subtree was already described elsewhere,
+        # reuse that description instead of calling the LLM.
+        donor = self._store.find_described_unit_by_edge_set_checksum(edge_set_cs)
+        if donor and donor["id"] != unit["id"]:
+            new_desc = donor["description"]
+            node_cs = donor.get("node_checksum") or hashlib.sha256((edge_set_cs + new_desc).encode()).hexdigest()[:16]
+            unit["description"] = new_desc
+            unit["status"] = "described"
+            unit["edge_set_checksum"] = edge_set_cs
+            unit["node_checksum"] = node_cs
+            unit["analysis_date"] = time.time()
+            unit["analysis_model"] = donor.get("analysis_model")
+            if self._embedder and new_desc:
+                try:
+                    unit["embedding"] = self._embedder.embed_one(new_desc)
+                except Exception as e:
+                    logger.warning("Rollup embed failed for %s: %s", unit["id"], e)
+            self._store.upsert_unit(unit)
+            self._on_progress("rolled_up", {"id": unit["id"], "path": unit["path"], "level": unit.get("level")})
+            if unit.get("parent_id"):
+                if not old_desc or self._judge.has_changed(old_desc, new_desc):
+                    self._store.mark_parent_stale(unit["id"])
+            return
+
+        fields = self._describer.summarize_group(described, language=language, node_type=node_type)
+        new_desc = fields.get("description", "")
         node_cs = hashlib.sha256((edge_set_cs + new_desc).encode()).hexdigest()[:16]
 
         unit.update(fields)

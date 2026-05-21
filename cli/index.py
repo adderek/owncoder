@@ -77,10 +77,16 @@ def cmd_init(args, config):
         transient=False,
     ) as progress:
         task = progress.add_task("Indexing…", total=max(total_to_index, 1))
+        _dedup_totals = {"same": 0, "cross": 0}
 
-        def progress_cb(path: str, chunk_count: int) -> None:
+        def progress_cb(path: str, chunk_count: int, dedup: dict | None = None) -> None:
+            if dedup:
+                _dedup_totals["same"] += dedup.get("dedup_same", 0)
+                _dedup_totals["cross"] += dedup.get("dedup_cross", 0)
+            saved = _dedup_totals["same"] + _dedup_totals["cross"]
+            dedup_tag = f" [cyan]({saved} deduped)[/cyan]" if saved else ""
             progress.advance(task)
-            progress.update(task, description=f"[dim]{Path(path).name}[/dim]")
+            progress.update(task, description=f"[dim]{Path(path).name}[/dim]{dedup_tag}")
 
         stats = index_directory(
             root=working_dir,
@@ -95,10 +101,16 @@ def cmd_init(args, config):
         )
 
     store.close()
+    dedup_parts = []
+    if stats.get("dedup_same", 0):
+        dedup_parts.append(f"{stats['dedup_same']} same-file")
+    if stats.get("dedup_cross", 0):
+        dedup_parts.append(f"{stats['dedup_cross']} cross-file")
+    dedup_str = f", [cyan]{' + '.join(dedup_parts)} chunks deduped[/cyan]" if dedup_parts else ""
     console.print(
         f"[green]Done.[/green] Indexed {stats['indexed']} files, "
         f"skipped {stats['skipped']}, "
-        f"created {stats['chunks']} chunks."
+        f"created {stats['chunks']} chunks{dedup_str}."
     )
     try:
         _in_progress.unlink(missing_ok=True)
@@ -124,13 +136,17 @@ def cmd_init(args, config):
                         r_stale = remaining.get("stale", 0)
                         if r_pending == 0 and r_stale == 0:
                             break
-                        console.print(f"  [dim]remaining={r_pending + r_stale}[/dim]", end="\r")
+                        deduped = worker.dedup_count
+                        dedup_tag = f"  [cyan]{deduped} deduped[/cyan]" if deduped else ""
+                        console.print(f"  [dim]remaining={r_pending + r_stale}{dedup_tag}[/dim]", end="\r")
                         _time.sleep(2)
                 except KeyboardInterrupt:
                     pass
                 worker.stop()
                 final = code_store.stats().get("by_status", {})
-                console.print(f"\n  Summarization: {final}")
+                deduped = worker.dedup_count
+                dedup_tag = f"  [cyan]{deduped} deduped[/cyan]" if deduped else ""
+                console.print(f"\n  Summarization: {final}{dedup_tag}")
 
     if getattr(args, "watch", False):
         _watch_and_reindex(config, console, languages=languages, exclude=exclude)
@@ -245,13 +261,17 @@ def cmd_index_update(args, config):
                         r_stale = remaining.get("stale", 0)
                         if r_pending == 0 and r_stale == 0:
                             break
-                        console.print(f"  [dim]remaining={r_pending + r_stale}[/dim]", end="\r")
+                        deduped = worker.dedup_count
+                        dedup_tag = f"  [cyan]{deduped} deduped[/cyan]" if deduped else ""
+                        console.print(f"  [dim]remaining={r_pending + r_stale}{dedup_tag}[/dim]", end="\r")
                         _time.sleep(2)
                 except KeyboardInterrupt:
                     pass
                 worker.stop()
                 final = code_store.stats().get("by_status", {})
-                console.print(f"\n  Summarization: {final}")
+                deduped = worker.dedup_count
+                dedup_tag = f"  [cyan]{deduped} deduped[/cyan]" if deduped else ""
+                console.print(f"\n  Summarization: {final}{dedup_tag}")
 
     pruned = prune_index(config.tools.working_dir, store, archive, reason="stale")
     if pruned["archived"]:

@@ -208,6 +208,8 @@ def index_directory(
     indexed = 0
     skipped = 0
     total_chunks = 0
+    dedup_same = 0
+    dedup_cross = 0
     embed_workers: int = getattr(getattr(embedder, "_cfg", None), "embed_workers", 1)
 
     if embed_workers <= 1:
@@ -252,10 +254,13 @@ def index_directory(
             total_chunks += len(chunks)
             indexed += 1
 
+            ds = None
             if code_store is not None:
-                _enqueue_for_summarization(code_store, chunks, rel, mtime, git_hash, force)
+                ds = _enqueue_for_summarization(code_store, chunks, rel, mtime, git_hash, force, abs_path=abs_path)
+                dedup_same += ds["dedup_same"]
+                dedup_cross += ds["dedup_cross"]
             if progress_cb:
-                progress_cb(rel, len(chunks))
+                progress_cb(rel, len(chunks), dedup=ds)
 
     else:
         # Parallel path: embed_workers concurrent embed requests, writes on main thread.
@@ -292,37 +297,114 @@ def index_directory(
                     store.upsert_many(chunks[i:i + _BATCH_SIZE], fresh=True)
                 total_chunks += len(chunks)
                 indexed += 1
+                ds = None
                 if code_store is not None:
-                    _enqueue_for_summarization(code_store, chunks, rel, mtime, git_hash, force)
+                    ds = _enqueue_for_summarization(code_store, chunks, rel, mtime, git_hash, force, abs_path=abs_path)
+                    dedup_same += ds["dedup_same"]
+                    dedup_cross += ds["dedup_cross"]
                 if progress_cb:
-                    progress_cb(rel, len(chunks))
+                    progress_cb(rel, len(chunks), dedup=ds)
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
 
-    return {"indexed": indexed, "skipped": skipped, "chunks": total_chunks, "files": len(files)}
+    return {
+        "indexed": indexed,
+        "skipped": skipped,
+        "chunks": total_chunks,
+        "files": len(files),
+        "dedup_same": dedup_same,
+        "dedup_cross": dedup_cross,
+    }
 
 
-def _enqueue_for_summarization(code_store, chunks: list[dict], path: str, mtime: float, git_hash, force: bool) -> None:
-    """Upsert changed chunks into code_store with status='pending'."""
+def _enqueue_for_summarization(
+    code_store, chunks: list[dict], path: str, mtime: float, git_hash, force: bool,
+    abs_path: str | None = None,
+) -> dict:
+    """Upsert changed chunks into code_store; skip LLM for content-identical chunks.
+
+    Returns {"dedup_same": int, "dedup_cross": int, "pending": int}.
+    """
     import hashlib
 
-    # Wipe old summarization units for this file to avoid orphan accumulation
-    # when chunk boundaries shift between indexing runs.
+    dedup_same = 0
+    dedup_cross = 0
+    pending = 0
+
+    # Snapshot existing leaf units BEFORE delete so we can skip re-summarization
+    # for chunks whose content is unchanged.
+    prior: dict[str, dict] = {} if force else code_store.get_unit_checksums_for_file(path)
+
+    # Wipe old units to avoid orphan accumulation when chunk boundaries shift.
     code_store.delete_units_for_file(path)
 
     file_checksum = hashlib.sha256(path.encode()).hexdigest()[:16]
-    existing_file = code_store.get_file_record(path)
 
-    # Build per-chunk checksums and detect which ones changed
+    # Compute actual file content checksum + size for cross-file dedup tracking.
+    content_checksum: str | None = None
+    file_size: int | None = None
+    try:
+        fpath = abs_path or path
+        stat = os.stat(fpath)
+        file_size = stat.st_size
+        with open(fpath, "rb") as fh:
+            content_checksum = hashlib.sha256(fh.read()).hexdigest()[:16]
+    except OSError:
+        pass
+
     for chunk in chunks:
         content = chunk.get("content", "")
         obj_cs = hashlib.sha256(content.encode()).hexdigest()[:16]
         chunk_id = chunk["id"]
 
+        # 1. Same-path skip: chunk existed with same content and was already described.
         if not force:
-            existing = code_store.get_unit(chunk_id)
-            if existing and existing.get("object_checksum") == obj_cs:
-                continue  # content unchanged — keep existing description
+            prev = prior.get(chunk_id)
+            if prev and prev.get("object_checksum") == obj_cs and prev.get("status") == "described":
+                # Re-insert with preserved description to avoid orphaning.
+                code_store.upsert_unit({
+                    "id": chunk_id,
+                    "path": path,
+                    "language": chunk.get("language"),
+                    "node_type": chunk.get("node_type"),
+                    "name": chunk.get("name"),
+                    "level": 0,
+                    "start_line": chunk.get("start_line"),
+                    "end_line": chunk.get("end_line"),
+                    "object_checksum": obj_cs,
+                    "node_checksum": prev.get("node_checksum"),
+                    "description": prev.get("description"),
+                    "parent_id": chunk.get("parent_chunk_id"),
+                    "status": "described",
+                    "mtime": mtime,
+                    "git_hash": git_hash,
+                })
+                dedup_same += 1
+                continue
+
+            # 2. Cross-path skip: another file with identical content already described.
+            donor = code_store.find_described_unit_by_object_checksum(obj_cs)
+            if donor:
+                code_store.upsert_unit({
+                    "id": chunk_id,
+                    "path": path,
+                    "language": chunk.get("language"),
+                    "node_type": chunk.get("node_type"),
+                    "name": chunk.get("name"),
+                    "level": 0,
+                    "start_line": chunk.get("start_line"),
+                    "end_line": chunk.get("end_line"),
+                    "object_checksum": obj_cs,
+                    "node_checksum": donor.get("node_checksum"),
+                    "description": donor.get("description"),
+                    "inferred_name": donor.get("inferred_name"),
+                    "parent_id": chunk.get("parent_chunk_id"),
+                    "status": "described",
+                    "mtime": mtime,
+                    "git_hash": git_hash,
+                })
+                dedup_cross += 1
+                continue
 
         code_store.upsert_unit({
             "id": chunk_id,
@@ -339,5 +421,12 @@ def _enqueue_for_summarization(code_store, chunks: list[dict], path: str, mtime:
             "mtime": mtime,
             "git_hash": git_hash,
         })
+        pending += 1
 
-    code_store.set_file_record(path, file_checksum)
+    code_store.set_file_record(
+        path, file_checksum,
+        content_checksum=content_checksum,
+        file_size=file_size,
+    )
+
+    return {"dedup_same": dedup_same, "dedup_cross": dedup_cross, "pending": pending}

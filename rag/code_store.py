@@ -47,9 +47,11 @@ CREATE TABLE IF NOT EXISTS units (
     extra_json        TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_units_path_level ON units(path, level, start_line);
-CREATE INDEX IF NOT EXISTS idx_units_status     ON units(status);
-CREATE INDEX IF NOT EXISTS idx_units_parent     ON units(parent_id);
+CREATE INDEX IF NOT EXISTS idx_units_path_level      ON units(path, level, start_line);
+CREATE INDEX IF NOT EXISTS idx_units_status          ON units(status);
+CREATE INDEX IF NOT EXISTS idx_units_parent          ON units(parent_id);
+CREATE INDEX IF NOT EXISTS idx_units_object_checksum ON units(object_checksum);
+CREATE INDEX IF NOT EXISTS idx_units_edge_checksum   ON units(edge_set_checksum);
 
 CREATE TABLE IF NOT EXISTS unit_children (
     parent_id   TEXT NOT NULL,
@@ -61,10 +63,12 @@ CREATE TABLE IF NOT EXISTS unit_children (
 CREATE INDEX IF NOT EXISTS idx_children_parent ON unit_children(parent_id, child_order);
 
 CREATE TABLE IF NOT EXISTS indexed_files (
-    path        TEXT PRIMARY KEY,
-    checksum    TEXT NOT NULL,
-    status      TEXT NOT NULL DEFAULT 'indexed',
-    indexed_at  REAL
+    path             TEXT PRIMARY KEY,
+    checksum         TEXT NOT NULL,
+    content_checksum TEXT,
+    file_size        INTEGER,
+    status           TEXT NOT NULL DEFAULT 'indexed',
+    indexed_at       REAL
 );
 
 CREATE TABLE IF NOT EXISTS judge_cache (
@@ -110,6 +114,15 @@ class CodeStore:
 
     def _run_ddl(self, conn: sqlite3.Connection) -> None:
         conn.executescript(_DDL)
+        # Migrations for existing DBs
+        for stmt in (
+            "ALTER TABLE indexed_files ADD COLUMN content_checksum TEXT",
+            "ALTER TABLE indexed_files ADD COLUMN file_size INTEGER",
+        ):
+            try:
+                conn.execute(stmt)
+            except Exception:
+                pass
         conn.commit()
 
     def _setup(self) -> None:
@@ -187,10 +200,19 @@ class CodeStore:
         )
         conn.commit()
 
-    def set_file_record(self, path: str, checksum: str, status: str = "indexed") -> None:
+    def set_file_record(
+        self,
+        path: str,
+        checksum: str,
+        status: str = "indexed",
+        content_checksum: str | None = None,
+        file_size: int | None = None,
+    ) -> None:
         self._conn.execute(
-            "INSERT OR REPLACE INTO indexed_files(path, checksum, status, indexed_at) VALUES (?,?,?,?)",
-            (path, checksum, status, time.time()),
+            "INSERT OR REPLACE INTO indexed_files"
+            "(path, checksum, content_checksum, file_size, status, indexed_at)"
+            " VALUES (?,?,?,?,?,?)",
+            (path, checksum, content_checksum, file_size, status, time.time()),
         )
         self._conn.commit()
 
@@ -271,6 +293,30 @@ class CodeStore:
     def get_file_record(self, path: str) -> dict | None:
         row = self._conn.execute(
             "SELECT * FROM indexed_files WHERE path = ?", (path,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_unit_checksums_for_file(self, path: str) -> dict[str, dict]:
+        """Return {unit_id: {object_checksum, status, description}} for a file (level=0 only)."""
+        rows = self._conn.execute(
+            "SELECT id, object_checksum, status, description FROM units WHERE path = ? AND level = 0",
+            (path,),
+        ).fetchall()
+        return {r["id"]: dict(r) for r in rows}
+
+    def find_described_unit_by_object_checksum(self, obj_cs: str) -> dict | None:
+        """Find any described unit with matching object_checksum (cross-path dedup)."""
+        row = self._conn.execute(
+            "SELECT * FROM units WHERE object_checksum = ? AND status = 'described' AND description IS NOT NULL LIMIT 1",
+            (obj_cs,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def find_described_unit_by_edge_set_checksum(self, edge_cs: str) -> dict | None:
+        """Find any described rollup unit with matching edge_set_checksum (subtree dedup)."""
+        row = self._conn.execute(
+            "SELECT * FROM units WHERE edge_set_checksum = ? AND status = 'described' AND description IS NOT NULL LIMIT 1",
+            (edge_cs,),
         ).fetchone()
         return dict(row) if row else None
 
