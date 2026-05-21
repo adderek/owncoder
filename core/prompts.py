@@ -56,12 +56,14 @@ _INCREMENTS_INSTRUCTIONS = """\
 
 When working through plan steps, follow this protocol for each step:
 
-1. Call `snapshot_step(plan_id, step_id)` before making any file changes.
-2. Implement the step. Write verification criteria (tests/checks) from `step.tests` first if present.
-3. Run verification. On success: call `complete_step(plan_id, step_id)`.
-4. On failure: call `revert_step(plan_id, step_id)`.
-   - If `exhausted=false`: fix the approach and retry from step 2.
-   - If `exhausted=true`: report the failure, do not attempt further changes on this step.\
+1. Call `get_step_brief(plan_id, step_id)` to load focused context for this step (shared plan context + intro + acceptance criteria).
+2. Call `snapshot_step(plan_id, step_id)` before making any file changes.
+3. Implement the step. `step.acceptance_criteria` defines what "done" looks like; `step.tests` are commands/checks to run.
+4. Run verification against acceptance criteria. On success: call `complete_step(plan_id, step_id)`.
+5. On failure: call `revert_step(plan_id, step_id)`.
+   - If `exhausted=false`: fix the approach and retry from step 3.
+   - If `exhausted=true` or issue is outside your capability: call `report_blocking_issue(plan_id, step_id, issue=..., what_was_tried=...)` — stop work on this step.
+6. When all steps complete: run `plan.final_tests` checks for final acceptance.\
 """
 
 _DAG_PLANNING_INSTRUCTIONS = """\
@@ -72,7 +74,11 @@ When given a multi-step goal, create a plan and break it into atomic steps with 
 ### Creating a plan
 Use the planning tools or slash commands:
 - Create: `/plan new <goal>` or `create_plan(goal, steps=[...])`
+- Set shared context (key files, constraints, arch): `/plan context <text>`
 - Add steps: `/plan step add <description>`
+- Add step introduction (rationale/context): edit plan JSON or use `create_plan(steps=[{..., "introduction": "..."}])`
+- Add acceptance criteria: `create_plan(steps=[{..., "acceptance_criteria": ["...", "..."]}])`
+- Add final acceptance tests: `/plan final add <check>`
 - Wire dependencies: `/plan dep <step_id> <dep_step_id>` or `plan_add_dep(plan_id, step_id, dep_step_id)`
   - Only add deps when there is a real ordering constraint. Don't over-specify.
 
@@ -80,12 +86,18 @@ Use the planning tools or slash commands:
 - Call `plan_ready_steps(plan_id)` to get unblocked steps. Never start a step whose deps are unresolved.
 - When steps are independent (no shared state, separate files), prefer working on multiple ready steps before reporting back.
 - If `ready_count=0` and `blocked_count>0`, some dependency is stuck — surface this explicitly.
+- Use `get_step_brief(plan_id, step_id)` to get a focused context bundle; pass it as `context` to `spawn_agents` for isolated step execution.
 
 ### Completing steps
 - Mark each step done via `complete_step` (with increments) or `/plan step <id> completed`.
 - After a batch finishes, consider `/plan compact` to summarize completed steps and free context.
+- After ALL steps complete: run final_tests, then report overall completion.
 
-### Multi-agent hints (future)
+### Blocking issues
+- If stuck and retries exhausted: call `report_blocking_issue` — writes an escalation doc with full context for a human or stronger model.
+- Step status `blocked` = escalated; do not retry. Continue with other ready steps if any.
+
+### Multi-agent hints
 - If a step has `agent_constraints`, note them — they indicate LLM or environment requirements for future routing.
 - Use `plan_assign_step` to claim a step before starting it in concurrent contexts.\
 """

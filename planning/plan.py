@@ -17,7 +17,7 @@ from pathlib import Path
 
 
 PLAN_STATUSES = ("pending", "active", "completed", "aborted", "stashed", "paused")
-STEP_STATUSES = ("pending", "in_progress", "completed", "failed", "skipped")
+STEP_STATUSES = ("pending", "in_progress", "completed", "failed", "skipped", "blocked")
 
 
 _plans_dir: Path | None = None
@@ -36,6 +36,10 @@ def _get_plans_dir() -> Path:
 class Step:
     id: str
     description: str
+    # WHY this step exists and what it builds on (context/rationale for the step)
+    introduction: str = ""
+    # Human-readable done conditions (what success looks like)
+    acceptance_criteria: list[str] = field(default_factory=list)
     tests: list[str] = field(default_factory=list)
     status: str = "pending"
     notes: str = ""
@@ -60,6 +64,10 @@ class Plan:
     status: str = "pending"
     steps: list[Step] = field(default_factory=list)
     notes: str = ""
+    # Shared context injected into every step brief (key files, constraints, arch decisions)
+    context: str = ""
+    # Verification checks run after ALL steps complete
+    final_tests: list[str] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -75,6 +83,9 @@ class Plan:
     def progress(self) -> tuple[int, int]:
         done = sum(1 for s in self.steps if s.status in ("completed", "skipped"))
         return done, len(self.steps)
+
+    def blocked_escalated_steps(self) -> list["Step"]:
+        return [s for s in self.steps if s.status == "blocked"]
 
     def ready_steps(self) -> list[Step]:
         """Pending steps with all deps resolved."""
@@ -106,6 +117,8 @@ class Plan:
             status=data.get("status", "pending"),
             steps=steps,
             notes=data.get("notes", ""),
+            context=data.get("context", ""),
+            final_tests=data.get("final_tests", []) or [],
             created_at=data.get("created_at", time.time()),
             updated_at=data.get("updated_at", time.time()),
         )
@@ -117,7 +130,13 @@ def _new_plan_id() -> str:
     return now.strftime("%Y%m%dT%H%M%S.") + f"{ms:03d}Z_{secrets.token_hex(2)}"
 
 
-def create_plan(goal: str, session_id: str = "", steps: list[dict] | None = None) -> Plan:
+def create_plan(
+    goal: str,
+    session_id: str = "",
+    steps: list[dict] | None = None,
+    context: str = "",
+    final_tests: list[str] | None = None,
+) -> Plan:
     pid = _new_plan_id()
     step_objs: list[Step] = []
     for i, s in enumerate(steps or [], 1):
@@ -127,11 +146,20 @@ def create_plan(goal: str, session_id: str = "", steps: list[dict] | None = None
             step_objs.append(Step(
                 id=str(s.get("id") or f"s{i}"),
                 description=str(s.get("description", "")),
+                introduction=str(s.get("introduction", "")),
+                acceptance_criteria=list(s.get("acceptance_criteria", []) or []),
                 tests=list(s.get("tests", []) or []),
                 status=s.get("status", "pending"),
                 notes=s.get("notes", ""),
             ))
-    plan = Plan(id=pid, goal=goal, session_id=session_id, steps=step_objs)
+    plan = Plan(
+        id=pid,
+        goal=goal,
+        session_id=session_id,
+        steps=step_objs,
+        context=context,
+        final_tests=list(final_tests or []),
+    )
     save_plan(plan)
     return plan
 

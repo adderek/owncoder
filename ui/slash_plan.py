@@ -24,13 +24,16 @@ def _render_plan(plan) -> str:
         f"[bold]plan[/bold] {plan.id}  [dim]status={plan.status}[/dim]",
         f"  goal: {plan.goal}",
     ]
+    if plan.context:
+        preview = plan.context[:80].replace("\n", " ")
+        lines.append(f"  context: {preview}{'…' if len(plan.context) > 80 else ''}")
     done, total = plan.progress()
     lines.append(f"  progress: {done}/{total} steps")
     ready_ids = {s.id for s in plan.ready_steps()}
     for s in plan.steps:
         marker = {
             "pending": "·", "in_progress": "▶", "completed": "✓",
-            "failed": "✗", "skipped": "—",
+            "failed": "✗", "skipped": "—", "blocked": "⚠",
         }.get(s.status, "?")
         suffix = ""
         if s.deps:
@@ -39,12 +42,18 @@ def _render_plan(plan) -> str:
             suffix += f"  [dim]@{s.assigned_to}[/dim]"
         if s.status == "pending" and s.id in ready_ids:
             suffix += "  [green]ready[/green]"
+        if s.status == "blocked":
+            suffix += "  [red]BLOCKED[/red]"
         lines.append(f"   {marker} [{s.id}] {s.description}{suffix}")
+        for c in s.acceptance_criteria:
+            lines.append(f"        ✓ accept: {c}")
         for t_desc in s.tests:
             lines.append(f"        · test: {t_desc}")
     cp = plan.critical_path()
     if len(cp) > 1:
         lines.append(f"  critical path: {' → '.join(cp)}")
+    if plan.final_tests:
+        lines.append(f"  final tests: {len(plan.final_tests)} check(s) pending after all steps")
     return "\n".join(lines)
 
 
@@ -219,5 +228,117 @@ def _apply_plan(agent, arg: str) -> tuple[bool, str]:
         plan.status = "active"
         save_plan(plan)
         return True, f"Plan {plan.id} resumed."
+
+    if sub == "context":
+        plan = _active_plan(agent)
+        if plan is None:
+            return False, "No active plan."
+        if not rest.strip():
+            if plan.context:
+                return True, f"Plan context:\n{plan.context}"
+            return True, "No shared context set. Usage: /plan context <text>"
+        plan.context = rest.strip()
+        save_plan(plan)
+        return True, "Shared context updated."
+
+    if sub == "final":
+        plan = _active_plan(agent)
+        if plan is None:
+            return False, "No active plan."
+        fp = rest.strip().split(maxsplit=1)
+        if not fp or fp[0] == "show":
+            if not plan.final_tests:
+                return True, "No final tests defined. Add with: /plan final add <check>"
+            lines = ["Final acceptance tests:"]
+            for i, t in enumerate(plan.final_tests, 1):
+                lines.append(f"  {i}. {t}")
+            return True, "\n".join(lines)
+        if fp[0] == "add":
+            check = fp[1] if len(fp) > 1 else ""
+            if not check:
+                return False, "Usage: /plan final add <check description>"
+            plan.final_tests.append(check)
+            save_plan(plan)
+            return True, f"Added final test: {check}"
+        if fp[0] == "clear":
+            plan.final_tests = []
+            save_plan(plan)
+            return True, "Final tests cleared."
+        return False, "Usage: /plan final [show|add <check>|clear]"
+
+    if sub == "escalate":
+        plan = _active_plan(agent)
+        if plan is None:
+            return False, "No active plan."
+        ep = rest.split(maxsplit=1)
+        if len(ep) < 2:
+            return False, "Usage: /plan escalate <step_id> <reason>"
+        step_id, reason = ep[0], ep[1]
+        from agent.planning.plan import update_step
+        updated = update_step(plan, step_id, status="blocked", notes=f"Blocked: {reason[:200]}")
+        if updated is None:
+            return False, f"No step {step_id}."
+        import time as _time
+        ts = _time.strftime("%Y-%m-%d %H:%M:%S UTC", _time.gmtime())
+        step = updated
+        doc_lines = [
+            f"# Blocking Issue: {step.description}",
+            "",
+            f"**Created:** {ts}  ",
+            f"**Plan ID:** `{plan.id}`  ",
+            f"**Step ID:** `{step_id}`",
+            "",
+            "## Plan Goal",
+            plan.goal,
+        ]
+        if plan.context:
+            doc_lines += ["", "## Shared Context", plan.context]
+        if step.introduction:
+            doc_lines += ["", "## Step Introduction", step.introduction]
+        doc_lines += ["", "## Step Description", step.description]
+        if step.acceptance_criteria:
+            doc_lines += ["", "## Acceptance Criteria"]
+            doc_lines += [f"- {c}" for c in step.acceptance_criteria]
+        doc_lines += ["", "## Blocking Issue", reason]
+        doc_lines += [
+            "",
+            "---",
+            "See `docs/agent/escalation.md` for escalation guide.",
+        ]
+        doc = "\n".join(doc_lines)
+        from agent.planning.plan import _get_plans_dir
+        d = _get_plans_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        safe_step = step_id.replace("/", "_")
+        doc_path = d / f"{plan.id}_{safe_step}_escalation.md"
+        doc_path.write_text(doc, encoding="utf-8")
+        return True, f"Step {step_id} escalated. Escalation doc: {doc_path}"
+
+    if sub == "brief":
+        plan = _active_plan(agent)
+        if plan is None:
+            return False, "No active plan."
+        if not rest.strip():
+            return False, "Usage: /plan brief <step_id>"
+        step_id = rest.strip().split()[0]
+        step = next((s for s in plan.steps if s.id == step_id), None)
+        if step is None:
+            return False, f"No step {step_id}."
+        done, total = plan.progress()
+        lines = [
+            f"[bold]Step {step.id}[/bold] — {step.description}",
+            f"Plan: {plan.goal}  ({done}/{total} done)",
+        ]
+        if plan.context:
+            lines += ["", "[bold]Shared context:[/bold]", plan.context]
+        if step.introduction:
+            lines += ["", "[bold]Introduction:[/bold]", step.introduction]
+        if step.acceptance_criteria:
+            lines += ["", "[bold]Acceptance criteria:[/bold]"]
+            lines += [f"  ✓ {c}" for c in step.acceptance_criteria]
+        if step.tests:
+            lines += ["", "[bold]Verification:[/bold]"]
+            lines += [f"  · {t}" for t in step.tests]
+        return True, "\n".join(lines)
 
     return False, f"Unknown /plan subcommand '{sub}'."

@@ -306,3 +306,175 @@ def tool_revert_step(plan_id: str, step_id: str) -> dict:
         "reverted": [{"repo": r, "ok": ok, "message": msg} for r, ok, msg in revert_results],
         "message": f"Reverted. Retry {new_retry_count}/{max_ret}.",
     }
+
+
+@register(
+    "get_step_brief",
+    {
+        "description": (
+            "Return a focused context bundle for a single plan step: plan goal, shared context, "
+            "step introduction, description, acceptance criteria, and tests. "
+            "Designed to be passed as `context` to spawn_agents for isolated step execution, "
+            "or used to refocus after context drift."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "plan_id": {"type": "string", "description": "Plan ID"},
+                "step_id": {"type": "string", "description": "Step ID"},
+            },
+            "required": ["plan_id", "step_id"],
+        },
+    },
+)
+def tool_get_step_brief(plan_id: str, step_id: str) -> dict:
+    from agent.planning import load_plan
+
+    plan = load_plan(plan_id)
+    if plan is None:
+        return {"ok": False, "error": f"plan not found: {plan_id}"}
+
+    step = next((s for s in plan.steps if s.id == step_id), None)
+    if step is None:
+        return {"ok": False, "error": f"step not found: {step_id}"}
+
+    done, total = plan.progress()
+    brief_lines = [
+        f"# Step Brief: {step.id} — {step.description}",
+        "",
+        f"## Plan: {plan.goal}",
+        f"Progress: {done}/{total} steps complete",
+    ]
+    if plan.context:
+        brief_lines += ["", "## Shared Context", plan.context]
+    if step.introduction:
+        brief_lines += ["", "## Introduction", step.introduction]
+    brief_lines += ["", "## Task", step.description]
+    if step.acceptance_criteria:
+        brief_lines += ["", "## Acceptance Criteria"]
+        brief_lines += [f"- {c}" for c in step.acceptance_criteria]
+    if step.tests:
+        brief_lines += ["", "## Verification Steps"]
+        brief_lines += [f"- {t}" for t in step.tests]
+    if plan.final_tests and all(
+        s.status in ("completed", "skipped") for s in plan.steps if s.id != step_id
+    ):
+        brief_lines += ["", "## Final Acceptance Tests (run after all steps complete)"]
+        brief_lines += [f"- {t}" for t in plan.final_tests]
+
+    brief = "\n".join(brief_lines)
+    return {
+        "ok": True,
+        "plan_id": plan_id,
+        "step_id": step_id,
+        "brief": brief,
+    }
+
+
+@register(
+    "report_blocking_issue",
+    {
+        "description": (
+            "Report a blocking issue that prevents step completion. "
+            "Marks the step as 'blocked', writes an escalation document with full context "
+            "(plan goal, shared context, step brief, what was tried, the blocker) "
+            "to .agent/plans/{plan_id}_{step_id}_escalation.md. "
+            "Call when revert_step exhausted=true OR when stuck on something outside your capability."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "plan_id": {"type": "string", "description": "Plan ID"},
+                "step_id": {"type": "string", "description": "Step ID"},
+                "issue": {"type": "string", "description": "Clear description of the blocking issue"},
+                "what_was_tried": {
+                    "type": "string",
+                    "description": "What approaches were attempted before escalating",
+                },
+                "suggested_resolution": {
+                    "type": "string",
+                    "description": "Optional: what you think might resolve this",
+                },
+            },
+            "required": ["plan_id", "step_id", "issue"],
+        },
+    },
+)
+def tool_report_blocking_issue(
+    plan_id: str,
+    step_id: str,
+    issue: str,
+    what_was_tried: str = "",
+    suggested_resolution: str = "",
+) -> dict:
+    import time as _time
+    from agent.planning import load_plan
+    from agent.planning.plan import update_step
+
+    plan = load_plan(plan_id)
+    if plan is None:
+        return {"ok": False, "error": f"plan not found: {plan_id}"}
+
+    step = next((s for s in plan.steps if s.id == step_id), None)
+    if step is None:
+        return {"ok": False, "error": f"step not found: {step_id}"}
+
+    ts = _time.strftime("%Y-%m-%d %H:%M:%S UTC", _time.gmtime())
+
+    doc_lines = [
+        f"# Blocking Issue: {step.description}",
+        "",
+        f"**Created:** {ts}  ",
+        f"**Plan ID:** `{plan_id}`  ",
+        f"**Step ID:** `{step_id}`",
+        "",
+        "---",
+        "",
+        "## Plan Goal",
+        plan.goal,
+    ]
+    if plan.context:
+        doc_lines += ["", "## Shared Context", plan.context]
+    if step.introduction:
+        doc_lines += ["", "## Step Introduction", step.introduction]
+    doc_lines += ["", "## Step Description", step.description]
+    if step.acceptance_criteria:
+        doc_lines += ["", "## Acceptance Criteria"]
+        doc_lines += [f"- {c}" for c in step.acceptance_criteria]
+    if step.tests:
+        doc_lines += ["", "## Verification Steps"]
+        doc_lines += [f"- {t}" for t in step.tests]
+    doc_lines += ["", "---", "", "## Blocking Issue", issue]
+    if what_was_tried:
+        doc_lines += ["", "## What Was Tried", what_was_tried]
+    if suggested_resolution:
+        doc_lines += ["", "## Suggested Resolution", suggested_resolution]
+    doc_lines += [
+        "",
+        "---",
+        "",
+        "## How to Escalate",
+        "1. Share this document with a stronger model or human reviewer.",
+        "2. Provide any relevant file contents or error logs.",
+        "3. Ask them to resume with: `load plan and continue step`",
+        f"   Plan: `{plan_id}` / Step: `{step_id}`",
+        "",
+        "See `docs/agent/escalation.md` for full escalation guide.",
+    ]
+
+    doc = "\n".join(doc_lines)
+
+    d = _get_plans_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    safe_step = step_id.replace("/", "_")
+    doc_path = d / f"{plan_id}_{safe_step}_escalation.md"
+    doc_path.write_text(doc, encoding="utf-8")
+
+    update_step(plan, step_id, status="blocked", notes=f"Blocked: {issue[:200]}")
+
+    return {
+        "ok": True,
+        "escalation_doc": str(doc_path),
+        "doc_content": doc,
+        "message": f"Step {step_id} marked blocked. Escalation doc: {doc_path}",
+    }
