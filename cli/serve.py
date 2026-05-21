@@ -44,13 +44,20 @@ body { font-family: monospace; font-size: 13px; display: flex; height: 100vh; ba
 #search-box input { width: 100%; background: #1e1e1e; border: 1px solid #3e3e42; color: #d4d4d4; padding: 3px 6px; border-radius: 3px; font-family: inherit; font-size: 12px; }
 #search-box input:focus { outline: 1px solid #007acc; }
 #file-tree { flex: 1; overflow-y: auto; padding: 4px 0; }
+#project-item { cursor: pointer; padding: 4px 8px; color: #888; font-size: 12px; border-bottom: 1px solid #2a2a2a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#project-item:hover { background: #2a2d2e; color: #d4d4d4; }
+#project-item.active { background: #094771; color: #d4d4d4; }
 
-.dir-node { cursor: pointer; padding: 2px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; user-select: none; }
+.dir-node { padding: 2px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; user-select: none; display: flex; align-items: center; }
 .dir-node:hover { background: #2a2d2e; }
-.dir-label { color: #569cd6; }
-.dir-label::before { content: "▼ "; font-size: 9px; }
-.dir-node.closed .dir-label::before { content: "▶ "; }
-.file-entry { cursor: pointer; padding: 2px 8px 2px 20px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dir-toggle { color: #569cd6; font-size: 9px; cursor: pointer; padding-right: 4px; flex-shrink: 0; }
+.dir-label { color: #569cd6; cursor: pointer; flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.dir-label:hover { color: #9fc8e8; }
+.dir-label.active { background: #094771; border-radius: 2px; padding: 0 3px; color: #c9e8ff; }
+.dir-node.closed .dir-toggle::before { content: "▶"; }
+.dir-node:not(.closed) .dir-toggle::before { content: "▼"; }
+.file-entry { cursor: pointer; padding: 2px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dir-children { padding-left: 10px; border-left: 1px solid #2a2a2a; margin-left: 11px; }
 .file-entry:hover { background: #2a2d2e; }
 .file-entry.active { background: #094771; }
 .file-badge { float: right; background: #3c3c3c; border-radius: 10px; padding: 0 5px; font-size: 11px; color: #888; }
@@ -113,6 +120,7 @@ body { font-family: monospace; font-size: 13px; display: flex; height: 100vh; ba
   <div class="folded-label" onclick="togglePanel('sidebar')">Files</div>
   <div class="panel-body">
     <div id="search-box"><input id="search" placeholder="Filter files…" oninput="filterFiles(this.value)" autocomplete="off"></div>
+    <div id="project-item" onclick="selectProject()">⊞ Project</div>
     <div id="file-tree"></div>
   </div>
 </div>
@@ -167,7 +175,7 @@ body { font-family: monospace; font-size: 13px; display: flex; height: 100vh; ba
 </div>
 
 <script>
-var allFiles = [], currentFile = null, currentTab = 'asm', fileData = null;
+var allFiles = [], currentFile = null, currentDir = null, currentTab = 'asm', fileData = null;
 var _units = {}, _chunks = [];
 
 // --- Panel fold/unfold ---
@@ -245,30 +253,49 @@ function filterFiles(q) {
   renderTree(allFiles.filter(function(f){ return f.path.toLowerCase().indexOf(q) >= 0; }), true);
 }
 
+function buildFileTree(files) {
+  var root = { _dirs: {}, _files: [] };
+  files.forEach(function(f) {
+    var parts = f.path.split('/');
+    var node = root;
+    for (var i = 0; i < parts.length - 1; i++) {
+      var seg = parts[i];
+      if (!node._dirs[seg]) node._dirs[seg] = { _path: parts.slice(0, i + 1).join('/'), _dirs: {}, _files: [] };
+      node = node._dirs[seg];
+    }
+    node._files.push(f);
+  });
+  return root;
+}
+
+function renderTreeNode(node) {
+  var html = '';
+  Object.keys(node._dirs).sort().forEach(function(name) {
+    var child = node._dirs[name];
+    var isActive = currentDir === child._path;
+    html += '<div class="dir-node closed">' +
+      '<span class="dir-toggle"></span>' +
+      '<span class="dir-label' + (isActive ? ' active' : '') + '" data-dirpath="' + esc(child._path) + '">' + esc(name) + '/</span>' +
+      '</div>' +
+      '<div class="dir-children" style="display:none">' + renderTreeNode(child) + '</div>';
+  });
+  node._files.sort(function(a, b) { return a.path < b.path ? -1 : 1; }).forEach(function(f) {
+    html += fileHtml(f);
+  });
+  return html;
+}
+
 function renderTree(files, flat) {
   var el = document.getElementById('file-tree');
   if (!files.length) { el.innerHTML = '<div class="empty">No files</div>'; return; }
   if (flat) { el.innerHTML = files.map(fileHtml).join(''); bindFileClicks(el); return; }
-  var dirs = {};
-  files.forEach(function(f) {
-    var parts = f.path.split('/');
-    var dir = parts.length > 1 ? parts.slice(0, -1).join('/') : '';
-    if (!dirs[dir]) dirs[dir] = [];
-    dirs[dir].push(f);
-  });
-  var html = '';
-  Object.keys(dirs).sort().forEach(function(dir) {
-    if (dir) {
-      html += '<div class="dir-node"><span class="dir-label">' + esc(dir) + '/</span></div>';
-      html += '<div class="dir-children">' + dirs[dir].map(fileHtml).join('') + '</div>';
-    } else {
-      html += dirs[dir].map(fileHtml).join('');
-    }
-  });
-  el.innerHTML = html;
+  el.innerHTML = renderTreeNode(buildFileTree(files));
   bindFileClicks(el);
-  el.querySelectorAll('.dir-node').forEach(function(n) {
-    n.addEventListener('click', function() { toggleDir(n); });
+  el.querySelectorAll('.dir-toggle').forEach(function(t) {
+    t.addEventListener('click', function(e) { e.stopPropagation(); toggleDir(t.closest('.dir-node')); });
+  });
+  el.querySelectorAll('.dir-label[data-dirpath]').forEach(function(lbl) {
+    lbl.addEventListener('click', function(e) { e.stopPropagation(); selectDir(lbl.getAttribute('data-dirpath')); });
   });
 }
 
@@ -291,10 +318,68 @@ function toggleDir(el) {
     next.style.display = el.classList.contains('closed') ? 'none' : '';
 }
 
+async function selectDir(dirPath) {
+  currentDir = dirPath;
+  currentFile = null;
+  document.querySelectorAll('.dir-label, .file-entry').forEach(function(e){ e.classList.remove('active'); });
+  document.getElementById('project-item').classList.remove('active');
+  var lbl = document.querySelector('.dir-label[data-dirpath="' + dirPath.replace(/\\/g,'\\\\').replace(/"/g,'\\"') + '"]');
+  if (lbl) lbl.classList.add('active');
+  document.getElementById('breadcrumb').textContent = dirPath + '/';
+  document.getElementById('tabs').style.display = 'none';
+  document.getElementById('nav-bar').style.display = 'none';
+  var r = await fetch('/api/dir?path=' + encodeURIComponent(dirPath));
+  var data = await r.json();
+  var el = document.getElementById('chunk-list');
+  if (!data.files.length) { el.innerHTML = '<div class="empty">No indexed files</div>'; return; }
+  el.innerHTML = data.files.map(function(f) {
+    var fname = esc(f.path.split('/').pop());
+    return '<div class="chunk-item" data-file-path="' + esc(f.path) + '">' +
+      '<div class="chunk-name">' + fname + '</div>' +
+      '<div class="chunk-meta">' + f.chunks + ' chunks' + (f.has_asm ? ' · semantic' : '') + '</div>' +
+      (f.description ? '<div class="chunk-desc">' + esc(f.description.slice(0,90)) + '</div>' : '') +
+      '</div>';
+  }).join('');
+  el.querySelectorAll('[data-file-path]').forEach(function(item) {
+    item.addEventListener('click', function() { selectFile(item.getAttribute('data-file-path')); });
+  });
+  document.getElementById('desc-body').innerHTML =
+    '<div class="desc-name">' + esc(dirPath) + '/</div>' +
+    '<div class="desc-meta">' + data.files.length + ' file' + (data.files.length !== 1 ? 's' : '') + '</div>' +
+    '<div class="desc-no-desc">No directory summary yet</div>';
+  document.getElementById('source-body').innerHTML = '<div class="empty">Select a file</div>';
+}
+
+async function selectProject() {
+  currentDir = null;
+  currentFile = null;
+  document.querySelectorAll('.dir-label, .file-entry').forEach(function(e){ e.classList.remove('active'); });
+  document.getElementById('project-item').classList.add('active');
+  document.getElementById('breadcrumb').textContent = '(project)';
+  document.getElementById('tabs').style.display = 'none';
+  document.getElementById('nav-bar').style.display = 'none';
+  var r = await fetch('/api/project');
+  var data = await r.json();
+  var el = document.getElementById('chunk-list');
+  el.innerHTML = '<div class="chunk-item" style="cursor:default">' +
+    '<div class="chunk-name">Project overview</div>' +
+    '<div class="chunk-meta">' + data.files + ' files · ' + data.chunks + ' chunks</div>' +
+    '</div>';
+  var desc = data.description
+    ? '<div class="desc-text">' + esc(data.description) + '</div>'
+    : '<div class="desc-no-desc">No project summary yet — run indexing with summarization enabled</div>';
+  document.getElementById('desc-body').innerHTML =
+    '<div class="desc-name">Project</div>' +
+    '<div class="desc-meta">' + data.files + ' files · ' + data.chunks + ' chunks</div>' +
+    desc;
+  document.getElementById('source-body').innerHTML = '<div class="empty"></div>';
+}
+
 // --- File selection ---
 
 async function selectFile(path) {
   document.querySelectorAll('.file-entry').forEach(function(e){ e.classList.remove('active'); });
+  document.getElementById('project-item').classList.remove('active');
   document.querySelectorAll('.file-entry[data-path]').forEach(function(e){
     if (e.getAttribute('data-path') === path) e.classList.add('active');
   });
@@ -529,6 +614,10 @@ def _make_handler(rag_db: str, asm_db: str, working_dir: str):
 
             if path == "/api/tree":
                 self._api_tree()
+            elif path == "/api/project":
+                self._api_project()
+            elif path == "/api/dir":
+                self._api_dir(qs.get("path", [""])[0])
             elif path == "/api/file":
                 self._api_file(qs.get("path", [""])[0])
             elif path == "/api/content":
@@ -560,6 +649,59 @@ def _make_handler(rag_db: str, asm_db: str, working_dir: str):
             result = [{"path": _rel(r["path"]), "chunks": r["cnt"], "has_asm": _rel(r["path"]) in asm_paths}
                       for r in rows]
             self.send_json(result)
+
+        def _api_project(self):
+            rc = _rag_conn()
+            chunks = rc.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+            files = rc.execute("SELECT COUNT(DISTINCT path) FROM chunks").fetchone()[0]
+            description = None
+            ac = _asm_conn()
+            if ac:
+                try:
+                    row = ac.execute(
+                        "SELECT description FROM units WHERE status='described'"
+                        " ORDER BY level DESC LIMIT 1"
+                    ).fetchone()
+                    if row:
+                        description = row["description"]
+                except Exception:
+                    pass
+            self.send_json({"files": files, "chunks": chunks, "description": description})
+
+        def _api_dir(self, dir_path: str):
+            rc = _rag_conn()
+            rows = rc.execute(
+                "SELECT path, COUNT(*) as cnt FROM chunks GROUP BY path ORDER BY path"
+            ).fetchall()
+            prefix = (dir_path.rstrip("/") + "/") if dir_path else ""
+            files = []
+            for r in rows:
+                rel = _rel(r["path"])
+                if rel.startswith(prefix):
+                    files.append({"path": rel, "chunks": r["cnt"], "has_asm": False, "description": None})
+            ac = _asm_conn()
+            asm_paths: set[str] = set()
+            if ac:
+                try:
+                    for row in ac.execute("SELECT DISTINCT path FROM units WHERE status='described'").fetchall():
+                        asm_paths.add(_rel(row["path"]))
+                except Exception:
+                    pass
+            for f in files:
+                f["has_asm"] = f["path"] in asm_paths
+                if ac and f["has_asm"]:
+                    try:
+                        for p in (f["path"], _abs(f["path"])):
+                            row = ac.execute(
+                                "SELECT description FROM units WHERE path=? AND status='described'"
+                                " ORDER BY level DESC, start_line LIMIT 1", (p,)
+                            ).fetchone()
+                            if row and row["description"]:
+                                f["description"] = row["description"]
+                                break
+                    except Exception:
+                        pass
+            self.send_json({"dir": dir_path, "files": files})
 
         def _api_file(self, file_path: str):
             if not file_path:
