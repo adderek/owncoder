@@ -18,6 +18,8 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_LLM_MAX_OUTPUT_TOKENS": ("llm", "max_output_tokens"),
         "AGENT_LLM_TEMPERATURE": ("llm", "temperature"),
         "AGENT_LLM_MAX_ITERATIONS": ("agent", "max_iterations"),
+        "AGENT_GOAL": ("agent", "goal"),
+        "AGENT_GOAL_MAX_ITERATIONS": ("agent", "goal_max_iterations"),
         "AGENT_LLM_THINK_LEVEL": ("agent", "think_level"),
         "AGENT_LLM_AUTO_DETECT_CTX": ("agent", "auto_detect_ctx"),
         "AGENT_LLM_NARRATION_FALLBACK": ("agent", "narration_fallback"),
@@ -236,6 +238,8 @@ def _apply_model_entry_to_llm(config: Config) -> None:
 
     # Behavior settings from config.agent (sourced from [agent] TOML section)
     config.llm.max_iterations = config.agent.max_iterations
+    config.llm.goal = config.agent.goal
+    config.llm.goal_max_iterations = config.agent.goal_max_iterations
     config.llm.compaction_threshold = config.agent.compaction_threshold
     config.llm.compaction_message_threshold = config.agent.compaction_message_threshold
     config.llm.narration_fallback = config.agent.narration_fallback

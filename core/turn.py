@@ -109,6 +109,9 @@ async def run_turn(
     _EDIT_FILE_FAIL_THRESHOLD = 2
     _max_iter_raw = getattr(config.llm, "max_iterations", 10)
     max_iter: int | None = None if _max_iter_raw is None else max(1, int(_max_iter_raw))
+    goal: str | None = getattr(config.llm, "goal", None)
+    goal_max_iter: int = max(1, int(getattr(config.llm, "goal_max_iterations", 200)))
+    total_iter_count: int = 0
     loop_cfg = getattr(config, "loop_guard", None)
     loop_detector: LoopDetector | None = None
     if loop_cfg is not None and getattr(loop_cfg, "enabled", True):
@@ -497,6 +500,7 @@ async def run_turn(
                 messages = await compact(messages, config, client, facts_store=facts_store, turn_index=turn_index, project_memory_store=project_memory_store, session_id=session_id)
                 _phase("compact_done", f"{_count_tokens_approx(messages)} tokens")
             iter_count += 1
+            total_iter_count += 1
             if on_progress is not None:
                 try:
                     on_progress(iter_count, max_iter if max_iter is not None else -1)
@@ -508,6 +512,36 @@ async def run_turn(
                 messages = messages + [{"role": "assistant", "content": note}]
                 return "".join(content_parts + [note]), messages
             if max_iter is not None and iter_count >= max_iter:
+                if goal is not None:
+                    if total_iter_count >= goal_max_iter:
+                        logger.warning("run_turn: goal_max_iterations=%d reached without achieving goal", goal_max_iter)
+                        note = f"[goal ceiling {goal_max_iter} reached — goal not yet achieved: {goal}]"
+                        messages = messages + [{"role": "assistant", "content": note}]
+                        return "".join(content_parts + [note]), messages
+                    if goal.startswith("$"):
+                        shell_cmd = goal[1:].strip()
+                        _phase("goal_check", f"shell: {shell_cmd[:60]}")
+                        try:
+                            proc = await asyncio.create_subprocess_shell(
+                                shell_cmd,
+                                stdout=asyncio.subprocess.DEVNULL,
+                                stderr=asyncio.subprocess.DEVNULL,
+                            )
+                            ret = await proc.wait()
+                        except Exception as _e:
+                            ret = 1
+                            logger.warning("goal shell check failed to run: %s", _e)
+                        if ret == 0:
+                            logger.info("run_turn: shell goal achieved after %d iterations", total_iter_count)
+                            note = f"[goal achieved after {total_iter_count} iterations: {goal}]"
+                            messages = messages + [{"role": "assistant", "content": note}]
+                            return "".join(content_parts + [note]), messages
+                        check_msg = {"role": "user", "content": f"[goal check] Shell command returned non-zero (not yet done): {shell_cmd}\nContinue working toward the goal."}
+                    else:
+                        check_msg = {"role": "user", "content": f"[goal check] Your current goal is: {goal}\nHave you fully achieved it? If yes, summarize what was done and stop calling tools. If not, continue working."}
+                    messages = messages + [check_msg]
+                    iter_count = 0
+                    continue
                 logger.warning("run_turn: reached max_iterations=%d, stopping tool loop", max_iter)
                 note = f"[iteration limit {max_iter} reached — type 'continue' to keep going]"
                 messages = messages + [{"role": "assistant", "content": note}]

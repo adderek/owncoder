@@ -24,6 +24,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/context", ["/ctx", "/legend"], "context breakdown grid + color/marker key", False),
     ("/output", ["/out"], "show model output breakdown (think/tool/reply/other)", True),
     ("/continue", ["/c"], "resume after iteration cap or truncation", False),
+    ("/goal", [], "set/show/clear completion goal  [<text> | $ <cmd> | clear]", True),
     ("/exec", [], "run a shell command", True),
     ("/export", [], "export conversation as markdown", False),
     ("/help", ["/?"], "show this help", False),
@@ -289,6 +290,28 @@ def _render_models_table(config: "Config"):
         )
 
     return tbl
+
+
+def _apply_goal(agent, arg: str) -> tuple[bool, str]:
+    """Handle /goal [<text> | $<cmd> | clear]. Returns (ok, message)."""
+    v = arg.strip()
+    if not v:
+        cur = getattr(agent.config.llm, "goal", None)
+        max_i = getattr(agent.config.llm, "goal_max_iterations", 200)
+        if cur is None:
+            return True, "No goal set. Usage: /goal <description>  or  /goal $ <shell-cmd>"
+        return True, f"goal: {cur}\ngoal_max_iterations: {max_i}"
+    if v.lower() in ("clear", "off", "none", "-"):
+        agent.config.llm.goal = None
+        if hasattr(agent.config, "agent"):
+            agent.config.agent.goal = None
+        return True, "Goal cleared. Agent will stop at max_iterations as usual."
+    agent.config.llm.goal = v
+    if hasattr(agent.config, "agent"):
+        agent.config.agent.goal = v
+    max_i = getattr(agent.config.llm, "goal_max_iterations", 200)
+    kind = "shell check" if v.startswith("$") else "LLM-evaluated"
+    return True, f"Goal set ({kind}): {v}\nAgent will run until goal is achieved (hard ceiling: {max_i} iterations)."
 
 
 def _match_commands(prefix: str) -> list[tuple[str, str, bool]]:

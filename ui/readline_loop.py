@@ -46,6 +46,7 @@ def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
   [{c}]/max_tokens [args][/{c}]   set tokens: <n> | out <n> | in <n> | default
   [{c}]/context[/{c}] ([{c}]/ctx[/{c}], [{c}]/legend[/{c}])  context breakdown grid + color/marker key
   [{c}]/unlimited[/{c}] ([{c}]/nomax[/{c}])  toggle unlimited iterations (no iter cap)
+  [{c}]/goal [text | $cmd | clear][/{c}]  set completion goal; agent runs until achieved
                        Ctrl+C while running: stop after current iteration (Ctrl+C again = cancel)
 
 [dim]Ctrl+D or Ctrl+Q to quit[/dim]
@@ -363,6 +364,12 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
 
             elif cmd in ("/context", "/ctx", "/legend"):
                 console.print(_render_context_report(server, t))
+
+            elif cmd == "/goal":
+                from agent.ui.slash import _apply_goal
+                ok, msg = _apply_goal(server._agent, arg)
+                for line in msg.splitlines():
+                    console.print(f"[{'green' if ok else 'yellow'}]{line}[/]")
 
             elif cmd in ("/quit", "/exit", "/q!"):
                 console.print(f"[{t.text_dim}]Bye.[/{t.text_dim}]")

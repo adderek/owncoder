@@ -70,6 +70,14 @@ class LocalUIServer:
     def is_unlimited_mode(self, session_id: str = "") -> bool:
         return getattr(self._agent.config.llm, "max_iterations", 10) is None
 
+    def get_goal(self, session_id: str = "") -> str | None:
+        return getattr(self._agent.config.llm, "goal", None)
+
+    def set_goal(self, goal: str | None, session_id: str = "") -> None:
+        self._agent.config.llm.goal = goal
+        if hasattr(self._agent.config, "agent"):
+            self._agent.config.agent.goal = goal
+
     # ── control ─────────────────────────────────────────────────────────────
 
     def inject(self, text: str, session_id: str = "") -> None:
@@ -153,6 +161,8 @@ class LocalUIServer:
                 "temperature": llm.temperature,
                 "think_level": getattr(llm, "think_level", "normal"),
                 "max_iterations": getattr(llm, "max_iterations", 10),
+                "goal": getattr(llm, "goal", None),
+                "goal_max_iterations": getattr(llm, "goal_max_iterations", 200),
             },
             "emb": {
                 "model": emb.model or "",

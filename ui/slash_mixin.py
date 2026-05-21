@@ -52,6 +52,13 @@ class SlashHandlerMixin:
         elif cmd in ("/continue", "/c"):
             self._begin_chat("continue")
 
+        elif cmd == "/goal":
+            from agent.ui.slash import _apply_goal
+            ok, msg = _apply_goal(self._server._agent, arg)
+            color = t.success if ok else t.warning
+            for line in msg.splitlines():
+                self._write_sys(f"[{color}]{line}[/{color}]")
+
         elif cmd == "/clear":
             self.query_one("#chat-log", self._wt.ConversationView).clear()
             self._switch_to_chat()
