@@ -72,6 +72,13 @@ class BgWorker:
                 self._stop.wait(timeout=_POLL)
 
     def _tick(self) -> bool:
+        # Fast-path: bulk-resolve any pending units whose checksum already has a described match.
+        resolved = self._store.bulk_dedup_pending(analysis_date=time.time())
+        if resolved:
+            self.dedup_count += resolved
+            self._on_progress("bulk_deduped", {"count": resolved})
+            return True
+
         pending = self._store.get_pending_units(limit=10)
         if pending:
             for unit in pending:

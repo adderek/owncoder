@@ -21,6 +21,16 @@ __all__ = [
 ]
 
 
+def _fast_file_checksum(path: str) -> str | None:
+    """Return sha256[:16] of file bytes, or None on error."""
+    import hashlib
+    try:
+        with open(path, "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()[:16]
+    except OSError:
+        return None
+
+
 def prune_index(
     root: str,
     store: "VectorStore",
@@ -212,11 +222,19 @@ def index_directory(
     dedup_cross = 0
     embed_workers: int = getattr(getattr(embedder, "_cfg", None), "embed_workers", 1)
 
+    # Pre-load in-memory dedup state from code_store to avoid per-chunk DB queries.
+    dedup_cache: dict | None = None          # {obj_cs: unit_dict} for O(1) leaf lookup
+    described_file_checksums: set | None = None  # content_checksums of fully-described files
+    if code_store is not None and not force:
+        dedup_cache = code_store.load_described_checksum_map()
+        described_file_checksums = code_store.get_described_content_checksums()
+
     if embed_workers <= 1:
         # Serial path: embed per batch → commit per batch (best crash recovery).
         for fpath in files:
             rel = str(fpath.relative_to(root_path))
             mtime = fpath.stat().st_mtime
+            abs_path = str(fpath)
 
             if not force:
                 stored_mtime = store.get_mtime(rel)
@@ -224,8 +242,19 @@ def index_directory(
                     skipped += 1
                     continue
 
+            # File-level skip: if content_checksum matches a fully-described file,
+            # skip chunking + embedding entirely.
+            if described_file_checksums is not None:
+                try:
+                    file_cs = _fast_file_checksum(abs_path)
+                    if file_cs and file_cs in described_file_checksums:
+                        store.set_file_mtime(rel, mtime)
+                        skipped += 1
+                        continue
+                except OSError:
+                    pass
+
             store.delete_by_path(rel)
-            abs_path = str(fpath)
             if abs_path != rel:
                 store.delete_by_path(abs_path)  # clean up legacy absolute-path entries
             chunks = chunk_file(abs_path, cfg)
@@ -256,9 +285,14 @@ def index_directory(
 
             ds = None
             if code_store is not None:
-                ds = _enqueue_for_summarization(code_store, chunks, rel, mtime, git_hash, force, abs_path=abs_path)
+                ds = _enqueue_for_summarization(
+                    code_store, chunks, rel, mtime, git_hash, force,
+                    abs_path=abs_path, dedup_cache=dedup_cache,
+                )
                 dedup_same += ds["dedup_same"]
                 dedup_cross += ds["dedup_cross"]
+                if dedup_cache is not None:
+                    dedup_cache.update(ds.get("new_described", {}))
             if progress_cb:
                 progress_cb(rel, len(chunks), dedup=ds)
 
@@ -280,6 +314,17 @@ def index_directory(
                         skipped += 1
                         work.append((rel, abs_path, mtime, None))
                         continue
+                    # File-level skip via content checksum.
+                    if described_file_checksums is not None:
+                        try:
+                            file_cs = _fast_file_checksum(abs_path)
+                            if file_cs and file_cs in described_file_checksums:
+                                store.set_file_mtime(rel, mtime)
+                                skipped += 1
+                                work.append((rel, abs_path, mtime, None))
+                                continue
+                        except OSError:
+                            pass
                 future = executor.submit(_chunk_and_embed, fpath, rel, mtime, embedder, cfg, git_hash)
                 work.append((rel, abs_path, mtime, future))
 
@@ -299,9 +344,14 @@ def index_directory(
                 indexed += 1
                 ds = None
                 if code_store is not None:
-                    ds = _enqueue_for_summarization(code_store, chunks, rel, mtime, git_hash, force, abs_path=abs_path)
+                    ds = _enqueue_for_summarization(
+                        code_store, chunks, rel, mtime, git_hash, force,
+                        abs_path=abs_path, dedup_cache=dedup_cache,
+                    )
                     dedup_same += ds["dedup_same"]
                     dedup_cross += ds["dedup_cross"]
+                    if dedup_cache is not None:
+                        dedup_cache.update(ds.get("new_described", {}))
                 if progress_cb:
                     progress_cb(rel, len(chunks), dedup=ds)
         finally:
@@ -320,16 +370,20 @@ def index_directory(
 def _enqueue_for_summarization(
     code_store, chunks: list[dict], path: str, mtime: float, git_hash, force: bool,
     abs_path: str | None = None,
+    dedup_cache: dict | None = None,
 ) -> dict:
     """Upsert changed chunks into code_store; skip LLM for content-identical chunks.
 
-    Returns {"dedup_same": int, "dedup_cross": int, "pending": int}.
+    Returns {"dedup_same": int, "dedup_cross": int, "pending": int, "new_described": dict}.
+    new_described is {obj_cs: unit_dict} for chunks resolved via cross-path dedup this call,
+    so the caller can update the in-memory cache.
     """
     import hashlib
 
     dedup_same = 0
     dedup_cross = 0
     pending = 0
+    new_described: dict[str, dict] = {}
 
     # Snapshot existing leaf units BEFORE delete so we can skip re-summarization
     # for chunks whose content is unchanged.
@@ -340,7 +394,7 @@ def _enqueue_for_summarization(
 
     file_checksum = hashlib.sha256(path.encode()).hexdigest()[:16]
 
-    # Compute actual file content checksum + size for cross-file dedup tracking.
+    # Compute actual file content checksum + size (reuse from cache if we already read this file).
     content_checksum: str | None = None
     file_size: int | None = None
     try:
@@ -383,9 +437,9 @@ def _enqueue_for_summarization(
                 continue
 
             # 2. Cross-path skip: another file with identical content already described.
-            donor = code_store.find_described_unit_by_object_checksum(obj_cs)
+            donor = code_store.find_described_unit_by_object_checksum(obj_cs, cache=dedup_cache)
             if donor:
-                code_store.upsert_unit({
+                unit_record = {
                     "id": chunk_id,
                     "path": path,
                     "language": chunk.get("language"),
@@ -402,7 +456,10 @@ def _enqueue_for_summarization(
                     "status": "described",
                     "mtime": mtime,
                     "git_hash": git_hash,
-                })
+                }
+                code_store.upsert_unit(unit_record)
+                # Add to cache so subsequent files in this run see it immediately.
+                new_described[obj_cs] = unit_record
                 dedup_cross += 1
                 continue
 
@@ -429,4 +486,9 @@ def _enqueue_for_summarization(
         file_size=file_size,
     )
 
-    return {"dedup_same": dedup_same, "dedup_cross": dedup_cross, "pending": pending}
+    return {
+        "dedup_same": dedup_same,
+        "dedup_cross": dedup_cross,
+        "pending": pending,
+        "new_described": new_described,
+    }

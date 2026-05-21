@@ -304,8 +304,13 @@ class CodeStore:
         ).fetchall()
         return {r["id"]: dict(r) for r in rows}
 
-    def find_described_unit_by_object_checksum(self, obj_cs: str) -> dict | None:
-        """Find any described unit with matching object_checksum (cross-path dedup)."""
+    def find_described_unit_by_object_checksum(self, obj_cs: str, cache: dict | None = None) -> dict | None:
+        """Find any described unit with matching object_checksum (cross-path dedup).
+
+        If `cache` is provided (built via load_described_checksum_map), the lookup is O(1) in-memory.
+        """
+        if cache is not None:
+            return cache.get(obj_cs)
         row = self._conn.execute(
             "SELECT * FROM units WHERE object_checksum = ? AND status = 'described' AND description IS NOT NULL LIMIT 1",
             (obj_cs,),
@@ -319,6 +324,83 @@ class CodeStore:
             (edge_cs,),
         ).fetchone()
         return dict(row) if row else None
+
+    def load_described_checksum_map(self) -> dict[str, dict]:
+        """Return {object_checksum: unit_dict} for all described leaf units.
+
+        Used as a fast in-memory dedup cache for an indexing run. The caller is
+        responsible for updating it when new units are described.
+        """
+        rows = self._conn.execute(
+            """SELECT object_checksum, description, node_checksum, inferred_name, analysis_model
+               FROM units
+               WHERE status = 'described' AND description IS NOT NULL AND object_checksum IS NOT NULL
+                 AND level = 0"""
+        ).fetchall()
+        return {r["object_checksum"]: dict(r) for r in rows}
+
+    def get_described_content_checksums(self) -> set[str]:
+        """Return set of content_checksums for files that are fully described."""
+        rows = self._conn.execute(
+            """SELECT f.content_checksum
+               FROM indexed_files f
+               WHERE f.content_checksum IS NOT NULL
+                 AND NOT EXISTS (
+                     SELECT 1 FROM units u
+                     WHERE u.path = f.path AND u.status != 'described'
+                 )
+                 AND EXISTS (
+                     SELECT 1 FROM units u WHERE u.path = f.path AND u.status = 'described'
+                 )"""
+        ).fetchall()
+        return {r["content_checksum"] for r in rows}
+
+    def bulk_dedup_pending(self, analysis_date: float) -> int:
+        """Resolve all pending units whose object_checksum already has a described match.
+
+        Runs as a single SQL pass — no LLM involved. Returns count of units resolved.
+        """
+        conn = self._conn
+        # Collect pending units that have a described counterpart with the same checksum.
+        rows = conn.execute("""
+            SELECT u.id,
+                   d.description, d.node_checksum, d.inferred_name, d.analysis_model
+            FROM units u
+            JOIN units d ON d.object_checksum = u.object_checksum
+                         AND d.status = 'described'
+                         AND d.description IS NOT NULL
+                         AND d.id != u.id
+            WHERE u.status = 'pending'
+            LIMIT 10000
+        """).fetchall()
+        if not rows:
+            return 0
+        conn.executemany("""
+            UPDATE units
+               SET status         = 'described',
+                   description    = ?,
+                   node_checksum  = ?,
+                   inferred_name  = ?,
+                   analysis_model = ?,
+                   analysis_date  = ?
+             WHERE id = ?
+        """, [
+            (r["description"], r["node_checksum"], r["inferred_name"], r["analysis_model"], analysis_date, r["id"])
+            for r in rows
+        ])
+        conn.commit()
+        # Mark parents stale for anything that just got described.
+        ids = [r["id"] for r in rows]
+        ph = ",".join("?" * len(ids))
+        conn.execute(f"""
+            UPDATE units SET status = 'stale'
+            WHERE status = 'described'
+              AND id IN (
+                  SELECT DISTINCT parent_id FROM units WHERE id IN ({ph}) AND parent_id IS NOT NULL
+              )
+        """, ids)
+        conn.commit()
+        return len(rows)
 
     # ── judge cache ───────────────────────────────────────────────────────────
 
