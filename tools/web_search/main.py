@@ -31,6 +31,8 @@ _config = None
 def setup(config) -> None:
     global _config
     _config = config
+    from agent.security import policy as _sec_policy
+    _sec_policy.setup(config)
     query_gate.setup(config)
     injection_shield.setup(config)
     http_executor.setup(config)
@@ -64,6 +66,19 @@ def _fetch_raw(url: str, headers: dict[str, str], timeout: int, mode: str) -> tu
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.read(), dict(resp.headers)
+
+def _extract_ddg_url(href: str) -> str:
+    """Extract the real destination URL from a DDG redirect href."""
+    import urllib.parse
+    try:
+        parsed = urllib.parse.urlparse(href)
+        params = urllib.parse.parse_qs(parsed.query)
+        if "uddg" in params:
+            return params["uddg"][0]
+    except Exception:
+        pass
+    return href
+
 
 def _search_duckduckgo(query: str, num_results: int) -> list[dict]:
     """Search DuckDuckGo HTML (no API key required)."""
@@ -136,7 +151,7 @@ def _search_duckduckgo(query: str, num_results: int) -> list[dict]:
     results = []
     for i, res in enumerate(parser.results[:num_results]):
         title = content_processor._strip_html(res['title']).strip()
-        url = res['url']
+        url = _extract_ddg_url(res['url'])
         snippet = content_processor._strip_html(res['snippet']).strip()[:500]
         results.append({
             "index": i + 1,
@@ -271,7 +286,7 @@ def web_search(query: str, num_results: int = 5, source: str = "web") -> dict:
             },
         }
 
-    # Layer 4: Injection shield on snippets
+    # Layer 4: Injection pattern filtering on snippets (no structural wrapping — snippets are short)
     results = injection_shield.shield_results(results)
 
     return {
@@ -280,8 +295,8 @@ def web_search(query: str, num_results: int = 5, source: str = "web") -> dict:
                 "index": r["index"],
                 "title": r["title"],
                 "url": r["url"],
-                "snippet": r.get("wrapped", r["snippet"]),
-                "snippet_hash": r.get("hash", r.get("snippet_hash", "")),
+                "snippet": r["snippet"],
+                "snippet_hash": r.get("snippet_hash", ""),
             }
             for r in results
         ],

@@ -13,6 +13,8 @@ from agent.core.streaming import (
 )
 from agent.core.history_ops import (
     _collapse_tool_rounds,
+    _merge_consecutive_assistants,
+    _truncate_large_messages,
     extract_last_code_block,
 )
 
@@ -187,3 +189,126 @@ class TestExtractLastCodeBlock:
         assert result is not None
         filename, _ = result
         assert filename == "hello.py"
+
+
+class TestMergeConsecutiveAssistants:
+    def test_no_consecutive_unchanged(self):
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "content": "bye"},
+            {"role": "assistant", "content": "goodbye"},
+        ]
+        assert _merge_consecutive_assistants(msgs) == msgs
+
+    def test_merges_two_plain_text(self):
+        msgs = [
+            {"role": "assistant", "content": "part one"},
+            {"role": "assistant", "content": "part two"},
+        ]
+        result = _merge_consecutive_assistants(msgs)
+        assert len(result) == 1
+        assert result[0]["role"] == "assistant"
+        assert "part one" in result[0]["content"]
+        assert "part two" in result[0]["content"]
+
+    def test_merges_empty_content_no_separator(self):
+        msgs = [
+            {"role": "assistant", "content": ""},
+            {"role": "assistant", "content": "second"},
+        ]
+        result = _merge_consecutive_assistants(msgs)
+        assert len(result) == 1
+        assert result[0]["content"] == "second"
+
+    def test_one_side_has_tool_calls(self):
+        tc = [{"id": "tc1", "function": {"name": "read_file", "arguments": "{}"}}]
+        msgs = [
+            {"role": "assistant", "content": "thinking...", "tool_calls": tc},
+            {"role": "assistant", "content": "done"},
+        ]
+        result = _merge_consecutive_assistants(msgs)
+        assert len(result) == 1
+        assert result[0]["tool_calls"] == tc
+        assert "thinking" in result[0]["content"]
+        assert "done" in result[0]["content"]
+
+    def test_both_sides_have_tool_calls_combined(self):
+        tc1 = [{"id": "tc1", "function": {"name": "read_file", "arguments": "{}"}}]
+        tc2 = [{"id": "tc2", "function": {"name": "write_file", "arguments": "{}"}}]
+        msgs = [
+            {"role": "assistant", "content": "a", "tool_calls": tc1},
+            {"role": "assistant", "content": "b", "tool_calls": tc2},
+        ]
+        result = _merge_consecutive_assistants(msgs)
+        assert len(result) == 1
+        assert result[0]["tool_calls"] == tc1 + tc2
+
+    def test_reasoning_content_concatenated_without_tool_calls(self):
+        msgs = [
+            {"role": "assistant", "content": "x", "reasoning_content": "part A"},
+            {"role": "assistant", "content": "y", "reasoning_content": "part B"},
+        ]
+        result = _merge_consecutive_assistants(msgs)
+        rc = result[0].get("reasoning_content", "")
+        assert "part A" in rc and "part B" in rc
+
+    def test_reasoning_content_longer_wins_with_tool_calls(self):
+        tc = [{"id": "tc1", "function": {"name": "read_file", "arguments": "{}"}}]
+        msgs = [
+            {"role": "assistant", "content": "x", "tool_calls": tc, "reasoning_content": "short"},
+            {"role": "assistant", "content": "y", "reasoning_content": "longer reasoning here"},
+        ]
+        result = _merge_consecutive_assistants(msgs)
+        assert result[0].get("reasoning_content") == "longer reasoning here"
+
+    def test_non_consecutive_not_merged(self):
+        msgs = [
+            {"role": "assistant", "content": "a"},
+            {"role": "user", "content": "mid"},
+            {"role": "assistant", "content": "b"},
+        ]
+        result = _merge_consecutive_assistants(msgs)
+        assert len(result) == 3
+
+    def test_three_consecutive_merged_into_one(self):
+        msgs = [
+            {"role": "assistant", "content": "a"},
+            {"role": "assistant", "content": "b"},
+            {"role": "assistant", "content": "c"},
+        ]
+        result = _merge_consecutive_assistants(msgs)
+        assert len(result) == 1
+        assert "a" in result[0]["content"]
+        assert "c" in result[0]["content"]
+
+
+class TestTruncateLargeMessages:
+    def _msg(self, role: str, content: str) -> dict:
+        return {"role": role, "content": content}
+
+    def test_short_messages_unchanged(self):
+        msgs = [self._msg("user", "hi"), self._msg("assistant", "hello")]
+        result = _truncate_large_messages(msgs, token_budget=10_000)
+        assert result[0]["content"] == "hi"
+        assert result[1]["content"] == "hello"
+
+    def test_truncates_longest_non_system(self):
+        big = "x" * 4000
+        msgs = [self._msg("user", big), self._msg("assistant", "short")]
+        result = _truncate_large_messages(msgs, token_budget=100)
+        assert len(result[0]["content"]) < len(big)
+        assert "[... truncated" in result[0]["content"]
+
+    def test_system_messages_not_truncated(self):
+        sys_content = "s" * 4000
+        msgs = [self._msg("system", sys_content), self._msg("user", "a" * 4000)]
+        result = _truncate_large_messages(msgs, token_budget=100)
+        assert result[0]["content"] == sys_content
+        assert "[... truncated" in result[1]["content"]
+
+    def test_original_messages_not_mutated(self):
+        original = "x" * 4000
+        msgs = [self._msg("user", original)]
+        _truncate_large_messages(msgs, token_budget=10)
+        assert msgs[0]["content"] == original
