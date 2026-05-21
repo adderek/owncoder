@@ -58,6 +58,8 @@ class Agent:
         self._project_memory_store = None  # project-level MemoryStore for session indexing
         self._last_turn_time: float = 0.0
         self._idle_compact_task: asyncio.Task | None = None
+        self._active_step_skills: list[str] = []
+        self._skill_loader = None
         self.stats: dict = {
             "input_tokens": 0,
             "output_tokens": 0,
@@ -130,6 +132,14 @@ class Agent:
             self.messages.append({"role": "system", "content": project_doc})
         if user_context:
             self.messages.append({"role": "system", "content": user_context})
+
+        # Skills: build loader and inject index summary once at session start.
+        from agent.skills import SkillLoader
+        self._skill_loader = SkillLoader(config)
+        self._active_step_skills = []
+        skill_index = self._skill_loader.index_summary()
+        if skill_index:
+            self.messages.append({"role": "system", "content": skill_index})
 
         # Notes are injected per-turn based on query relevance (_refresh_notes_context).
         # A full static load at startup is used only when no embedder is available.
@@ -284,6 +294,46 @@ class Agent:
             insert_at = 0
         self.messages.insert(insert_at, {"role": "user", "content": notes_content, "_notes_marker": True})
 
+    def _refresh_skills_context(self) -> None:
+        """Swap skills system message when the active plan step changes."""
+        if self._skill_loader is None:
+            return
+        step_skills: list[str] = []
+        try:
+            from agent.planning.plan import list_plans
+            active = next((p for p in list_plans() if p.status == "active"), None)
+            if active:
+                in_progress = next((s for s in active.steps if s.status == "in_progress"), None)
+                if in_progress:
+                    step_skills = list(in_progress.skills)
+        except Exception:
+            pass
+
+        if step_skills == self._active_step_skills:
+            return
+        self._active_step_skills = step_skills
+
+        self.messages = [m for m in self.messages if not m.get("_skills_marker")]
+        if not step_skills:
+            return
+
+        content = self._skill_loader.load(step_skills)
+        if not content.strip():
+            return
+
+        # Inject after last static system message, before any user/assistant turns.
+        insert_at = 0
+        for i, m in enumerate(self.messages):
+            if m.get("role") == "system":
+                insert_at = i + 1
+            else:
+                break
+        self.messages.insert(insert_at, {
+            "role": "system",
+            "content": f"# Active step skills\n\n{content}",
+            "_skills_marker": True,
+        })
+
     def pending_background_count(self) -> int:
         return sum(1 for t in self._pending_bg_tasks if not t.done())
 
@@ -394,11 +444,15 @@ class Agent:
                     assistant += count_tokens_approx(json.dumps(m["tool_calls"]))
             elif role == "tool":
                 tool_results += n
+        skills_tokens = sum(
+            count_tokens_approx(m.get("content", "") if isinstance(m.get("content"), str) else "")
+            for m in self.messages if m.get("_skills_marker")
+        )
         return [
             {"label": "agent_prompt", "tokens": agent_prompt},
             {"label": "user_context", "tokens": user_context},
             {"label": "tools_schema", "tokens": self.schema_tokens()},
-            {"label": "skills",       "tokens": 0},
+            {"label": "skills",       "tokens": skills_tokens},
             {"label": "user_input",   "tokens": user_input},
             {"label": "assistant",    "tokens": assistant},
             {"label": "tool_results", "tokens": tool_results},
@@ -516,6 +570,7 @@ class Agent:
                     pass
             self._inject_similar_sessions(user_input, embedding=precomputed_embedding)
             self._refresh_notes_context(user_input, embedding=precomputed_embedding)
+        self._refresh_skills_context()
         if on_user_message is not None:
             on_user_message()
         _run_turn_fn = run_turn if not self.config.parallel.enabled else run_turn_ipc

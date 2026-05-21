@@ -273,8 +273,17 @@ class TestStepNewFields:
             step_data.pop("snapshot_refs", None)
             step_data.pop("retry_count", None)
             step_data.pop("max_retries", None)
+            step_data.pop("skills", None)
         path.write_text(json.dumps(data))
         loaded = plan_mod.load_plan(plan.id)
         assert loaded.steps[0].snapshot_refs == []
         assert loaded.steps[0].retry_count == 0
         assert loaded.steps[0].max_retries == 3
+        assert loaded.steps[0].skills == []
+
+    def test_skills_persist_and_load(self):
+        plan = plan_mod.create_plan("goal", steps=[{
+            "id": "s1", "description": "do thing", "skills": ["python", "testing"]
+        }])
+        loaded = plan_mod.load_plan(plan.id)
+        assert loaded.steps[0].skills == ["python", "testing"]

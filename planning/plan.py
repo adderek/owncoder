@@ -54,6 +54,8 @@ class Step:
     assigned_to: str = ""
     # Multi-agent: routing hints e.g. {"llm_tags": ["local"], "env": "gpu-box"}
     agent_constraints: dict = field(default_factory=dict)
+    # Named skill bundles to load when this step is in_progress
+    skills: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -151,6 +153,7 @@ def create_plan(
                 tests=list(s.get("tests", []) or []),
                 status=s.get("status", "pending"),
                 notes=s.get("notes", ""),
+                skills=list(s.get("skills", []) or []),
             ))
     plan = Plan(
         id=pid,
