@@ -144,6 +144,29 @@ Use the planning tools or slash commands:
 """
 
 
+_TURN_SIGNALS_INSTRUCTIONS = """\
+## Turn signals
+
+When you finish a response and there is clear follow-up work the harness should
+run automatically, end your response with exactly one signal line:
+
+  >>>NEXT: <what to do next>          — harness auto-loops with this as next input
+  >>>ASK: <question>                  — pause; user must answer before proceeding
+  >>>FEEDBACK: <topic>                — pause; ask user for feedback on this topic
+  >>>REVIEW: <scope>                  — request stronger-model review of scope
+  >>>DONE: <summary>                  — all tasks complete; no further steps
+  >>>CROWS: <problem>                 — consult many small models for creative solutions
+  >>>BLOCKED: <reason> | <unblocks>   — dead end; what would allow progress
+
+Rules:
+- Signal line must be the very last non-blank line of your response.
+- Omit entirely when this is a simple answer requiring no follow-up.
+- Use >>>NEXT only when the next step is clear and within your capability.
+- Use >>>ASK / >>>BLOCKED to pause the loop for human input.
+- Use >>>DONE when the original goal is fully achieved.\
+"""
+
+
 def _log_llm_request(messages: list, tools, config: "Config") -> None:
     if not getattr(config, "logs", None) or not getattr(config.logs, "dedupe_preamble", True):
         return
@@ -227,6 +250,10 @@ def _build_system_prompt(
 
     if getattr(config.planning, "increments_enabled", False):
         prompt = f"{prompt}\n\n{_INCREMENTS_INSTRUCTIONS}"
+
+    ts_cfg = getattr(config, "turn_signals", None)
+    if ts_cfg is None or getattr(ts_cfg, "enabled", True):
+        prompt = f"{prompt}\n\n{_TURN_SIGNALS_INSTRUCTIONS}"
 
     return prompt
 

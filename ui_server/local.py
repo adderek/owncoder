@@ -40,21 +40,68 @@ class LocalUIServer:
         on_reasoning=None,
         on_context_size=None,
         on_user_message=None,
+        on_signal=None,
     ) -> str:
+        from agent.core.turn_signals import parse_signal
+
         self._stop_event = asyncio.Event()
-        return await self._agent.chat(
-            text,
-            on_token=on_token,
-            on_tool_call=on_tool_call,
-            on_tool_result=on_tool_result,
-            on_progress=on_progress,
-            on_loop_detected=on_loop_detected,
-            on_phase=on_phase,
-            on_reasoning=on_reasoning,
-            on_context_size=on_context_size,
-            on_user_message=on_user_message,
-            stop_event=self._stop_event,
-        )
+
+        ts_cfg = getattr(self._agent.config, "turn_signals", None)
+        signals_enabled = ts_cfg is None or getattr(ts_cfg, "enabled", True)
+        max_auto_steps = getattr(ts_cfg, "max_auto_steps", 20) if ts_cfg else 20
+
+        current_input = text
+        auto_step = 0
+
+        while True:
+            response = await self._agent.chat(
+                current_input,
+                on_token=on_token,
+                on_tool_call=on_tool_call,
+                on_tool_result=on_tool_result,
+                on_progress=on_progress,
+                on_loop_detected=on_loop_detected,
+                on_phase=on_phase,
+                on_reasoning=on_reasoning,
+                on_context_size=on_context_size,
+                on_user_message=on_user_message,
+                stop_event=self._stop_event,
+            )
+
+            if not signals_enabled:
+                return response
+
+            clean_response, signal = parse_signal(response)
+
+            if signal is None:
+                return response
+
+            # Strip signal text from the last assistant message in history.
+            msgs = self._agent.get_messages()
+            if msgs and msgs[-1].get("role") == "assistant":
+                content = msgs[-1].get("content", "")
+                if isinstance(content, str) and content != clean_response:
+                    msgs[-1] = {**msgs[-1], "content": clean_response}
+                    self._agent.set_messages(msgs)
+
+            # Notify UI of the signal.
+            if on_signal is not None:
+                try:
+                    on_signal(signal, clean_response)
+                except Exception:
+                    logger.exception("on_signal callback failed")
+
+            if signal.kind == "next_step" and auto_step < max_auto_steps:
+                if self._stop_event is not None and self._stop_event.is_set():
+                    return clean_response
+                auto_step += 1
+                self._stop_event = asyncio.Event()
+                current_input = signal.payload
+                continue
+
+            # done, ask_user, request_feedback, request_review, consult_crows, blocked
+            # — all pause the auto-loop and return to the UI.
+            return clean_response
 
     # ── runtime controls ─────────────────────────────────────────────────────
 

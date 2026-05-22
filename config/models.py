@@ -425,6 +425,17 @@ class ConcurrencyConfig:
 
 
 @dataclass
+class TurnSignalsConfig:
+    """Harness-level turn signals for agent work planning/execution.
+
+    When enabled, the agent may emit >>>SIGNAL lines at end of response to
+    control the meta-loop: auto-continue, ask user, mark done, etc.
+    """
+    enabled: bool = True
+    max_auto_steps: int = 20
+
+
+@dataclass
 class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
@@ -452,3 +463,4 @@ class Config:
     web_search: WebSearchConfig = field(default_factory=WebSearchConfig)
     output_store: OutputStoreConfig = field(default_factory=OutputStoreConfig)
     concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
+    turn_signals: TurnSignalsConfig = field(default_factory=TurnSignalsConfig)

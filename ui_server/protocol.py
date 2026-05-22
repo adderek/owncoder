@@ -30,8 +30,15 @@ class UIServerProtocol(Protocol):
         on_reasoning=None,
         on_context_size=None,
         on_user_message=None,
+        on_signal=None,
     ) -> str:
-        """Send a user message; stream events via callbacks; return full response."""
+        """Send a user message; stream events via callbacks; return full response.
+
+        on_signal(signal, clean_response) — called when model emits a turn signal.
+        signal.kind: next_step | ask_user | request_feedback | request_review |
+                     done | consult_crows | blocked
+        signal.payload: signal text content.
+        """
         ...
 
     def inject(self, text: str, session_id: str) -> None:
