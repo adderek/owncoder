@@ -6,6 +6,13 @@ import subprocess
 from pathlib import Path
 
 
+def _fmt_tps(v: float) -> str:
+    if v >= 10:
+        return f"{v:.0f}"
+    s = f"{v:.1f}"
+    return s.lstrip("0") or "0"
+
+
 # Control tokens the model may emit during chunked summarization.
 # The model is told about these in the per-step prompt; if it emits one on the
 # first line of its response, we retry the step with extra context.
@@ -164,16 +171,63 @@ def _save_problem_report(
         return None
 
 
+def _pick_fast_entry(registry, gpu_pool: list[str]):
+    """Return (entry_name, entry) for fastest GPU model by measured tps, else first in pool."""
+    from agent.metrics.model_stats import get_tps
+    best_name, best_entry, best_tps = None, None, -1.0
+    for name in gpu_pool:
+        entry = registry.get(name)
+        if entry is None:
+            continue
+        measured = get_tps(name)
+        declared = entry.tokens_per_sec if entry.tokens_per_sec > 0 else 0.0
+        tps = measured if measured > 0 else declared
+        if best_name is None or tps > best_tps:
+            best_name, best_entry, best_tps = name, entry, tps
+    return best_name, best_entry
+
+
+def _print_model_list(console, registry, gpu_pool: list[str]) -> None:
+    from rich.table import Table
+    from agent.metrics.model_stats import load_stats
+    stats = load_stats()
+    table = Table(title="Available model entries", show_lines=False)
+    table.add_column("name", style="cyan")
+    table.add_column("model")
+    table.add_column("tags", style="dim")
+    table.add_column("tps (measured)", justify="right")
+    table.add_column("tps (config)", justify="right")
+    table.add_column("gpu", justify="center")
+    for name in registry.names():
+        entry = registry.get(name)
+        rec = stats.get(name, {})
+        measured = f"{_fmt_tps(rec['tps_ewma'])} ({rec['samples']}s)" if rec else "-"
+        declared = f"{_fmt_tps(entry.tokens_per_sec)}" if entry.tokens_per_sec > 0 else "-"
+        gpu_mark = "✓" if name in gpu_pool else ""
+        tags = ", ".join(entry.tags) if entry.tags else ""
+        table.add_row(name, entry.model or name, tags, measured, declared, gpu_mark)
+    console.print(table)
+
+
 def cmd_commit(args, config):
     from rich.console import Console
     from rich.panel import Panel
     from rich.prompt import Prompt
+    from agent.config import make_registry
 
     console = Console()
+    registry = make_registry(config)
+    gpu_pool: list[str] = config.concurrency.gpu_pool
+
+    # -m with no value → list models and exit
+    summ_override = getattr(args, "summarizer_model", None)
+    if summ_override == "__list__":
+        _print_model_list(console, registry, gpu_pool)
+        return
 
     path = Path(args.path)
     if not path.is_absolute():
-        path = Path(config.tools.working_dir) / path
+        path = Path.cwd() / path
     path = path.resolve()
 
     if not path.is_dir():
@@ -238,22 +292,31 @@ def cmd_commit(args, config):
     from rich.markup import escape as _markup_escape
     import time as _time
     from openai import AsyncOpenAI
-    from agent.config import make_registry
 
     state = {"tokens": 0, "buf": "", "start": _time.monotonic(), "phase": "starting", "raw_outputs": []}
 
-    # Resolve summarizer model entry (for chunked diff summarization only).
-    registry = make_registry(config)
+    # Resolve summarizer entry:
+    # 1. explicit -m NAME flag
+    # 2. [models] summarizer role in config
+    # 3. auto-pick fastest GPU model from gpu_pool
+    # 4. fall back to primary model
     summ_entry = None
-    summ_override = getattr(args, "summarizer_model", None)
+    summ_entry_name: str = ""
     if summ_override:
         summ_entry = registry.get(summ_override)
         if summ_entry is None:
             console.print(f"[red]Unknown model entry '{summ_override}'. "
-                          f"Available: {registry.names()}[/red]")
+                          f"Run 'agent commit -m' to list available entries.[/red]")
             return
+        summ_entry_name = summ_override
     elif config.model_roles.get("summarizer"):
         summ_entry = registry.summarizer
+        summ_entry_name = config.model_roles["summarizer"]
+    elif gpu_pool:
+        name, entry = _pick_fast_entry(registry, gpu_pool)
+        if entry is not None:
+            summ_entry = entry
+            summ_entry_name = name
 
     primary_client = AsyncOpenAI(base_url=config.llm.base_url, api_key=config.llm.api_key)
     primary_model = config.llm.model
@@ -265,7 +328,7 @@ def cmd_commit(args, config):
             f"(staged diff: {diff_chars:,} chars → {len(chunks)} chunks of ≤{chunk_chars:,}{summ_label})…[/dim]"
         )
     else:
-        _display_model = summ_entry.model if summ_override and summ_entry else primary_model
+        _display_model = summ_entry.model if summ_entry else primary_model
         console.print(
             f"[dim]Generating commit message for {path} "
             f"(staged diff: {diff_chars:,} chars · model: {_display_model})…[/dim]"
@@ -278,22 +341,36 @@ def cmd_commit(args, config):
         summ_client = primary_client
         summ_model = primary_model
 
-    async def _stream(messages: list[dict], *, max_tokens: int, client=None, model: str = "") -> str:
+    async def _stream(
+        messages: list[dict],
+        *,
+        max_tokens: int,
+        client=None,
+        model: str = "",
+        entry_name: str = "",
+    ) -> str:
         from agent.core.streaming import _clean_output
+        from agent.metrics.model_stats import update_stats
         _client = client or primary_client
         _model = model or primary_model
+        t0 = _time.monotonic()
         stream = await _client.chat.completions.create(
             model=_model,
             messages=messages,
             temperature=0.2,
             max_tokens=max_tokens,
             stream=True,
+            stream_options={"include_usage": True},
             extra_body={"reasoning_effort": "low"},
         )
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
+        usage_completion_tokens: int = 0
         async for chunk in stream:
             if not chunk.choices:
+                # Final usage chunk
+                if hasattr(chunk, "usage") and chunk.usage:
+                    usage_completion_tokens = chunk.usage.completion_tokens or 0
                 continue
             delta = chunk.choices[0].delta
             if delta.content:
@@ -302,9 +379,17 @@ def cmd_commit(args, config):
                 state["buf"] += delta.content
             if getattr(delta, "reasoning_content", None):
                 reasoning_parts.append(delta.reasoning_content)
+        elapsed = _time.monotonic() - t0
         raw_content = "".join(content_parts)
         raw_reasoning = "".join(reasoning_parts)
         state["raw_outputs"].append({"content": raw_content, "reasoning": raw_reasoning})
+        # Record tok/s using backend-reported count when available, else chunk count
+        tok_count = usage_completion_tokens if usage_completion_tokens > 0 else len(content_parts)
+        if entry_name:
+            try:
+                update_stats(entry_name, tok_count, elapsed)
+            except Exception:
+                pass
         full = _clean_output(raw_content)
         if not full:
             full = _clean_output(raw_reasoning)
@@ -354,17 +439,20 @@ def cmd_commit(args, config):
             {"role": "user", "content": _build_user(False, False)},
         ]
         out = (await _stream(messages, max_tokens=summary_tokens,
-                             client=summ_client, model=summ_model)).strip()
+                             client=summ_client, model=summ_model,
+                             entry_name=summ_entry_name)).strip()
 
         first_line = out.splitlines()[0].strip() if out else ""
         if first_line == _REQUEST_PREV_RAW and prev_raw:
             messages[-1]["content"] = _build_user(True, False)
             out = (await _stream(messages, max_tokens=summary_tokens,
-                                 client=summ_client, model=summ_model)).strip()
+                                 client=summ_client, model=summ_model,
+                                 entry_name=summ_entry_name)).strip()
         elif first_line == _REQUEST_PREV_SUMMARY and running_summary:
             messages[-1]["content"] = _build_user(False, True)
             out = (await _stream(messages, max_tokens=summary_tokens,
-                                 client=summ_client, model=summ_model)).strip()
+                                 client=summ_client, model=summ_model,
+                                 entry_name=summ_entry_name)).strip()
         return out
 
     final_system = (
@@ -386,14 +474,16 @@ def cmd_commit(args, config):
             f"{label}:\n{diff_or_summary}\n\n"
             "Write the commit message."
         )
+        _final_entry = summ_entry_name if (summ_override or summ_entry) else ""
         return (await _stream(
             [
                 {"role": "system", "content": final_system},
                 {"role": "user", "content": user_prompt},
             ],
             max_tokens=config.token_limits.commit_message_max_tokens,
-            client=summ_client if summ_override else None,
-            model=summ_model if summ_override else "",
+            client=summ_client if summ_entry else None,
+            model=summ_model if summ_entry else "",
+            entry_name=_final_entry,
         )).strip()
 
     async def _run() -> str:

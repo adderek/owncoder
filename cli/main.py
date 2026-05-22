@@ -74,11 +74,12 @@ def main() -> None:
 
     # commit
     commit_p = sub.add_parser("commit", help="Generate and apply a commit message for a subrepo")
-    commit_p.add_argument("path", type=str, help="Path to subrepo (absolute or relative to working dir)")
+    commit_p.add_argument("path", nargs="?", default=".",
+                          help="Path to git repo (default: current directory)")
     commit_p.add_argument("--model", type=str, help="Override model name (primary + summarization)")
-    commit_p.add_argument("--summarizer-model", type=str, dest="summarizer_model",
-                          help="Named model entry to use for chunked diff summarization"
-                                " (overrides [models] summarizer role)")
+    commit_p.add_argument("-m", "--summarizer-model", dest="summarizer_model",
+                          nargs="?", const="__list__", default=None,
+                          help="-m alone: list available models; -m NAME: use that model for summarization")
     commit_p.add_argument("--chunk-size", type=str, help="Override chunk size (integer chars or percentage, e.g. '12000' or '50%%')")
 
     # exec

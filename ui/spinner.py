@@ -8,6 +8,13 @@ if TYPE_CHECKING:
     pass
 
 
+def _fmt_tps(v: float) -> str:
+    if v >= 10:
+        return f"{v:.0f}"
+    s = f"{v:.1f}"
+    return s.lstrip("0") or "0"
+
+
 def _spinner_status_fields(server, status: str, elapsed: float) -> list[str]:
     """Return status fields in priority order (most meaningful first).
 
@@ -47,9 +54,9 @@ def _spinner_status_fields(server, status: str, elapsed: float) -> list[str]:
             fields.append(f"↑{_k(s['input_tokens'])}")
             fields.append(f"↓{_k(s['output_tokens'])}")
             if s.get("in_tps"):
-                fields.append(f"{s['in_tps']:.0f}↑t/s")
+                fields.append(f"{_fmt_tps(s['in_tps'])}↑t/s")
             if s.get("out_tps"):
-                fields.append(f"{s['out_tps']:.1f}↓t/s")
+                fields.append(f"{_fmt_tps(s['out_tps'])}↓t/s")
             if s.get("reasoning_tokens"):
                 fields.append(f"think {_k(s['reasoning_tokens'])}")
             if s.get("tool_tokens"):

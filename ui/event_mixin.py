@@ -16,6 +16,13 @@ from rich.markdown import Markdown
 logger = logging.getLogger(__name__)
 
 
+def _fmt_tps(v: float) -> str:
+    if v >= 10:
+        return f"{v:.0f}"
+    s = f"{v:.1f}"
+    return s.lstrip("0") or "0"
+
+
 class EventHandlerMixin:
     """Textual event handlers for agent tool/stream/worker events."""
 
@@ -241,9 +248,9 @@ class EventHandlerMixin:
         if s and s.get("calls", 0) > 0:
             extras = [f"↑{s['input_tokens']:,}", f"↓{s['output_tokens']:,}"]
             if s.get("in_tps"):
-                extras.append(f"{s['in_tps']:.0f} in-tok/s")
+                extras.append(f"{_fmt_tps(s['in_tps'])} in-tok/s")
             if s.get("out_tps"):
-                extras.append(f"{s['out_tps']:.1f} out-tok/s")
+                extras.append(f"{_fmt_tps(s['out_tps'])} out-tok/s")
             if s.get("reasoning_tokens"):
                 extras.append(f"think {s['reasoning_tokens']:,}")
             if s.get("tool_tokens"):

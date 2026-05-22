@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agent.ui.render import _render_context_report, _delatex
-from agent.ui.spinner import _run_spinner
+from agent.ui.spinner import _run_spinner, _fmt_tps
 from agent.ui.colors import _hex_to_ansi
 
 logger = logging.getLogger(__name__)
@@ -568,9 +568,9 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                 f"↓{s['output_tokens']}",
             ]
             if s.get("in_tps"):
-                parts.append(f"{s['in_tps']:.0f} in-tok/s")
+                parts.append(f"{_fmt_tps(s['in_tps'])} in-tok/s")
             if s.get("out_tps"):
-                parts.append(f"{s['out_tps']:.1f} out-tok/s")
+                parts.append(f"{_fmt_tps(s['out_tps'])} out-tok/s")
             if s.get("reasoning_tokens"):
                 parts.append(f"think {s['reasoning_tokens']}")
             if s.get("tool_tokens"):
