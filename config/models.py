@@ -324,6 +324,7 @@ class AgentConfig:
     narration_fallback: bool = True
     auto_detect_ctx: bool = True
     think_level: str = "normal"
+    autonomy: float = 0.5  # 0.0=supervised … 1.0=autopilot; >1.0 treated as percentage
 
 
 @dataclass

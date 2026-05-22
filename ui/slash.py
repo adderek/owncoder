@@ -41,6 +41,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
         True,
     ),
     ("/think", ["/effort"], "set thinking level  off|low|normal|high|max", True),
+    ("/autonomy", ["/auto", "/verbose"], "set autonomy level  0.0–1.0 (or %) or supervised|explain|balanced|brisk|autopilot", True),
     ("/max_tokens", [], "set max tokens   [out <n> | in <n> | <n> | default]", True),
     ("/wrap", [], "toggle line wrapping", False),
     ("/round-summary", ["/summary"], "toggle gray Q/A summary after each turn", False),
@@ -76,6 +77,28 @@ def _apply_think(agent, arg: str) -> tuple[bool, str]:
         return False, f"Invalid level '{v}'. Allowed: {', '.join(THINK_LEVELS)}"
     agent.config.llm.think_level = v
     return True, f"think_level = {v}"
+
+
+def _apply_autonomy(agent, arg: str) -> tuple[bool, str]:
+    from agent.core.prompts import AUTONOMY_LEVELS, _resolve_autonomy
+
+    def _fmt(val: float) -> str:
+        anchor = min(4, max(0, round(val * 4)))
+        return f"{val:.2f} ({int(val * 100)}%) [{AUTONOMY_LEVELS[anchor]}]"
+
+    v = arg.strip().lower()
+    if not v:
+        cur = getattr(agent.config.agent, "autonomy", 0.5)
+        return True, (
+            f"autonomy = {_fmt(_resolve_autonomy(cur))}  "
+            f"(0.0=supervised … 1.0=autopilot; also accepts % or name: {', '.join(AUTONOMY_LEVELS)}; '-' to reset)"
+        )
+    if v in ("-", "default"):
+        agent.config.agent.autonomy = agent._llm_defaults["autonomy"]
+        return True, f"autonomy reset to {_fmt(_resolve_autonomy(agent.config.agent.autonomy))}"
+    resolved = _resolve_autonomy(v)
+    agent.config.agent.autonomy = resolved
+    return True, f"autonomy = {_fmt(resolved)}"
 
 
 def _apply_temperature(agent, arg: str) -> tuple[bool, str]:

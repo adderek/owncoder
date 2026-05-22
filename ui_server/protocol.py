@@ -129,6 +129,10 @@ class UIServerProtocol(Protocol):
         """Set/query think level. Returns (ok, message)."""
         ...
 
+    def set_autonomy(self, arg: str, session_id: str = "") -> "tuple[bool, str]":
+        """Set/query autonomy level (0–4 or named). Returns (ok, message)."""
+        ...
+
     def set_temperature(self, arg: str, session_id: str = "") -> "tuple[bool, str]":
         """Set/query temperature. Returns (ok, message)."""
         ...

@@ -42,6 +42,7 @@ def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
   [{c}]/analyze-asm <file>[/{c}]  LLM-driven assembly analysis and summarization
                        options: --resume  --force  --levels N
   [{c}]/think [level][/{c}]       thinking effort: off|low|normal|high|max ('-' resets)
+  [{c}]/autonomy [level][/{c}]    autonomy: 0.0–1.0 (or %) or supervised|explain|balanced|brisk|autopilot ('-' resets)
   [{c}]/temperature [v][/{c}]     sampling temperature 0.0–2.0 (alias [{c}]/temp[/{c}]; '-' resets)
   [{c}]/max_tokens [args][/{c}]   set tokens: <n> | out <n> | in <n> | default
   [{c}]/context[/{c}] ([{c}]/ctx[/{c}], [{c}]/legend[/{c}])  context breakdown grid + color/marker key
@@ -347,6 +348,10 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
 
             elif cmd == "/think":
                 ok, msg = server.set_think_level(arg)
+                console.print(f"[{'green' if ok else 'yellow'}]{msg}[/]")
+
+            elif cmd in ("/autonomy", "/auto", "/verbose"):
+                ok, msg = server.set_autonomy(arg)
                 console.print(f"[{'green' if ok else 'yellow'}]{msg}[/]")
 
             elif cmd in ("/temperature", "/temp"):

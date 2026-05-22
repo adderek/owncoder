@@ -9,7 +9,7 @@ from agent.memory.compactor import compact, _count_tokens_approx
 from agent.tools import get_schemas
 from openai import BadRequestError
 
-from .prompts import _build_call_kwargs, _inject_think_hint, _log_llm_request
+from .prompts import _build_call_kwargs, _inject_think_hint, _inject_autonomy_hint, _log_llm_request
 from .tool_calls import _tool_result_message, _FakeToolCall, execute_tool, _parse_raw_tool_calls
 from .streaming import _stream_response, _strip_tool_blocks, _is_narrating_tool_use, _gpu_slot
 from .cache_tracker import check_cache, mark_request
@@ -219,6 +219,7 @@ async def run_turn(
                         logger.info("%s", _cache_msg)
                         _phase("cache", _cache_msg)
                 api_messages_sent = _inject_think_hint(api_messages, config)
+                api_messages_sent = _inject_autonomy_hint(api_messages_sent, config)
                 _log_llm_request(api_messages_sent, tools, config)
                 import time
                 t_start = time.monotonic()

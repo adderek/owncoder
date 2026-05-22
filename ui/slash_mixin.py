@@ -237,6 +237,12 @@ class SlashHandlerMixin:
             for line in msg.splitlines():
                 self._write_sys(f"[{color}]{line}[/{color}]")
 
+        elif cmd in ("/autonomy", "/auto", "/verbose"):
+            ok, msg = self._server.set_autonomy(arg)
+            color = t.success if ok else t.warning
+            for line in msg.splitlines():
+                self._write_sys(f"[{color}]{line}[/{color}]")
+
         elif cmd in ("/temperature", "/temp"):
             ok, msg = self._server.set_temperature(arg)
             color = t.success if ok else t.warning

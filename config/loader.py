@@ -87,6 +87,7 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_RECOVERY_ENABLED": ("recovery", "enabled"),
         "AGENT_WEB_SEARCH_ENABLED": ("web_search", "enabled"),
         "AGENT_WEB_SEARCH_BACKEND": ("web_search", "backend"),
+        "AGENT_AUTONOMY": ("agent", "autonomy"),
     }
     for env_key, (section, attr) in env_map.items():
         val = os.environ.get(env_key)

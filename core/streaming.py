@@ -6,7 +6,7 @@ import re
 import time
 from typing import TYPE_CHECKING
 
-from .prompts import _inject_think_hint, _log_llm_request, _build_call_kwargs
+from .prompts import _inject_think_hint, _inject_autonomy_hint, _log_llm_request, _build_call_kwargs
 from .tool_calls import _FakeToolCall, _parse_text_tool_calls, _parse_qwen_function_xml, _parse_agent_exec_xml
 
 if TYPE_CHECKING:
@@ -174,6 +174,7 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
     finish_reason = "stop"
 
     api_messages = _inject_think_hint(api_messages, config)
+    api_messages = _inject_autonomy_hint(api_messages, config)
     _log_llm_request(api_messages, tools, config)
     t_start = time.monotonic()
     t_first_token: float | None = None

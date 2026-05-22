@@ -38,6 +38,7 @@ class Agent:
             "ctx_window": config.llm.ctx_window,
             "temperature": config.llm.temperature,
             "think_level": config.llm.think_level,
+            "autonomy": config.agent.autonomy,
         }
         self.data_provider = data_provider
         self.store = store

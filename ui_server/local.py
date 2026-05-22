@@ -240,6 +240,10 @@ class LocalUIServer:
         from agent.ui.slash import _apply_think
         return _apply_think(self._agent, arg)
 
+    def set_autonomy(self, arg: str, session_id: str = "") -> "tuple[bool, str]":
+        from agent.ui.slash import _apply_autonomy
+        return _apply_autonomy(self._agent, arg)
+
     def set_temperature(self, arg: str, session_id: str = "") -> "tuple[bool, str]":
         from agent.ui.slash import _apply_temperature
         return _apply_temperature(self._agent, arg)

@@ -34,6 +34,47 @@ def load_base_rules() -> str:
     return content
 
 
+AUTONOMY_LEVELS = ("supervised", "explain", "balanced", "brisk", "autopilot")
+# Scale: 0.0 = supervised (max oversight), 1.0 = autopilot (full autonomy).
+# Named anchors at 0.0, 0.25, 0.5, 0.75, 1.0.
+_AUTONOMY_NAMED: dict[str, float] = {
+    "supervised": 0.0, "explain": 0.25, "balanced": 0.5, "brisk": 0.75, "autopilot": 1.0,
+}
+_AUTONOMY_ALIASES: dict[str, float] = {
+    "precise": 0.0, "review": 0.0,
+    "verbose": 0.25,
+    "normal": 0.5, "default": 0.5,
+    "quiet": 0.75,
+    "silent": 1.0, "auto": 1.0,
+}
+# Instructions injected per-turn; keyed by anchor index 0–4 (= round(level * 4)).
+_AUTONOMY_HINTS: dict[int, str] = {
+    0: (
+        "[autonomy=supervised] Supervised mode. "
+        "Before each significant action output a structured decision point: "
+        "ACTION, REASON, RISK, ALTERNATIVES. "
+        "Wait for explicit approval before proceeding. "
+        "Keep requests terse and machine-parseable — a reviewer model may respond."
+    ),
+    1: (
+        "[autonomy=explain] Explanation mode. "
+        "Before non-obvious decisions explain your reasoning briefly. "
+        "Ask for confirmation before destructive or high-risk actions."
+    ),
+    2: "",  # balanced = default behavior, no injection needed
+    3: (
+        "[autonomy=brisk] Low-interruption mode. "
+        "Act without confirmation. No step-by-step narration. "
+        "Send a brief done-signal when finished. Ask only when missing essential information with no alternative."
+    ),
+    4: (
+        "[autonomy=autopilot] Fully autonomous mode. "
+        "Do NOT explain your actions, narrate your plan, or ask for confirmation. "
+        "Only speak if you reach a critical dead end that genuinely requires external input. "
+        "When done, one line max: what was done."
+    ),
+}
+
 THINK_LEVELS = ("off", "low", "normal", "med", "medium", "high", "max")
 
 # Aliases normalised before lookup in _THINK_HINTS / _REASONING_EFFORT.
@@ -215,6 +256,48 @@ def _build_call_kwargs(config: "Config") -> dict:
         extra = kw.setdefault("extra_body", {})
         extra.setdefault("chat_template_kwargs", {})["enable_thinking"] = False
     return kw
+
+
+def _resolve_autonomy(value: "float | str | None") -> float:
+    """Return autonomy level in [0.0, 1.0] from a float, int, percentage, or name.
+
+    Scale: 0.0 = supervised (max oversight), 1.0 = autopilot (full autonomy).
+    Values > 1.0 are treated as percentages and divided by 100.
+    """
+    if value is None:
+        return 0.5
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in _AUTONOMY_NAMED:
+            return _AUTONOMY_NAMED[v]
+        if v in _AUTONOMY_ALIASES:
+            return _AUTONOMY_ALIASES[v]
+        try:
+            f = float(v)
+        except ValueError:
+            return 0.5
+        if f > 1.0:
+            f = f / 100.0
+        return max(0.0, min(1.0, f))
+    f = float(value)
+    if f > 1.0:
+        f = f / 100.0
+    return max(0.0, min(1.0, f))
+
+
+def _inject_autonomy_hint(api_messages: list[dict], config: "Config") -> list[dict]:
+    raw = getattr(getattr(config, "agent", None), "autonomy", 0.5)
+    level = _resolve_autonomy(raw)
+    anchor = min(4, max(0, round(level * 4)))
+    hint = _AUTONOMY_HINTS.get(anchor, "")
+    if not hint:
+        return api_messages
+    for i, msg in enumerate(api_messages):
+        if msg.get("role") == "system":
+            updated = dict(msg)
+            updated["content"] = msg["content"] + "\n" + hint
+            return api_messages[:i] + [updated] + api_messages[i + 1:]
+    return [{"role": "system", "content": hint}] + api_messages
 
 
 def _inject_think_hint(api_messages: list[dict], config: "Config") -> list[dict]:
