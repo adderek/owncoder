@@ -11,6 +11,7 @@ Produce three artifacts, wrapped in tags, in this exact order:
 The JSON facts object must contain:
 {
   "original_request": "...",
+  "constraints": [...],
   "files_modified": [...],
   "decisions": [...],
   "current_task": "...",
@@ -23,6 +24,10 @@ Rules:
   * `original_request`: copy VERBATIM from the previous facts JSON if present.
     If this is the first round, extract the user's very first message verbatim.
     Truncate to 400 chars with "[…]" if longer. NEVER rephrase or summarise it.
+  * `constraints`: list of explicit user prohibitions/requirements from
+    "[CONSTRAINTS]:" in the draft. Copy forward verbatim across rounds. Empty
+    list if none stated. NEVER drop or rephrase — these guard against KV quant
+    drift and must survive aggressive compaction.
   * The <summary> is one or two tight paragraphs — what was done, where it
     stands, what matters next. Name files, functions, and decisions
     explicitly; skip conversational texture.
@@ -36,8 +41,8 @@ Rules:
       that clearly supersedes it. Only rephrase when the previous q_view
       conflicts with `original_request` or new user instructions.
   * Under context pressure, drop execution details before dropping intent.
-    `original_request` and `<q>` must survive even the most aggressive
-    compaction.
+    `original_request`, `constraints`, and `<q>` must survive even the most
+    aggressive compaction.
   * If the draft notes that details have been elided, mention in <summary>
     that `recall_facts(query=...)` is available to expand specifics.
   * Never invent file paths, error messages, or decisions.

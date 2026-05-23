@@ -27,6 +27,10 @@ GOAL PRESERVATION (critical):
     request verbatim (first user message), marked as "[ORIGINAL REQUEST]:".
     If a previous draft already has "[ORIGINAL REQUEST]:", copy it exactly —
     never rephrase it.
+  * Record all explicit user constraints, prohibitions, and requirements as
+    "[CONSTRAINTS]:". Examples: "don't use X", "must stay backward-compat",
+    "only touch module Y". Copy forward verbatim across rounds — never drop or
+    rephrase. These survive KV quantization and compaction as written facts.
 
 Output a single long-form report organised under these headers:
 
