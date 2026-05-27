@@ -436,6 +436,13 @@ class TurnSignalsConfig:
 
 
 @dataclass
+class KbConfig:
+    """Knowledge-base integration. Off by default."""
+    enabled: bool = False
+    corpus_path: str = ""
+
+
+@dataclass
 class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
@@ -464,3 +471,4 @@ class Config:
     output_store: OutputStoreConfig = field(default_factory=OutputStoreConfig)
     concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
     turn_signals: TurnSignalsConfig = field(default_factory=TurnSignalsConfig)
+    kb: KbConfig = field(default_factory=KbConfig)

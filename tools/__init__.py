@@ -95,6 +95,10 @@ def load_all_tools(config=None, store=None, embedder=None, asm_store=None, data_
     if config is not None and getattr(config.web_search, "enabled", False):
         web_search.setup(config)
 
+    if config is not None and getattr(getattr(config, "kb", None), "enabled", False):
+        from agent.tools import kb  # noqa: F401
+        kb.setup(config)
+
     if config is not None and getattr(config.planning, "increments_enabled", False):
         from agent.tools import increment_tools  # noqa: F401
         increment_tools.setup(config)

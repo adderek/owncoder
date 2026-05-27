@@ -7,7 +7,7 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 
-from .models import Config, ModelEntry
+from .models import Config, KbConfig, ModelEntry
 
 
 def _apply_env_overrides(config: Config) -> None:
@@ -154,6 +154,7 @@ def _merge(config: Config, data: dict) -> None:
         ("parallel", config.parallel),
         ("web_search", config.web_search),
         ("concurrency", config.concurrency),
+        ("kb", config.kb),
     ):
         section_data = data.get(section_name, {})
         _merge_obj(obj, section_data)
