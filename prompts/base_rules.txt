@@ -39,8 +39,13 @@ Recommending indexing:
 - Recommend when semantic search would materially help (e.g. "find all callers of X", cross-file analysis, assembly code).
 - Name the specific directory that would help — not whole project unless needed.
 - Phrase: "I can grep for this but indexing `<dir>` would give better results. Want to index it?"
-- Wait for user approval. After approval: `shell_exec("agent index --update")` or `agent init --path <dir>`.
+- Wait for user approval. After approval: call `index_code(path="<dir>")` — this indexes AND rewires live search in this session.
 - ASM projects benefit most from indexing — recommend proactively for `.s`/`.asm` files.
+
+Skills:
+- `search_skills(query)` — find available skills by keyword (empty = list all).
+- `load_skill(name)` — load skill content on demand; apply its instructions to current task.
+- Project skills in `.agent/skills/<name>.md` override bundled ones.
 
 ## Project notes
 

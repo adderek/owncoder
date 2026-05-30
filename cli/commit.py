@@ -296,7 +296,7 @@ def cmd_commit(args, config):
     import time as _time
     from openai import AsyncOpenAI
 
-    state = {"tokens": 0, "buf": "", "start": _time.monotonic(), "phase": "starting", "raw_outputs": []}
+    state = {"tokens": 0, "buf": "", "start": _time.monotonic(), "phase": "starting", "raw_outputs": [], "fallback": False}
 
     # Resolve summarizer entry:
     # 1. explicit -m NAME flag
@@ -344,21 +344,12 @@ def cmd_commit(args, config):
         summ_client = primary_client
         summ_model = primary_model
 
-    async def _stream(
-        messages: list[dict],
-        *,
-        max_tokens: int,
-        client=None,
-        model: str = "",
-        entry_name: str = "",
-    ) -> str:
-        from agent.core.streaming import _clean_output
+    async def _do_stream(client, model: str, messages: list[dict], max_tokens: int, entry_name: str) -> tuple[str, str, int, float]:
+        """Low-level stream call. Returns (raw_content, raw_reasoning, completion_tokens, elapsed)."""
         from agent.metrics.model_stats import update_stats
-        _client = client or primary_client
-        _model = model or primary_model
         t0 = _time.monotonic()
-        stream = await _client.chat.completions.create(
-            model=_model,
+        stream = await client.chat.completions.create(
+            model=model,
             messages=messages,
             temperature=0.2,
             max_tokens=max_tokens,
@@ -371,7 +362,6 @@ def cmd_commit(args, config):
         usage_completion_tokens: int = 0
         async for chunk in stream:
             if not chunk.choices:
-                # Final usage chunk
                 if hasattr(chunk, "usage") and chunk.usage:
                     usage_completion_tokens = chunk.usage.completion_tokens or 0
                 continue
@@ -383,16 +373,41 @@ def cmd_commit(args, config):
             if getattr(delta, "reasoning_content", None):
                 reasoning_parts.append(delta.reasoning_content)
         elapsed = _time.monotonic() - t0
-        raw_content = "".join(content_parts)
-        raw_reasoning = "".join(reasoning_parts)
-        state["raw_outputs"].append({"content": raw_content, "reasoning": raw_reasoning})
-        # Record tok/s using backend-reported count when available, else chunk count
         tok_count = usage_completion_tokens if usage_completion_tokens > 0 else len(content_parts)
         if entry_name:
             try:
                 update_stats(entry_name, tok_count, elapsed)
             except Exception:
                 pass
+        return "".join(content_parts), "".join(reasoning_parts), usage_completion_tokens, elapsed
+
+    async def _stream(
+        messages: list[dict],
+        *,
+        max_tokens: int,
+        client=None,
+        model: str = "",
+        entry_name: str = "",
+    ) -> str:
+        from agent.core.streaming import _clean_output
+        from openai import APIConnectionError as _APIConnErr
+        _client = client or primary_client
+        _model = model or primary_model
+
+        try:
+            raw_content, raw_reasoning, _, _ = await _do_stream(_client, _model, messages, max_tokens, entry_name)
+        except _APIConnErr:
+            if _client is not primary_client:
+                state["fallback"] = True
+                console.print(
+                    f"[yellow]Summarizer unreachable ({summ_entry.base_url if summ_entry else '?'}). "
+                    f"Falling back to primary model.[/yellow]"
+                )
+                raw_content, raw_reasoning, _, _ = await _do_stream(primary_client, primary_model, messages, max_tokens, "")
+            else:
+                raise
+
+        state["raw_outputs"].append({"content": raw_content, "reasoning": raw_reasoning})
         full = _clean_output(raw_content)
         if not full:
             full = _clean_output(raw_reasoning)
