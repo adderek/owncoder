@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-import traceback
 from pathlib import Path
 
 
@@ -15,6 +14,33 @@ def _find_project_root(start_dir: Path, search_parents: bool) -> Path | None:
             break
         curr = curr.parent
     return None
+
+
+def _friendly_error(exc: Exception) -> str:
+    """Return a human-readable error message for known exception types."""
+    name = type(exc).__name__
+    msg = str(exc)
+
+    # OpenAI / httpx connection errors
+    try:
+        from openai import APIConnectionError, APITimeoutError, AuthenticationError, RateLimitError
+        if isinstance(exc, APIConnectionError):
+            return (
+                f"\nError: cannot reach LLM endpoint.\n"
+                f"  Check that your model server is running and the endpoint URL is correct.\n"
+                f"  (Configure via agent.toml or AGENT_LLM_BASE_URL)"
+            )
+        if isinstance(exc, APITimeoutError):
+            return "\nError: LLM request timed out. Server may be overloaded."
+        if isinstance(exc, AuthenticationError):
+            return "\nError: LLM authentication failed. Check your API key."
+        if isinstance(exc, RateLimitError):
+            return "\nError: LLM rate limit hit. Try again later."
+    except ImportError:
+        pass
+
+    # Generic fallback — show type + message but no traceback
+    return f"\nError ({name}): {msg}"
 
 
 def main() -> None:
@@ -222,6 +248,7 @@ def main() -> None:
     except (KeyboardInterrupt, SystemExit):
         raise
     except Exception as exc:
+        import logging as _logging
         dump_path = _write_exception_dump(exc, argv=sys.argv, config=config, log_path=log_path)
         try:
             from agent import failure_report as _fr
@@ -233,11 +260,17 @@ def main() -> None:
             )
         except Exception:
             pass
-        msg = f"\nUnhandled exception: {type(exc).__name__}: {exc}"
+
+        # Log full traceback to file; show friendly message on screen.
+        _logging.getLogger(__name__).error(
+            "Unhandled exception in command %r", getattr(args, "command", None),
+            exc_info=True,
+        )
+
+        _user_msg = _friendly_error(exc)
         if dump_path:
-            msg += f"\nDump written to: {dump_path}"
-        print(msg, file=sys.stderr)
-        traceback.print_exc()
+            _user_msg += f"\nDetails logged to: {dump_path}"
+        print(_user_msg, file=sys.stderr)
         sys.exit(1)
 
 
