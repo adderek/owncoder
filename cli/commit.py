@@ -261,7 +261,7 @@ def cmd_commit(args, config):
         if chunk_size_arg.endswith("%"):
             try:
                 percentage = float(chunk_size_arg[:-1]) / 100.0
-                chunk_chars = int(config.llm.ctx_window * percentage)
+                chunk_chars = int(config.llm.ctx_window * percentage) if config.llm.ctx_window > 0 else 0
             except (ValueError, TypeError):
                 console.print(f"[red]Invalid chunk size percentage: {chunk_size_arg}[/red]")
                 return
@@ -272,14 +272,17 @@ def cmd_commit(args, config):
                 console.print(f"[red]Invalid chunk size: {chunk_size_arg}. Must be integer or percentage (e.g. '50%').[/red]")
                 return
     else:
+        chunk_chars = 0
+
+    if chunk_chars <= 0:
         chunk_chars = config.token_limits.commit_chunk_chars
-        if chunk_chars <= 0:
-            # Auto-derive: leave room for running summary (output of prev step),
-            # output budget for this step, and system/prompt overhead (~500 tok).
-            # chars_per_token ≈ 4 for code/diffs.
-            summary_tok = config.token_limits.commit_summary_tokens
-            overhead_tok = summary_tok + summary_tok + 500
-            chunk_chars = max(4000, (config.llm.ctx_window - overhead_tok) * 4)
+    if chunk_chars <= 0:
+        # Auto-derive: leave room for running summary (output of prev step),
+        # output budget for this step, and system/prompt overhead (~500 tok).
+        # chars_per_token ≈ 4 for code/diffs.
+        summary_tok = config.token_limits.commit_summary_tokens
+        overhead_tok = summary_tok + summary_tok + 500
+        chunk_chars = max(4000, (config.llm.ctx_window - overhead_tok) * 4)
 
     summary_tokens = config.token_limits.commit_summary_tokens
     diff_chars = len(staged_diff)

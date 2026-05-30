@@ -45,6 +45,8 @@ def load_all_tools(config=None, store=None, embedder=None, asm_store=None, data_
     import pkgutil as _pu
     _pkg_path = str(Path(__file__).parent)
     for _importer, _modname, _ispkg in _pu.walk_packages(path=[_pkg_path], prefix="agent.tools."):
+        if _modname in ("agent.tools.kb",):
+            continue  # loaded conditionally by kb.enabled guard below
         if _modname not in sys.modules:
             try:
                 _il.import_module(_modname)
