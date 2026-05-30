@@ -25,3 +25,26 @@ Multi-step task checkpoint:
 - Task start: write key constraints + original intent to plan (`/plan`) or `.agent/recovery/`.
 - Each major step: compare action against written checkpoint, not recalled summary.
 - Doubt about original intent → ask user. Assumption is failure mode.
+
+## Code search mode
+
+Index coverage is injected at session start under "# Index coverage". Check it before searching.
+
+When not indexed (or a directory is not indexed):
+- Use `shell_exec` with grep/find/sed/awk, or `read_file`/`list_files` for code navigation.
+- `search_code` falls back to grep automatically — you can always search, just slower.
+- Never claim you cannot search without an index.
+
+Recommending indexing:
+- Recommend when semantic search would materially help (e.g. "find all callers of X", cross-file analysis, assembly code).
+- Name the specific directory that would help — not whole project unless needed.
+- Phrase: "I can grep for this but indexing `<dir>` would give better results. Want to index it?"
+- Wait for user approval. After approval: `shell_exec("agent index --update")` or `agent init --path <dir>`.
+- ASM projects benefit most from indexing — recommend proactively for `.s`/`.asm` files.
+
+## Project notes
+
+Use `save_note` to persist facts that would be expensive to re-derive:
+- Architectural decisions, user preferences, recurring constraints.
+- Module roles, non-obvious invariants, "always do X / never do Y" rules.
+- Call after discovering something important, not just when asked.

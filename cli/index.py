@@ -26,45 +26,39 @@ def _make_bg_worker(config, code_store, embedder):
                     working_dir=config.tools.working_dir)
 
 
-def cmd_init(args, config):
-    from agent.rag.indexer import index_directory, pending_files, LANGUAGE_MAP
+def _run_indexing(config, console, root: str | None = None, languages=None, exclude=None, force: bool = False) -> dict:
+    """Run indexing and return stats. Creates .initialized marker on success."""
+    from agent.rag.indexer import index_directory, pending_files
     from agent.rag.store import VectorStore
     from agent.rag.embedder import Embedder
     from agent.rag.code_store import CodeStore
-    from agent.tools.rules import load_rules
-    from rich.console import Console
     from rich.progress import Progress, SpinnerColumn, BarColumn, MofNCompleteColumn, TimeElapsedColumn, TimeRemainingColumn, TextColumn
 
-    console = Console()
-
-    languages = args.languages.split(",") if args.languages else None
-    exclude = args.exclude.split(",") if args.exclude else []
     working_dir = config.tools.working_dir
+    index_root = root or working_dir
     _agent_dir = Path(working_dir) / config.tools.agent_dir
-    _agent_dir.mkdir(parents=True, exist_ok=True)
     _in_progress = _agent_dir / ".init_in_progress"
     _initialized = _agent_dir / ".initialized"
 
     if _in_progress.exists() and not _initialized.exists():
-        console.print("[yellow]Warning: previous 'agent init' was interrupted. Re-running.[/yellow]")
+        console.print("[yellow]Warning: previous indexing was interrupted. Re-running.[/yellow]")
     _in_progress.touch()
 
     store = VectorStore(config.rag)
     embedder = Embedder(config.embeddings)
     code_store = CodeStore(config.summarization.db_path)
 
-    load_rules(working_dir)
-
-    console.print(f"[bold]Indexing[/bold] {Path(working_dir).resolve()}")
+    rel_root = Path(index_root).relative_to(working_dir) if index_root != working_dir else None
+    label = str(rel_root) if rel_root else Path(working_dir).resolve().name
+    console.print(f"[bold]Indexing[/bold] {label}")
     if languages:
         console.print(f"Languages: {', '.join(languages)}")
     workers = config.embeddings.embed_workers
     if workers > 1:
         console.print(f"[dim]Embedding workers: {workers}[/dim]")
 
-    # Pre-scan disk to get an accurate total for the progress bar.
-    pre = pending_files(root=working_dir, store=store, languages=languages, exclude=exclude)
-    total_to_index = pre["pending"] if not getattr(args, "force", False) else pre["total"]
+    pre = pending_files(root=index_root, store=store, languages=languages, exclude=exclude or [])
+    total_to_index = pre["pending"] if not force else pre["total"]
 
     with Progress(
         SpinnerColumn(),
@@ -89,18 +83,17 @@ def cmd_init(args, config):
             progress.update(task, description=f"[dim]{Path(path).name}[/dim]{dedup_tag}")
 
         stats = index_directory(
-            root=working_dir,
+            root=index_root,
             store=store,
             embedder=embedder,
             cfg=config.rag,
             languages=languages,
-            exclude=exclude,
-            force=getattr(args, "force", False),
+            exclude=exclude or [],
+            force=force,
             progress_cb=progress_cb,
             code_store=code_store,
         )
 
-    store.close()
     dedup_parts = []
     if stats.get("dedup_same", 0):
         dedup_parts.append(f"{stats['dedup_same']} same-file")
@@ -127,7 +120,7 @@ def cmd_init(args, config):
             worker = _make_bg_worker(config, code_store, embedder)
             if worker:
                 worker.start()
-                import signal, time as _time
+                import time as _time
                 console.print("  [dim]Press Ctrl+C to stop early (queue persists).[/dim]")
                 try:
                     while worker.is_alive():
@@ -147,6 +140,76 @@ def cmd_init(args, config):
                 deduped = worker.dedup_count
                 dedup_tag = f"  [cyan]{deduped} deduped[/cyan]" if deduped else ""
                 console.print(f"\n  Summarization: {final}{dedup_tag}")
+
+    store.close()
+    return stats
+
+
+def cmd_init(args, config):
+    from agent.tools.rules import load_rules
+    from rich.console import Console
+
+    console = Console()
+
+    working_dir = config.tools.working_dir
+    _agent_dir = Path(working_dir) / config.tools.agent_dir
+    _agent_dir.mkdir(parents=True, exist_ok=True)
+    _configured = _agent_dir / ".configured"
+
+    load_rules(working_dir)
+    _configured.touch()
+
+    console.print(f"[green]Initialized[/green] {Path(working_dir).resolve()}")
+    console.print("  Config dir: [bold].agent/[/bold]")
+
+    skip_index = getattr(args, "skip_index", False)
+    index_path = getattr(args, "path", None)
+    languages = args.languages.split(",") if args.languages else None
+    exclude = args.exclude.split(",") if args.exclude else []
+
+    if skip_index:
+        console.print("  Skipping indexing. Run [bold]agent init[/bold] or [bold]agent index --update[/bold] to index later.")
+        if getattr(args, "watch", False):
+            _watch_and_reindex(config, console, languages=languages, exclude=exclude)
+        return
+
+    # Ask whether to index (unless path explicitly given, then confirm subtree intent).
+    if index_path:
+        target_root = str(Path(working_dir) / index_path)
+        console.print(f"\n  Index path: [bold]{index_path}[/bold]")
+        try:
+            choice = input("  Index this path now? [Y/n]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            choice = "n"
+        if choice in ("", "y", "yes"):
+            _run_indexing(config, console, root=target_root, languages=languages, exclude=exclude, force=getattr(args, "force", False))
+        else:
+            console.print("  Skipped. Run [bold]agent index --update[/bold] to index later.")
+    else:
+        console.print("\n[bold]Index project now?[/bold]")
+        console.print("  [cyan]w[/cyan]  Whole project")
+        console.print("  [cyan]p[/cyan]  Specific path (subtree only)")
+        console.print("  [cyan]s[/cyan]  Skip — use grep/read tools, index later")
+        try:
+            choice = input("  [w/p/s]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            choice = "s"
+
+        if choice in ("w", "whole", ""):
+            _run_indexing(config, console, languages=languages, exclude=exclude, force=getattr(args, "force", False))
+        elif choice in ("p", "path"):
+            try:
+                index_path = input("  Path to index (relative to project root): ").strip()
+            except (EOFError, KeyboardInterrupt):
+                index_path = ""
+            if index_path:
+                target_root = str(Path(working_dir) / index_path)
+                _run_indexing(config, console, root=target_root, languages=languages, exclude=exclude, force=getattr(args, "force", False))
+            else:
+                console.print("  No path given. Skipping.")
+        else:
+            console.print("  Skipped. Run [bold]agent index --update[/bold] to index later.")
+            console.print("  [dim]Tip: agent works without indexing — uses grep/read/shell tools.[/dim]")
 
     if getattr(args, "watch", False):
         _watch_and_reindex(config, console, languages=languages, exclude=exclude)

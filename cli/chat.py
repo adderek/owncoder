@@ -9,6 +9,26 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def _get_index_coverage(store, working_dir: str) -> dict[str, int]:
+    """Return {top-level-dir-or-file: indexed_file_count} for injecting into context."""
+    if store is None:
+        return {}
+    try:
+        paths = store.list_paths()
+        coverage: dict[str, int] = {}
+        wd = Path(working_dir)
+        for p in paths:
+            try:
+                rel = Path(p).relative_to(wd)
+                top = rel.parts[0] if len(rel.parts) > 1 else str(rel)
+            except ValueError:
+                top = Path(p).name
+            coverage[top] = coverage.get(top, 0) + 1
+        return coverage
+    except Exception:
+        return {}
+
+
 def _bg_update_index(store, embedder, config, result: dict) -> None:
     """Re-index changed files and prune deleted ones. Runs in a daemon thread."""
     try:
@@ -164,30 +184,77 @@ def cmd_chat(args, config):
         )
 
     import sys as _sys
-    _marker = Path(config.tools.working_dir) / config.tools.agent_dir / ".initialized"
-    _db_path_check = Path(config.rag.db_path)
+    _agent_dir = Path(config.tools.working_dir) / config.tools.agent_dir
+    _configured = _agent_dir / ".configured"
+    _initialized = _agent_dir / ".initialized"
+
+    if not _agent_dir.exists() or (not _configured.exists() and not _initialized.exists()):
+        console.print("[red]Not initialized.[/red] Run [bold]agent init[/bold] first.")
+        _sys.exit(1)
+
     _reuse_store = None
-    if not _marker.exists():
-        _ERR_MSG = (
-            "[red]Index not initialized.[/red] Run [bold]agent init[/bold] first.\n"
-            "  The agent will not work correctly without a completed index."
-        )
-        if _db_path_check.exists():
+    _db_path_check = Path(config.rag.db_path)
+    _is_indexed = False
+
+    if _db_path_check.exists():
+        try:
+            _guard = VectorStore(config.rag)
+            if _guard.stats()["files"] > 0:
+                _is_indexed = True
+                _reuse_store = _guard
+                if not _initialized.exists():
+                    _initialized.touch()
+            else:
+                _guard.close()
+        except Exception:
+            pass
+
+    if not _is_indexed:
+        console.print("\n[yellow]Project not indexed.[/yellow] Semantic search unavailable.")
+        console.print("  [cyan]w[/cyan]  Index whole project now")
+        console.print("  [cyan]p[/cyan]  Index a specific path (subtree)")
+        console.print("  [cyan]s[/cyan]  Skip — use grep/read tools (faster start)")
+        try:
+            _idx_choice = input("  Index? [w/p/s]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            _idx_choice = "s"
+
+        if _idx_choice in ("w", "whole"):
+            from agent.cli.index import _run_indexing
+            _run_indexing(config, console)
+            if _db_path_check.exists():
+                try:
+                    _reuse_store = VectorStore(config.rag)
+                    if _reuse_store.stats()["files"] > 0:
+                        _is_indexed = True
+                    else:
+                        _reuse_store.close()
+                        _reuse_store = None
+                except Exception:
+                    pass
+        elif _idx_choice in ("p", "path"):
             try:
-                _guard = VectorStore(config.rag)
-                if _guard.stats()["files"] > 0:
-                    _marker.touch()
-                    _reuse_store = _guard
-                else:
-                    _guard.close()
-                    console.print(_ERR_MSG)
-                    _sys.exit(1)
-            except Exception:
-                console.print(_ERR_MSG)
-                _sys.exit(1)
+                _idx_path = input("  Path to index (relative to project root): ").strip()
+            except (EOFError, KeyboardInterrupt):
+                _idx_path = ""
+            if _idx_path:
+                from agent.cli.index import _run_indexing
+                _idx_root = str(Path(config.tools.working_dir) / _idx_path)
+                _run_indexing(config, console, root=_idx_root)
+                if _db_path_check.exists():
+                    try:
+                        _reuse_store = VectorStore(config.rag)
+                        if _reuse_store.stats()["files"] > 0:
+                            _is_indexed = True
+                        else:
+                            _reuse_store.close()
+                            _reuse_store = None
+                    except Exception:
+                        pass
+            else:
+                console.print("  No path given. Skipping.")
         else:
-            console.print(_ERR_MSG)
-            _sys.exit(1)
+            console.print("[dim]Skipping indexing. Using grep/read/shell tools for code search.[/dim]")
 
     store = None
     embedder = None
@@ -195,7 +262,7 @@ def cmd_chat(args, config):
     _bg_thread: threading.Thread | None = None
     _bg_result: dict = {}
     db_path = Path(config.rag.db_path)
-    if db_path.exists():
+    if _is_indexed and db_path.exists():
         try:
             store = _reuse_store or VectorStore(config.rag)
             embedder = Embedder(config.embeddings)
@@ -211,14 +278,23 @@ def cmd_chat(args, config):
             _bg_thread.start()
         except Exception as e:
             console.print(f"[yellow]Warning: could not load index: {e}[/yellow]")
-    else:
-        console.print(
-            "[yellow]No index found[/yellow] — code search disabled. "
-            "Run [bold]agent init[/bold] to build one."
-        )
 
     data_provider = LocalDataProvider(store=store, embedder=embedder, asm_store=asm_store, config=config)
     agent = Agent(config, data_provider=data_provider)
+
+    # Inject index coverage as system context so agent knows what's indexed.
+    _coverage = _get_index_coverage(store, config.tools.working_dir)
+    if _coverage:
+        _cov_lines = "\n".join(f"  {d}/: {n} file(s)" for d, n in sorted(_coverage.items()))
+        _cov_msg = f"# Index coverage\nIndexed directories (semantic search available):\n{_cov_lines}"
+    else:
+        _cov_msg = (
+            "# Index coverage\n"
+            "Not indexed. Semantic search unavailable.\n"
+            "Use shell_exec (grep/find/sed), read_file, list_files for code navigation.\n"
+            "Recommend indexing to user when semantic search would materially help."
+        )
+    agent.messages.append({"role": "system", "content": _cov_msg})
 
     if args.session:
         session, messages = load_session(args.session)

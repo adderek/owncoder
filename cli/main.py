@@ -25,11 +25,13 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command")
 
     # init
-    init_p = sub.add_parser("init", help="Initialize index for current directory")
+    init_p = sub.add_parser("init", help="Initialize project config; optionally index")
     init_p.add_argument("--languages", type=str, help="Comma-separated languages: py,js,kt,cpp")
     init_p.add_argument("--exclude", type=str, help="Comma-separated paths to exclude")
     init_p.add_argument("--force", action="store_true", help="Force re-index all files")
     init_p.add_argument("--watch", action="store_true", help="Watch for file changes and re-index automatically")
+    init_p.add_argument("--path", type=str, metavar="PATH", help="Index only this subtree (relative to project root)")
+    init_p.add_argument("--skip-index", action="store_true", help="Configure only; skip indexing prompt")
 
     # index
     idx_p = sub.add_parser("index", help="Manage index")
