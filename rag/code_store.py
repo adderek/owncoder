@@ -451,6 +451,16 @@ class CodeStore:
         files = conn.execute("SELECT COUNT(*) FROM indexed_files").fetchone()[0]
         return {"total": total, "by_status": by_status, "files": files}
 
+    def stats_by_level(self) -> dict[int, dict[str, int]]:
+        """Return {level: {status: count}} for all levels."""
+        rows = self._conn.execute(
+            "SELECT level, status, COUNT(*) FROM units GROUP BY level, status"
+        ).fetchall()
+        result: dict[int, dict[str, int]] = {}
+        for level, status, count in rows:
+            result.setdefault(level, {})[status] = count
+        return result
+
     def max_level(self) -> int:
         row = self._conn.execute("SELECT MAX(level) FROM units").fetchone()
         return row[0] or 0

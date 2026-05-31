@@ -4,47 +4,92 @@ from pathlib import Path
 
 
 def _run_summarization_loop(console, code_store, worker) -> None:
-    """Drive the BgWorker until queue empty, showing live per-endpoint throughput."""
+    """Drive the BgWorker until queue empty, showing rich per-level progress."""
     import time as _time
+    from rich.progress import (
+        Progress, SpinnerColumn, BarColumn, MofNCompleteColumn,
+        TimeElapsedColumn, TimeRemainingColumn, TextColumn,
+    )
 
-    prev_desc = 0
-    prev_emb = 0
+    initial_stats = code_store.stats()
+    initial_by_status = initial_stats.get("by_status", {})
+    total_units = initial_stats.get("total", 1)
+    initial_described = initial_by_status.get("described", 0)
+    work_total = total_units - initial_described
+
+    prev_desc_calls = 0
     prev_time = _time.monotonic()
+    rate_str = ""
 
-    try:
-        while worker.is_alive():
-            by_status = code_store.stats().get("by_status", {})
-            r_pending = by_status.get("pending", 0)
-            r_stale = by_status.get("stale", 0)
-            if r_pending == 0 and r_stale == 0:
-                break
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TextColumn("{task.fields[rate]}"),
+        TimeElapsedColumn(),
+        TimeRemainingColumn(),
+        console=console,
+        transient=False,
+    ) as progress:
+        task = progress.add_task(
+            "Summarizing…", total=max(work_total, 1), rate="",
+        )
 
-            now = _time.monotonic()
-            dt = now - prev_time
-            desc_delta = worker.describe_calls - prev_desc
-            emb_delta = worker.embed_calls - prev_emb
-            prev_desc = worker.describe_calls
-            prev_emb = worker.embed_calls
-            prev_time = now
+        try:
+            while worker.is_alive():
+                _time.sleep(2)
 
-            parts = [f"remaining={r_pending + r_stale}"]
-            if dt > 0 and desc_delta > 0:
-                parts.append(f"{worker.describe_endpoint}: {desc_delta / dt:.1f}/s")
-            if dt > 0 and emb_delta > 0 and worker.embed_endpoint:
-                parts.append(f"{worker.embed_endpoint}: {emb_delta / dt:.1f}/s")
-            if worker.dedup_count:
-                parts.append(f"[cyan]{worker.dedup_count} deduped[/cyan]")
+                stats = code_store.stats()
+                by_status = stats.get("by_status", {})
+                pending = by_status.get("pending", 0)
+                stale = by_status.get("stale", 0)
+                described = by_status.get("described", 0)
+                if pending == 0 and stale == 0:
+                    progress.update(task, completed=task.total)
+                    break
 
-            console.print(f"  [dim]{'  |  '.join(parts)}[/dim]", end="\r")
-            _time.sleep(2)
-    except KeyboardInterrupt:
-        pass
+                now = _time.monotonic()
+                dt = now - prev_time
+                delta = worker.describe_calls - prev_desc_calls
+                prev_desc_calls = worker.describe_calls
+                prev_time = now
+                if dt > 0 and delta > 0:
+                    rate_str = f"[dim]{delta / dt:.1f}/s[/dim]"
+
+                done = max(0, described - initial_described)
+
+                by_level = code_store.stats_by_level()
+                level_parts = []
+                for lvl, st in sorted(by_level.items()):
+                    lvl_pending = st.get("pending", 0) + st.get("stale", 0)
+                    if lvl_pending == 0:
+                        continue
+                    lvl_done = st.get("described", 0)
+                    lvl_total = sum(st.values())
+                    label = "leaf" if lvl == 0 else f"L{lvl}"
+                    level_parts.append(f"{label} {lvl_done}/{lvl_total}")
+
+                dedup = worker.dedup_count
+                dedup_tag = f"  [cyan]{dedup} deduped[/cyan]" if dedup else ""
+                desc = "Summarizing…"
+                if level_parts:
+                    desc = f"Summarizing [{' | '.join(level_parts)}]"
+
+                progress.update(
+                    task,
+                    completed=done,
+                    description=desc + dedup_tag,
+                    rate=rate_str,
+                )
+        except KeyboardInterrupt:
+            pass
 
     worker.stop()
     final = code_store.stats().get("by_status", {})
     deduped = worker.dedup_count
     dedup_tag = f"  [cyan]{deduped} deduped[/cyan]" if deduped else ""
-    console.print(f"\n  Summarization: {final}{dedup_tag}")
+    console.print(f"  Summarization: {final}{dedup_tag}")
 
 
 def _open_archive(config):
