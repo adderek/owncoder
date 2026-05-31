@@ -52,7 +52,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/abort-plan", [], "mark active plan aborted (no stash)", False),
     ("/stash-plan", [], "git stash current changes + mark plan stashed", False),
     ("/pause-plan", [], "mark active plan paused; resume later", False),
-    ("/model", [], "switch active model  [<entry> | role=<entry> | role=?]", True),
+    ("/model", [], "switch active model  [<entry> | role=<entry> | role=? | refresh]", True),
     ("/models", [], "show all configured model entries with capabilities", False),
     ("/recoveries", [], "list pending crash-recovery records", False),
     ("/quit", ["/exit", "/q!"], "quit the agent", False),

@@ -41,7 +41,7 @@ def _strip_ext(name: str) -> str:
     return n
 
 
-# ── public entry point ────────────────────────────────────────────────────────
+# ── public entry points ───────────────────────────────────────────────────────
 
 def enrich_model_entries(config: "Config", timeout: int = 3) -> None:
     """Probe all unique endpoints and enrich model_entries in-place."""
@@ -53,6 +53,38 @@ def enrich_model_entries(config: "Config", timeout: int = 3) -> None:
     for base_url, entries in by_url.items():
         api_key = entries[0][1].api_key  # all entries on same url share key
         _probe_endpoint(base_url, api_key, entries, timeout, global_max_ctx)
+
+
+def refresh_ctx_windows(config: "Config", timeout: int = 3) -> dict[str, int]:
+    """Force-probe all endpoints and overwrite ctx_window in model_entries.
+
+    Unlike enrich_model_entries, always overwrites existing non-zero values.
+    Also probes the embeddings endpoint and updates cfg.embeddings.max_tokens
+    if the server reports a usable context length.
+
+    Returns mapping of entry_name → new ctx_window for entries that changed.
+    """
+    global_max_ctx = getattr(config.llm, "global_max_ctx", 0)
+    updated: dict[str, int] = {}
+
+    by_url: dict[str, list[tuple[str, "ModelEntry"]]] = {}
+    for name, entry in config.model_entries.items():
+        by_url.setdefault(entry.base_url, []).append((name, entry))
+
+    for base_url, entries in by_url.items():
+        api_key = entries[0][1].api_key
+        probed = _probe_ctx_force(base_url, api_key, entries, timeout, global_max_ctx)
+        updated.update(probed)
+
+    # Probe embeddings endpoint separately (cfg.embeddings is not a model_entry)
+    emb = config.embeddings
+    if emb and emb.base_url:
+        emb_ctx = _probe_ctx_single(emb.base_url, getattr(emb, "api_key", ""), emb.model, timeout)
+        if emb_ctx and emb_ctx > 0:
+            updated["__emb__"] = emb_ctx
+            emb.max_tokens = emb_ctx
+
+    return updated
 
 
 # ── endpoint probing ──────────────────────────────────────────────────────────
@@ -207,6 +239,105 @@ def _probe_llamacpp_props(name: str, base_url: str, timeout: int) -> int | None:
         return None
     n_ctx = data.get("n_ctx")
     return n_ctx if isinstance(n_ctx, int) and n_ctx > 0 else None
+
+
+# ── force-refresh probes ──────────────────────────────────────────────────────
+
+def _probe_ctx_single(base_url: str, api_key: str, model: str, timeout: int) -> int | None:
+    """Probe one endpoint/model for ctx_window. Returns int or None."""
+    url = base_url.rstrip("/") + "/models"
+    try:
+        req = urllib.request.Request(url, method="GET")
+        req.add_header("Authorization", f"Bearer {api_key}")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read())
+    except Exception:
+        return None
+
+    server_models: dict[str, dict] = {
+        m["id"]: m for m in data.get("data", []) if isinstance(m, dict)
+    }
+    server_info = server_models.get(model) or {}
+    if not server_info:
+        for sid, sm in server_models.items():
+            if (
+                sid.lower() == model.lower()
+                or _strip_ext(sid.lower()) == model.lower()
+                or model.lower() in sid.lower()
+            ):
+                server_info = sm
+                break
+
+    _meta = server_info.get("meta", {}) or {}
+    server_ctx = (
+        _meta.get("n_ctx")
+        or server_info.get("n_ctx")
+        or server_info.get("context_length")
+        or server_info.get("max_model_len")
+    )
+    if not isinstance(server_ctx, int) or server_ctx <= 0:
+        if not _looks_like_ollama(base_url):
+            server_ctx = _probe_llamacpp_props("", base_url, timeout)
+    if not isinstance(server_ctx, int) or server_ctx <= 0:
+        server_ctx = (server_info.get("meta", {}) or {}).get("n_ctx_train")
+    return server_ctx if isinstance(server_ctx, int) and server_ctx > 0 else None
+
+
+def _probe_ctx_force(
+    base_url: str,
+    api_key: str,
+    entries: "list[tuple[str, ModelEntry]]",
+    timeout: int,
+    global_max_ctx: int = 0,
+) -> dict[str, int]:
+    """Probe endpoint and force-overwrite ctx_window for all entries. Returns updated map."""
+    url = base_url.rstrip("/") + "/models"
+    try:
+        req = urllib.request.Request(url, method="GET")
+        req.add_header("Authorization", f"Bearer {api_key}")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read())
+    except Exception:
+        return {}
+
+    server_models: dict[str, dict] = {
+        m["id"]: m for m in data.get("data", []) if isinstance(m, dict)
+    }
+    is_ollama = _looks_like_ollama(base_url)
+    updated: dict[str, int] = {}
+
+    for name, entry in entries:
+        server_info = server_models.get(entry.model) or {}
+        if not server_info:
+            for sid, sm in server_models.items():
+                if (
+                    sid.lower() == entry.model.lower()
+                    or _strip_ext(sid.lower()) == entry.model.lower()
+                    or entry.model.lower() in sid.lower()
+                ):
+                    server_info = sm
+                    break
+
+        _meta = server_info.get("meta", {}) or {}
+        server_ctx = (
+            _meta.get("n_ctx")
+            or server_info.get("n_ctx")
+            or server_info.get("context_length")
+            or server_info.get("max_model_len")
+        )
+        if not isinstance(server_ctx, int) or server_ctx <= 0:
+            if not is_ollama:
+                server_ctx = _probe_llamacpp_props(name, base_url, timeout)
+        if not isinstance(server_ctx, int) or server_ctx <= 0:
+            server_ctx = (_meta or {}).get("n_ctx_train")
+
+        if isinstance(server_ctx, int) and server_ctx > 0:
+            if global_max_ctx > 0:
+                server_ctx = min(server_ctx, global_max_ctx)
+            entry.ctx_window = server_ctx
+            updated[name] = server_ctx
+
+    return updated
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────

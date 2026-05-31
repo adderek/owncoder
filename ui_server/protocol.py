@@ -130,6 +130,10 @@ class UIServerProtocol(Protocol):
         """RAG store stats {"files": int, "chunks": int} or None if unavailable."""
         ...
 
+    def refresh_model_info(self, session_id: str = "") -> dict:
+        """Re-probe model endpoints for context sizes. Returns {"updated": {name: ctx}, "llm_ctx": int}."""
+        ...
+
     # ── runtime config mutation ───────────────────────────────────────────────
 
     def set_think_level(self, arg: str, session_id: str = "") -> "tuple[bool, str]":

@@ -227,6 +227,16 @@ class LocalUIServer:
             },
         }
 
+    def refresh_model_info(self, session_id: str = "") -> dict:
+        from agent.config.model_probe import refresh_ctx_windows
+        cfg = self._agent.config
+        updated = refresh_ctx_windows(cfg)
+        # Propagate to cfg.llm if the active default entry was updated
+        active = cfg.model_roles.get("default", "")
+        if active and active in updated:
+            cfg.llm.ctx_window = updated[active]
+        return {"updated": updated, "llm_ctx": cfg.llm.ctx_window}
+
     def get_ui_config(self, session_id: str = "") -> dict:
         cfg = self._agent.config
         return {

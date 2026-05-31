@@ -273,12 +273,37 @@ class SlashHandlerMixin:
             self._write_sys(f"[{t.success}]Round summary {state}.[/{t.success}]")
 
         elif cmd == "/model":
-            ok, msg = self._server.set_model(arg)
-            color = t.success if ok else t.warning
-            for line in msg.splitlines():
-                self._write_sys(f"[{color}]{line}[/{color}]")
-            if ok:
+            if arg.strip() == "refresh":
+                self._write_sys(f"[{t.text_dim}]Probing model endpoints…[/{t.text_dim}]")
+                try:
+                    result = await asyncio.to_thread(self._server.refresh_model_info)
+                    updated = result.get("updated", {})
+                    llm_ctx = result.get("llm_ctx", 0)
+                    if updated:
+                        parts = [
+                            f"{k}={v // 1024}k" if v >= 1024 else f"{k}={v}"
+                            for k, v in updated.items()
+                            if k != "__emb__"
+                        ]
+                        if "__emb__" in updated:
+                            v = updated["__emb__"]
+                            parts.append(f"emb={v // 1024}k" if v >= 1024 else f"emb={v}")
+                        self._write_sys(
+                            f"[{t.success}]Refreshed ctx: {', '.join(parts)}"
+                            f"  llm_ctx={llm_ctx // 1024}k[/{t.success}]"
+                        )
+                    else:
+                        self._write_sys(f"[{t.text_dim}]No context sizes returned from endpoints.[/{t.text_dim}]")
+                except Exception as e:
+                    self._write_sys(f"[{t.error}]Refresh failed: {e}[/{t.error}]")
                 self._refresh_token_bar()
+            else:
+                ok, msg = self._server.set_model(arg)
+                color = t.success if ok else t.warning
+                for line in msg.splitlines():
+                    self._write_sys(f"[{color}]{line}[/{color}]")
+                if ok:
+                    self._refresh_token_bar()
 
         elif cmd == "/models":
             from agent.ui.slash import _render_models_table

@@ -512,15 +512,18 @@ def build_widget_classes(t) -> SimpleNamespace:
             margin-top: 1;
             width: 100%;
         }
+        #model-config-refresh {
+            margin-top: 1;
+            width: 100%;
+        }
         """
 
-        def __init__(self, configs: dict) -> None:
+        def __init__(self, configs: dict, server=None) -> None:
             super().__init__()
             self._configs = configs
+            self._server = server
 
-        def compose(self):
-            from textual.containers import Vertical
-            from textual.widgets import Button, Static, RichLog
+        def _build_body(self) -> str:
             lines = []
             role_labels = [("llm", "LLM  (main)"), ("emb", "Embed"), ("sum", "Summarizer")]
             for role, heading in role_labels:
@@ -529,12 +532,32 @@ def build_widget_classes(t) -> SimpleNamespace:
                 for k, v in cfg.items():
                     lines.append(f"  [{t.text_dim}]{k}[/{t.text_dim}]  {_escape(str(v))}")
                 lines.append("")
-            body = "\n".join(lines).rstrip()
+            return "\n".join(lines).rstrip()
+
+        def compose(self):
+            from textual.containers import Vertical
+            from textual.widgets import Button, Static
             with Vertical(id="model-config-dialog"):
-                yield Static(body, markup=True)
+                yield Static(self._build_body(), id="model-config-body", markup=True)
+                if self._server is not None:
+                    yield Button("Refresh ctx sizes", id="model-config-refresh")
                 yield Button("Close  [ESC]", id="model-config-close")
 
-        def on_button_pressed(self, event) -> None:
+        async def on_button_pressed(self, event) -> None:
+            if event.button.id == "model-config-refresh" and self._server is not None:
+                import asyncio
+                event.button.disabled = True
+                event.button.label = "Refreshing…"
+                try:
+                    await asyncio.to_thread(self._server.refresh_model_info)
+                    self._configs = self._server.get_model_configs()
+                    self.query_one("#model-config-body").update(self._build_body())
+                    event.button.label = "Refresh ctx sizes"
+                except Exception:
+                    event.button.label = "Refresh failed"
+                finally:
+                    event.button.disabled = False
+                return
             self.dismiss()
 
         def on_key(self, event) -> None:
@@ -633,17 +656,23 @@ def build_widget_classes(t) -> SimpleNamespace:
                 parts.append(f"[rgb(232,128,26)]agents:{worker_count}●[/]")
             self.update("  ".join(parts))
 
-        def on_click(self) -> None:
+        async def on_click(self) -> None:
+            import asyncio
             from agent.core.model_status import get_workers
             if get_workers():
                 self.app.push_screen(WorkersScreen())
                 return
+            server = getattr(self.app, "_server", None)
+            if server is not None:
+                try:
+                    await asyncio.to_thread(server.refresh_model_info)
+                except Exception:
+                    pass
             try:
-                server = self.app._server
-                configs = server.get_model_configs()
+                configs = server.get_model_configs() if server else {}
             except Exception:
                 configs = {}
-            self.app.push_screen(ModelConfigScreen(configs))
+            self.app.push_screen(ModelConfigScreen(configs, server=server))
 
     class HintBar(Static):
         """Contextual hints shown during history navigation."""
