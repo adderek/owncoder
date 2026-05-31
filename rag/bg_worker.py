@@ -43,6 +43,22 @@ class BgWorker:
         self._thread: threading.Thread | None = None
         self.dedup_count: int = 0  # chunks skipped via content dedup
 
+    @property
+    def describe_calls(self) -> int:
+        return self._describer.call_count
+
+    @property
+    def embed_calls(self) -> int:
+        return self._embedder.call_count if self._embedder else 0
+
+    @property
+    def describe_endpoint(self) -> str:
+        return self._describer.endpoint
+
+    @property
+    def embed_endpoint(self) -> str | None:
+        return self._embedder.endpoint if self._embedder else None
+
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return

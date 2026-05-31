@@ -3,6 +3,50 @@ from __future__ import annotations
 from pathlib import Path
 
 
+def _run_summarization_loop(console, code_store, worker) -> None:
+    """Drive the BgWorker until queue empty, showing live per-endpoint throughput."""
+    import time as _time
+
+    prev_desc = 0
+    prev_emb = 0
+    prev_time = _time.monotonic()
+
+    try:
+        while worker.is_alive():
+            by_status = code_store.stats().get("by_status", {})
+            r_pending = by_status.get("pending", 0)
+            r_stale = by_status.get("stale", 0)
+            if r_pending == 0 and r_stale == 0:
+                break
+
+            now = _time.monotonic()
+            dt = now - prev_time
+            desc_delta = worker.describe_calls - prev_desc
+            emb_delta = worker.embed_calls - prev_emb
+            prev_desc = worker.describe_calls
+            prev_emb = worker.embed_calls
+            prev_time = now
+
+            parts = [f"remaining={r_pending + r_stale}"]
+            if dt > 0 and desc_delta > 0:
+                parts.append(f"{worker.describe_endpoint}: {desc_delta / dt:.1f}/s")
+            if dt > 0 and emb_delta > 0 and worker.embed_endpoint:
+                parts.append(f"{worker.embed_endpoint}: {emb_delta / dt:.1f}/s")
+            if worker.dedup_count:
+                parts.append(f"[cyan]{worker.dedup_count} deduped[/cyan]")
+
+            console.print(f"  [dim]{'  |  '.join(parts)}[/dim]", end="\r")
+            _time.sleep(2)
+    except KeyboardInterrupt:
+        pass
+
+    worker.stop()
+    final = code_store.stats().get("by_status", {})
+    deduped = worker.dedup_count
+    dedup_tag = f"  [cyan]{deduped} deduped[/cyan]" if deduped else ""
+    console.print(f"\n  Summarization: {final}{dedup_tag}")
+
+
 def _open_archive(config):
     from agent.rag.archive import ArchiveStore
     return ArchiveStore(config.rag.archive_db_path)
@@ -120,26 +164,8 @@ def _run_indexing(config, console, root: str | None = None, languages=None, excl
             worker = _make_bg_worker(config, code_store, embedder)
             if worker:
                 worker.start()
-                import time as _time
                 console.print("  [dim]Press Ctrl+C to stop early (queue persists).[/dim]")
-                try:
-                    while worker.is_alive():
-                        remaining = code_store.stats().get("by_status", {})
-                        r_pending = remaining.get("pending", 0)
-                        r_stale = remaining.get("stale", 0)
-                        if r_pending == 0 and r_stale == 0:
-                            break
-                        deduped = worker.dedup_count
-                        dedup_tag = f"  [cyan]{deduped} deduped[/cyan]" if deduped else ""
-                        console.print(f"  [dim]remaining={r_pending + r_stale}{dedup_tag}[/dim]", end="\r")
-                        _time.sleep(2)
-                except KeyboardInterrupt:
-                    pass
-                worker.stop()
-                final = code_store.stats().get("by_status", {})
-                deduped = worker.dedup_count
-                dedup_tag = f"  [cyan]{deduped} deduped[/cyan]" if deduped else ""
-                console.print(f"\n  Summarization: {final}{dedup_tag}")
+                _run_summarization_loop(console, code_store, worker)
 
     store.close()
     return stats
@@ -300,7 +326,10 @@ def cmd_index_update(args, config):
         console.print("No changed files detected. Index is up to date.")
     else:
         stats = index_directory(root=config.tools.working_dir, store=store, embedder=embedder, cfg=config.rag)
-        console.print(f"Updated: {stats['indexed']} files re-indexed, {stats['skipped']} unchanged.")
+        emb_summary = ""
+        if embedder.call_count > 0:
+            emb_summary = f"  [dim]emb: {embedder.call_count} vecs @ {embedder.rate:.1f}/s ({embedder.endpoint})[/dim]"
+        console.print(f"Updated: {stats['indexed']} files re-indexed, {stats['skipped']} unchanged.{emb_summary}")
 
     # Resume any pending summarization left over from an interrupted run.
     if config.summarization.enabled:
@@ -309,7 +338,6 @@ def cmd_index_update(args, config):
         by_status = code_store.stats().get("by_status", {})
         pending = by_status.get("pending", 0) + by_status.get("stale", 0)
         if pending:
-            import time as _time
             depth = code_store.max_level()
             rounds_hint = f", ~{depth + 1} rollup round(s)" if depth > 0 else ""
             console.print(f"  {pending} chunks pending summarization{rounds_hint} (resuming…)")
@@ -317,24 +345,7 @@ def cmd_index_update(args, config):
             if worker:
                 worker.start()
                 console.print("  [dim]Press Ctrl+C to stop early (queue persists).[/dim]")
-                try:
-                    while worker.is_alive():
-                        remaining = code_store.stats().get("by_status", {})
-                        r_pending = remaining.get("pending", 0)
-                        r_stale = remaining.get("stale", 0)
-                        if r_pending == 0 and r_stale == 0:
-                            break
-                        deduped = worker.dedup_count
-                        dedup_tag = f"  [cyan]{deduped} deduped[/cyan]" if deduped else ""
-                        console.print(f"  [dim]remaining={r_pending + r_stale}{dedup_tag}[/dim]", end="\r")
-                        _time.sleep(2)
-                except KeyboardInterrupt:
-                    pass
-                worker.stop()
-                final = code_store.stats().get("by_status", {})
-                deduped = worker.dedup_count
-                dedup_tag = f"  [cyan]{deduped} deduped[/cyan]" if deduped else ""
-                console.print(f"\n  Summarization: {final}{dedup_tag}")
+                _run_summarization_loop(console, code_store, worker)
 
     pruned = prune_index(config.tools.working_dir, store, archive, reason="stale")
     if pruned["archived"]:

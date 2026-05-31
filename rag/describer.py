@@ -91,6 +91,16 @@ class Describer:
         self._model = model
         self._ctx_tokens = ctx_tokens
         self._max_output_tokens = max_output_tokens
+        self.call_count: int = 0
+
+    @property
+    def endpoint(self) -> str:
+        import re
+        url = str(self._client.base_url)
+        m = re.search(r":(\d+)", url)
+        port = f":{m.group(1)}" if m else url
+        short = self._model.split("/")[-1][:16]
+        return f"{short}@{port}"
 
     def describe_chunk(
         self,
@@ -182,6 +192,7 @@ class Describer:
                 extra_body={"chat_template_kwargs": {"enable_thinking": False}},
             )
             text = response.choices[0].message.content or ""
+            self.call_count += 1
             return _extract_json(text)
         except Exception as e:
             logger.warning("Describer LLM call failed: %s", e)
