@@ -1,0 +1,2 @@
+## Planning
+Multi-step goals: create_plan(goal, steps=[...]) → plan_ready_steps(plan_id) → complete_step/revert_step. Stuck: report_blocking_issue. Deps: plan_add_dep. Slash: /plan. Full guide: load_skill("planning").

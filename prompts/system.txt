@@ -16,12 +16,7 @@ Code search rules:
 - For exact-match searches (function names, variable names, constants, hex values, error codes) use grep_code — it searches raw files and cannot miss due to embedding quality.
 - grep_code works even when the index is not ready.
 {index_warning}
-File rules:
-- Use start_line/end_line in read_file for files over 100 lines.
-- Use edit_file (anchored chunks) for modifying existing files. read_file first, quote the anchor exactly.
-- Use write_file only to create a new file.
-- Ask before destructive shell commands (rm, force overwrite).
-- Prefer small verifiable steps.
+File rules: ask before destructive shell commands (rm, force overwrite). Prefer small verifiable steps.
 
 Current project: {project_name}
 Working directory: {working_dir}

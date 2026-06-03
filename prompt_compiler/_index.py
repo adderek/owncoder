@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
-_KNOWN_PROMPT_FILES = ("system.txt", "analyze.txt", "synthesize.txt")
+_KNOWN_PROMPT_FILES = ("system.txt", "analyze.txt", "synthesize.txt", "base_rules.txt")
 
 
 def _cache_key(api_base: str, model: str, original: str) -> str:
@@ -44,17 +44,27 @@ def _index_file(config: "Config") -> Path:
     return _cache_dir(config) / "index.json"
 
 
+def _load_stripped(path: Path) -> str:
+    """Read a prompt file, stripping comment lines (lines starting with '#')."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    return "\n".join(l for l in lines if not l.startswith("#")).strip()
+
+
 def _known_targets() -> list[tuple[str, str]]:
     """Enumerate (logical_name, original_text) for every shippable prompt."""
     out: list[tuple[str, str]] = []
     for fname in _KNOWN_PROMPT_FILES:
         p = _PROMPTS_DIR / fname
-        if p.is_file():
-            out.append((fname, p.read_text(encoding="utf-8")))
-    gd = _PROMPTS_DIR / "guidelines"
-    if gd.is_dir():
-        for p in sorted(gd.glob("*.txt")):
-            out.append((f"guidelines/{p.name}", p.read_text(encoding="utf-8")))
+        if not p.is_file():
+            continue
+        text = _load_stripped(p) if fname == "base_rules.txt" else p.read_text(encoding="utf-8")
+        if text:
+            out.append((fname, text))
+    for subdir in ("guidelines", "inline"):
+        d = _PROMPTS_DIR / subdir
+        if d.is_dir():
+            for p in sorted(d.glob("*.txt")):
+                out.append((f"{subdir}/{p.name}", p.read_text(encoding="utf-8")))
     return out
 
 

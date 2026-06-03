@@ -18,6 +18,10 @@ from typing import TYPE_CHECKING
 
 import agent.prompt_compiler._state as _s
 from ._state import reset_state_for_tests  # noqa: F401 — re-exported for tests
+
+# Re-export shared state for tests that need to inspect/patch internals.
+_lock = _s._lock
+_in_flight = _s._in_flight
 from ._index import (
     _cache_key, _compiled_path, _ensure_loaded, _known_targets, _save_index,
     _PROMPTS_DIR, _KNOWN_PROMPT_FILES,
@@ -71,6 +75,16 @@ def load(name: str, original: str, config: "Config") -> str:
             _s._index[key] = entry
             _save_index()
         _s._active[name] = key
+
+        # Background-compile new entries if auto_spawn is enabled.
+        if (
+            entry.status == "pending"
+            and entry.attempts == 0
+            and key not in _s._in_flight
+            and getattr(config.compile_prompts, "auto_spawn", True)
+        ):
+            _s._in_flight.add(key)
+            _spawn_compile(key, name, original, config)
 
         compiled_path = _compiled_path(config, key)
         if entry.status == "compiled" and compiled_path.exists():

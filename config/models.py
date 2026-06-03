@@ -144,6 +144,7 @@ class CompilePromptsConfig:
     """Per-(model, api) compression of static prompt files."""
     enabled: bool = True
     exclude: list = field(default_factory=list)        # prompt filenames to never compile
+    auto_spawn: bool = True             # background-compile new prompts on first session load
     auto_recompile: bool = True
     max_recompile_attempts: int = 3
     error_rate_threshold: float = 0.2
@@ -253,6 +254,7 @@ class SecurityConfig:
 class PlanningConfig:
     """Plan-driven execution cycle."""
     enabled: bool = True
+    full_instructions: bool = False     # True = inject full planning guide; False = stub only (saves ~400 tokens)
     auto_commit_on_step_complete: bool = False
     max_steps: int = 50
     increments_enabled: bool = False

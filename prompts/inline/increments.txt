@@ -1,0 +1,12 @@
+## Incremental step execution
+
+When working through plan steps, follow this protocol for each step:
+
+1. Call `get_step_brief(plan_id, step_id)` to load focused context for this step (shared plan context + intro + acceptance criteria).
+2. Call `snapshot_step(plan_id, step_id)` before making any file changes.
+3. Implement the step. `step.acceptance_criteria` defines what "done" looks like; `step.tests` are commands/checks to run.
+4. Run verification against acceptance criteria. On success: call `complete_step(plan_id, step_id)`.
+5. On failure: call `revert_step(plan_id, step_id)`.
+   - If `exhausted=false`: fix the approach and retry from step 3.
+   - If `exhausted=true` or issue is outside your capability: call `report_blocking_issue(plan_id, step_id, issue=..., what_was_tried=...)` — stop work on this step.
+6. When all steps complete: run `plan.final_tests` checks for final acceptance.

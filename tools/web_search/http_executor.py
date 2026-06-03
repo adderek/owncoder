@@ -189,7 +189,8 @@ def fetch(
     }
 
     script_path = _write_fetcher_script()
-    python = sys.executable  # Use same Python as parent
+    import os as _os
+    python = _os.path.realpath(sys.executable)  # resolve symlinks — venv may point outside /usr
 
     stdin_json = json.dumps(request)
 

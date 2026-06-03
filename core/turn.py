@@ -101,6 +101,9 @@ async def run_turn(
         tools = inject_purpose_into_schemas(tools)
     nudge_count = 0
     MAX_NUDGES = 3
+    _NO_TOOL_SENTINEL = "NO_TOOL_NEEDED:"
+    _justify_pending_content: str | None = None
+    _justify_messages_snapshot: list | None = None  # messages state just after original response, before justify prompt
     content_parts: list[str] = []
     iter_count = 0
     _read_path_counts: dict[str, int] = {}
@@ -500,6 +503,8 @@ async def run_turn(
                 _phase("compact", f"post-tool at {token_est} tokens")
                 messages = await compact(messages, config, client, facts_store=facts_store, turn_index=turn_index, project_memory_store=project_memory_store, session_id=session_id)
                 _phase("compact_done", f"{_count_tokens_approx(messages)} tokens")
+            _justify_pending_content = None
+            _justify_messages_snapshot = None
             iter_count += 1
             total_iter_count += 1
             if on_progress is not None:
@@ -553,13 +558,47 @@ async def run_turn(
         already_nudged = nudge_count > 0
         fallback_enabled = bool(getattr(config.llm, "narration_fallback", True))
 
-        if fallback_enabled and _is_narrating_tool_use(content) and not already_nudged and nudge_count < MAX_NUDGES:
+        # Check if agent justified skipping tools in response to a justify prompt
+        if _justify_pending_content is not None:
+            if content.strip().startswith(_NO_TOOL_SENTINEL):
+                _phase("no_tool_justified", content.strip().split("\n", 1)[0])
+                # _justify_messages_snapshot already contains the original response as assistant;
+                # just collapse/merge and return it without the justify exchange
+                msgs_final = _collapse_tool_rounds(_justify_messages_snapshot, side_log=side_log, turn_id=turn_index)
+                msgs_final = _merge_consecutive_assistants(msgs_final)
+                return "".join(content_parts + [_justify_pending_content]), msgs_final
+            # Agent didn't justify — fall through to hard nudge below
+            _justify_pending_content = None
+            _justify_messages_snapshot = None
+
+        if fallback_enabled and (iter_count == 0 or _is_narrating_tool_use(content)) and not already_nudged and nudge_count < MAX_NUDGES:
             messages_with_current = messages + [stamp_reasoning({"role": "assistant", "content": content})]
             applied = _apply_code_from_history(messages_with_current, on_tool_call, side_log=side_log, turn_id=turn_index)
             if applied:
                 human, summary = applied
                 messages = messages_with_current + [summary, {"role": "assistant", "content": human}]
                 return f"{content}\n\n{human}", messages
+            if iter_count == 0 and not _is_narrating_tool_use(content) and content.strip():
+                # Plain text response with no tool calls and no narration — ask agent to justify
+                _phase("nudge_justify", "no tool call; asking agent to justify")
+                if on_tool_call:
+                    on_tool_call("⟳ justify", "")
+                _justify_pending_content = content
+                _justify_messages_snapshot = messages_with_current
+                messages = messages_with_current
+                justify_msg = {
+                    "role": "user",
+                    "content": (
+                        f"You responded without calling any tool. "
+                        f"If no tool was needed (e.g. this is a question or conversational response), "
+                        f"reply with exactly: {_NO_TOOL_SENTINEL} <one-line reason>. "
+                        f"Otherwise call the appropriate tool now."
+                    ),
+                    "_nudged": True,
+                }
+                messages = messages + [justify_msg]
+                nudge_count += 1
+                continue
             _phase("nudge", "model narrated; re-prompting")
             if on_tool_call:
                 on_tool_call("⟳ nudge", "")

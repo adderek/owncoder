@@ -39,4 +39,5 @@ def cfg(tmp_path):
     c.tools.working_dir = str(tmp_path)
     c.tools.agent_dir = str(tmp_path / ".agent")
     c.tools.allow_shell = False
+    c.compile_prompts.auto_spawn = False
     return c

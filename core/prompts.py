@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "system.txt"
 GUIDELINES_DIR = Path(__file__).parent.parent / "prompts" / "guidelines"
+INLINE_DIR = Path(__file__).parent.parent / "prompts" / "inline"
 BASE_RULES_PATH = Path(__file__).parent.parent / "prompts" / "base_rules.txt"
 
 _PREAMBLE_CACHE: set[str] = set()
@@ -92,79 +93,25 @@ _REASONING_EFFORT = {
     "off": "none", "low": "low", "normal": "medium", "high": "high", "max": "high",
 }
 
-_INCREMENTS_INSTRUCTIONS = """\
-## Incremental step execution
-
-When working through plan steps, follow this protocol for each step:
-
-1. Call `get_step_brief(plan_id, step_id)` to load focused context for this step (shared plan context + intro + acceptance criteria).
-2. Call `snapshot_step(plan_id, step_id)` before making any file changes.
-3. Implement the step. `step.acceptance_criteria` defines what "done" looks like; `step.tests` are commands/checks to run.
-4. Run verification against acceptance criteria. On success: call `complete_step(plan_id, step_id)`.
-5. On failure: call `revert_step(plan_id, step_id)`.
-   - If `exhausted=false`: fix the approach and retry from step 3.
-   - If `exhausted=true` or issue is outside your capability: call `report_blocking_issue(plan_id, step_id, issue=..., what_was_tried=...)` — stop work on this step.
-6. When all steps complete: run `plan.final_tests` checks for final acceptance.\
-"""
-
-_DAG_PLANNING_INSTRUCTIONS = """\
-## Plan-driven execution with DAG dependencies
-
-When given a multi-step goal, create a plan and break it into atomic steps with explicit dependencies.
-
-### Creating a plan
-Use the planning tools or slash commands:
-- Create: `/plan new <goal>` or `create_plan(goal, steps=[...])`
-- Set shared context (key files, constraints, arch): `/plan context <text>`
-- Add steps: `/plan step add <description>`
-- Add step introduction (rationale/context): edit plan JSON or use `create_plan(steps=[{..., "introduction": "..."}])`
-- Add acceptance criteria: `create_plan(steps=[{..., "acceptance_criteria": ["...", "..."]}])`
-- Add final acceptance tests: `/plan final add <check>`
-- Wire dependencies: `/plan dep <step_id> <dep_step_id>` or `plan_add_dep(plan_id, step_id, dep_step_id)`
-  - Only add deps when there is a real ordering constraint. Don't over-specify.
-
-### Choosing what to work on
-- Call `plan_ready_steps(plan_id)` to get unblocked steps. Never start a step whose deps are unresolved.
-- When steps are independent (no shared state, separate files), prefer working on multiple ready steps before reporting back.
-- If `ready_count=0` and `blocked_count>0`, some dependency is stuck — surface this explicitly.
-- Use `get_step_brief(plan_id, step_id)` to get a focused context bundle; pass it as `context` to `spawn_agents` for isolated step execution.
-
-### Completing steps
-- Mark each step done via `complete_step` (with increments) or `/plan step <id> completed`.
-- After a batch finishes, consider `/plan compact` to summarize completed steps and free context.
-- After ALL steps complete: run final_tests, then report overall completion.
-
-### Blocking issues
-- If stuck and retries exhausted: call `report_blocking_issue` — writes an escalation doc with full context for a human or stronger model.
-- Step status `blocked` = escalated; do not retry. Continue with other ready steps if any.
-
-### Multi-agent hints
-- If a step has `agent_constraints`, note them — they indicate LLM or environment requirements for future routing.
-- Use `plan_assign_step` to claim a step before starting it in concurrent contexts.\
-"""
+def _load_inline(name: str) -> str:
+    p = INLINE_DIR / name
+    return p.read_text(encoding="utf-8").strip() if p.exists() else ""
 
 
-_TURN_SIGNALS_INSTRUCTIONS = """\
-## Turn signals
-
-When you finish a response and there is clear follow-up work the harness should
-run automatically, end your response with exactly one signal line:
-
-  >>>NEXT: <what to do next>          — harness auto-loops with this as next input
-  >>>ASK: <question>                  — pause; user must answer before proceeding
-  >>>FEEDBACK: <topic>                — pause; ask user for feedback on this topic
-  >>>REVIEW: <scope>                  — request stronger-model review of scope
-  >>>DONE: <summary>                  — all tasks complete; no further steps
-  >>>CROWS: <problem>                 — consult many small models for creative solutions
-  >>>BLOCKED: <reason> | <unblocks>   — dead end; what would allow progress
-
-Rules:
-- Signal line must be the very last non-blank line of your response.
-- Omit entirely when this is a simple answer requiring no follow-up.
-- Use >>>NEXT only when the next step is clear and within your capability.
-- Use >>>ASK / >>>BLOCKED to pause the loop for human input.
-- Use >>>DONE when the original goal is fully achieved.\
-"""
+# Fallback strings used when inline/*.txt files are missing.
+_INCREMENTS_FALLBACK = (
+    "## Incremental step execution\n"
+    "For each step: get_step_brief → snapshot_step → implement → verify → complete_step.\n"
+    "On failure: revert_step; if exhausted: report_blocking_issue and stop."
+)
+_DAG_PLANNING_FALLBACK = (
+    "## Plan-driven execution\n"
+    "Use create_plan, plan_ready_steps, complete_step, report_blocking_issue."
+)
+_TURN_SIGNALS_FALLBACK = (
+    "## Turn signals\n"
+    "End response with >>>NEXT/>>>ASK/>>>DONE/>>>BLOCKED/>>>REVIEW/>>>FEEDBACK/>>>CROWS as appropriate."
+)
 
 
 def _log_llm_request(messages: list, tools, config: "Config") -> None:
@@ -246,14 +193,24 @@ def _build_system_prompt(
                 prompt = f"{prompt}\n\n{text}"
 
     if getattr(config.planning, "enabled", True):
-        prompt = f"{prompt}\n\n{_DAG_PLANNING_INSTRUCTIONS}"
+        if getattr(config.planning, "full_instructions", False):
+            text = _load_inline("dag_planning.txt") or _DAG_PLANNING_FALLBACK
+            text = prompt_compiler.load("inline/dag_planning.txt", text, config)
+        else:
+            text = _load_inline("dag_planning_stub.txt") or _DAG_PLANNING_FALLBACK
+            text = prompt_compiler.load("inline/dag_planning_stub.txt", text, config)
+        prompt = f"{prompt}\n\n{text}"
 
     if getattr(config.planning, "increments_enabled", False):
-        prompt = f"{prompt}\n\n{_INCREMENTS_INSTRUCTIONS}"
+        text = _load_inline("increments.txt") or _INCREMENTS_FALLBACK
+        text = prompt_compiler.load("inline/increments.txt", text, config)
+        prompt = f"{prompt}\n\n{text}"
 
     ts_cfg = getattr(config, "turn_signals", None)
     if ts_cfg is None or getattr(ts_cfg, "enabled", True):
-        prompt = f"{prompt}\n\n{_TURN_SIGNALS_INSTRUCTIONS}"
+        text = _load_inline("turn_signals.txt") or _TURN_SIGNALS_FALLBACK
+        text = prompt_compiler.load("inline/turn_signals.txt", text, config)
+        prompt = f"{prompt}\n\n{text}"
 
     return prompt
 

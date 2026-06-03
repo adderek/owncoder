@@ -9,6 +9,7 @@ from agent.memory.compactor import _count_tokens_approx
 from agent.tools import get_schemas
 
 from .prompts import _build_system_prompt, load_base_rules, HARD_RULES_MARKER
+from agent import prompt_compiler as _prompt_compiler
 from .turn import _post_turn_capture_and_summarize, run_turn
 from agent.ipc.controller import run_turn_ipc
 
@@ -125,6 +126,8 @@ class Agent:
             print(f"warning: {project_doc_warning}", file=sys.stderr)
 
         base_rules = load_base_rules()
+        if base_rules:
+            base_rules = _prompt_compiler.load("base_rules.txt", base_rules, config)
         self.messages = []
         if base_rules:
             self.messages.append({"role": "system", "content": base_rules, HARD_RULES_MARKER: True})
