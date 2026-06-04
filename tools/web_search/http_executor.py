@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _config = None
+_script_path: Path | None = None
 
 # Inline Python script for HTTP fetching. Uses only stdlib.
 # Runs inside the sandbox — reads JSON from stdin, writes JSON to stdout.
@@ -131,13 +132,12 @@ if __name__ == "__main__":
 
 
 def setup(config) -> None:
-    global _config
+    global _config, _script_path
     _config = config
+    _script_path = _write_fetcher_script()
 
 
 def _write_fetcher_script() -> Path:
-    """Write the fetcher script to a temp location so the sandbox can run it."""
-    # Use a stable path under .agent so it's inside the project root (sandbox bind).
     agent_dir = Path(_config.tools.agent_dir if _config else ".agent")
     script_dir = agent_dir / "web_search"
     script_dir.mkdir(parents=True, exist_ok=True)
@@ -188,7 +188,7 @@ def fetch(
         "user_agent": ws_cfg.user_agent,
     }
 
-    script_path = _write_fetcher_script()
+    script_path = _script_path or _write_fetcher_script()
     import os as _os
     python = _os.path.realpath(sys.executable)  # resolve symlinks — venv may point outside /usr
 

@@ -32,36 +32,36 @@ def setup(config) -> None:
     "grep_code",
     {
         "description": (
-            "Search raw source files with grep — always works, no index needed. "
-            "Use for exact-match searches (function names, constants, error codes, hex values) "
-            "and to verify search_code results before editing."
+            "Grep raw source files — no index needed, always works. "
+            "Use for exact matches: names, constants, error codes, hex values. "
+            "Also use to verify search_code hits before editing."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "pattern": {
                     "type": "string",
-                    "description": "Search pattern (regex by default; set fixed_string=true for literal text)",
+                    "description": "Regex pattern (set fixed_string=true for literal match)",
                 },
                 "path": {
                     "type": "string",
-                    "description": "Directory or file to search (default: project working directory)",
+                    "description": "Path to search (default: project root)",
                 },
                 "file_glob": {
                     "type": "string",
-                    "description": "Filename glob to restrict search, e.g. '*.py' or '*.c'",
+                    "description": "Glob to restrict files, e.g. '*.py'",
                 },
                 "fixed_string": {
                     "type": "boolean",
-                    "description": "Treat pattern as a fixed string, not a regex (default: false)",
+                    "description": "Literal string match, not regex (default: false)",
                 },
                 "case_insensitive": {
                     "type": "boolean",
-                    "description": "Case-insensitive matching (default: false)",
+                    "description": "Case-insensitive (default: false)",
                 },
                 "max_results": {
                     "type": "integer",
-                    "description": f"Max matches to return (default: {_DEFAULT_MAX})",
+                    "description": f"Max matches (default: {_DEFAULT_MAX})",
                 },
             },
             "required": ["pattern"],

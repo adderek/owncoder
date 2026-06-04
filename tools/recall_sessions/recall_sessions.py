@@ -37,28 +37,25 @@ def _get_store():
     "recall_sessions",
     {
         "description": (
-            "Search summaries of past sessions for decisions, errors, or solutions "
-            "from earlier work. Use when you need to know: 'what did we decide about "
-            "X in a previous session?', 'how did we solve error Y before?', 'what "
-            "changes were made to file Z last week?'. Returns snippet excerpts ranked "
-            "by relevance. Complements recall_facts (which searches the current "
-            "session) — this searches across all past sessions."
+            "Search past session summaries for prior decisions, errors, solutions. "
+            "Use for: 'what did we decide about X?', 'how did we fix Y before?'. "
+            "Ranked by relevance. Unlike recall_facts (current session only), searches ALL past sessions."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Keywords or description of the fact to find.",
+                    "description": "Keywords describing what to find.",
                 },
                 "max_results": {
                     "type": "integer",
-                    "description": "Max results to return. Default 5.",
+                    "description": "Max results (default 5).",
                 },
                 "outcome_filter": {
                     "type": "string",
                     "enum": ["good", "bad", "ok"],
-                    "description": "Only return sessions with this outcome rating. Omit for all sessions.",
+                    "description": "Filter by session outcome. Omit for all.",
                 },
             },
             "required": ["query"],

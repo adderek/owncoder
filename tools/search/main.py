@@ -26,10 +26,10 @@ def setup(config, data_provider) -> None:
     "search_code",
     {
         "description": (
-            "Search the codebase index using semantic + keyword search. "
-            "Results are excerpts from a summarized index — use them to locate files and line ranges, "
-            "then verify with read_file before making changes. "
-            "Falls back to grep when the index is not ready."
+            "Semantic + keyword search over codebase index. "
+            "Results are index excerpts — locate files/lines, then read_file to verify before editing. "
+            "Falls back to grep when index not ready. "
+            "Prefer grep_code for exact matches (names, constants, hex values) — index can miss."
         ),
         "parameters": {
             "type": "object",
@@ -104,7 +104,7 @@ def search_code(query: str, top_k: int | None = None) -> dict:
 @register(
     "search_archive",
     {
-        "description": "Search ARCHIVED (discarded) index entries — files that were removed or hidden via .agent.ignore. Only use when the user explicitly asks about content that is no longer in the live index.",
+        "description": "Search archived/discarded index entries (removed or .agent.ignore-hidden files). Only when user asks about content no longer in live index.",
         "parameters": {
             "type": "object",
             "properties": {

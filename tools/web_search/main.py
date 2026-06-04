@@ -146,7 +146,14 @@ def _search_duckduckgo(query: str, num_results: int) -> list[dict]:
                         self.last_link_data = None
 
     parser = DDGParser()
-    parser.feed(raw.decode("utf-8", errors="replace"))
+    html_text = raw.decode("utf-8", errors="replace")
+    parser.feed(html_text)
+
+    if not parser.results:
+        logger.warning(
+            "DDG parser returned 0 results — DDG may have changed HTML structure. "
+            "Sample: %.200s", html_text[:200]
+        )
 
     results = []
     for i, res in enumerate(parser.results[:num_results]):
@@ -170,8 +177,6 @@ def _search_brave(query: str, num_results: int) -> list[dict]:
     import urllib.parse
     import json as _json
 
-    from agent.config import make_registry
-    registry = make_registry(_config)
     # Try to get Brave API key from model entries tagged 'brave'
     brave_key = None
     for entry in _config.model_entries.values():
@@ -232,12 +237,7 @@ def _search_backend(query: str, num_results: int) -> list[dict]:
 @register(
     "web_search",
     {
-        "description": (
-            "Search the web for up-to-date information. "
-            "Returns sanitized snippets only — use web_fetch(url) to retrieve "
-            "full page text for a specific result. "
-            "Rate limited to 3 calls per turn."
-        ),
+        "description": "Web search. Sanitized snippets only — use web_fetch(url) for full text. Rate limit: 3/turn.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -249,17 +249,12 @@ def _search_backend(query: str, num_results: int) -> list[dict]:
                     "type": "integer",
                     "description": "Number of results (default: 5, max: 10)",
                 },
-                "source": {
-                    "type": "string",
-                    "enum": ["web", "docs"],
-                    "description": "Search source (web or docs)",
-                },
             },
             "required": ["query"],
         },
     },
 )
-def web_search(query: str, num_results: int = 5, source: str = "web") -> dict:
+def web_search(query: str, num_results: int = 5) -> dict:
     """Search the web. Returns snippets only (two-phase pull model)."""
     if _config is None:
         return {"error": "Web search not configured"}
@@ -280,13 +275,11 @@ def web_search(query: str, num_results: int = 5, source: str = "web") -> dict:
             "meta": {
                 "query": query,
                 "total_results": 0,
-                "source": source,
                 "query_hash": _sha256(query),
                 "note": "No results found or search backend unavailable.",
             },
         }
 
-    # Layer 4: Injection pattern filtering on snippets (no structural wrapping — snippets are short)
     results = injection_shield.shield_results(results)
 
     return {
@@ -303,7 +296,6 @@ def web_search(query: str, num_results: int = 5, source: str = "web") -> dict:
         "meta": {
             "query": query,
             "total_results": len(results),
-            "source": source,
             "query_hash": _sha256(query),
         },
     }
@@ -312,12 +304,7 @@ def web_search(query: str, num_results: int = 5, source: str = "web") -> dict:
 @register(
     "web_fetch",
     {
-        "description": (
-            "Fetch full page text for a URL. Use after web_search to retrieve "
-            "detailed content from a specific result. "
-            "All content is sanitized and wrapped for safety. "
-            "Rate limited to 5 calls per turn."
-        ),
+        "description": "Fetch full page text. Use after web_search for detailed content. Sanitized + injection-wrapped. Rate limit: 5/turn.",
         "parameters": {
             "type": "object",
             "properties": {

@@ -2,7 +2,12 @@ Available tools:
 
 search_code(query, top_k=8)
   Semantic + keyword search over the indexed codebase.
-  ALWAYS call this before read_file.
+  Results are index excerpts — hints only. Always read_file to verify before editing.
+  For exact-match searches (function names, constants, hex values) use grep_code instead.
+
+grep_code(pattern, path=None, fixed_string=False)
+  Search raw source files with grep. Always works — no index needed.
+  Use for exact matches: function names, variable names, constants, error codes.
 
 read_file(path, start_line=None, end_line=None)
   Read file contents. Always specify start_line/end_line for files > 100 lines.
@@ -11,9 +16,9 @@ read_file(path, start_line=None, end_line=None)
 write_file(path, content)
   Write a new file. Use ONLY for new files — never to modify existing files.
 
-edit_file(chunks, match=None, on_chunk_fail=None)
-  Modify an existing file by replacing anchored regions. ONLY these three kwargs
-  exist. Do NOT pass selection_type, mode, operation, type, action, diff, patch,
+edit_file(chunks)
+  Modify an existing file by replacing anchored regions. ONLY the chunks kwarg is
+  required. Do NOT pass selection_type, mode, operation, type, action, diff, patch,
   edits, or any other field — they will raise TypeError.
   Pattern: read_file first → quote exact anchor → edit_file.
   Each chunk is a dict with exactly these keys:
@@ -24,9 +29,6 @@ edit_file(chunks, match=None, on_chunk_fail=None)
       delete, use "". To insert, include the anchor inside the replacement.
     - range_hint ([int, int], optional): [start_line, end_line] to disambiguate
       duplicate anchors.
-  match (optional str): "exact" (default) or "lstrip" for leading-whitespace-
-    tolerant matching.
-  on_chunk_fail (optional str): "abort" (default, atomic) or "skip".
   Replace is the ONLY operation — there is no insert/delete mode. To insert,
   anchor on surrounding text and include it in the replacement.
   Fails loudly on any mismatch — no silent changes.
@@ -41,8 +43,10 @@ edit_file(chunks, match=None, on_chunk_fail=None)
 list_files(path=".", pattern="**/*")
   List files in a directory, respecting .gitignore.
 
-run_command(cmd, cwd=None, timeout=30)
-  Execute a shell command. Returns stdout, stderr, returncode, duration_ms.
+run_argv(argv, cwd=None, timeout=None, network=False)
+  Execute command as argv list (no shell interpretation, sandboxed).
+  For pipes/redirects: run_argv(["sh", "-c", "cmd | other"]).
+  Network blocked by default — set network=True only when required (curl, git fetch).
 
 git_diff(staged=False, path=None)
   Show git diff.
@@ -59,10 +63,26 @@ git_status()
 git_related_files(path)
   Find files most often committed alongside a given file.
 
-web_search(query, num_results=5, source="web")
-  Search the web for up-to-date information. Returns sanitized snippets only.
-  ALWAYS prefer this over web_fetch for initial search. Rate limited to 3/turn.
+save_note(title, body, tags=None)
+  Persist a fact/decision/preference across sessions. Use for architectural decisions,
+  user preferences, recurring constraints, "always do X / never do Y" rules.
+
+recall_facts(query, round_id=None, max_results=3)
+  Retrieve derived facts (decisions, filenames, errors) compressed out of active context.
+  Use when [SESSION SUMMARY] lacks a specific detail.
+  For verbatim user messages, use recall_history instead.
+
+recall_history(turns=5, from_turn=None, include_responses=False)
+  Read verbatim user messages from the Q/A log. Use to verify original intent after
+  suspected goal drift. Never compacted.
+  For derived facts/decisions, use recall_facts instead.
+
+web_search(query, num_results=5)
+  Search the web. Returns sanitized snippets only.
+  Use web_fetch(url) to retrieve full text for a specific result.
+  Rate limited to 3 calls per turn.
 
 web_fetch(url)
-  Fetch full page text from a URL. Use only after web_search to get details.
-  All content is sanitized and wrapped for safety. Rate limited to 5/turn.
+  Fetch full page text from a URL. Use after web_search to get details.
+  Content sanitized and wrapped for injection safety.
+  Rate limited to 5 calls per turn.

@@ -40,11 +40,7 @@ def _get_corpus():
 
 
 @register("kb_search", {
-    "description": (
-        "Search the knowledge-base corpus by full-text query. "
-        "Returns matching nodes with id, name, kind, scope, and description snippet. "
-        "Use to find functions, modules, or concepts by keyword."
-    ),
+    "description": "Full-text search over KB corpus. Returns nodes (id, name, kind, scope, description). Use to find functions, modules, concepts.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -89,11 +85,7 @@ def kb_search(query: str, kind: str | None = None, scope: str | None = None, lim
 
 
 @register("kb_get", {
-    "description": (
-        "Get a single knowledge-base node by id or dimensional-link. "
-        "Returns full node data including dims, description, locators. "
-        "Dimensional-link syntax: kind=function:name=main"
-    ),
+    "description": "Get KB node by id or dimensional-link (e.g. kind=function:name=main). Returns dims, description, locators.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -128,11 +120,7 @@ def kb_get(ref: str) -> str:
 
 
 @register("kb_deps", {
-    "description": (
-        "Return callees (dependencies) of a node. "
-        "depth=1 returns only direct deps; depth>1 also returns transitive deps. "
-        "Use to understand what a function calls."
-    ),
+    "description": "Return callees (deps) of a node. depth=1 direct only, >1 transitive. Use to see what a function calls.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -173,11 +161,7 @@ def kb_deps(node_id: str, kind: str = "calls", depth: int = 1) -> str:
 
 
 @register("kb_callers", {
-    "description": (
-        "Return callers (inverse dependencies) of a node. "
-        "depth=1 returns only direct callers; depth>1 also returns transitive callers. "
-        "Use to find what calls a given function."
-    ),
+    "description": "Return callers (inverse deps) of a node. depth=1 direct only, >1 transitive. Use to find what calls a function.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -218,11 +202,7 @@ def kb_callers(node_id: str, kind: str = "calls", depth: int = 1) -> str:
 
 
 @register("kb_add_note", {
-    "description": (
-        "Add an observation or note attached to a knowledge-base node. "
-        "Returns the note id. "
-        "Use to record findings, hypotheses, or context about a node."
-    ),
+    "description": "Attach observation/note to a KB node. Returns note id. Use to record findings, hypotheses, context.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -253,11 +233,7 @@ def kb_add_note(attach_to: str, body: str, kind: str = "observation") -> str:
 
 
 @register("kb_propose_description", {
-    "description": (
-        "Propose a new description for a knowledge-base node. "
-        "Stored as an override in the DB (does not modify YAML source). "
-        "Use to annotate nodes with LLM-generated descriptions."
-    ),
+    "description": "Propose description for a KB node. Stored as DB override (no YAML change). Use to annotate nodes.",
     "parameters": {
         "type": "object",
         "properties": {

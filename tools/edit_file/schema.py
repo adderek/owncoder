@@ -9,19 +9,19 @@ def _build_schema() -> dict:
     ec = rules.config.edit
 
     chunk_props = {
-        "path": {"type": "string", "description": "File path to edit."},
-        "anchor": {"type": "string", "description": "Exact text currently in the file. Must match once."},
-        "replacement": {"type": "string", "description": 'New text to insert in place of the anchor. Use "" to delete.'},
+        "path": {"type": "string", "description": "File path."},
+        "anchor": {"type": "string", "description": "Exact text to replace. Must match once."},
+        "replacement": {"type": "string", "description": 'Replacement text. "" to delete.'},
         "range_hint": {
             "type": "array",
             "items": {"type": "integer"},
             "minItems": 2,
             "maxItems": 2,
-            "description": "Optional [start_line, end_line], 1-indexed inclusive. Anchor must lie entirely inside.",
+            "description": "[start_line, end_line] to disambiguate duplicate anchors.",
         },
-        "anchor_sha256": {"type": "string", "description": "Optional sha256 (hex, lowercase) of the anchor bytes for integrity check."},
-        "expect_removed": {"type": "integer", "description": "Optional self-check: number of lines the anchor spans."},
-        "expect_added": {"type": "integer", "description": "Optional self-check: number of lines in replacement."},
+        "anchor_sha256": {"type": "string", "description": "sha256 (hex) of anchor for integrity check."},
+        "expect_removed": {"type": "integer", "description": "Self-check: lines in anchor."},
+        "expect_added": {"type": "integer", "description": "Self-check: lines in replacement."},
     }
 
     props: dict = {
@@ -33,19 +33,19 @@ def _build_schema() -> dict:
                 "required": ["path", "anchor", "replacement"],
                 "properties": chunk_props,
             },
-            "description": "One or more anchored edits (alternative to path+anchor+replacement below). All applied atomically.",
+            "description": "Anchored edits list. All applied atomically.",
         },
         "path": {
             "type": "string",
-            "description": "Alternative to chunks: file path (use with anchor+replacement).",
+            "description": "Alt to chunks: file path (use with anchor+replacement).",
         },
         "anchor": {
             "type": "string",
-            "description": "Alternative to chunks: exact text currently in the file (use with path+replacement).",
+            "description": "Alt to chunks: exact text to replace (use with path+replacement).",
         },
         "replacement": {
             "type": "string",
-            "description": "Alternative to chunks: new text to replace anchor (use with path+anchor).",
+            "description": "Alt to chunks: replacement text (use with path+anchor).",
         },
     }
     required: list[str] = []  # either chunks[] OR flat path+anchor+replacement — both valid
@@ -64,13 +64,10 @@ def _build_schema() -> dict:
 
     return {
         "description": (
-            "Modifies an EXISTING file by replacing one or more anchored regions. "
-            "Does NOT create new files — use write_file(path, content) for that. "
-            "Always read_file first, then quote the anchor EXACTLY (whitespace matters). "
-            "Anchor must match exactly once; use range_hint to disambiguate. "
-            "Fails loudly on any mismatch — no silent changes. "
-            "Example: chunks=[{'path': 'foo.py', 'anchor': 'def bar():', 'replacement': 'def bar(x):'}] "
-            "Or flat: path='foo.py', anchor='def bar():', replacement='def bar(x):'"
+            "Modify EXISTING file by replacing anchored text. New files: use write_file. "
+            "read_file first, copy anchor EXACTLY (whitespace matters). "
+            "Anchor must match once; use range_hint if duplicate. Fails loudly on mismatch. "
+            "chunks=[{'path':'f.py','anchor':'old','replacement':'new'}] or flat path+anchor+replacement."
         ),
         "parameters": {
             "type": "object",

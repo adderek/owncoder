@@ -45,30 +45,25 @@ def _get_store():
     "save_note",
     {
         "description": (
-            "Save a fact, decision, or preference that should persist beyond this "
-            "session. Use for: architectural decisions, user preferences, recurring "
-            "constraints, resolved ambiguities, 'always do X / never do Y' rules. "
-            "Notes are injected into future sessions so the agent remembers them "
-            "without having to re-derive them from code or history."
+            "Persist fact/decision/preference across sessions. "
+            "Use for: arch decisions, user prefs, recurring constraints, 'always/never do X' rules. "
+            "Injected into future sessions."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "title": {
                     "type": "string",
-                    "description": "Short title (≤80 chars). Used as note heading.",
+                    "description": "Short title (≤80 chars).",
                 },
                 "body": {
                     "type": "string",
-                    "description": (
-                        "Note content. Be specific: name files, functions, decisions, "
-                        "rationale. Avoid conversational padding."
-                    ),
+                    "description": "Content. Be specific: name files, functions, decisions, rationale.",
                 },
                 "tags": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Optional topic tags for retrieval (e.g. ['auth','database']).",
+                    "description": "Topic tags for retrieval (e.g. ['auth','database']).",
                 },
             },
             "required": ["title", "body"],

@@ -5,6 +5,7 @@ Unicode normalization, audit logging. Deny-closed: any failure rejects.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import ipaddress
 import json
 import os
@@ -45,6 +46,7 @@ _BLOCKED_NETWORKS = [
     ipaddress.IPv6Network("::1/128"),
     ipaddress.IPv6Network("fc00::/7"),
     ipaddress.IPv6Network("fe80::/10"),
+    ipaddress.IPv6Network("::ffff:0:0/96"),  # IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1)
 ]
 
 _BLOCKED_SCHEMES = {"file", "ftp", "gopher", "dict", "data", "javascript", "vbscript"}
@@ -129,12 +131,19 @@ def _validate_url(url: str) -> str | None:
         pass  # Not an IP, proceed to DNS check
 
     # DNS rebind check: resolve hostname, verify resolved IPs
+    _DNS_TIMEOUT_S = 5.0
     try:
-        resolved = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _ex:
+            _fut = _ex.submit(
+                socket.getaddrinfo, hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM
+            )
+            resolved = _fut.result(timeout=_DNS_TIMEOUT_S)
         for family, _, _, _, sockaddr in resolved:
             ip = sockaddr[0]
             if not _is_ip_safe(ip):
                 return f"DNS resolved to blocked IP: {hostname} → {ip}"
+    except concurrent.futures.TimeoutError:
+        return f"DNS resolution timed out for: {hostname}"
     except socket.gaierror:
         return f"DNS resolution failed for: {hostname}"
     except Exception as e:

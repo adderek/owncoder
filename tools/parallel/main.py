@@ -176,11 +176,9 @@ async def _run_worker(
     "spawn_agents",
     {
         "description": (
-            "Run independent subtasks in parallel across multiple agent workers, "
-            "each potentially using a different model/endpoint (GPU, CPU, cloud). "
-            "Per-group concurrency limits prevent overloading any single backend. "
-            "Workers are read-only by default (no file edits). "
-            "Only available when [parallel] enabled = true in agent.toml."
+            "Run subtasks in parallel across worker agents (different models/endpoints). "
+            "Per-group concurrency limits. Workers read-only by default. "
+            "Requires [parallel] enabled=true in agent.toml."
         ),
         "parameters": {
             "type": "object",
@@ -193,48 +191,43 @@ async def _run_worker(
                         "properties": {
                             "task": {
                                 "type": "string",
-                                "description": "The subtask prompt for this worker.",
+                                "description": "Subtask prompt.",
                             },
                             "model": {
                                 "type": "string",
                                 "description": (
-                                    "Named model entry from agent.toml [models.*]. "
-                                    "If omitted and [parallel.decision] enabled, the "
-                                    "decision-maker selects automatically using `hint`. "
-                                    "Falls back to round-robin from [parallel].workers."
+                                    "Model entry from agent.toml [models.*]. "
+                                    "Omit to auto-select via decision-maker (uses hint). "
+                                    "Falls back to round-robin."
                                 ),
                             },
                             "hint": {
                                 "type": "object",
-                                "description": (
-                                    "Resource hints for automatic model selection. "
-                                    "Ignored when `model` is explicit."
-                                ),
+                                "description": "Resource hints for auto model selection. Ignored if model set.",
                                 "properties": {
                                     "est_in_tokens": {
                                         "type": "integer",
-                                        "description": "Estimated input tokens for this subtask.",
+                                        "description": "Est. input tokens.",
                                     },
                                     "est_out_tokens": {
                                         "type": "integer",
-                                        "description": "Estimated output tokens for this subtask.",
+                                        "description": "Est. output tokens.",
                                     },
                                     "min_strength": {
                                         "type": "number",
-                                        "description": "Minimum model size in billions of parameters.",
+                                        "description": "Min model size (billions of params).",
                                     },
                                     "needs_thinking": {
                                         "type": "boolean",
-                                        "description": "Task requires extended chain-of-thought reasoning.",
+                                        "description": "Requires extended reasoning.",
                                     },
                                 },
                             },
                             "context": {
                                 "type": "string",
                                 "description": (
-                                    "Optional pre-fetched context (file contents, RAG results) "
-                                    "injected before the task. Lets weak/cheap workers skip "
-                                    "search tools — supply the relevant code here instead."
+                                    "Pre-fetched context (code, RAG results) injected before task. "
+                                    "Lets workers skip search tools."
                                 ),
                             },
                         },

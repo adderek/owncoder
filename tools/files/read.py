@@ -41,10 +41,9 @@ def _build_gitignore_spec(base):
     "read_file",
     {
         "description": (
-            "Read file contents, optionally limited to a line range. "
-            "Always use start_line/end_line for large files. "
-            "When a line range exceeds the file, the range is auto-clamped and "
-            "end_of_file=true is returned so you know you've reached the end."
+            "Read file contents, optionally a line range. "
+            "Use start_line/end_line for large files. "
+            "Range auto-clamps; end_of_file=true signals end of file."
         ),
         "parameters": {
             "type": "object",
@@ -150,10 +149,9 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
     "list_files",
     {
         "description": (
-            "List files in a directory, respecting .gitignore. Returns relative paths with size. "
-            "Capped at max_results (default 500) to keep responses small — narrow with `pattern` "
-            "(e.g. 'src/**/*.py') if you need more. "
-            "Set include_lines=true to also get line counts (slower for large trees)."
+            "List files in directory, .gitignore-aware. Returns relative paths + sizes. "
+            "Capped at max_results (default 500) — narrow with pattern (e.g. 'src/**/*.py'). "
+            "include_lines=true adds line counts (slower)."
         ),
         "parameters": {
             "type": "object",

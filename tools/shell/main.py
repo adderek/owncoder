@@ -259,9 +259,9 @@ def get_transcript() -> list[dict]:
     "run_argv",
     {
         "description": (
-            "Run a command as an explicit argv list (no shell interpretation). "
-            "Safe from shell injection, sandboxed. "
-            "For pipes/redirects/heredocs, use run_argv(['sh', '-c', 'your command'])."
+            "Run command as argv list — no shell interpretation, sandboxed. "
+            "Pipes/redirects: ['sh','-c','cmd']. "
+            "Network blocked by default; network=true for curl/fetch."
         ),
         "parameters": {
             "type": "object",

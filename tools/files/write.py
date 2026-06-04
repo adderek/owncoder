@@ -8,7 +8,7 @@ from .paths import _resolve, _working_dir, _undo_stack
 @register(
     "write_file",
     {
-        "description": "Write content to a file. Creates parent dirs if needed. Use only for new files — prefer edit_file for modifying existing files.",
+        "description": "Write new file (creates parent dirs). New files only — use edit_file to modify existing.",
         "parameters": {
             "type": "object",
             "properties": {

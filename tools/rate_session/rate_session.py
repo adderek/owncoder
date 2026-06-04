@@ -42,12 +42,9 @@ def _get_store():
     "rate_session",
     {
         "description": (
-            "Record a quality outcome for the current session. "
-            "Call this when a significant task completes successfully (outcome='good'), "
-            "fails or gets stuck (outcome='bad'), or produces partial results (outcome='ok'). "
-            "Ratings improve future session retrieval: similar successful sessions are "
-            "injected as context at the start of related tasks. "
-            "voter defaults to 'agent'; use voter='user' only when relaying explicit user feedback."
+            "Record session outcome. Call on task complete: 'good'|'bad'|'ok'. "
+            "Good sessions get injected as context in future related tasks. "
+            "voter='agent' default; 'user' only when relaying explicit user feedback."
         ),
         "parameters": {
             "type": "object",

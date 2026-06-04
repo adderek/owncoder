@@ -40,10 +40,9 @@ def _get_loader():
     "search_skills",
     {
         "description": (
-            "Search available skills by name or description. "
-            "Skills are reusable instruction sets (markdown files) that can be loaded on demand. "
-            "Project-local skills in .agent/skills/ override bundled ones. "
-            "Pass empty query to list all available skills."
+            "Search skills by name or description. "
+            "Skills are reusable instruction sets loaded on demand. "
+            "Project skills (.agent/skills/) override bundled. Empty query = list all."
         ),
         "parameters": {
             "type": "object",
@@ -83,11 +82,7 @@ def search_skills(query: str = "") -> dict[str, Any]:
 @register(
     "load_skill",
     {
-        "description": (
-            "Load the full content of a skill by name. "
-            "Returns the skill's instruction text so you can apply it. "
-            "Project-local skills (.agent/skills/) override bundled ones."
-        ),
+        "description": "Load skill instruction text by name. Project skills (.agent/skills/) override bundled.",
         "parameters": {
             "type": "object",
             "properties": {

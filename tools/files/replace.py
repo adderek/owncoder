@@ -91,16 +91,16 @@ def replace_text(path: str, search_block: str, replace_block: str, match_index: 
     "replace_symbol",
     {
         "description": (
-            "Replace the full source of a top-level or nested Python function/class by name. "
-            "Immune to whitespace drift and duplicate text elsewhere in the file. "
-            "Use dotted names for nested symbols (e.g. 'MyClass.method'). Python files only."
+            "Replace full source of a Python function/class by name. "
+            "Immune to whitespace drift and duplicate text. "
+            "Dotted names for nested symbols ('MyClass.method'). Python only."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "Python file path"},
                 "symbol": {"type": "string", "description": "Symbol name, dotted for nesting (e.g. 'Foo.bar')"},
-                "new_source": {"type": "string", "description": "Full replacement source for the symbol, including def/class line. Will be re-indented to match the original."},
+                "new_source": {"type": "string", "description": "Full replacement including def/class line. Auto re-indented."},
             },
             "required": ["path", "symbol", "new_source"],
         },

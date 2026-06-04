@@ -22,32 +22,24 @@ def setup(qa_logger) -> None:
     "recall_history",
     {
         "description": (
-            "Read raw user messages (and optionally agent responses) from this "
-            "session's on-disk Q/A log. Use when you suspect the current session "
-            "summary has drifted from the user's original intent, or when you need "
-            "to verify verbatim wording of earlier requests. Works even after "
-            "multiple compaction rounds because Q/A files are never compacted."
+            "Read verbatim user messages from Q/A log. "
+            "Use when session summary may have drifted or to verify exact earlier wording. "
+            "Never compacted. For derived facts/decisions use recall_facts."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "turns": {
                     "type": "integer",
-                    "description": (
-                        "Number of most-recent turns to retrieve. Use 0 or omit "
-                        "for all turns. Default 5."
-                    ),
+                    "description": "Most-recent turns to retrieve (0=all, default 5).",
                 },
                 "from_turn": {
                     "type": "integer",
-                    "description": "If set, only return turns >= this turn_id.",
+                    "description": "Return only turns >= this turn_id.",
                 },
                 "include_responses": {
                     "type": "boolean",
-                    "description": (
-                        "Include agent responses (A side). Default false — "
-                        "user messages only."
-                    ),
+                    "description": "Include agent responses (default: false).",
                 },
             },
             "required": [],
