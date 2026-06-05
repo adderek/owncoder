@@ -311,6 +311,7 @@ class ParallelConfig:
     groups: dict = field(default_factory=dict)
     # "readonly" = read_file/search_code/list_files/grep/recall only.
     # "all" = full tool set minus spawn_agents.
+    # "internet" = web_search/web_fetch only (for dedicated internet fetch workers).
     worker_tools: str = "readonly"
     worker_timeout_seconds: int = 120
 
@@ -388,6 +389,9 @@ class WebSearchConfig:
     user_agent: str = "owncoder-agent/1.0"
     max_response_bytes: int = 1_048_576   # 1 MB
     max_result_chars: int = 32_768        # 32 KB per result
+    # When True: web_search/web_fetch stripped from main agent; only available in
+    # internet worker subagents (spawn_agents with worker_tools="internet").
+    require_worker: bool = False
     # Injection patterns: map of pattern string → action.
     # Actions: "filter" (prefix [FILTERED]), "escape" (backslash-escape).
     injection_patterns: dict = field(default_factory=lambda: {

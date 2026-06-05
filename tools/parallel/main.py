@@ -58,6 +58,9 @@ _READONLY_TOOLS = frozenset({
     "git_diff",
 })
 
+# Tools available in "internet" worker mode — fetch-only, no fs access.
+_INTERNET_TOOLS = frozenset({"web_search", "web_fetch"})
+
 # Tool always stripped from workers regardless of worker_tools setting.
 _WORKER_EXCLUDED = frozenset({"spawn_agents"})
 
@@ -122,6 +125,10 @@ async def _run_worker(
     from openai import AsyncOpenAI
     from agent.core.turn import run_turn
     from agent.core.prompts import _build_system_prompt
+    from agent.security.query_gate import make_worker_limiter
+
+    # Isolate rate limit counters so concurrent workers don't share state.
+    make_worker_limiter()
 
     try:
         wcfg = _worker_config(config, model_name)
@@ -258,6 +265,10 @@ async def spawn_agents(tasks: list[dict]) -> str:
         from agent.tools import get_schemas
         all_names = {s["function"]["name"] for s in get_schemas()}
         excluded |= (all_names - _READONLY_TOOLS)
+    elif worker_tools_mode == "internet":
+        from agent.tools import get_schemas
+        all_names = {s["function"]["name"] for s in get_schemas()}
+        excluded |= (all_names - _INTERNET_TOOLS)
 
     # Build per-group semaphores and model->group mapping.
     group_sems, model_to_group = _build_group_semaphores(_config)

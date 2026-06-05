@@ -6,6 +6,7 @@ Unicode normalization, audit logging. Deny-closed: any failure rejects.
 from __future__ import annotations
 
 import concurrent.futures
+import contextvars
 import ipaddress
 import json
 import os
@@ -13,6 +14,7 @@ import re
 import socket
 import time
 import unicodedata
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -52,10 +54,39 @@ _BLOCKED_NETWORKS = [
 _BLOCKED_SCHEMES = {"file", "ftp", "gopher", "dict", "data", "javascript", "vbscript"}
 
 # ── Rate limiting ───────────────────────────────────────────────────────
-_search_count = 0
-_fetch_count = 0
-_last_call_ts = 0.0
 _COOLDOWN_S = 1.0
+
+
+@dataclass
+class _RateLimiter:
+    search_count: int = 0
+    fetch_count: int = 0
+    last_call_ts: float = 0.0
+
+
+# Main agent limiter (module-level, reset between turns).
+_main_limiter = _RateLimiter()
+
+# Per-worker contextvar: each asyncio Task gets its own copy via make_worker_limiter().
+_worker_limiter_var: contextvars.ContextVar[_RateLimiter | None] = contextvars.ContextVar(
+    "_worker_limiter", default=None
+)
+
+
+def _get_limiter() -> _RateLimiter:
+    lim = _worker_limiter_var.get(None)
+    return lim if lim is not None else _main_limiter
+
+
+def make_worker_limiter() -> _RateLimiter:
+    """Create an isolated rate limiter for the current asyncio task (worker).
+
+    Must be called inside the worker coroutine so the ContextVar write stays
+    scoped to that task's context copy.
+    """
+    lim = _RateLimiter()
+    _worker_limiter_var.set(lim)
+    return lim
 
 # ── Unicode ──────────────────────────────────────────────────────────────
 _ZERO_WIDTH = re.compile("[​-‏‪-‮⁠-⁤﻿]")
@@ -162,34 +193,33 @@ def _sanitize_unicode(text: str) -> str:
 
 def _check_rate_limit(is_fetch: bool = False) -> str | None:
     """Return error if rate limit exceeded, None if allowed."""
-    global _search_count, _fetch_count, _last_call_ts
     max_search = _config.web_search.max_search_calls_per_turn if _config else 3
     max_fetch = _config.web_search.max_fetch_calls_per_turn if _config else 5
 
+    lim = _get_limiter()
     now = time.monotonic()
-    elapsed = now - _last_call_ts
+    elapsed = now - lim.last_call_ts
     if elapsed < _COOLDOWN_S:
         return f"Rate limit: minimum {_COOLDOWN_S}s between calls ({elapsed:.1f}s elapsed)"
 
     if is_fetch:
-        _fetch_count += 1
-        if _fetch_count > max_fetch:
+        lim.fetch_count += 1
+        if lim.fetch_count > max_fetch:
             return f"Rate limit: max {max_fetch} fetch calls per turn"
     else:
-        _search_count += 1
-        if _search_count > max_search:
+        lim.search_count += 1
+        if lim.search_count > max_search:
             return f"Rate limit: max {max_search} search calls per turn"
 
-    _last_call_ts = now
+    lim.last_call_ts = now
     return None
 
 
 def reset_rate_limits() -> None:
-    """Reset per-turn counters (call at start of each agent turn)."""
-    global _search_count, _fetch_count, _last_call_ts
-    _search_count = 0
-    _fetch_count = 0
-    _last_call_ts = 0.0
+    """Reset per-turn counters for the main agent (call at start of each turn)."""
+    _main_limiter.search_count = 0
+    _main_limiter.fetch_count = 0
+    _main_limiter.last_call_ts = 0.0
 
 
 def gate_query(query: str, session_id: str = "") -> str | dict:

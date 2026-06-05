@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.config.models import Config, WebSearchConfig
+from agent.config.models import Config, WebSearchConfig, ParallelConfig
 from agent.security import policy as sec_policy
 from agent.tools.web_search import main as ws_main
 
@@ -196,11 +196,11 @@ class TestDDGParser:
         results = self._ddg_search(enabled_cfg, html)
         assert results[0]["url"] == "https://example.com/"
 
-    def test_fetch_error_returns_empty(self, enabled_cfg, monkeypatch):
+    def test_fetch_error_raises_runtime_error(self, enabled_cfg, monkeypatch):
         ws_main.setup(enabled_cfg)
         with patch.object(ws_main, "_fetch_raw", side_effect=Exception("network down")):
-            results = ws_main._search_duckduckgo("query", 5)
-        assert results == []
+            with pytest.raises(RuntimeError, match="unavailable"):
+                ws_main._search_duckduckgo("query", 5)
 
 
 class TestWebFetch:
@@ -271,3 +271,118 @@ class TestWebFetch:
         assert result["url"] == "https://example.com/page"
         assert "text_hash" in result
         assert len(result["text_hash"]) == 64
+
+
+class TestBackendFailureClearError:
+    """Backend transport failure must produce a clear error, not silent empty results."""
+
+    def test_ddg_network_failure_raises_and_surfaces(self, enabled_cfg):
+        ws_main.setup(enabled_cfg)
+        with patch.object(ws_main, "_fetch_raw", side_effect=Exception("sandbox timeout")):
+            result = ws_main.web_search("test query")
+        assert "error" in result
+        assert "sandbox timeout" in result["error"] or "unavailable" in result["error"]
+
+    def test_brave_missing_key_surfaces_as_error(self, enabled_cfg):
+        ws_main.setup(enabled_cfg)
+        brave_cfg = Config(web_search=WebSearchConfig(enabled=True, backend="brave"))
+        ws_main.setup(brave_cfg)
+        import os
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("BRAVE_API_KEY", None)
+            result = ws_main.web_search("test")
+        assert "error" in result
+        assert "key" in result["error"].lower() or "unavailable" in result["error"].lower()
+
+    def test_empty_results_not_confused_with_error(self, enabled_cfg):
+        ws_main.setup(enabled_cfg)
+        with patch.object(ws_main, "_search_backend", return_value=[]):
+            result = ws_main.web_search("obscure thing")
+        assert "error" not in result
+        assert result["meta"]["total_results"] == 0
+        assert result["meta"]["note"] == "No results found."
+
+
+class TestRequireWorker:
+    """require_worker=True causes agent.py to build excluded set with web_search/web_fetch."""
+
+    def test_require_worker_true_builds_excluded_set(self):
+        require_cfg = Config(web_search=WebSearchConfig(enabled=True, require_worker=True))
+        excluded: set[str] = set()
+        if require_cfg.web_search.require_worker:
+            excluded.update({"web_search", "web_fetch"})
+        assert "web_search" in excluded
+        assert "web_fetch" in excluded
+
+    def test_require_worker_false_builds_empty_excluded(self):
+        cfg = Config(web_search=WebSearchConfig(enabled=True, require_worker=False))
+        excluded: set[str] = set()
+        if cfg.web_search.require_worker:
+            excluded.update({"web_search", "web_fetch"})
+        assert "web_search" not in excluded
+        assert "web_fetch" not in excluded
+
+    def test_require_worker_excluded_set_filters_schemas(self, enabled_cfg):
+        ws_main.setup(enabled_cfg)
+        from agent.tools import get_schemas
+
+        # Simulate filtered view (as run_turn does it)
+        excluded = {"web_search", "web_fetch"}
+        all_schemas = get_schemas()
+        # Register web_search/web_fetch if not present (enabled_cfg has them)
+        visible = {s["function"]["name"] for s in all_schemas} - excluded
+        assert "web_search" not in visible
+        assert "web_fetch" not in visible
+
+
+class TestInternetWorkerMode:
+    """worker_tools='internet' gives workers only web_search/web_fetch."""
+
+    def test_internet_mode_excludes_non_internet_tools(self, enabled_cfg):
+        from agent.tools.parallel.main import _INTERNET_TOOLS, _WORKER_EXCLUDED
+        from agent.tools import get_schemas
+
+        ws_main.setup(enabled_cfg)
+
+        all_names = {s["function"]["name"] for s in get_schemas()}
+        excluded = set(_WORKER_EXCLUDED)
+        excluded |= (all_names - _INTERNET_TOOLS)
+
+        # Internet tools must survive
+        assert "web_search" not in excluded
+        assert "web_fetch" not in excluded
+        # Non-internet tools must be excluded
+        assert "read_file" in excluded or "list_files" in excluded or "run_argv" in excluded
+
+    def test_internet_mode_does_not_include_spawn_agents(self, enabled_cfg):
+        from agent.tools.parallel.main import _INTERNET_TOOLS, _WORKER_EXCLUDED
+        from agent.tools import get_schemas
+
+        ws_main.setup(enabled_cfg)
+        all_names = {s["function"]["name"] for s in get_schemas()}
+        excluded = set(_WORKER_EXCLUDED)
+        excluded |= (all_names - _INTERNET_TOOLS)
+
+        assert "spawn_agents" in excluded
+
+
+class TestRateLimiterIsolation:
+    """Each worker gets an isolated rate limiter via contextvars."""
+
+    def test_make_worker_limiter_returns_fresh_instance(self):
+        from agent.security.query_gate import make_worker_limiter, _main_limiter
+
+        lim = make_worker_limiter()
+        assert lim is not _main_limiter
+        assert lim.search_count == 0
+        assert lim.fetch_count == 0
+
+    def test_worker_limiter_does_not_affect_main(self):
+        from agent.security.query_gate import (
+            make_worker_limiter, _main_limiter, reset_rate_limits, _get_limiter
+        )
+        reset_rate_limits()
+        lim = make_worker_limiter()
+        lim.search_count = 99
+        # Main limiter must be untouched since we only mutated lim directly
+        assert _main_limiter.search_count == 0

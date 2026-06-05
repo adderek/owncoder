@@ -41,6 +41,7 @@ async def run(
     project_memory_store=None,
     session_id: str | None = None,
     stop_event: asyncio.Event | None = None,
+    excluded_tools: set[str] | None = None,
 ) -> None:
     """Run one agent turn; emit result events via `send` (sync callable).
 
@@ -108,6 +109,7 @@ async def run(
             project_memory_store=project_memory_store,
             session_id=session_id,
             stop_event=stop_event,
+            excluded_tools=excluded_tools,
         )
         send(TurnDoneEvent(response=response, messages=updated_messages))
     except Exception as exc:

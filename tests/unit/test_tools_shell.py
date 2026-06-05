@@ -10,7 +10,7 @@ from agent.tools.shell import (
     setup as shell_setup,
     ToolDisabledError,
 )
-from agent.tools.shell.main import get_transcript
+from agent.tools.shell.main import get_transcript, run_argv
 
 
 @pytest.fixture(autouse=True)
@@ -111,6 +111,40 @@ class TestTruncateStream:
         assert "truncated" in text
         assert text.startswith("A")
         assert text.endswith("A")
+
+
+class TestRunArgvNetworkGuard:
+    """run_argv(network=True) must be blocked when security.network != 'on'."""
+
+    def test_network_true_blocked_when_security_network_off(self, tmp_path):
+        cfg = Config()
+        cfg.tools.working_dir = str(tmp_path)
+        cfg.tools.allow_shell = True
+        cfg.security.network = "off"
+        shell_setup(cfg)
+        result = run_argv(["curl", "https://example.com"], network=True)
+        assert "error" in result
+        assert "network=true blocked" in result["error"]
+
+    def test_network_false_not_blocked_by_policy(self, tmp_path):
+        cfg = Config()
+        cfg.tools.working_dir = str(tmp_path)
+        cfg.tools.allow_shell = True
+        cfg.security.network = "off"
+        shell_setup(cfg)
+        # network=False is the default — guard must not fire
+        result = run_argv(["echo", "hello"], network=False)
+        assert "network=true blocked" not in result.get("error", "")
+
+    def test_network_true_allowed_when_security_network_on(self, tmp_path):
+        cfg = Config()
+        cfg.tools.working_dir = str(tmp_path)
+        cfg.tools.allow_shell = True
+        cfg.security.network = "on"
+        shell_setup(cfg)
+        result = run_argv(["echo", "hello"], network=True)
+        # Guard must not reject — downstream may fail for other reasons but not the guard
+        assert "network=true blocked" not in result.get("error", "")
 
     def test_run_command_stdout_truncation(self, tmp_path):
         cfg = Config()

@@ -284,6 +284,15 @@ def run_argv(argv: list[str], cwd: str | None = None, timeout: int | None = None
         raise ToolDisabledError("Shell commands are disabled (tools.allow_shell = false)")
     if not argv:
         return {"error": "argv must be non-empty"}
+    if network and _config is not None and _config.security.network != "on":
+        return {
+            "error": (
+                "run_argv: network=true blocked — security.network is not 'on'. "
+                "Use web_search/web_fetch for internet access, or set "
+                "security.network='on' in agent.toml."
+            ),
+            "argv": argv,
+        }
     rules = get_rules()
     # Re-use existing rule checks against the joined representation.
     joined = " ".join(shlex.quote(a) for a in argv)

@@ -92,7 +92,7 @@ def _search_duckduckgo(query: str, num_results: int) -> list[dict]:
         raw, _ = _fetch_raw(url, {"User-Agent": ws_cfg.user_agent}, ws_cfg.timeout_total_s, ws_cfg.execution_mode)
     except Exception as e:
         logger.warning("DuckDuckGo search failed: %s", e)
-        return []
+        raise RuntimeError(f"DuckDuckGo backend unavailable: {e}") from e
 
     proc = content_processor.process(raw, content_type="text/html")
     if proc.get("binary_rejected") or proc.get("error"):
@@ -189,7 +189,7 @@ def _search_brave(query: str, num_results: int) -> list[dict]:
         brave_key = os.environ.get("BRAVE_API_KEY", "")
 
     if not brave_key:
-        return [{"error": "Brave Search API key not configured. Set BRAVE_API_KEY env var or configure a model entry with 'brave' tag."}]
+        raise RuntimeError("Brave Search API key not configured. Set BRAVE_API_KEY env var or configure a model entry with 'brave' tag.")
 
     url = "https://api.search.brave.com/res/v1/web/search"
     params = {"q": query, "count": min(num_results, 20)}
@@ -207,7 +207,7 @@ def _search_brave(query: str, num_results: int) -> list[dict]:
         data = _json.loads(raw)
     except Exception as e:
         logger.warning("Brave search failed: %s", e)
-        return [{"error": f"Brave search failed: {e}"}]
+        raise RuntimeError(f"Brave backend unavailable: {e}") from e
 
     results = []
     web_results = data.get("web", {}).get("results", [])
@@ -267,7 +267,10 @@ def web_search(query: str, num_results: int = 5) -> dict:
         return gated
 
     # Backend search
-    results = _search_backend(gated, num_results)
+    try:
+        results = _search_backend(gated, num_results)
+    except RuntimeError as e:
+        return {"error": str(e), "query": query}
 
     if not results:
         return {
@@ -276,7 +279,7 @@ def web_search(query: str, num_results: int = 5) -> dict:
                 "query": query,
                 "total_results": 0,
                 "query_hash": _sha256(query),
-                "note": "No results found or search backend unavailable.",
+                "note": "No results found.",
             },
         }
 

@@ -591,6 +591,9 @@ class Agent:
         if on_user_message is not None:
             on_user_message()
         _run_turn_fn = run_turn if not self.config.parallel.enabled else run_turn_ipc
+        _excluded: set[str] = set()
+        if getattr(self.config.web_search, "require_worker", False):
+            _excluded.update({"web_search", "web_fetch"})
         try:
             response, self.messages = await _run_turn_fn(
                 self.messages,
@@ -612,6 +615,7 @@ class Agent:
                 project_memory_store=self._project_memory_store,
                 session_id=self._session_id,
                 stop_event=stop_event,
+                excluded_tools=_excluded or None,
             )
         except BaseException:
             # Roll back the user message so the next turn doesn't start with
