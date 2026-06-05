@@ -18,6 +18,7 @@ from .history_ops import (
     _apply_code_from_history,
 )
 from .loop_detector import LoopDetector
+from .confidence import ConfidenceMonitor
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
@@ -57,6 +58,7 @@ async def run_turn(
     on_usage=None,
     on_progress=None,
     on_loop_detected=None,
+    on_blind_detected=None,
     on_phase=None,
     on_reasoning=None,
     on_context_size=None,
@@ -122,6 +124,17 @@ async def run_turn(
             window=int(getattr(loop_cfg, "window", 10)),
             threshold=int(getattr(loop_cfg, "repeat_threshold", 3)),
             per_tool_threshold=getattr(loop_cfg, "per_tool_threshold", None),
+        )
+    conf_cfg = getattr(config, "confidence_guard", None)
+    confidence_monitor: ConfidenceMonitor | None = None
+    if conf_cfg is not None and getattr(conf_cfg, "enabled", True):
+        confidence_monitor = ConfidenceMonitor(
+            window=int(getattr(conf_cfg, "window", 8)),
+            error_rate_threshold=float(getattr(conf_cfg, "error_rate_threshold", 0.6)),
+            null_rate_threshold=float(getattr(conf_cfg, "null_rate_threshold", 0.6)),
+            dup_rate_threshold=float(getattr(conf_cfg, "dup_rate_threshold", 0.5)),
+            score_threshold=float(getattr(conf_cfg, "score_threshold", 0.35)),
+            inject_cooldown=int(getattr(conf_cfg, "inject_cooldown", 3)),
         )
     if on_progress is not None:
         try:
@@ -488,6 +501,8 @@ async def run_turn(
                     prompt_compiler.record_call(ok, config)
                 except Exception:
                     logger.exception("prompt_compiler.record_call failed")
+                if confidence_monitor is not None:
+                    confidence_monitor.observe_result(result, is_error=not ok)
                 if on_tool_result is not None:
                     try:
                         on_tool_result(tc.function.name, ok)
@@ -552,6 +567,38 @@ async def run_turn(
                 note = f"[iteration limit {max_iter} reached — type 'continue' to keep going]"
                 messages = messages + [{"role": "assistant", "content": note}]
                 return "".join(content_parts + [note]), messages
+            if confidence_monitor is not None:
+                confidence_monitor.tick_iter()
+                conf_sig = confidence_monitor.should_intervene()
+                if conf_sig.triggered:
+                    logger.warning(
+                        "confidence_guard: non-convergence score=%.2f err=%.0f%% null=%.0f%% dup=%.0f%%",
+                        conf_sig.score, conf_sig.error_rate * 100,
+                        conf_sig.null_rate * 100, conf_sig.dup_rate * 100,
+                    )
+                    _phase("confidence_guard", f"score={conf_sig.score:.2f}")
+                    if on_blind_detected is not None:
+                        try:
+                            result_cb = on_blind_detected(conf_sig)
+                            if asyncio.iscoroutine(result_cb):
+                                result_cb = await result_cb
+                        except Exception:
+                            logger.exception("on_blind_detected callback failed")
+                    if side_log is not None:
+                        try:
+                            side_log.append("confidence_guard.jsonl", {
+                                "turn": turn_index,
+                                "iter": iter_count,
+                                "score": conf_sig.score,
+                                "error_rate": conf_sig.error_rate,
+                                "null_rate": conf_sig.null_rate,
+                                "dup_rate": conf_sig.dup_rate,
+                            })
+                        except Exception as _e:
+                            logger.warning("side_log append failed (confidence_guard): %s", _e)
+                    intervention = ConfidenceMonitor.intervention_message(conf_sig)
+                    messages = messages + [{"role": "user", "content": intervention, "_confidence_guard": True}]
+                    confidence_monitor.acknowledge()
             continue
 
         content = msg.content or ""

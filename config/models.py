@@ -167,6 +167,22 @@ class LoopGuardConfig:
 
 
 @dataclass
+class ConfidenceGuardConfig:
+    """Behavioral non-convergence detector.
+
+    Fires when tool calls consistently fail, return null, or repeat identical
+    results — indicating the model is circling blind without self-awareness.
+    """
+    enabled: bool = True
+    window: int = 8                    # sliding window of tool call results
+    error_rate_threshold: float = 0.6  # trigger if >N fraction are errors
+    null_rate_threshold: float = 0.6   # trigger if >N fraction are null/empty
+    dup_rate_threshold: float = 0.5    # trigger if >N fraction are duplicate results
+    score_threshold: float = 0.35      # composite score below which intervention fires
+    inject_cooldown: int = 3           # min tool-call iters between injections
+
+
+@dataclass
 class LogsConfig:
     """Logging configuration."""
     level: str = "DEBUG"
@@ -466,6 +482,7 @@ class Config:
     asm: AsmAnalysisConfig = field(default_factory=AsmAnalysisConfig)
     logs: LogsConfig = field(default_factory=LogsConfig)
     loop_guard: LoopGuardConfig = field(default_factory=LoopGuardConfig)
+    confidence_guard: ConfidenceGuardConfig = field(default_factory=ConfidenceGuardConfig)
     compile_prompts: CompilePromptsConfig = field(default_factory=CompilePromptsConfig)
     token_limits: TokenLimitsConfig = field(default_factory=TokenLimitsConfig)
     tool_compaction: ToolCompactionConfig = field(default_factory=ToolCompactionConfig)

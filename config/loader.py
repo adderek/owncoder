@@ -88,6 +88,13 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_WEB_SEARCH_ENABLED": ("web_search", "enabled"),
         "AGENT_WEB_SEARCH_BACKEND": ("web_search", "backend"),
         "AGENT_AUTONOMY": ("agent", "autonomy"),
+        "AGENT_CONFIDENCE_GUARD_ENABLED": ("confidence_guard", "enabled"),
+        "AGENT_CONFIDENCE_GUARD_WINDOW": ("confidence_guard", "window"),
+        "AGENT_CONFIDENCE_GUARD_ERROR_THRESHOLD": ("confidence_guard", "error_rate_threshold"),
+        "AGENT_CONFIDENCE_GUARD_NULL_THRESHOLD": ("confidence_guard", "null_rate_threshold"),
+        "AGENT_CONFIDENCE_GUARD_DUP_THRESHOLD": ("confidence_guard", "dup_rate_threshold"),
+        "AGENT_CONFIDENCE_GUARD_SCORE_THRESHOLD": ("confidence_guard", "score_threshold"),
+        "AGENT_CONFIDENCE_GUARD_COOLDOWN": ("confidence_guard", "inject_cooldown"),
     }
     for env_key, (section, attr) in env_map.items():
         val = os.environ.get(env_key)
@@ -145,6 +152,7 @@ def _merge(config: Config, data: dict) -> None:
         ("asm_analysis", config.asm),
         ("logs", config.logs),
         ("loop_guard", config.loop_guard),
+        ("confidence_guard", config.confidence_guard),
         ("compile_prompts", config.compile_prompts),
         ("token_limits", config.token_limits),
         ("tool_compaction", config.tool_compaction),
