@@ -128,9 +128,31 @@ class Agent:
         base_rules = load_base_rules()
         if base_rules:
             base_rules = _prompt_compiler.load("base_rules.txt", base_rules, config)
+
+        # Project-level MemoryStore — init early so it can be shared with rules injection.
+        try:
+            from pathlib import Path
+            from agent.memory.store import MemoryStore
+            _agent_dir = Path(config.tools.working_dir) / config.tools.agent_dir
+            self._project_memory_store = MemoryStore(_agent_dir / "memory.db")
+        except Exception:
+            self._project_memory_store = None
+
         self.messages = []
         if base_rules:
             self.messages.append({"role": "system", "content": base_rules, HARD_RULES_MARKER: True})
+
+        # Inject learned behavioral rules from past sessions.
+        try:
+            from agent.memory.rules_loader import load_behavioral_rules
+            hard_rules, soft_rules = load_behavioral_rules(config, store=self._project_memory_store)
+            if hard_rules:
+                self.messages.append({"role": "system", "content": hard_rules, HARD_RULES_MARKER: True})
+            if soft_rules:
+                self.messages.append({"role": "system", "content": soft_rules})
+        except Exception:
+            pass
+
         self.messages.append({"role": "system", "content": system_content})
         if project_doc:
             self.messages.append({"role": "system", "content": project_doc})
@@ -152,15 +174,6 @@ class Agent:
             notes_ctx = load_notes_context(config)
             if notes_ctx:
                 self.messages.append({"role": "system", "content": notes_ctx, "_notes_marker": True})
-
-        # Project-level MemoryStore for cross-session session-summary indexing.
-        try:
-            from pathlib import Path
-            from agent.memory.store import MemoryStore
-            _agent_dir = Path(config.tools.working_dir) / config.tools.agent_dir
-            self._project_memory_store = MemoryStore(_agent_dir / "memory.db")
-        except Exception:
-            self._project_memory_store = None
 
     def set_session_id(self, session_id: str) -> None:
         from agent.memory.qa_log import QALogger

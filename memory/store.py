@@ -81,6 +81,12 @@ class MemoryStore:
             );
         """)
         self._conn().commit()
+        # Migration: add hit_count if missing (SQLite doesn't support IF NOT EXISTS for columns).
+        try:
+            self._conn().execute("ALTER TABLE entries ADD COLUMN hit_count INTEGER DEFAULT 0")
+            self._conn().commit()
+        except Exception:
+            pass
 
     # ── vec table ───────────────────────────────────────────────────────────
 
@@ -359,6 +365,14 @@ class MemoryStore:
 
         combined.sort(key=lambda x: x[0], reverse=True)
         return [{"combined_score": s, **d} for s, d in combined[:top_k]]
+
+    def increment_hit_count(self, entry_id: str) -> None:
+        conn = self._conn()
+        conn.execute(
+            "UPDATE entries SET hit_count = COALESCE(hit_count, 0) + 1, updated_at = ? WHERE id = ?",
+            (time.time(), entry_id),
+        )
+        conn.commit()
 
     def close(self) -> None:
         if hasattr(self._local, "conn"):

@@ -368,6 +368,18 @@ def cmd_chat(args, config):
             )
         except Exception:
             pass
+        try:
+            from agent.memory.reflector import reflect_session
+            reflect_session(
+                session_id=session.id,
+                config=config,
+                facts_store=getattr(agent, "_facts_store", None),
+                embedder=embedder,
+                store=getattr(agent, "_project_memory_store", None),
+            )
+        except Exception:
+            logger.debug("reflect_session teardown failed", exc_info=True)
+            pass
         if _bg_thread and _bg_thread.is_alive():
             _bg_thread.join(timeout=5)
         if _bg_result.get("error"):
