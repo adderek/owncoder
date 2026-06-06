@@ -196,12 +196,14 @@ class EventHandlerMixin:
         self._agent_running = False
         self.query_one("#input-bar", self._wt.PromptInput).focus()
         if getattr(self, "_terminal_title", "auto") != "off":
+            icon = getattr(self, "_title_icon", "🌟")
+            suffix = self._session_title_suffix() if hasattr(self, "_session_title_suffix") else ""
             if event.state == WorkerState.ERROR:
-                self.title = "agent — error, waiting for input"
+                self.title = f"{icon} agent — error, waiting for input{suffix}"
             elif event.state == WorkerState.SUCCESS:
-                self.title = "agent — waiting for input"
+                self.title = f"{icon} agent — waiting for input{suffix}"
             else:
-                self.title = "agent — cancelled"
+                self.title = f"{icon} agent — cancelled{suffix}"
         if event.state in (WorkerState.SUCCESS, WorkerState.ERROR):
             if getattr(self, "_bell_on_input_request", True):
                 self.bell()

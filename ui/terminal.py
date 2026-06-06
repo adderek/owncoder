@@ -32,11 +32,23 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
     import os
     import re
     import sys
-    session_name = f'{session.id} {session.description}' if session else 'No Session'
+    _ui_cfg_pre = server.get_ui_config()
+    _pre_icon = _ui_cfg_pre.get("terminal_title_icon", "🌟")
+    _pre_sess_mode = _ui_cfg_pre.get("terminal_title_session", "name")
+    if session and _pre_sess_mode != "off":
+        if _pre_sess_mode == "name":
+            _pre_sess = session.short_name or session.id
+        elif _pre_sess_mode == "id":
+            _pre_sess = session.id
+        else:
+            _pre_sess = f"{session.short_name} ({session.id})" if session.short_name else session.id
+        _pre_title = f"{_pre_icon} agent — waiting for input [{_pre_sess}]"
+    else:
+        _pre_title = f"{_pre_icon} agent — waiting for input"
     # Strip control characters to prevent terminal escape injection, then write
     # the OSC title sequence directly — avoids shell injection via os.system.
-    _safe_name = re.sub(r'[\x00-\x1f\x7f]', '', session_name)
-    sys.stdout.write(f'\033]0;\U0001f31f {_safe_name}\007')
+    _safe_title = re.sub(r'[\x00-\x1f\x7f]', '', _pre_title)
+    sys.stdout.write(f'\033]0;{_safe_title}\007')
     sys.stdout.flush()
 
     from textual.app import App, ComposeResult
@@ -162,6 +174,8 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             self._rating_prompted: bool = False
             self._bell_on_input_request: bool = ui_cfg.get("bell_on_input_request", True)
             self._terminal_title: str = ui_cfg.get("terminal_title", "auto")
+            self._title_session_mode: str = ui_cfg.get("terminal_title_session", "name")
+            self._title_icon: str = ui_cfg.get("terminal_title_icon", "🌟")
             self._round_summary_enabled = ui_cfg["round_summary"]
             try:
                 from agent.ui.prefs import load_prefs
@@ -251,6 +265,9 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                 pass
 
         def on_mount(self) -> None:
+            if self._terminal_title != "off":
+                icon = getattr(self, "_title_icon", "🌟")
+                self.title = f"{icon} agent — waiting for input{self._session_title_suffix()}"
             self.query_one("#input-bar", PromptInput).focus()
             self.call_later(self._refresh_git)
             self.call_later(self._refresh_token_bar)
@@ -475,11 +492,25 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
 
         _TITLE_SPINNERS = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
+        def _session_title_suffix(self) -> str:
+            mode = getattr(self, "_title_session_mode", "name")
+            if mode == "off" or not self._session:
+                return ""
+            s = self._session
+            if mode == "name":
+                part = s.short_name or s.id
+            elif mode == "id":
+                part = s.id
+            else:  # "both"
+                part = f"{s.short_name} ({s.id})" if s.short_name else s.id
+            return f" [{part}]"
+
         def _tick_title_spinner(self) -> None:
             s = self._TITLE_SPINNERS[self._title_spinner_idx % len(self._TITLE_SPINNERS)]
             self._title_spinner_idx += 1
             label = self._title_task_label or "working"
-            self.title = f"{s} agent — {label}"
+            icon = getattr(self, "_title_icon", "🌟")
+            self.title = f"{s} {icon} agent — {label}{self._session_title_suffix()}"
 
         def _begin_chat(self, user_text: str) -> None:
             self._hide_rating_bar()

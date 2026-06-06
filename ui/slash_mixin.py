@@ -145,16 +145,20 @@ class SlashHandlerMixin:
         elif cmd == "/sessions":
             from agent.memory.session import list_sessions
             import datetime
-            sessions = list_sessions()
+            sessions = [s for s in list_sessions() if s.get("message_count", 0) > 0]
             if not sessions:
                 self._write_sys(f"[{t.text_dim}]No sessions found.[/{t.text_dim}]")
             for s in sessions:
                 ts_val = s.get("updated_at") or s.get("created_at")
-                ts = (
-                    datetime.datetime.fromtimestamp(ts_val).strftime("%Y-%m-%d %H:%M")
-                    if ts_val
-                    else "?"
-                )
+                try:
+                    if isinstance(ts_val, (int, float)):
+                        ts = datetime.datetime.fromtimestamp(ts_val).strftime("%Y-%m-%d %H:%M")
+                    elif ts_val:
+                        ts = datetime.datetime.fromisoformat(ts_val.replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M")
+                    else:
+                        ts = "?"
+                except Exception:
+                    ts = "?"
                 label = s.get("short_name") or s["id"]
                 name_extra = (
                     f"  [{t.text_dim}]{s['name']}[/{t.text_dim}]" if s.get("name") else ""

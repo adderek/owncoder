@@ -184,15 +184,17 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                 from agent.memory.session import list_sessions
                 import datetime
 
-                for s in list_sessions():
+                for s in [s for s in list_sessions() if s.get("message_count", 0) > 0]:
                     ts_val = s.get("updated_at") or s.get("created_at")
-                    ts = (
-                        datetime.datetime.fromtimestamp(ts_val).strftime(
-                            "%Y-%m-%d %H:%M"
-                        )
-                        if ts_val
-                        else "?"
-                    )
+                    try:
+                        if isinstance(ts_val, (int, float)):
+                            ts = datetime.datetime.fromtimestamp(ts_val).strftime("%Y-%m-%d %H:%M")
+                        elif ts_val:
+                            ts = datetime.datetime.fromisoformat(ts_val.replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M")
+                        else:
+                            ts = "?"
+                    except Exception:
+                        ts = "?"
                     label = s.get("short_name") or s["id"]
                     name_part = (
                         f"  [dim]{s.get('name', '')}[/dim]" if s.get("name") else ""
@@ -417,6 +419,19 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
 
         _bell_enabled = _ui_cfg.get("bell_on_input_request", True)
         _title_mode = _ui_cfg.get("terminal_title", "auto")
+        _title_icon = _ui_cfg.get("terminal_title_icon", "🌟")
+        _title_session_mode = _ui_cfg.get("terminal_title_session", "name")
+
+        def _session_suffix() -> str:
+            if _title_session_mode == "off" or session is None:
+                return ""
+            if _title_session_mode == "name":
+                part = session.short_name or session.id
+            elif _title_session_mode == "id":
+                part = session.id
+            else:
+                part = f"{session.short_name} ({session.id})" if session.short_name else session.id
+            return f" [{part}]"
 
         def _set_term_title(title: str) -> None:
             if _title_mode == "off":
@@ -424,7 +439,7 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
             sys.stdout.write(f"\033]0;{title}\007")
             sys.stdout.flush()
 
-        _set_term_title("agent — working")
+        _set_term_title(f"{_title_icon} agent — working{_session_suffix()}")
 
         verbose = _os.environ.get("AGENT_VERBOSE", "").lower() in ("1", "true", "yes")
 
@@ -551,7 +566,7 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
         except Exception as e:
             logger.error("chat error: %s\n%s", e, traceback.format_exc())
             console.print(f"[{t.error}]Error: {e}[/{t.error}]")
-            _set_term_title("agent — error, waiting for input")
+            _set_term_title(f"{_title_icon} agent — error, waiting for input{_session_suffix()}")
             if _bell_enabled:
                 sys.stdout.write("\007")
                 sys.stdout.flush()
@@ -563,7 +578,7 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
         if session is not None:
             server.save_session(session)
 
-        _set_term_title("agent — waiting for input")
+        _set_term_title(f"{_title_icon} agent — waiting for input{_session_suffix()}")
         if _bell_enabled:
             sys.stdout.write("\007")
             sys.stdout.flush()
