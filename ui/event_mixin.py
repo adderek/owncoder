@@ -83,7 +83,8 @@ class EventHandlerMixin:
                 preview = ", ".join(f"{k}={_pval(v)}" for k, v in list(args.items())[:2])
         except Exception:
             pass
-        label = f"[{t.tool_color}]⚙ {_escape(event.name)}[/{t.tool_color}]"
+        from agent.ui.render import tool_icon as _ti
+        label = f"[{t.tool_color}]{_ti(event.name)} {_escape(event.name)}[/{t.tool_color}]"
         if preview:
             label += f" [dim]({_escape(preview)})[/dim]"
         self.query_one("#context-panel", self._wt.ContextPanel).set_context(label)
@@ -101,6 +102,7 @@ class EventHandlerMixin:
         if not self._last_tool_calls:
             return ""
         seen = list(dict.fromkeys(self._last_tool_calls))
+        from agent.ui.render import tool_icon as _ti
         parts = []
         for name in seen:
             s = self._tool_stats.get(name, {"ok": 0, "err": 0})
@@ -110,8 +112,8 @@ class EventHandlerMixin:
             if s["err"]:
                 counts.append(f"[{t.error}]{s['err']}[/{t.error}]")
             suffix = f" {' '.join(counts)}" if counts else ""
-            parts.append(f"{_escape(name)}{suffix}")
-        return f"[{t.tool_color}]⚙[/{t.tool_color}] " + ", ".join(parts)
+            parts.append(f"[{t.tool_color}]{_ti(name)}[/{t.tool_color}] {_escape(name)}{suffix}")
+        return ", ".join(parts)
 
     def on_iteration_progress_event(self, event) -> None:
         self._iter_done = event.done

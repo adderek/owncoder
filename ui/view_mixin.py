@@ -84,7 +84,8 @@ class ViewMixin:
                 for tc in tool_calls:
                     if isinstance(tc, dict):
                         name = tc.get("function", {}).get("name", "?")
-                        _cw(f"[{t.tool_color}]  ⚙ {name}[/{t.tool_color}]")
+                        from agent.ui.render import tool_icon as _ti
+                        _cw(f"[{t.tool_color}]  {_ti(name)} {name}[/{t.tool_color}]")
                 if content:
                     summary = (a_summaries[a_idx] if a_idx < len(a_summaries) else "") or content
                     _cw(f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] {_escape(_one_line(summary, wrap=False))}")
@@ -167,7 +168,8 @@ class ViewMixin:
         tools = list(dict.fromkeys(self._last_tool_calls))
         action_bits: list[str] = []
         if tools:
-            action_bits.append("⚙ " + ", ".join(tools[:4]))
+            from agent.ui.render import tool_icon as _ti
+            action_bits.append(", ".join(f"{_ti(n)} {n}" for n in tools[:4]))
         if self._modified_files:
             action_bits.append("✎ " + " ".join(self._modified_files[:4]))
         action = " · ".join(action_bits)

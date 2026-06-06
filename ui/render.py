@@ -166,6 +166,74 @@ _OUT_SEGMENT_DESCS: dict[str, str] = {
 }
 
 
+# Per-tool emoji icons. Used by all UI layers (textual + readline).
+# When a tool name is not found, callers fall back to "⚙".
+TOOL_ICONS: dict[str, str] = {
+    # File operations
+    "read_file":            "📖",
+    "list_files":           "📂",
+    "write_file":           "📝",
+    "edit_file":            "✏️",
+    "replace_symbol":       "🔀",
+    "undo_file":            "↩️",
+    # Shell / execution
+    "run_argv":             "▶️",
+    # Git
+    "git_diff":             "±",
+    "git_log":              "📜",
+    "git_blame":            "🕵",
+    "git_status":           "📋",
+    "git_related_files":    "🔗",
+    # Search / code navigation
+    "grep_code":            "🔍",
+    "search_code":          "🔎",
+    "search_archive":       "🗄",
+    # Memory / recall
+    "recall_facts":         "💭",
+    "recall_history":       "📚",
+    "recall_sessions":      "🕐",
+    "save_note":            "📌",
+    # Session
+    "rate_session":         "⭐",
+    "retrieve_output":      "📤",
+    # Web
+    "web_search":           "🌐",
+    "web_fetch":            "🌐",
+    # Indexing
+    "index_code":           "🗂",
+    "project_file_stats":   "📊",
+    "analyze_asm":          "🔬",
+    # Skills / agents
+    "search_skills":        "🛠",
+    "load_skill":           "⚡",
+    "manage_skills":        "🛠",
+    "spawn_agents":         "🤖",
+    # Knowledge base
+    "kb_search":            "🔍",
+    "kb_get":               "📖",
+    "kb_deps":              "🕸",
+    "kb_callers":           "🔗",
+    "kb_add_note":          "📌",
+    "kb_propose_description": "✍",
+    # Ideas
+    "submit_idea":          "💡",
+    # Planning / increment
+    "snapshot_step":        "📸",
+    "complete_step":        "✅",
+    "plan_ready_steps":     "📐",
+    "plan_add_dep":         "🔗",
+    "plan_assign_step":     "👤",
+    "revert_step":          "↩️",
+    "get_step_brief":       "📋",
+    "report_blocking_issue": "🚧",
+}
+
+
+def tool_icon(name: str) -> str:
+    """Return the emoji icon for tool *name*, or '⚙' if none defined."""
+    return TOOL_ICONS.get(name, "⚙")
+
+
 def _mini_bar(fraction: float, color: str, width: int = 20) -> str:
     frac = max(0.0, min(1.0, fraction))
     filled = int(round(frac * width))

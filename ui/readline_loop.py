@@ -478,7 +478,8 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                 reasoning_active[0] = False
             preview = _args_preview(args_str)
             suffix = f"[{t.text_dim}]({_escape(preview)})[/{t.text_dim}]" if preview else ""
-            console.print(f"  [{t.tool_color}]⚙ {_escape(name)}[/{t.tool_color}] {suffix}")
+            from agent.ui.render import tool_icon as _ti
+            console.print(f"  [{t.tool_color}]{_ti(name)} {_escape(name)}[/{t.tool_color}] {suffix}")
             tool_results.append(name)
 
         def on_tool_result(name: str, ok: bool) -> None:

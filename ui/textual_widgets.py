@@ -757,9 +757,11 @@ def build_widget_classes(t) -> SimpleNamespace:
                     a_display = _delatex(a_content.strip()) if a_content else ""
                     yield Static(_Md(a_display) if a_display else f"[{t.text_dim}](empty)[/{t.text_dim}]", id="turn-a-body", markup=not bool(a_display))
                 if tools or files:
+                    from agent.ui.render import tool_icon as _ti
                     parts = []
                     if tools:
-                        parts.append(f"[{t.tool_color}]⚙ {_escape('  '.join(tools))}[/{t.tool_color}]")
+                        tool_strs = "  ".join(f"{_ti(n)} {_escape(n)}" for n in tools)
+                        parts.append(f"[{t.tool_color}]{tool_strs}[/{t.tool_color}]")
                     if files:
                         parts.append(f"[{t.text_dim}]✎ {_escape('  '.join(files))}[/{t.text_dim}]")
                     yield Static("  ".join(parts), markup=True, id="turn-detail-tools")
