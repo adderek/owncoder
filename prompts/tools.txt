@@ -86,3 +86,16 @@ web_fetch(url)
   Fetch full page text from a URL. Use after web_search to get details.
   Content sanitized and wrapped for injection safety.
   Rate limited to 5 calls per turn.
+
+submit_idea(title, body="", type="idea", tags=[], priority=3)
+  Capture an improvement idea, bug, optimization, or feature request.
+  Stored in .agent/ideas.db — reviewed/implemented later.
+  Call proactively when you notice something worth doing that is OUT of current scope.
+  Do NOT implement it now — just capture and stay on task.
+  type: "feature" | "bug" | "optimization" | "integration" | "module" | "idea"
+  priority: 1 (low) – 5 (critical), default 3.
+  Examples of when to call:
+    - You read a function and notice a latent bug unrelated to current task
+    - You see a repeated pattern that could be abstracted
+    - A config option is missing that would make the tool more useful
+    - You spot a performance issue in a hot path while editing nearby code
