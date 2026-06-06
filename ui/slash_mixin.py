@@ -358,6 +358,20 @@ class SlashHandlerMixin:
                 limit = getattr(self._server._agent.config.llm, "max_iterations", 10)
                 self._write_sys(f"[{t.text_dim}]Unlimited iterations OFF — limit restored to {limit}.[/{t.text_dim}]")
 
+        elif cmd == "/idea":
+            from agent.ui.slash_ideas import _apply_idea
+            ok, msg = _apply_idea(self._server._agent, arg)
+            color = t.success if ok else t.warning
+            for line in msg.splitlines():
+                self._write_sys(f"[{color}]{line}[/{color}]")
+
+        elif cmd == "/ideas":
+            from agent.ui.slash_ideas import _apply_ideas
+            ok, msg = _apply_ideas(self._server._agent, arg)
+            color = t.success if ok else t.warning
+            for line in msg.splitlines():
+                self._write_sys(f"[{color}]{line}[/{color}]")
+
         elif cmd == "/recoveries":
             from agent.planning import recovery
             recs = recovery.scan_pending()

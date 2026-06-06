@@ -376,6 +376,18 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                 for line in msg.splitlines():
                     console.print(f"[{'green' if ok else 'yellow'}]{line}[/]")
 
+            elif cmd == "/idea":
+                from agent.ui.slash_ideas import _apply_idea
+                ok, msg = _apply_idea(agent, arg)
+                for line in msg.splitlines():
+                    console.print(f"[{'green' if ok else 'yellow'}]{line}[/]")
+
+            elif cmd == "/ideas":
+                from agent.ui.slash_ideas import _apply_ideas
+                ok, msg = _apply_ideas(agent, arg)
+                for line in msg.splitlines():
+                    console.print(f"[{'green' if ok else 'yellow'}]{line}[/]")
+
             elif cmd in ("/quit", "/exit", "/q!"):
                 console.print(f"[{t.text_dim}]Bye.[/{t.text_dim}]")
                 return

@@ -165,8 +165,10 @@ def main() -> None:
     configure_sessions(config.tools.working_dir, config.tools.agent_dir)
     from agent.planning import configure_plans
     from agent.planning.recovery import configure as configure_recovery
+    from agent.ideas import configure as configure_ideas
     configure_plans(config.tools.working_dir, config.tools.agent_dir)
     configure_recovery(config.tools.working_dir, config.tools.agent_dir)
+    configure_ideas(config.tools.working_dir, config.tools.agent_dir)
     log_dir = Path(config.tools.working_dir) / config.tools.agent_dir
     _setup_logging(str(log_dir), config.logs)
     log_path = log_dir / "agent.log"
