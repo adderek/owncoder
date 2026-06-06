@@ -284,6 +284,52 @@ def _inject_autonomy_hint(api_messages: list[dict], config: "Config") -> list[di
     return [{"role": "system", "content": hint}] + api_messages
 
 
+_AEI_ANALYTICAL_HINT = (
+    "[aei=analytical] You are speaking with an analytical, technical user. "
+    "Be direct and critical. No hedging, no emotional padding, no encouragement phrases. "
+    "Use terse language: fragments OK, drop filler words. "
+    "Point out flaws or risks without softening. Omit pleasantries entirely."
+)
+
+_AEI_SUPPORTIVE_HINT = (
+    "[aei=supportive] You are speaking with a user who may need guidance. "
+    "Be warm, patient, and encouraging. Explain your reasoning. "
+    "Acknowledge uncertainty openly. Offer alternatives when unsure. "
+    "Confirm understanding before taking irreversible actions."
+)
+
+_AEI_ADAPTIVE_HINT = (
+    "[aei=adaptive] Before each response, silently assess the user's last message on three axes:\n"
+    "  - sentiment: negative / neutral / positive affect\n"
+    "  - certainty: how precisely the request is specified (vague → precise)\n"
+    "  - style: terse command vs. verbose prose\n"
+    "Adjust your response accordingly:\n"
+    "  - Precise + terse + neutral/negative → direct, minimal, no pleasantries (analytical mode)\n"
+    "  - Vague + verbose + positive/neutral → explanatory, confirm intent, offer alternatives (supportive mode)\n"
+    "  - Mixed signals → balanced: answer directly but flag ambiguities.\n"
+    "Do NOT mention this assessment in your reply. Apply it silently."
+)
+
+
+def _inject_aei_hint(api_messages: list[dict], config: "Config") -> list[dict]:
+    aei = getattr(config, "aei", None)
+    mode = (getattr(aei, "mode", "adaptive") or "adaptive").lower().strip()
+    if mode == "analytical":
+        hint = _AEI_ANALYTICAL_HINT
+    elif mode == "supportive":
+        hint = _AEI_SUPPORTIVE_HINT
+    elif mode == "adaptive":
+        hint = _AEI_ADAPTIVE_HINT
+    else:
+        return api_messages
+    for i, msg in enumerate(api_messages):
+        if msg.get("role") == "system":
+            updated = dict(msg)
+            updated["content"] = msg["content"] + "\n" + hint
+            return api_messages[:i] + [updated] + api_messages[i + 1:]
+    return [{"role": "system", "content": hint}] + api_messages
+
+
 def _inject_think_hint(api_messages: list[dict], config: "Config") -> list[dict]:
     level = (getattr(config.llm, "think_level", "normal") or "normal").lower()
     level = _THINK_LEVEL_ALIASES.get(level, level)

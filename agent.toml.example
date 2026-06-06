@@ -290,6 +290,19 @@ nofile             = 256
 follow_symlinks    = false
 allow_legacy_shell = false
 
+# ── Adaptive Emotional Intelligence ──────────────────────────────────────────
+# Controls how the agent adapts its tone and communication style.
+#
+# mode = "adaptive"    (default) — silently assesses each user message on
+#                      sentiment, certainty, and style; adjusts verbosity,
+#                      confirmation frequency, and tone accordingly.
+# mode = "analytical"  — always direct, terse, critical; no hedging or
+#                      emotional padding. For power users who know what they want.
+# mode = "supportive"  — always warm, explanatory, patient. For beginners.
+
+[aei]
+mode = "adaptive"   # "adaptive" | "analytical" | "supportive"
+
 # ── Parallel agents ───────────────────────────────────────────────────────────
 # Gives the agent a `spawn_agents` tool to fan-out independent subtasks across
 # multiple model endpoints simultaneously.

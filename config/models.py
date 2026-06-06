@@ -465,6 +465,30 @@ class KbConfig:
 
 
 @dataclass
+class AEIConfig:
+    """Adaptive Emotional Intelligence — controls response tone/style.
+
+    mode:
+      "adaptive"    (default) — agent observes user's sentiment, certainty,
+                    and complexity/style each turn and adapts accordingly.
+                    Users who give clear analytical instructions get direct
+                    responses; uncertain or emotionally-loaded messages get
+                    more supportive, explanatory replies.
+      "analytical"  — always direct, critical, no hedging, no emotional
+                    padding. Suitable for power users who know what they want.
+      "supportive"  — always warm, encouraging, patient; explain decisions,
+                    acknowledge uncertainty. Suitable for beginners.
+
+    In adaptive mode the agent is instructed to self-assess per turn:
+      - sentiment_score: negative/neutral/positive user affect
+      - certainty_score: how precisely the user specified the task
+      - complexity_style: terse commands vs. verbose prose
+    and adjust verbosity, confirmation frequency, and tone accordingly.
+    """
+    mode: str = "adaptive"  # "adaptive" | "analytical" | "supportive"
+
+
+@dataclass
 class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
@@ -495,3 +519,4 @@ class Config:
     concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
     turn_signals: TurnSignalsConfig = field(default_factory=TurnSignalsConfig)
     kb: KbConfig = field(default_factory=KbConfig)
+    aei: AEIConfig = field(default_factory=AEIConfig)
