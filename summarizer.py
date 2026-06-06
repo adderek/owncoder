@@ -14,12 +14,14 @@ logger = logging.getLogger(__name__)
 _Q_SYSTEM = (
     "Extract the core intent of the user message as a short phrase. "
     "State WHAT they want, not how they said it. "
+    "Reply in the SAME language as the input. "
     "≤15 words. No labels, no trailing punctuation."
 )
 _A_SYSTEM = (
     "Extract the key result, finding, or decision from the agent response. "
     "Skip all preamble, praise, and process description — only the conclusion matters. "
     "State WHAT was determined or delivered, not how. "
+    "Reply in the SAME language as the input. "
     "≤15 words. No labels, no trailing punctuation."
 )
 
@@ -72,6 +74,47 @@ def _pick_summarizer_entry(config: "Config", content: str) -> tuple:
 from contextlib import asynccontextmanager
 
 
+def _sanitize_summary(text: str) -> str:
+    """Truncate at language-switch artifacts (e.g. CJK chars injected into Latin text).
+
+    Local multilingual models sometimes code-switch mid-output. We detect the
+    dominant script of the first ~20 chars and truncate at the first run of a
+    substantially different script class.
+    """
+    import unicodedata
+    if not text:
+        return text
+
+    def _script(ch: str) -> str:
+        cp = ord(ch)
+        if 0x4E00 <= cp <= 0x9FFF or 0x3400 <= cp <= 0x4DBF or 0xF900 <= cp <= 0xFAFF:
+            return "cjk"
+        if 0x3040 <= cp <= 0x30FF:  # hiragana/katakana
+            return "cjk"
+        if 0xAC00 <= cp <= 0xD7AF:  # hangul
+            return "cjk"
+        if 0x0400 <= cp <= 0x04FF:  # cyrillic
+            return "cyrillic"
+        if ch.isalpha():
+            return "latin"
+        return "other"
+
+    # Detect dominant script from first 30 non-other chars.
+    scripts: list[str] = [_script(c) for c in text[:60] if _script(c) != "other"]
+    if not scripts:
+        return text
+    dominant = max(set(scripts), key=scripts.count)
+    if dominant == "other":
+        return text
+
+    # Truncate at first character of a different (non-other, non-dominant) script.
+    for i, ch in enumerate(text):
+        s = _script(ch)
+        if s != "other" and s != dominant:
+            return text[:i].rstrip(" ,;:—-")
+    return text
+
+
 @asynccontextmanager
 async def _noop():
     yield
@@ -120,7 +163,7 @@ async def _call_llm_one_line(
         full = _clean_output("".join(reasoning_parts))
     if not full:
         full = raw_content.strip()
-    return full
+    return _sanitize_summary(full)
 
 
 def _update_json_file(path: Path, updates: dict) -> None:

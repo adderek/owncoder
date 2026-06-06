@@ -9,9 +9,6 @@ import json as _json
 import logging
 
 from rich.markup import escape as _escape
-from rich.markdown import Markdown
-
-from agent.ui.render import _delatex
 
 logger = logging.getLogger(__name__)
 
@@ -82,19 +79,15 @@ class ViewMixin:
                 display = (q_summaries[q_idx] if q_idx < len(q_summaries) else "") or content
                 current_ordinal[0] = q_idx
                 q_idx += 1
-                _cw(f"[bold {t.user_color}]You:[/bold {t.user_color}] {_escape(_one_line(display, wrap=self._wrap_enabled))}")
+                _cw(f"[bold {t.user_color}]You:[/bold {t.user_color}] {_escape(_one_line(display, wrap=False))}")
             elif role == "assistant":
                 for tc in tool_calls:
                     if isinstance(tc, dict):
                         name = tc.get("function", {}).get("name", "?")
                         _cw(f"[{t.tool_color}]  ⚙ {name}[/{t.tool_color}]")
                 if content:
-                    if self._wrap_enabled:
-                        _cw(f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}]")
-                        _cw(Markdown(_delatex(content.strip())))
-                    else:
-                        summary = (a_summaries[a_idx] if a_idx < len(a_summaries) else "") or content
-                        _cw(f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] {_escape(_one_line(summary, wrap=False))}")
+                    summary = (a_summaries[a_idx] if a_idx < len(a_summaries) else "") or content
+                    _cw(f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] {_escape(_one_line(summary, wrap=False))}")
                     a_idx += 1
         if resume_marker:
             _cw(f"[{t.text_dim}]─── resumed ───[/{t.text_dim}]")
@@ -121,12 +114,31 @@ class ViewMixin:
             self.query_one("#sparse-log", self._wt.SparseView).load_history(entries)
         except Exception:
             logger.exception("_reload_qa_views: view update failed (ignored)")
-        # Load cached summaries from disk (no LLM call); mark dirty if new turns since last summary
+        # Load cached summaries from disk (no LLM call).
         self._load_cached_qa_summaries(entries)
-        # Background mode: kick off summarization immediately
+        # Background mode: kick off session-level summarization only if new turns exist.
         mode = self._server.get_ui_config().get("qa_summary_mode", "lazy")
-        if mode == "background" and entries:
+        if mode == "background" and entries and self._session_summary_is_stale(entries):
             self._start_qa_summary_worker(entries)
+
+    def _session_summary_is_stale(self, entries: list) -> bool:
+        """Return True if session-level Q/A summary needs regeneration."""
+        if not entries or not self._session:
+            return False
+        try:
+            from agent.memory.session import _get_session_dir, get_session_subpath
+            from agent.memory.session_summarizer import load_stored
+            session_dir = _get_session_dir() / get_session_subpath(self._session.id)
+            last_turn_id = entries[-1][0]
+            for scope in ("q", "a"):
+                stored = load_stored(session_dir, scope)
+                if not stored.get("content"):
+                    return True
+                if stored.get("summarized_up_to_turn", -1) < last_turn_id:
+                    return True
+            return False
+        except Exception:
+            return True  # on error, assume stale
 
     def _load_cached_qa_summaries(self, entries: list) -> None:
         if not self._session:
