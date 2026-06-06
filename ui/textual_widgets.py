@@ -736,13 +736,19 @@ def build_widget_classes(t) -> SimpleNamespace:
             a_content = self._a_data.get("content", "") or ""
             tid = self._q_data.get("turn_id") or self._a_data.get("turn_id") or (self._ordinal + 1)
 
+            tools = self._a_data.get("tool_calls") or []
+            files = self._a_data.get("modified_files") or []
+            # Deduplicate while preserving order.
+            tools = list(dict.fromkeys(tools))
+            files = list(dict.fromkeys(files))
+
             with Vertical(id="turn-detail-dialog"):
                 yield Static(
                     f"[bold {t.user_color}]Turn {tid} — Q[/bold {t.user_color}]",
                     markup=True,
                 )
                 with ScrollableContainer(id="turn-detail-q"):
-                    yield Static(_Md(q_content.strip()) if q_content else Static(f"[{t.text_dim}](empty)[/{t.text_dim}]"), id="turn-q-body")
+                    yield Static(_Md(q_content.strip()) if q_content else f"[{t.text_dim}](empty)[/{t.text_dim}]", id="turn-q-body", markup=not bool(q_content))
                 yield Static(
                     f"[bold {t.agent_color}]A[/bold {t.agent_color}]",
                     markup=True,
@@ -750,6 +756,13 @@ def build_widget_classes(t) -> SimpleNamespace:
                 with ScrollableContainer(id="turn-detail-a"):
                     a_display = _delatex(a_content.strip()) if a_content else ""
                     yield Static(_Md(a_display) if a_display else f"[{t.text_dim}](empty)[/{t.text_dim}]", id="turn-a-body", markup=not bool(a_display))
+                if tools or files:
+                    parts = []
+                    if tools:
+                        parts.append(f"[{t.tool_color}]⚙ {_escape('  '.join(tools))}[/{t.tool_color}]")
+                    if files:
+                        parts.append(f"[{t.text_dim}]✎ {_escape('  '.join(files))}[/{t.text_dim}]")
+                    yield Static("  ".join(parts), markup=True, id="turn-detail-tools")
                 yield Button("Close  [ESC]", id="turn-detail-close")
 
         def on_button_pressed(self, event) -> None:
