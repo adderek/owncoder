@@ -22,6 +22,7 @@ class LLMConfig:
     temperature: float = 0.7
     seed: int | None = None
     think_level: str = "normal"
+    think_budget: int = -1          # token budget for thinking; -1 = unlimited / server default
     narration_fallback: bool = True
     cache_ttl: int = 300         # prompt cache TTL in seconds; 0 = disable cache tracking
     gpu: bool = False             # True when resolved default entry is in [concurrency].gpu_pool

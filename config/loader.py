@@ -21,6 +21,7 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_GOAL": ("agent", "goal"),
         "AGENT_GOAL_MAX_ITERATIONS": ("agent", "goal_max_iterations"),
         "AGENT_LLM_THINK_LEVEL": ("agent", "think_level"),
+        "AGENT_LLM_THINK_BUDGET": ("llm", "think_budget"),
         "AGENT_LLM_AUTO_DETECT_CTX": ("agent", "auto_detect_ctx"),
         "AGENT_LLM_NARRATION_FALLBACK": ("agent", "narration_fallback"),
         "AGENT_LOOP_GUARD_ENABLED": ("loop_guard", "enabled"),

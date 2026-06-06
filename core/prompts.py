@@ -230,6 +230,9 @@ def _build_call_kwargs(config: "Config") -> dict:
     if seed is not None:
         kw["seed"] = seed
     level = (getattr(config.llm, "think_level", "normal") or "normal").lower()
+    # Strip synthetic "b{N}" budget prefix stored by test runner (e.g. "b512")
+    if level.startswith("b") and level[1:].isdigit():
+        level = "normal"
     if level not in THINK_LEVELS:
         logger.warning("_build_call_kwargs: invalid think_level=%r, falling back to 'normal'", level)
         level = "normal"
@@ -239,6 +242,10 @@ def _build_call_kwargs(config: "Config") -> dict:
     if level == "off":
         extra = kw.setdefault("extra_body", {})
         extra.setdefault("chat_template_kwargs", {})["enable_thinking"] = False
+    think_budget = getattr(config.llm, "think_budget", -1)
+    if think_budget is not None and think_budget >= 0:
+        extra = kw.setdefault("extra_body", {})
+        extra["thinking_budget_tokens"] = int(think_budget)
     return kw
 
 
