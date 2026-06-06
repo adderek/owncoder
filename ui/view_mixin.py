@@ -33,7 +33,7 @@ class ViewMixin:
         from textual.widgets import TabbedContent
         self.query_one(TabbedContent).active = "tab-chat"
 
-    def _restore_chat_history(self, messages: list) -> None:
+    def _restore_chat_history(self, messages: list, resume_marker: bool = False) -> None:
         t = self._t
         _one_line = self._wt._one_line
         chat_log = self.query_one("#chat-log", self._wt.ConversationView)
@@ -65,6 +65,8 @@ class ViewMixin:
                         chat_log.write(
                             f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] {_escape(_one_line(content, wrap=False))}"
                         )
+        if resume_marker:
+            chat_log.write(f"[{t.text_dim}]─── resumed ───[/{t.text_dim}]")
 
     def _reload_sys_view(self) -> None:
         sys_log = self.query_one("#sys-log", self._wt.SysView)

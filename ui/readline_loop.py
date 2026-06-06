@@ -145,6 +145,10 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
 
             elif cmd == "/save":
                 if session is not None:
+                    if arg.strip():
+                        from agent.memory.session import _sanitize_short_name
+                        session.short_name = _sanitize_short_name(arg.strip())
+                        session.name = arg.strip()
                     server.save_session(session)
                     label = session.short_name or session.id
                     console.print(f"[dim]Saved session '{label}'.[/dim]")
@@ -169,6 +173,12 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                         console.print(
                             f"[dim]Loaded session '{label}' ({len(loaded_msgs)} messages).[/dim]"
                         )
+                        visible = [m for m in loaded_msgs if m.get("role") in ("user", "assistant") and m.get("content")]
+                        for m in visible[-4:]:
+                            role_label = "You" if m["role"] == "user" else "Agent"
+                            snippet = str(m["content"])[:120].replace("\n", " ")
+                            console.print(f"[dim]  {role_label}: {snippet}[/dim]")
+                        console.print("[dim]─── resumed ───[/dim]")
 
             elif cmd == "/sessions":
                 from agent.memory.session import list_sessions

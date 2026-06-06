@@ -115,6 +115,10 @@ class SlashHandlerMixin:
             self._write_sys("Tools: " + "  ".join(names))
 
         elif cmd == "/save":
+            if arg.strip():
+                from agent.memory.session import _sanitize_short_name
+                self._session.short_name = _sanitize_short_name(arg.strip())
+                self._session.name = arg.strip()
             self._server.save_session(self._session)
             label = self._session.short_name or self._session.id
             self._write_sys(f"[{t.text_dim}]Saved session '{label}'.[/{t.text_dim}]")
@@ -130,13 +134,13 @@ class SlashHandlerMixin:
                     self._server.set_messages(loaded_msgs)
                     self._session = loaded_session
                     label = loaded_session.short_name or loaded_session.id
+                    self._refresh_token_bar()
+                    self._restore_chat_history(loaded_msgs, resume_marker=True)
+                    self._switch_to_chat()
                     self._write_sys(
                         f"[{t.text_dim}]Loaded session '{label}' "
                         f"({len(loaded_msgs)} messages).[/{t.text_dim}]"
                     )
-                    self._refresh_token_bar()
-                    self._restore_chat_history(loaded_msgs)
-                    self._switch_to_chat()
 
         elif cmd == "/sessions":
             from agent.memory.session import list_sessions
