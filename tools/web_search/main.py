@@ -81,11 +81,11 @@ def _extract_ddg_url(href: str) -> str:
 
 
 def _search_duckduckgo(query: str, num_results: int) -> list[dict]:
-    """Search DuckDuckGo HTML (no API key required)."""
+    """Search DuckDuckGo lite HTML (no API key required)."""
     import urllib.parse
     from html.parser import HTMLParser
 
-    url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
+    url = f"https://lite.duckduckgo.com/lite/?q={urllib.parse.quote(query)}"
     ws_cfg = _config.web_search
 
     try:
@@ -98,6 +98,7 @@ def _search_duckduckgo(query: str, num_results: int) -> list[dict]:
     if proc.get("binary_rejected") or proc.get("error"):
         return []
 
+    # lite.duckduckgo.com uses class="result-link" / class="result-snippet"
     class DDGParser(HTMLParser):
         def __init__(self):
             super().__init__()
@@ -110,19 +111,18 @@ def _search_duckduckgo(query: str, num_results: int) -> list[dict]:
             self.last_link_data = None
 
         def handle_starttag(self, tag, attrs):
-            if tag == 'a':
-                attrs_dict = dict(attrs)
-                classes = attrs_dict.get('class', [])
-                if isinstance(classes, str):
-                    classes = classes.split()
+            attrs_dict = dict(attrs)
+            classes = attrs_dict.get('class', '')
+            if isinstance(classes, list):
+                classes = ' '.join(classes)
 
-                if 'result__a' in classes:
-                    self.in_link = True
-                    self.current_link = attrs_dict.get('href', '')
-                    self.current_title = ""
-                elif 'result__snippet' in classes:
-                    self.in_snippet = True
-                    self.current_snippet = ""
+            if tag == 'a' and 'result-link' in classes:
+                self.in_link = True
+                self.current_link = attrs_dict.get('href', '')
+                self.current_title = ""
+            elif tag == 'td' and 'result-snippet' in classes:
+                self.in_snippet = True
+                self.current_snippet = ""
 
         def handle_data(self, data):
             if self.in_link:
@@ -131,19 +131,18 @@ def _search_duckduckgo(query: str, num_results: int) -> list[dict]:
                 self.current_snippet += data
 
         def handle_endtag(self, tag):
-            if tag == 'a':
-                if self.in_link:
-                    self.in_link = False
-                    self.last_link_data = {'url': self.current_link, 'title': self.current_title}
-                elif self.in_snippet:
-                    self.in_snippet = False
-                    if self.last_link_data:
-                        self.results.append({
-                            'url': self.last_link_data['url'],
-                            'title': self.last_link_data['title'],
-                            'snippet': self.current_snippet
-                        })
-                        self.last_link_data = None
+            if tag == 'a' and self.in_link:
+                self.in_link = False
+                self.last_link_data = {'url': self.current_link, 'title': self.current_title}
+            elif tag == 'td' and self.in_snippet:
+                self.in_snippet = False
+                if self.last_link_data:
+                    self.results.append({
+                        'url': self.last_link_data['url'],
+                        'title': self.last_link_data['title'],
+                        'snippet': self.current_snippet
+                    })
+                    self.last_link_data = None
 
     parser = DDGParser()
     html_text = raw.decode("utf-8", errors="replace")
@@ -151,7 +150,7 @@ def _search_duckduckgo(query: str, num_results: int) -> list[dict]:
 
     if not parser.results:
         logger.warning(
-            "DDG parser returned 0 results — DDG may have changed HTML structure. "
+            "DDG lite parser returned 0 results — DDG may have changed HTML structure. "
             "Sample: %.200s", html_text[:200]
         )
 
