@@ -53,6 +53,15 @@ def build_event_classes() -> "SimpleNamespace":
             super().__init__()
             self.ordinal = ordinal
 
+    class ExpandTurn(Message):
+        """Posted when user wants full Q+A content for a turn."""
+
+        def __init__(self, ordinal: int, q_data: dict, a_data: dict) -> None:
+            super().__init__()
+            self.ordinal = ordinal
+            self.q_data = q_data
+            self.a_data = a_data
+
     return SimpleNamespace(
         ToolCallEvent=ToolCallEvent,
         ToolResultEvent=ToolResultEvent,
@@ -62,4 +71,5 @@ def build_event_classes() -> "SimpleNamespace":
         ReasoningTokenEvent=ReasoningTokenEvent,
         ContextSizeEvent=ContextSizeEvent,
         JumpToTurn=JumpToTurn,
+        ExpandTurn=ExpandTurn,
     )

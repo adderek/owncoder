@@ -170,6 +170,8 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             else:
                 self._wrap_enabled = False
 
+            self._last_qa_entries: list = []
+            self._chat_line_to_ordinal: list = []
             self._qa_summary_dirty: bool = False
             self._rating_prompted: bool = False
             self._bell_on_input_request: bool = ui_cfg.get("bell_on_input_request", True)
@@ -296,9 +298,18 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                 )
             sys_log.write(f"[{t.text_dim}]Type /help for commands  ·  F1 opens this tab[/{t.text_dim}]")
             msgs = self._server.get_messages()
-            if msgs:
-                self._restore_chat_history(msgs)
             self._reload_qa_views()
+            if msgs:
+                self._restore_chat_history(msgs, qa_entries=getattr(self, "_last_qa_entries", None))
+            try:
+                app_ref = self
+
+                def _on_turn_summarized() -> None:
+                    app_ref.call_from_thread(app_ref._reload_qa_views)
+
+                self._server._agent.on_turn_summarized = _on_turn_summarized
+            except Exception:
+                pass
 
         # ── actions ──────────────────────────────────────────────────────────
 

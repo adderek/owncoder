@@ -135,7 +135,12 @@ class SlashHandlerMixin:
                     self._session = loaded_session
                     label = loaded_session.short_name or loaded_session.id
                     self._refresh_token_bar()
-                    self._restore_chat_history(loaded_msgs, resume_marker=True)
+                    self._reload_qa_views()
+                    self._restore_chat_history(
+                        loaded_msgs,
+                        resume_marker=True,
+                        qa_entries=getattr(self, "_last_qa_entries", None),
+                    )
                     self._switch_to_chat()
                     self._write_sys(
                         f"[{t.text_dim}]Loaded session '{label}' "
@@ -390,6 +395,30 @@ class SlashHandlerMixin:
                     self._write_sys(
                         f"[{t.warning}]{r.session_id}[/{t.warning}] [dim]{r.exception}[/dim]"
                     )
+
+        elif cmd == "/resummarize":
+            if not self._session:
+                self._write_sys(f"[{t.warning}]No active session.[/{t.warning}]")
+            else:
+                force = "--force" in (arg or "")
+                sid = self._session.id
+                self._write_sys(f"[{t.text_dim}]Re-summarizing {'all' if force else 'stale'} entries…[/{t.text_dim}]")
+
+                async def _do_resummarize() -> None:
+                    from agent.summarizer import resummarize_session
+                    try:
+                        updated, skipped = await resummarize_session(
+                            self._server._agent.config, sid, force=force
+                        )
+                        self._write_sys(
+                            f"[{t.success}]Re-summarized {updated} entr{'y' if updated == 1 else 'ies'},"
+                            f" {skipped} skipped.[/{t.success}]"
+                        )
+                        self._reload_qa_views()
+                    except Exception as exc:
+                        self._write_sys(f"[{t.error}]resummarize failed: {exc}[/{t.error}]")
+
+                self.run_worker(_do_resummarize(), exclusive=False, name="resummarize")
 
         else:
             self._write_sys(f"[{t.warning}]Unknown command '{cmd}'. Type /help.[/{t.warning}]")

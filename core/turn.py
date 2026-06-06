@@ -35,6 +35,7 @@ async def _post_turn_capture_and_summarize(
     response: str,
     tool_calls: list[str],
     modified_files: list[str],
+    on_summarized=None,
 ) -> None:
     try:
         q_path, a_path = await asyncio.gather(
@@ -43,7 +44,12 @@ async def _post_turn_capture_and_summarize(
         )
         if config.ui.q_summaries:
             from agent.summarizer import summarize_turn_background
-            await summarize_turn_background(config, q_path, a_path)
+            wrote = await summarize_turn_background(config, q_path, a_path)
+            if wrote and on_summarized is not None:
+                try:
+                    on_summarized()
+                except Exception:
+                    logger.debug("_post_turn_capture_and_summarize: on_summarized callback error (ignored)")
     except Exception:
         logger.exception("_post_turn_capture_and_summarize: error (ignored)")
 

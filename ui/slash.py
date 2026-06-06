@@ -55,6 +55,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/model", [], "switch active model  [<entry> | role=<entry> | role=? | refresh]", True),
     ("/models", [], "show all configured model entries with capabilities", False),
     ("/recoveries", [], "list pending crash-recovery records", False),
+    ("/resummarize", [], "re-summarize Q/A entries with stale or missing summaries  [--force]", True),
     ("/idea", [], "ideas: <title> | add [--type T] [--tags t] [--priority N] <title> [| body] | show <id> | update <id> k=v | done <id> | reject <id>", True),
     ("/ideas", [], "list ideas  [status_filter: raw|evaluated|planned|implementing|verifying|done|rejected]", True),
     ("/quit", ["/exit", "/q!"], "quit the agent", False),

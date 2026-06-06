@@ -38,6 +38,12 @@ class EventHandlerMixin:
         except Exception:
             logger.exception("jump_to_turn: scroll failed (ignored)")
 
+    def on_expand_turn(self, event) -> None:
+        try:
+            self.push_screen(self._wt.TurnDetailScreen(event.ordinal, event.q_data, event.a_data))
+        except Exception:
+            logger.exception("on_expand_turn: push_screen failed (ignored)")
+
     def on_tool_call_event(self, event) -> None:
         t = self._t
         # Track modified files

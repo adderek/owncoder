@@ -33,12 +33,40 @@ class ViewMixin:
         from textual.widgets import TabbedContent
         self.query_one(TabbedContent).active = "tab-chat"
 
-    def _restore_chat_history(self, messages: list, resume_marker: bool = False) -> None:
+    def _restore_chat_history(
+        self,
+        messages: list,
+        resume_marker: bool = False,
+        qa_entries: "list | None" = None,
+    ) -> None:
         t = self._t
         _one_line = self._wt._one_line
         chat_log = self.query_one("#chat-log", self._wt.ConversationView)
         chat_log.clear()
         self._chat_user_lines = []
+        self._chat_qa_data: list[tuple] = []
+        self._chat_line_to_ordinal: list[int] = []
+        current_ordinal: list[int] = [-1]  # mutable cell; -1 = pre-first-turn lines
+
+        def _cw(line) -> None:
+            """Write one line to chat_log and extend the ordinal map by however many visual lines result."""
+            before = len(chat_log.lines)
+            chat_log.write(line)
+            added = len(chat_log.lines) - before
+            self._chat_line_to_ordinal.extend([current_ordinal[0]] * max(added, 1))
+
+        # Build parallel Q/A data and summary lists from Q/A log (best-effort by turn count).
+        qa_list: list[tuple] = []
+        q_summaries: list[str] = []
+        a_summaries: list[str] = []
+        if qa_entries:
+            for _tid, q, a in qa_entries:
+                qa_list.append((q or {}, a or {}))
+                q_summaries.append((q or {}).get("summary_q", "") or "")
+                a_summaries.append((a or {}).get("summary_a", "") or "")
+
+        q_idx = 0
+        a_idx = 0
         for m in messages:
             role = m.get("role", "")
             if role == "system":
@@ -49,24 +77,27 @@ class ViewMixin:
             tool_calls = m.get("tool_calls") or []
             if role == "user":
                 self._chat_user_lines.append(len(chat_log.lines))
-                chat_log.write(
-                    f"[bold {t.user_color}]You:[/bold {t.user_color}] {_escape(_one_line(content, wrap=self._wrap_enabled))}"
-                )
+                q_d, a_d = qa_list[q_idx] if q_idx < len(qa_list) else ({"content": content}, {})
+                self._chat_qa_data.append((q_d, a_d))
+                display = (q_summaries[q_idx] if q_idx < len(q_summaries) else "") or content
+                current_ordinal[0] = q_idx
+                q_idx += 1
+                _cw(f"[bold {t.user_color}]You:[/bold {t.user_color}] {_escape(_one_line(display, wrap=self._wrap_enabled))}")
             elif role == "assistant":
                 for tc in tool_calls:
                     if isinstance(tc, dict):
                         name = tc.get("function", {}).get("name", "?")
-                        chat_log.write(f"[{t.tool_color}]  ⚙ {name}[/{t.tool_color}]")
+                        _cw(f"[{t.tool_color}]  ⚙ {name}[/{t.tool_color}]")
                 if content:
                     if self._wrap_enabled:
-                        chat_log.write(f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}]")
-                        chat_log.write(Markdown(_delatex(content.strip())))
+                        _cw(f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}]")
+                        _cw(Markdown(_delatex(content.strip())))
                     else:
-                        chat_log.write(
-                            f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] {_escape(_one_line(content, wrap=False))}"
-                        )
+                        summary = (a_summaries[a_idx] if a_idx < len(a_summaries) else "") or content
+                        _cw(f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] {_escape(_one_line(summary, wrap=False))}")
+                    a_idx += 1
         if resume_marker:
-            chat_log.write(f"[{t.text_dim}]─── resumed ───[/{t.text_dim}]")
+            _cw(f"[{t.text_dim}]─── resumed ───[/{t.text_dim}]")
 
     def _reload_sys_view(self) -> None:
         sys_log = self.query_one("#sys-log", self._wt.SysView)
@@ -83,6 +114,7 @@ class ViewMixin:
         except Exception:
             logger.exception("_reload_qa_views: read_history_sync failed (ignored)")
             return
+        self._last_qa_entries = entries
         try:
             self.query_one("#q-log", self._wt.QView).load_history(entries)
             self.query_one("#a-log", self._wt.AView).load_history(entries)
@@ -148,6 +180,10 @@ class ViewMixin:
                 "tool_calls": list(self._last_tool_calls),
                 "modified_files": list(self._modified_files),
             }
+            # Keep chat_qa_data in sync so click-to-expand works for live turns too.
+            if not hasattr(self, "_chat_qa_data"):
+                self._chat_qa_data = []
+            self._chat_qa_data.append((q_data, a_data))
             self.query_one("#q-log", self._wt.QView).add_turn(turn_id, q_data, a_data)
             self.query_one("#a-log", self._wt.AView).add_turn(turn_id, q_data, a_data)
             self.query_one("#sparse-log", self._wt.SparseView).add_turn(turn_id, q_data, a_data)

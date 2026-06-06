@@ -37,10 +37,11 @@ def build_widget_classes(t) -> SimpleNamespace:
     # Build event classes first so JumpToTurn is available to view mixins below.
     _events = build_event_classes()
     JumpToTurn = _events.JumpToTurn
+    ExpandTurn = _events.ExpandTurn
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
-    def _one_line(text: str, limit: int = 120, wrap: bool = False) -> str:
+    def _one_line(text: str, limit: int = 160, wrap: bool = False) -> str:
         text = (text or "").strip()
         if not wrap:
             text = text.replace("\n", " ")
@@ -343,22 +344,59 @@ def build_widget_classes(t) -> SimpleNamespace:
     # ── log views ─────────────────────────────────────────────────────────────
 
     class ConversationView(RichLog):
-        """Live chat log — user ↔ agent turns."""
+        """Live chat log — user ↔ agent turns. Click any line to expand that turn."""
+
+        def on_click(self, event) -> None:
+            qa_data = getattr(self.app, "_chat_qa_data", [])
+            if not qa_data:
+                return
+            line_idx = int(self.scroll_offset.y) + int(event.y)
+
+            # Primary: per-visual-line ordinal map built during _restore_chat_history.
+            line_to_ordinal = getattr(self.app, "_chat_line_to_ordinal", [])
+            if line_to_ordinal:
+                if 0 <= line_idx < len(line_to_ordinal):
+                    ordinal = line_to_ordinal[line_idx]
+                else:
+                    ordinal = len(qa_data) - 1  # past end → last turn
+                if ordinal < 0 or ordinal >= len(qa_data):
+                    return
+                q_d, a_d = qa_data[ordinal]
+                self.post_message(ExpandTurn(ordinal, q_d, a_d))
+                return
+
+            # Fallback: anchor search for live sessions without line_to_ordinal.
+            anchors = getattr(self.app, "_chat_user_lines", [])
+            if not anchors:
+                return
+            ordinal = 0
+            for i, line_no in enumerate(anchors):
+                if line_no <= line_idx:
+                    ordinal = i
+                else:
+                    break
+            if ordinal < len(qa_data):
+                q_d, a_d = qa_data[ordinal]
+                self.post_message(ExpandTurn(ordinal, q_d, a_d))
 
     class SysView(RichLog):
         """System log — commands, session info, help output."""
 
     class _QALineTrackingMixin:
-        """Mixin providing click-to-jump behavior shared by Q/A/Sparse views."""
+        """Mixin providing click-to-expand behavior shared by Q/A/Sparse views."""
 
         def _reset_line_map(self) -> None:
             self._line_ordinals: list[int] = []
             self._entry_count: int = 0
+            self._qa_entries: list[tuple] = []
 
         def _track_line(self, ordinal: int) -> None:
             if not hasattr(self, "_line_ordinals"):
                 self._line_ordinals = []
             self._line_ordinals.append(ordinal)
+
+        def _store_entries(self, entries: list) -> None:
+            self._qa_entries = list(entries)
 
         def on_click(self, event) -> None:
             ordinals = getattr(self, "_line_ordinals", [])
@@ -366,7 +404,13 @@ def build_widget_classes(t) -> SimpleNamespace:
                 return
             line_idx = int(self.scroll_offset.y) + int(event.y)
             if 0 <= line_idx < len(ordinals):
-                self.post_message(JumpToTurn(ordinals[line_idx]))
+                ordinal = ordinals[line_idx]
+                entries = getattr(self, "_qa_entries", [])
+                if 0 <= ordinal < len(entries):
+                    _, q_data, a_data = entries[ordinal]
+                    self.post_message(ExpandTurn(ordinal, q_data or {}, a_data or {}))
+                else:
+                    self.post_message(JumpToTurn(ordinal))
 
     class QView(_QALineTrackingMixin, RichLog):
         """View for user questions: one line per turn."""
@@ -374,13 +418,16 @@ def build_widget_classes(t) -> SimpleNamespace:
         def load_history(self, entries: "list[tuple[int, dict, dict]]") -> None:
             self.clear()
             self._reset_line_map()
+            self._store_entries(entries)
             for ordinal, (tid, q, _a) in enumerate(entries):
                 self._write_entry(ordinal, tid, q)
             self._entry_count = len(entries)
 
-        def add_turn(self, turn_id: int, q_data: dict, _a_data: dict) -> None:
+        def add_turn(self, turn_id: int, q_data: dict, a_data: dict) -> None:
             ordinal = getattr(self, "_entry_count", 0)
             self._entry_count = ordinal + 1
+            entries = getattr(self, "_qa_entries", [])
+            entries.append((turn_id, q_data, a_data))
             self._write_entry(ordinal, turn_id, q_data)
 
         def _write_entry(self, ordinal: int, turn_id: int, q: dict) -> None:
@@ -398,13 +445,16 @@ def build_widget_classes(t) -> SimpleNamespace:
         def load_history(self, entries: "list[tuple[int, dict, dict]]") -> None:
             self.clear()
             self._reset_line_map()
+            self._store_entries(entries)
             for ordinal, (tid, _q, a) in enumerate(entries):
                 self._write_entry(ordinal, tid, a)
             self._entry_count = len(entries)
 
-        def add_turn(self, turn_id: int, _q_data: dict, a_data: dict) -> None:
+        def add_turn(self, turn_id: int, q_data: dict, a_data: dict) -> None:
             ordinal = getattr(self, "_entry_count", 0)
             self._entry_count = ordinal + 1
+            entries = getattr(self, "_qa_entries", [])
+            entries.append((turn_id, q_data, a_data))
             self._write_entry(ordinal, turn_id, a_data)
 
         def _write_entry(self, ordinal: int, turn_id: int, a: dict) -> None:
@@ -422,6 +472,7 @@ def build_widget_classes(t) -> SimpleNamespace:
         def load_history(self, entries: "list[tuple[int, dict, dict]]") -> None:
             self.clear()
             self._reset_line_map()
+            self._store_entries(entries)
             for ordinal, (tid, q, a) in enumerate(entries):
                 self._write_entry(ordinal, tid, q, a)
             self._entry_count = len(entries)
@@ -429,6 +480,8 @@ def build_widget_classes(t) -> SimpleNamespace:
         def add_turn(self, turn_id: int, q_data: dict, a_data: dict) -> None:
             ordinal = getattr(self, "_entry_count", 0)
             self._entry_count = ordinal + 1
+            entries = getattr(self, "_qa_entries", [])
+            entries.append((turn_id, q_data, a_data))
             self._write_entry(ordinal, turn_id, q_data, a_data)
 
         def _write_entry(self, ordinal: int, turn_id: int, q: dict, a: dict) -> None:
@@ -627,6 +680,77 @@ def build_widget_classes(t) -> SimpleNamespace:
                 self.query_one("#workers-body").update(body)
             except Exception:
                 pass
+
+        def on_button_pressed(self, event) -> None:
+            self.dismiss()
+
+        def on_key(self, event) -> None:
+            if event.key in ("escape", "q"):
+                self.dismiss()
+
+    class TurnDetailScreen(ModalScreen):
+        """Modal showing full Q+A content for a clicked turn."""
+
+        CSS = """
+        TurnDetailScreen {
+            align: center middle;
+        }
+        #turn-detail-dialog {
+            width: 90%;
+            max-width: 120;
+            height: auto;
+            max-height: 80%;
+            border: solid $primary;
+            background: $surface;
+            padding: 1 2;
+        }
+        #turn-detail-q {
+            margin-bottom: 1;
+            max-height: 15;
+            overflow-y: auto;
+        }
+        #turn-detail-a {
+            margin-bottom: 1;
+            max-height: 25;
+            overflow-y: auto;
+        }
+        #turn-detail-close {
+            margin-top: 1;
+            width: 100%;
+        }
+        """
+
+        def __init__(self, ordinal: int, q_data: dict, a_data: dict) -> None:
+            super().__init__()
+            self._ordinal = ordinal
+            self._q_data = q_data
+            self._a_data = a_data
+
+        def compose(self):
+            from textual.containers import Vertical, ScrollableContainer
+            from textual.widgets import Button, Static
+            from rich.markdown import Markdown as _Md
+            from agent.ui.render import _delatex
+
+            q_content = self._q_data.get("content", "") or ""
+            a_content = self._a_data.get("content", "") or ""
+            tid = self._q_data.get("turn_id") or self._a_data.get("turn_id") or (self._ordinal + 1)
+
+            with Vertical(id="turn-detail-dialog"):
+                yield Static(
+                    f"[bold {t.user_color}]Turn {tid} — Q[/bold {t.user_color}]",
+                    markup=True,
+                )
+                with ScrollableContainer(id="turn-detail-q"):
+                    yield Static(_Md(q_content.strip()) if q_content else Static(f"[{t.text_dim}](empty)[/{t.text_dim}]"), id="turn-q-body")
+                yield Static(
+                    f"[bold {t.agent_color}]A[/bold {t.agent_color}]",
+                    markup=True,
+                )
+                with ScrollableContainer(id="turn-detail-a"):
+                    a_display = _delatex(a_content.strip()) if a_content else ""
+                    yield Static(_Md(a_display) if a_display else f"[{t.text_dim}](empty)[/{t.text_dim}]", id="turn-a-body", markup=not bool(a_display))
+                yield Button("Close  [ESC]", id="turn-detail-close")
 
         def on_button_pressed(self, event) -> None:
             self.dismiss()
@@ -985,6 +1109,8 @@ def build_widget_classes(t) -> SimpleNamespace:
         ConversationView=ConversationView,
         SysView=SysView,
         JumpToTurn=JumpToTurn,
+        ExpandTurn=ExpandTurn,
+        TurnDetailScreen=TurnDetailScreen,
         _QALineTrackingMixin=_QALineTrackingMixin,
         QView=QView,
         AView=AView,

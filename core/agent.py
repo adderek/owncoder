@@ -78,6 +78,7 @@ class Agent:
             "last_tool_tokens": 0,
         }
         self._pending_bg_tasks: set[asyncio.Task] = set()
+        self.on_turn_summarized = None
         self.round_peak_tokens: int = 0
         self.last_round_peak_tokens: int = 0
         self._inject_queue: asyncio.Queue = asyncio.Queue()
@@ -636,6 +637,7 @@ class Agent:
                     response,
                     list(_turn_tool_calls),
                     list(_turn_modified_files),
+                    on_summarized=self.on_turn_summarized,
                 )
             )
             self._pending_bg_tasks.add(task)
