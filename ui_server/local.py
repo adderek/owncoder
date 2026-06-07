@@ -248,7 +248,10 @@ class LocalUIServer:
             "reasoning_fold": getattr(cfg.ui, "reasoning_fold", "end_of_round"),
             "bell_on_input_request": bool(getattr(cfg.ui, "bell_on_input_request", True)),
             "terminal_title": getattr(cfg.ui, "terminal_title", "auto"),
+            "terminal_title_icon": getattr(cfg.ui, "terminal_title_icon", "🌟"),
+            "terminal_title_session": getattr(cfg.ui, "terminal_title_session", "name"),
             "qa_summary_mode": getattr(cfg.ui, "qa_summary_mode", "lazy"),
+            "spinner_animation": getattr(cfg.ui, "spinner_animation", "box"),
         }
 
     def get_turn_id(self, session_id: str = "") -> int:

@@ -139,10 +139,12 @@ def build_app_css(t) -> str:
     #loading-row.active {{
         display: block;
     }}
-    LoadingIndicator {{
+    SpinnerWidget {{
         width: auto;
         height: 1;
         background: {t.active};
+        color: white;
+        padding: 0 1;
     }}
     #loading-tokens {{
         height: 1;

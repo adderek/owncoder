@@ -207,11 +207,11 @@ class EventHandlerMixin:
             icon = getattr(self, "_title_icon", "🌟")
             suffix = self._session_title_suffix() if hasattr(self, "_session_title_suffix") else ""
             if event.state == WorkerState.ERROR:
-                self.title = f"{icon} agent — error, waiting for input{suffix}"
+                self._set_terminal_title(f"{icon} agent — error, waiting for input{suffix}")
             elif event.state == WorkerState.SUCCESS:
-                self.title = f"{icon} agent — waiting for input{suffix}"
+                self._set_terminal_title(f"{icon} agent — waiting for input{suffix}")
             else:
-                self.title = f"{icon} agent — cancelled{suffix}"
+                self._set_terminal_title(f"{icon} agent — cancelled{suffix}")
         if event.state in (WorkerState.SUCCESS, WorkerState.ERROR):
             if getattr(self, "_bell_on_input_request", True):
                 self.bell()

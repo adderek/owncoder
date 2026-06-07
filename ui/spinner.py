@@ -7,6 +7,33 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     pass
 
+SPINNER_PRESETS: dict[str, list[str]] = {
+    "box":        list("┤┘┴└├┌┬┐"),
+    "braille":    list("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+    "clock":      list("🕛🕐🕑🕒🕓🕔🕕🕖🕗🕘🕙🕚"),
+    "dots_heavy": list("⣾⣽⣻⢿⡿⣟⣯⣷"),
+    "quarter":    list("◰◳◲◱"),
+    "half":       list("◐◓◑◒"),
+    "circles":    ["●○○○○", "○●○○○", "○○●○○", "○○○●○", "○○○○●"],
+}
+
+
+def resolve_spinner_frames(animation: str) -> list[str]:
+    """Return list of animation frames for the given preset name or custom chars.
+
+    ``animation`` can be:
+    - a preset name (key in SPINNER_PRESETS)
+    - a string of characters to cycle through (each char is one frame)
+    - a comma-separated list of multi-char frames ("frame1,frame2,frame3")
+    """
+    if animation in SPINNER_PRESETS:
+        return SPINNER_PRESETS[animation]
+    if "," in animation:
+        return [f.strip() for f in animation.split(",") if f.strip()]
+    if animation:
+        return list(animation)
+    return SPINNER_PRESETS["box"]
+
 
 def _fmt_tps(v: float) -> str:
     if v >= 10:

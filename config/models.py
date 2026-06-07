@@ -139,6 +139,7 @@ class UIConfig:
     terminal_title_session: str = "name"  # "name" | "id" | "both" | "off" — session info in title
     terminal_title_icon: str = "🌟"  # prefix icon, e.g. "🌟" | "🤖"
     qa_summary_mode: str = "lazy"  # "lazy" (on tab open) | "background" (after each turn) | "off"
+    spinner_animation: str = "box"  # preset name or custom chars; see ui/spinner.py SPINNER_PRESETS
     theme: ThemeConfig = field(default_factory=ThemeConfig)
 
 

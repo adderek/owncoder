@@ -57,10 +57,11 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
         RichLog,
         Static,
         TextArea,
-        LoadingIndicator,
         TabbedContent,
         TabPane,
     )
+    from agent.ui.textual_widgets import SpinnerWidget
+    from agent.ui.spinner import resolve_spinner_frames
     from textual.containers import Horizontal
     from textual.binding import Binding
     from textual.message import Message
@@ -178,6 +179,9 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             self._terminal_title: str = ui_cfg.get("terminal_title", "auto")
             self._title_session_mode: str = ui_cfg.get("terminal_title_session", "name")
             self._title_icon: str = ui_cfg.get("terminal_title_icon", "🌟")
+            self._spinner_frames: list[str] = resolve_spinner_frames(
+                ui_cfg.get("spinner_animation", "box")
+            )
             self._round_summary_enabled = ui_cfg["round_summary"]
             try:
                 from agent.ui.prefs import load_prefs
@@ -226,7 +230,7 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                 with TabPane("sys", id="tab-sys"):
                     yield SysView(id="sys-log", markup=True, highlight=True)
             with Horizontal(id="loading-row"):
-                yield LoadingIndicator(id="loading-indicator")
+                yield SpinnerWidget(self._spinner_frames, id="loading-indicator")
                 yield Static("", id="loading-tokens", markup=True)
             from textual.widgets import Button as _Button
             with Horizontal(id="rating-bar"):
@@ -269,7 +273,7 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
         def on_mount(self) -> None:
             if self._terminal_title != "off":
                 icon = getattr(self, "_title_icon", "🌟")
-                self.title = f"{icon} agent — waiting for input{self._session_title_suffix()}"
+                self._set_terminal_title(f"{icon} agent — waiting for input{self._session_title_suffix()}")
             self.query_one("#input-bar", PromptInput).focus()
             self.call_later(self._refresh_git)
             self.call_later(self._refresh_token_bar)
@@ -501,8 +505,6 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             except Exception:
                 pass
 
-        _TITLE_SPINNERS = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-
         def _session_title_suffix(self) -> str:
             mode = getattr(self, "_title_session_mode", "name")
             if mode == "off" or not self._session:
@@ -516,12 +518,23 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                 part = f"{s.short_name} ({s.id})" if s.short_name else s.id
             return f" [{part}]"
 
+        def _set_terminal_title(self, title: str) -> None:
+            import re as _re
+            safe = _re.sub(r'[\x00-\x1f\x7f]', '', title)
+            try:
+                if self._driver is not None:
+                    self._driver.write(f"\033]0;{safe}\007")
+            except Exception:
+                pass
+
         def _tick_title_spinner(self) -> None:
-            s = self._TITLE_SPINNERS[self._title_spinner_idx % len(self._TITLE_SPINNERS)]
+            frames = getattr(self, "_spinner_frames", None) or ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+            s = frames[self._title_spinner_idx % len(frames)]
             self._title_spinner_idx += 1
             label = self._title_task_label or "working"
             icon = getattr(self, "_title_icon", "🌟")
-            self.title = f"{s} {icon} agent — {label}{self._session_title_suffix()}"
+            if self._terminal_title != "off":
+                self._set_terminal_title(f"{icon} {s} agent — {label}{self._session_title_suffix()}")
 
         def _begin_chat(self, user_text: str) -> None:
             self._hide_rating_bar()

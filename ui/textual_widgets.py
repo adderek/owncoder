@@ -14,6 +14,40 @@ if TYPE_CHECKING:
     pass
 
 
+# ── module-level widgets (no theme dependency) ────────────────────────────────
+
+def _build_spinner_widget():
+    from textual.widgets import Static
+
+    class SpinnerWidget(Static):
+        """Single-character animated spinner. Replaces Textual's LoadingIndicator.
+
+        Characters may be 1 or 2 columns wide; always rendered with a trailing
+        space so the next character is not partially overwritten.
+        """
+
+        def __init__(self, frames: list[str], **kwargs):
+            super().__init__("", **kwargs)
+            self._frames = frames if frames else ["⠋"]
+            self._idx = 0
+
+        def on_mount(self) -> None:
+            self.set_interval(0.1, self._tick)
+
+        def _tick(self) -> None:
+            frame = self._frames[self._idx % len(self._frames)]
+            self._idx += 1
+            self.update(f"{frame} ")
+
+    return SpinnerWidget
+
+
+try:
+    SpinnerWidget = _build_spinner_widget()
+except Exception:
+    SpinnerWidget = None  # type: ignore[assignment,misc]
+
+
 def build_widget_classes(t) -> SimpleNamespace:
     """Return a SimpleNamespace of all widget/message classes.
 
