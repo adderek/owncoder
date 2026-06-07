@@ -119,6 +119,51 @@ def _graph_stale_warning() -> str | None:
     return None
 
 
+@register(
+    "graph_status",
+    {
+        "description": (
+            "Check whether the knowledge graph exists and is up to date. "
+            "Call this before using graph_query/graph_path/graph_context to avoid stale results. "
+            "Returns: exists, node/edge counts, age, stale flag, and graphify binary availability."
+        ),
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+)
+def graph_status(**_kwargs) -> dict:
+    import datetime
+    p = _graph_json_path()
+    bin_ok = _graphify_bin() is not None
+
+    if not p.exists():
+        return {
+            "exists": False,
+            "stale": None,
+            "graphify_installed": bin_ok,
+            "hint": "Run graph_build() to create the graph." if bin_ok else "Install graphifyy first: agent/.venv/bin/pip install graphifyy",
+        }
+
+    graph_mtime = p.stat().st_mtime
+    source_mtime = _newest_source_mtime(_root())
+    stale = source_mtime > graph_mtime
+    age_s = int(__import__("time").time() - graph_mtime)
+
+    graph = _load_graph()
+    node_count = len(graph.get("nodes", [])) if graph else 0
+    edge_count = len(graph.get("links", [])) if graph else 0
+
+    return {
+        "exists": True,
+        "stale": stale,
+        "nodes": node_count,
+        "edges": edge_count,
+        "built": datetime.datetime.fromtimestamp(graph_mtime).isoformat(timespec="seconds"),
+        "age_seconds": age_s,
+        "graphify_installed": bin_ok,
+        "hint": "Run graph_build() to refresh." if stale else "Graph is current.",
+    }
+
+
 def _node_matches(node: dict, term: str) -> bool:
     term = term.lower()
     return (

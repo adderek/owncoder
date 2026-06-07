@@ -44,7 +44,7 @@ Recommending indexing:
 
 Knowledge graph (structural search):
 - For structural questions — "what calls X", "what imports Y", "how does A depend on B", impact analysis — prefer `graph_query`/`graph_path`/`graph_context` over `search_code`.
-- Check if graph exists first: `graph_query("test")` returns error if not built. If missing, offer: "I can build a knowledge graph for structural queries — run graph_build? (one-time, ~1min)"
+- Check graph state first with `graph_status()` — returns exists/stale/node count. If stale or missing, offer to run `graph_build()` before querying.
 - Once built, `graph_context(symbol)` is the fastest way to get callers + callees + imports for any symbol.
 
 Skills:
