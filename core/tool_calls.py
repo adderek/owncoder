@@ -328,6 +328,12 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
                 "error": f"Missing required arguments: {', '.join(missing)}",
                 "tool": name
             })
+        allowed = set(params.get("properties", {}).keys())
+        if allowed:
+            unknown = [k for k in args if k not in allowed]
+            if unknown:
+                logger.warning("execute_tool: %s stripping unknown args %s", name, unknown)
+                args = {k: v for k, v in args.items() if k in allowed}
 
     try:
         loop = asyncio.get_running_loop()

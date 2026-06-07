@@ -86,7 +86,8 @@ class EventHandlerMixin:
         from agent.ui.render import tool_icon as _ti
         label = f"[{t.tool_color}]{_ti(event.name)} {_escape(event.name)}[/{t.tool_color}]"
         if preview:
-            label += f" [dim]({_escape(preview)})[/dim]"
+            safe_preview = preview.replace("[", "\\[").replace("]", "\\]")
+            label += f" [dim]({safe_preview})[/dim]"
         self.query_one("#context-panel", self._wt.ContextPanel).set_context(label)
         self._title_task_label = event.name
 

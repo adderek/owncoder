@@ -76,6 +76,12 @@ def load(name: str, original: str, config: "Config") -> str:
             _save_index()
         _s._active[name] = key
 
+        # Reset suspect entries so they can be recompiled with clean stats.
+        if entry.status == "suspect":
+            entry.status = "pending"
+            entry.attempts = 0
+            _save_index()
+
         # Background-compile new entries if auto_spawn is enabled.
         if (
             entry.status == "pending"
