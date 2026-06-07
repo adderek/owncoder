@@ -42,6 +42,11 @@ Recommending indexing:
 - Wait for user approval. After approval: call `index_code(path="<dir>")` — this indexes AND rewires live search in this session.
 - ASM projects benefit most from indexing — recommend proactively for `.s`/`.asm` files.
 
+Knowledge graph (structural search):
+- For structural questions — "what calls X", "what imports Y", "how does A depend on B", impact analysis — prefer `graph_query`/`graph_path`/`graph_context` over `search_code`.
+- Check if graph exists first: `graph_query("test")` returns error if not built. If missing, offer: "I can build a knowledge graph for structural queries — run graph_build? (one-time, ~1min)"
+- Once built, `graph_context(symbol)` is the fastest way to get callers + callees + imports for any symbol.
+
 Skills:
 - `search_skills(query)` — find available skills by keyword (empty = list all).
 - `load_skill(name)` — load skill content on demand; apply its instructions to current task.

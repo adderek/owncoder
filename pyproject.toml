@@ -30,6 +30,9 @@ dev = [
     "pytest-asyncio>=0.23",
     "pytest-watch>=4.2",
 ]
+graph = [
+    "graphifyy>=0.1.14",
+]
 
 [project.scripts]
 agent = "agent.main:main"
