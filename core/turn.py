@@ -116,7 +116,8 @@ async def run_turn(
     iter_count = 0
     _read_path_counts: dict[str, int] = {}
     _edit_file_fails: dict[str, int] = {}
-    _READ_PATH_WARN_THRESHOLD = 3
+    _READ_PATH_WARN_THRESHOLD = 3   # inject warning into result
+    _READ_PATH_STOP_THRESHOLD = 6   # hard-stop the turn
     _EDIT_FILE_FAIL_THRESHOLD = 2
     _max_iter_raw = getattr(config.llm, "max_iterations", 10)
     max_iter: int | None = None if _max_iter_raw is None else max(1, int(_max_iter_raw))
@@ -446,14 +447,25 @@ async def run_turn(
                         rpath = str(a.get("path", ""))
                         if rpath:
                             _read_path_counts[rpath] = _read_path_counts.get(rpath, 0) + 1
-                            if _read_path_counts[rpath] >= _READ_PATH_WARN_THRESHOLD:
+                            count = _read_path_counts[rpath]
+                            if count >= _READ_PATH_STOP_THRESHOLD:
+                                # Hard stop: same file read too many times this turn.
+                                stop_note = (
+                                    f"[loop guard: '{rpath}' read {count}× this turn without progress. "
+                                    f"Stop re-reading — use search_files to find a specific anchor, "
+                                    f"or report what you need and ask the user for guidance.]"
+                                )
+                                logger.warning("loop_guard: read_file path '%s' count %d >= stop threshold", rpath, count)
+                                messages = messages + [{"role": "assistant", "content": stop_note}]
+                                return "".join(content_parts + [stop_note]), messages
+                            elif count >= _READ_PATH_WARN_THRESHOLD:
                                 try:
                                     r_parsed = json.loads(result)
                                 except Exception:
                                     r_parsed = {}
                                 if isinstance(r_parsed, dict):
                                     r_parsed["_loop_warning"] = (
-                                        f"[loop-guard] '{rpath}' read {_read_path_counts[rpath]}× this turn. "
+                                        f"[loop-guard] '{rpath}' read {count}× this turn. "
                                         "If previous reads didn't give you the anchor, use search_files or "
                                         "specify start_line/end_line to target a different section. "
                                         "Do not re-read the same range again."

@@ -30,6 +30,8 @@ if TYPE_CHECKING:
     from agent.config import Config
     from agent.memory.facts_store import FactsStore, FactsRound
 
+from agent.memory.smart_compactor import EntityProtector as _EntityProtector
+
 
 class CompactionError(Exception):
     """Raised when stage-2 synthesis cannot produce usable output."""
@@ -471,6 +473,13 @@ async def compact(
 
     transcript_text = _render_transcript(to_compact)
 
+    # Protect technical entities (file paths, hex values, error codes) so the
+    # Stage-1 LLM preserves them verbatim rather than paraphrasing them away.
+    _protector = _EntityProtector()
+    _entities = _protector.scan_text(transcript_text)
+    if _entities:
+        transcript_text = _protector.protect_text(transcript_text, _entities)
+
     prev_round = facts_store.latest_round() if facts_store is not None else None
     round_id = prev_round.round_id if prev_round is not None else None
     from_turn = (prev_round.to_turn + 1) if prev_round else 0
@@ -480,6 +489,9 @@ async def compact(
     knowledge_draft = await _analyze_transcript(
         transcript_text, prev_round, config, client
     )
+    # Strip entity markers before saving to Tier-2 facts and feeding Stage 2.
+    if _entities:
+        knowledge_draft = _protector.unprotect_text(knowledge_draft)
 
     # Stage 2
     try:

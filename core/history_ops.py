@@ -10,6 +10,8 @@ from .streaming import _is_narrating_tool_use
 logger = logging.getLogger(__name__)
 
 _EXTRACT_SHRINK_RATIO = 0.25
+# Fraction of lines that may start with markdown bullets before we refuse the write.
+_PROSE_BULLET_THRESHOLD = 0.40
 
 _FILE_RE = re.compile(
     r"\b([a-zA-Z0-9./\-_]+\.(?:sh|bash|py|js|mjs|cjs|ts|jsx|tsx|go|rs|java|kt|c|cpp|h|hpp|rb|toml|yaml|yml|json|md|txt))\b"
@@ -218,6 +220,30 @@ def _build_extracted_summary(filename: str, code: str, outcome: str, err: str | 
     return summary_msg
 
 
+def _is_prose_not_code(filename: str, code: str) -> bool:
+    """Return True if `code` looks like planning prose rather than source code."""
+    lines = [l for l in code.splitlines() if l.strip()]
+    if not lines:
+        return False
+    # High ratio of markdown bullet lines → prose
+    bullet_lines = sum(1 for l in lines if l.lstrip().startswith(("* ", "- ", "• ")))
+    if bullet_lines / len(lines) >= _PROSE_BULLET_THRESHOLD:
+        return True
+    # Python-specific: attempt to parse; refuse if syntax error AND no valid
+    # Python statement could be constructed (i.e. it's not real code at all).
+    ext = Path(filename).suffix.lower()
+    if ext == ".py":
+        try:
+            import ast as _ast
+            _ast.parse(code)
+        except SyntaxError:
+            # Still might be partial code — only refuse if bullets are dominant.
+            # A SyntaxError alone is insufficient (e.g. f-strings with complex exprs).
+            if bullet_lines > 0:
+                return True
+    return False
+
+
 def _apply_code_from_history(
     messages: list[dict],
     on_tool_call,
@@ -232,6 +258,14 @@ def _apply_code_from_history(
     outcome: str
     human: str
     err: str | None = None
+
+    # Reject prose masquerading as code before touching disk.
+    if _is_prose_not_code(filename, code):
+        logger.warning(
+            "[extract] refused write to %s: content looks like prose/planning text, not code",
+            filename,
+        )
+        return None
 
     p = Path(filename)
     existing_len = 0

@@ -69,6 +69,14 @@ def _get_store():
         },
     },
 )
+def _looks_like_placeholder(call_id: str) -> bool:
+    """Detect hallucinated/planning-text call IDs."""
+    if len(call_id) > 80:
+        return True
+    low = call_id.lower()
+    return any(marker in low for marker in ("not provided", "...", "use read_file", "(", "will use", "placeholder"))
+
+
 def retrieve_output(
     call_id: str,
     mode: str = "full",
@@ -77,6 +85,14 @@ def retrieve_output(
     start_line: int | None = None,
     end_line: int | None = None,
 ) -> dict:
+    if _looks_like_placeholder(call_id):
+        return {
+            "error": (
+                "call_id looks like a placeholder, not a real output-store ID. "
+                "retrieve_output only works with a call_id from a '[output truncated: call_id=...]' "
+                "envelope in a previous tool result. Do not invent or guess call_ids."
+            )
+        }
     try:
         store = _get_store()
     except RuntimeError as e:

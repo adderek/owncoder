@@ -1,2 +1,9 @@
-*   `content_summary`: Co się stało.
-*   `protected_entities`: Lista terminów, które muszą zostać zachowane.
+from dataclasses import dataclass, field
+from typing import List
+
+
+@dataclass
+class CompactionRecord:
+    session_id: str
+    content_summary: str
+    protected_entities: List[str] = field(default_factory=list)

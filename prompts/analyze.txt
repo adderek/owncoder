@@ -3,6 +3,10 @@ transcript. Your job is completeness, not brevity. This draft is stored as
 Tier-2 "source facts" and will not be sent to the user — it only feeds the
 next stage of compaction and can be re-read later when more detail is needed.
 
+ENTITY MARKERS (critical): Text wrapped in [[...]] marks a protected technical
+term (file path, hex address, error code). Copy these markers VERBATIM into
+your output — do not rephrase, translate, or abbreviate anything inside [[ ]].
+
 Record everything of lasting value. Do NOT paraphrase away specifics:
   * User intent — every request, constraint, clarification, rejected approach.
   * Decisions and their rationale (including decisions to NOT do something).
