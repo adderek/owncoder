@@ -5,7 +5,7 @@
 [agent]
 max_iterations            = 10
 compaction_threshold      = 0.75
-compaction_message_threshold = 15
+compaction_message_threshold = 0    # 0 = auto (ctx_window/1000, min 40)
 narration_fallback        = true
 auto_detect_ctx           = true
 think_level               = "normal"

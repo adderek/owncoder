@@ -177,6 +177,28 @@ class FactsStore:
         self._index_round(r)
         return r
 
+    # ── durable session metadata ─────────────────────────────────────────────
+    def _original_request_path(self) -> Path:
+        return self.dir / "original_request.txt"
+
+    def set_original_request(self, text: str) -> None:
+        """Persist original user request. Written once; subsequent calls no-op if already set."""
+        p = self._original_request_path()
+        if p.exists():
+            return
+        self.dir.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+
+    def get_original_request(self) -> str:
+        """Return persisted original request, or empty string if not set."""
+        p = self._original_request_path()
+        if not p.exists():
+            return ""
+        try:
+            return p.read_text(encoding="utf-8").strip()
+        except Exception:
+            return ""
+
     def _index_round(self, r: FactsRound) -> None:
         """Embed and store round in MemoryStore for semantic recall."""
         if self._mem_store is None or self._embedder is None:

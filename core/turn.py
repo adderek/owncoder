@@ -532,6 +532,9 @@ async def run_turn(
             _notify_ctx(token_est)
             token_threshold = int(config.llm.ctx_window * config.llm.compaction_threshold)
             msg_threshold = config.llm.compaction_message_threshold
+            if msg_threshold <= 0:
+                # Auto: ~1 message per 1000 tokens at the compaction threshold.
+                msg_threshold = max(40, config.llm.ctx_window // 1000)
 
             if token_est > token_threshold or len(messages) > msg_threshold:
                 _phase("compact", f"post-tool at {token_est} tokens")

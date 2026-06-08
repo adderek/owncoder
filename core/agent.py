@@ -579,6 +579,8 @@ class Agent:
         _is_continue = user_input.strip().lower() in ("continue", "/continue", "/c")
         if not _is_continue:
             self.messages.append({"role": "user", "content": user_input})
+            if self._facts_store is not None:
+                self._facts_store.set_original_request(user_input)
             # Compute embedding once; reuse across both injection helpers.
             precomputed_embedding = None
             if self.embedder is not None:

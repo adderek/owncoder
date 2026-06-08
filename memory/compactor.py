@@ -512,6 +512,11 @@ async def compact(
     prev_original = (prev_round.facts or {}).get("original_request", "") if prev_round else ""
     if prev_original and not facts.get("original_request"):
         facts["original_request"] = prev_original
+    # Fall back to durable store (written on first user turn in agent.py).
+    if not facts.get("original_request") and facts_store is not None:
+        durable = facts_store.get_original_request()
+        if durable:
+            facts["original_request"] = durable
 
     # Drift check: if original_request exists, verify q_view hasn't drifted.
     original_request = facts.get("original_request", "")

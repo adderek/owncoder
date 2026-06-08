@@ -14,7 +14,7 @@ class LLMConfig:
     global_max_ctx: int = 0       # hard ceiling applied after probe (0 = no global cap)
     auto_detect_ctx: bool = True  # query server for actual context size on startup
     compaction_threshold: float = 0.75
-    compaction_message_threshold: int = 15
+    compaction_message_threshold: int = 0
     max_output_tokens: int = 4096
     max_iterations: int | None = 10   # cap on tool-call rounds per user turn (None = infinity)
     goal: str | None = None            # completion condition; prefix "$" for shell check
@@ -343,7 +343,7 @@ class AgentConfig:
     goal: str | None = None
     goal_max_iterations: int = 200
     compaction_threshold: float = 0.75
-    compaction_message_threshold: int = 15
+    compaction_message_threshold: int = 0
     narration_fallback: bool = True
     auto_detect_ctx: bool = True
     think_level: str = "normal"
