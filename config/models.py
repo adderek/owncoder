@@ -16,7 +16,7 @@ class LLMConfig:
     compaction_threshold: float = 0.75
     compaction_message_threshold: int = 0
     max_output_tokens: int = 4096
-    max_iterations: int | None = 10   # cap on tool-call rounds per user turn (None = infinity)
+    max_iterations: int | None = None  # cap on tool-call rounds per user turn (None/0 = unlimited)
     goal: str | None = None            # completion condition; prefix "$" for shell check
     goal_max_iterations: int = 200     # hard ceiling when goal is set
     temperature: float = 0.7
@@ -339,7 +339,7 @@ class ParallelConfig:
 @dataclass
 class AgentConfig:
     """Agent runtime behavior (independent of model/endpoint choice)."""
-    max_iterations: int = 10
+    max_iterations: int | None = None  # None/0 = unlimited
     goal: str | None = None
     goal_max_iterations: int = 200
     compaction_threshold: float = 0.75

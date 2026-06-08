@@ -312,6 +312,10 @@ class LocalUIServer:
         from agent.ui.slash import _apply_max_tokens
         return _apply_max_tokens(self._agent, arg)
 
+    def set_max_iter(self, arg: str, session_id: str = "") -> "tuple[bool, str]":
+        from agent.ui.slash import _apply_max_iter
+        return _apply_max_iter(self._agent, arg)
+
     def set_model(self, arg: str, session_id: str = "") -> "tuple[bool, str]":
         from agent.ui.slash import _apply_model
         return _apply_model(self._agent, arg)

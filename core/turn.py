@@ -119,8 +119,8 @@ async def run_turn(
     _READ_PATH_WARN_THRESHOLD = 3   # inject warning into result
     _READ_PATH_STOP_THRESHOLD = 6   # hard-stop the turn
     _EDIT_FILE_FAIL_THRESHOLD = 2
-    _max_iter_raw = getattr(config.llm, "max_iterations", 10)
-    max_iter: int | None = None if _max_iter_raw is None else max(1, int(_max_iter_raw))
+    _max_iter_raw = getattr(config.llm, "max_iterations", None)
+    max_iter: int | None = None if (_max_iter_raw is None or _max_iter_raw == 0) else max(1, int(_max_iter_raw))
     goal: str | None = getattr(config.llm, "goal", None)
     goal_max_iter: int = max(1, int(getattr(config.llm, "goal_max_iterations", 200)))
     total_iter_count: int = 0

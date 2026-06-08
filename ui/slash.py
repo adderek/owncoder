@@ -43,6 +43,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/think", ["/effort"], "set thinking level  off|low|normal|high|max", True),
     ("/autonomy", ["/auto", "/verbose"], "set autonomy level  0.0–1.0 (or %) or supervised|explain|balanced|brisk|autopilot", True),
     ("/max_tokens", [], "set max tokens   [out <n> | in <n> | <n> | default]", True),
+    ("/maxiter", ["/max_iter"], "set max tool-call iterations per turn  [<n> | 0/none = unlimited]", True),
     ("/wrap", [], "toggle line wrapping", False),
     ("/round-summary", ["/summary"], "toggle gray Q/A summary after each turn", False),
     ("/tools", [], "list available tools", False),
@@ -122,6 +123,30 @@ def _apply_temperature(agent, arg: str) -> tuple[bool, str]:
         return False, f"Out of range: {f}. Must be 0.0–2.0."
     agent.config.llm.temperature = f
     return True, f"temperature = {f}"
+
+
+def _apply_max_iter(agent, arg: str) -> tuple[bool, str]:
+    cur = agent.config.llm.max_iterations
+    cur_display = "unlimited" if cur is None or cur == 0 else str(cur)
+    v = arg.strip().lower()
+    if not v:
+        return True, (
+            f"max_iterations = {cur_display}  "
+            f"(0/none = unlimited; set positive int to cap tool rounds per turn)\n"
+            f"Usage: /maxiter <n>   or   /maxiter 0   or   /maxiter none"
+        )
+    if v in ("0", "none", "null", "unlimited", "-", "default", "∞", "inf"):
+        agent.config.llm.max_iterations = None
+        return True, "max_iterations = unlimited (Ctrl+C to interrupt)"
+    try:
+        n = int(v)
+    except ValueError:
+        return False, f"Invalid value '{arg.strip()}'. Use a positive integer or 0/none for unlimited."
+    if n < 1:
+        agent.config.llm.max_iterations = None
+        return True, "max_iterations = unlimited (Ctrl+C to interrupt)"
+    agent.config.llm.max_iterations = n
+    return True, f"max_iterations = {n}"
 
 
 def _apply_max_tokens(agent, arg: str) -> tuple[bool, str]:

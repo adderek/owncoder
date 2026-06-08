@@ -17,7 +17,6 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_LLM_MODEL": ("llm", "model"),
         "AGENT_LLM_MAX_OUTPUT_TOKENS": ("llm", "max_output_tokens"),
         "AGENT_LLM_TEMPERATURE": ("llm", "temperature"),
-        "AGENT_LLM_MAX_ITERATIONS": ("agent", "max_iterations"),
         "AGENT_GOAL": ("agent", "goal"),
         "AGENT_GOAL_MAX_ITERATIONS": ("agent", "goal_max_iterations"),
         "AGENT_LLM_THINK_LEVEL": ("agent", "think_level"),
@@ -116,6 +115,12 @@ def _apply_env_overrides(config: Config) -> None:
     seed_val = os.environ.get("AGENT_LLM_SEED")
     if seed_val is not None and seed_val.strip():
         config.llm.seed = int(seed_val)
+
+    # AGENT_LLM_MAX_ITERATIONS: int | None (0/none/null = unlimited)
+    max_iter_val = os.environ.get("AGENT_LLM_MAX_ITERATIONS")
+    if max_iter_val is not None:
+        v = max_iter_val.strip().lower()
+        config.agent.max_iterations = None if v in ("", "0", "none", "null", "unlimited") else int(v)
 
     # Role overrides: AGENT_MODEL_ROLE_<ROLE> = model-entry-name
     for role in ("default", "summarizer", "embeddings"):

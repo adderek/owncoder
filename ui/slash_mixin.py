@@ -262,6 +262,12 @@ class SlashHandlerMixin:
             for line in msg.splitlines():
                 self._write_sys(f"[{color}]{line}[/{color}]")
 
+        elif cmd in ("/maxiter", "/max_iter"):
+            ok, msg = self._server.set_max_iter(arg)
+            color = t.success if ok else t.warning
+            for line in msg.splitlines():
+                self._write_sys(f"[{color}]{line}[/{color}]")
+
         elif cmd == "/wrap":
             from agent.ui.prefs import load_prefs, save_prefs
             self._wrap_enabled = not self._wrap_enabled

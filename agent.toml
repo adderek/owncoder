@@ -3,7 +3,7 @@
 # See agent.toml.example for a full reference of all available options.
 
 [agent]
-max_iterations            = 10
+max_iterations            = 0     # 0/null = unlimited; set positive int to cap per-turn tool rounds
 compaction_threshold      = 0.75
 compaction_message_threshold = 0    # 0 = auto (ctx_window/1000, min 40)
 narration_fallback        = true
