@@ -141,15 +141,15 @@ class EventHandlerMixin:
         else:
             stats["err"] += 1
 
-    def _render_file_diffs(self) -> str:
-        """Render modified files as clickable-looking entries with +N/-M stats."""
+    def _render_file_diffs(self) -> list[str]:
+        """Return one line per modified file with +N/-M stats (clickable in chat)."""
         if not self._modified_files:
-            return ""
+            return []
         t = self._t
-        parts = []
+        lines = []
         for entry in self._modified_files:
             if isinstance(entry, str):
-                parts.append(_escape(entry))
+                lines.append(f"📄 {_escape(entry)}")
                 continue
             path = entry.get("path", "")
             added = entry.get("added", 0)
@@ -161,8 +161,8 @@ class EventHandlerMixin:
                 stats += f"[{t.error}]-{removed}[/{t.error}]"
             if not stats:
                 stats = "[dim]0[/-dim]"
-            parts.append(f"📄 {_escape(path)} {stats}")
-        return "  ".join(parts)
+            lines.append(f"📄 {_escape(path)} {stats}")
+        return lines
 
     def _render_tool_summary(self) -> str:
         t = self._t
@@ -368,28 +368,32 @@ class EventHandlerMixin:
             self._stream_last_render = 0.0
 
     def _turn_write_chat(self, response: "str | None", empty_response: bool) -> None:
-        from rich.markdown import Markdown as _Markdown
-        from agent.ui.render import _delatex
-        t = self._t
-        if self._last_tool_calls:
-            tool_part = self._render_tool_summary()
-            if self._modified_files:
-                files_part = self._render_file_diffs()
-                self._write_chat(f"  {tool_part}  ·  {files_part}")
-            else:
-                self._write_chat(f"  {tool_part}")
-        elif self._modified_files:
-            files_part = self._render_file_diffs()
-            self._write_chat(f"  {files_part}")
-        if response:
-            if empty_response:
-                self._write_chat(
-                    f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] "
-                    f"[{t.text_dim}]{_escape(response)}[/{t.text_dim}]"
-                )
-            else:
-                self._write_chat(f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}]")
-                self._write_chat(_Markdown(_delatex(response)))
+          from rich.markdown import Markdown as _Markdown
+          from agent.ui.render import _delatex
+          t = self._t
+          chat_log = self.query_one("#chat-log", self._wt.ConversationView)
+          file_lines = self._render_file_diffs()
+          if self._last_tool_calls:
+              tool_part = self._render_tool_summary()
+              self._write_chat(f"  {tool_part}")
+          if file_lines:
+              for idx, line_text in enumerate(file_lines):
+                  before = len(chat_log.lines)
+                  self._write_chat(f"  {line_text}")
+                  after = len(chat_log.lines)
+                  entry = self._modified_files[idx] if idx < len(self._modified_files) else None
+                  if entry is not None:
+                      for li in range(before, after):
+                          self._chat_file_lines[li] = entry
+          if response:
+              if empty_response:
+                  self._write_chat(
+                      f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] "
+                      f"[{t.text_dim}]{_escape(response)}[/{t.text_dim}]"
+                  )
+              else:
+                  self._write_chat(f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}]")
+                  self._write_chat(_Markdown(_delatex(response)))
 
     def on_worker_state_changed(self, event) -> None:
         from textual.worker import WorkerState

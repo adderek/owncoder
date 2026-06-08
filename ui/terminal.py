@@ -141,7 +141,8 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             self._streaming_active: bool = False
             self._stream_buffer: list[str] = []
             self._stream_last_render: float = 0.0
-            self._modified_files: list[str] = []
+            self._modified_files: list[dict] = []
+            self._chat_file_lines: dict[int, dict] = {}
             self._loading_timer = None
             self._iter_done: int = 0
             self._iter_limit: int = 0
@@ -567,6 +568,7 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             self._stream_buffer = []
             self._stream_last_render = 0.0
             self._modified_files = []
+            self._chat_file_lines = {}
             self._iter_done = 0
             self._iter_limit = 0
             self._stop_requested = False

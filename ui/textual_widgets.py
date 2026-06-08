@@ -381,10 +381,23 @@ def build_widget_classes(t) -> SimpleNamespace:
         """Live chat log — user ↔ agent turns. Click any line to expand that turn."""
 
         def on_click(self, event) -> None:
+            line_idx = int(self.scroll_offset.y) + int(event.y)
+
+            # Check if this line is a clickable file diff entry.
+            file_lines = getattr(self.app, "_chat_file_lines", {})
+            if line_idx in file_lines:
+                entry = file_lines[line_idx]
+                path = entry.get("path", "") if isinstance(entry, dict) else entry
+                added = entry.get("added", 0) if isinstance(entry, dict) else 0
+                removed = entry.get("removed", 0) if isinstance(entry, dict) else 0
+                self.app.push_screen(
+                    self.app._wt.FileDiffScreen(path, added, removed)
+                )
+                return
+
             qa_data = getattr(self.app, "_chat_qa_data", [])
             if not qa_data:
                 return
-            line_idx = int(self.scroll_offset.y) + int(event.y)
 
             # Primary: per-visual-line ordinal map built during _restore_chat_history.
             line_to_ordinal = getattr(self.app, "_chat_line_to_ordinal", [])
@@ -808,10 +821,21 @@ def build_widget_classes(t) -> SimpleNamespace:
                                 classes="tool-call-btn",
                             )
                     if files:
-                        yield Static(
-                            f"[{t.text_dim}]✎ {_escape('  '.join(files))}[/{t.text_dim}]",
-                            markup=True,
-                        )
+                        yield Static(f"[{t.text_dim}]Files (click for diff):[/{t.text_dim}]", markup=True)
+                        for fidx, fentry in enumerate(files):
+                            if isinstance(fentry, dict):
+                                fp = fentry.get("path", "")
+                                fa = fentry.get("added", 0)
+                                fr = fentry.get("removed", 0)
+                                stat = f" +{fa}/-{fr}" if (fa or fr) else ""
+                            else:
+                                fp = str(fentry)
+                                stat = ""
+                            yield Button(
+                                f"📄 {_escape(fp)}{stat}",
+                                id=f"file-btn-{fidx}",
+                                classes="tool-call-btn",
+                            )
                 yield Button("Close  [ESC]", id="turn-detail-close")
 
         def on_button_pressed(self, event) -> None:
@@ -829,6 +853,20 @@ def build_widget_classes(t) -> SimpleNamespace:
                     tool_name = tool_names[idx]
                     tid = self._q_data.get("turn_id") or self._a_data.get("turn_id") or (self._ordinal + 1)
                     self.app.push_screen(ToolCallDetailScreen(tool_name, tid, self._session_dir))
+            if btn_id.startswith("file-btn-"):
+                idx = int(btn_id[len("file-btn-"):])
+                files = self._a_data.get("modified_files") or []
+                files = list(dict.fromkeys(files))
+                if idx < len(files):
+                    fentry = files[idx]
+                    if isinstance(fentry, dict):
+                        fp = fentry.get("path", "")
+                        fa = fentry.get("added", 0)
+                        fr = fentry.get("removed", 0)
+                    else:
+                        fp = str(fentry)
+                        fa = fr = 0
+                    self.app.push_screen(FileDiffScreen(fp, fa, fr))
 
         def on_key(self, event) -> None:
             if event.key in ("escape", "q"):
