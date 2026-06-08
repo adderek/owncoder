@@ -936,6 +936,85 @@ def build_widget_classes(t) -> SimpleNamespace:
             if event.key in ("escape", "q"):
                 self.dismiss()
 
+    class FileDiffScreen(ModalScreen):
+        """Modal showing git diff for a modified file."""
+
+        CSS = """
+        FileDiffScreen {
+            align: center middle;
+        }
+        #diff-dialog {
+            width: 90%;
+            max-width: 120;
+            height: auto;
+            max-height: 80%;
+            border: solid $accent;
+            background: $surface;
+            padding: 1 2;
+        }
+        #diff-body {
+            max-height: 35;
+            overflow-y: auto;
+            margin-bottom: 1;
+        }
+        #diff-close {
+            width: 100%;
+        }
+        """
+
+        def __init__(self, file_path: str, added: int = 0, removed: int = 0) -> None:
+            super().__init__()
+            self._file_path = file_path
+            self._added = added
+            self._removed = removed
+
+        def _get_diff(self) -> str:
+            import subprocess
+            try:
+                result = subprocess.run(
+                    ["git", "diff", "--", self._file_path],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    return result.stdout
+                # Try staged diff too
+                result = subprocess.run(
+                    ["git", "diff", "--cached", "--", self._file_path],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    return result.stdout
+            except Exception:
+                pass
+            return f"[dim]No diff available for {_escape(self._file_path)}[/dim]"
+
+        def compose(self):
+            from textual.containers import Vertical, ScrollableContainer
+            from textual.widgets import Button, Static
+            from rich.markup import escape as _esc
+            from rich.diff import Diff
+
+            diff_text = self._get_diff()
+            stat = ""
+            if self._added or self._removed:
+                stat = f"  [{t.success}]+{self._added}[/{t.success}] [{t.error}]-{self._removed}[/{t.error}]"
+
+            with Vertical(id="diff-dialog"):
+                yield Static(
+                    f"[bold]📄 {_esc(self._file_path)}[/bold]{stat}",
+                    markup=True,
+                )
+                with ScrollableContainer(id="diff-body"):
+                    yield Static(diff_text, markup=False)
+                yield Button("Close  [ESC]", id="diff-close")
+
+        def on_button_pressed(self, event) -> None:
+            self.dismiss()
+
+        def on_key(self, event) -> None:
+            if event.key in ("escape", "q"):
+                self.dismiss()
+
     class ModelStatusBar(Static):
         """Compact inline indicator of model request states (idle/running). Click to view config."""
 
