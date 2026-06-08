@@ -23,6 +23,42 @@ def _fmt_tps(v: float) -> str:
     return s.lstrip("0") or "0"
 
 
+def _compute_file_diffs(paths: "list[str]") -> "list[dict]":
+    """Run git diff --numstat for the given paths and return [{path, added, removed}].
+
+    Returns entries even if git is unavailable (added/removed = 0).
+    """
+    import subprocess
+    if not paths:
+        return []
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--numstat", "--"] + paths,
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            # git not available or no changes; return paths with zero stats
+            return [{"path": p, "added": 0, "removed": 0} for p in paths]
+        stats: dict[str, dict] = {p: {"path": p, "added": 0, "removed": 0} for p in paths}
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split("\t")
+            if len(parts) == 3:
+                a, r, fpath = parts
+                a_int = int(a) if a != "-" else 0
+                r_int = int(r) if r != "-" else 0
+                # Match by basename or full path
+                for p in paths:
+                    if fpath == p or fpath.endswith(p) or p.endswith(fpath):
+                        stats[p] = {"path": p, "added": a_int, "removed": r_int}
+                        break
+        return list(stats.values())
+    except Exception:
+        return [{"path": p, "added": 0, "removed": 0} for p in paths]
+
+
 class EventHandlerMixin:
     """Textual event handlers for agent tool/stream/worker events."""
 
@@ -104,6 +140,29 @@ class EventHandlerMixin:
             stats["ok"] += 1
         else:
             stats["err"] += 1
+
+    def _render_file_diffs(self) -> str:
+        """Render modified files as clickable-looking entries with +N/-M stats."""
+        if not self._modified_files:
+            return ""
+        t = self._t
+        parts = []
+        for entry in self._modified_files:
+            if isinstance(entry, str):
+                parts.append(_escape(entry))
+                continue
+            path = entry.get("path", "")
+            added = entry.get("added", 0)
+            removed = entry.get("removed", 0)
+            stats = ""
+            if added:
+                stats += f"[{t.success}]+{added}[/{t.success}]"
+            if removed:
+                stats += f"[{t.error}]-{removed}[/{t.error}]"
+            if not stats:
+                stats = "[dim]0[/-dim]"
+            parts.append(f"📄 {_escape(path)} {stats}")
+        return "  ".join(parts)
 
     def _render_tool_summary(self) -> str:
         t = self._t
@@ -223,6 +282,24 @@ class EventHandlerMixin:
         if event.state in (WorkerState.SUCCESS, WorkerState.ERROR):
             if getattr(self, "_bell_on_input_request", True):
                 self.bell()
+        # Compute diff stats for modified files (convert list[str] → list[dict]).
+        if self._modified_files:
+            raw_paths = [f if isinstance(f, str) else f.get("path", "") for f in self._modified_files]
+            raw_paths = [p for p in raw_paths if p]
+            self._modified_files = _compute_file_diffs(raw_paths)
+            # Write file change summary to sys view
+            t = self._t
+            file_lines = []
+            for entry in self._modified_files:
+                if isinstance(entry, str):
+                    file_lines.append(f"  {_escape(entry)}")
+                    continue
+                p = entry.get("path", "")
+                a = entry.get("added", 0)
+                r = entry.get("removed", 0)
+                stat = f"[{t.success}]+{a}[/{t.success}] [{t.error}]-{r}[/{t.error}]" if (a or r) else ""
+                file_lines.append(f"  {_escape(p)} {stat}")
+            self._write_sys(f"[{t.text_dim}]Files changed ({len(self._modified_files)}):[/{t.text_dim}]\n" + "\n".join(file_lines), switch_tab=False)
 
     def _turn_extract_response(self, event) -> "tuple[str | None, bool]":
         from textual.worker import WorkerState
@@ -297,12 +374,12 @@ class EventHandlerMixin:
         if self._last_tool_calls:
             tool_part = self._render_tool_summary()
             if self._modified_files:
-                files_part = f"[{t.success}]{_escape('  '.join(self._modified_files))}[/{t.success}]"
+                files_part = self._render_file_diffs()
                 self._write_chat(f"  {tool_part}  ·  {files_part}")
             else:
                 self._write_chat(f"  {tool_part}")
         elif self._modified_files:
-            files_part = f"[{t.success}]{_escape('  '.join(self._modified_files))}[/{t.success}]"
+            files_part = self._render_file_diffs()
             self._write_chat(f"  {files_part}")
         if response:
             if empty_response:

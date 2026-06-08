@@ -171,7 +171,17 @@ class ViewMixin:
             from agent.ui.render import tool_icon as _ti
             action_bits.append(", ".join(f"{_ti(n)} {n}" for n in tools[:4]))
         if self._modified_files:
-            action_bits.append("✎ " + " ".join(self._modified_files[:4]))
+            file_parts = []
+            for entry in self._modified_files[:4]:
+                if isinstance(entry, str):
+                    file_parts.append(entry)
+                else:
+                    p = entry.get("path", "")
+                    a = entry.get("added", 0)
+                    r = entry.get("removed", 0)
+                    stat = f"+{a}/-{r}" if (a or r) else ""
+                    file_parts.append(f"{p} ({stat})" if stat else p)
+            action_bits.append("✎ " + " ".join(file_parts))
         action = " · ".join(action_bits)
         if action and a:
             a_part = f"{action} — {a}"
@@ -192,7 +202,10 @@ class ViewMixin:
                 "turn_id": turn_id,
                 "content": response or "",
                 "tool_calls": list(self._last_tool_calls),
-                "modified_files": list(self._modified_files),
+                "modified_files": [
+                    f if isinstance(f, dict) else {"path": f, "added": 0, "removed": 0}
+                    for f in self._modified_files
+                ],
             }
             # Keep chat_qa_data in sync so click-to-expand works for live turns too.
             if not hasattr(self, "_chat_qa_data"):
