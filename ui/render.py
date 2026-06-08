@@ -201,6 +201,10 @@ TOOL_ICONS: dict[str, str] = {
     "web_fetch":            "🌐",
     # Indexing
     "index_code":           "🗂",
+    "graph_status":          "🩺",
+    "graph_query":           "🔍",
+    "graph_path":            "📡",
+    "graph_context":        "👁️",
     "project_file_stats":   "📊",
     "analyze_asm":          "🔬",
     # Skills / agents
