@@ -116,18 +116,17 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
         BINDINGS = [
             Binding("ctrl+q", "quit", "Quit"),
             Binding("ctrl+d", "quit", "Quit", show=False),
-            Binding("f1", "show_help", "Help"),
             Binding("ctrl+r", "continue_turn", "Continue"),
             Binding("ctrl+c", "interrupt_turn", "Stop", show=False),
             Binding("ctrl+tab", "focus_next", "Switch focus", show=False),
-            Binding("ctrl+1", "activate_tab('tab-chat')", "Chat", show=False),
-            Binding("ctrl+2", "activate_tab('tab-q')", "Q", show=False),
-            Binding("ctrl+3", "activate_tab('tab-q-summary')", "Q Sum", show=False),
-            Binding("ctrl+4", "activate_tab('tab-a')", "A", show=False),
-            Binding("ctrl+5", "activate_tab('tab-a-summary')", "A Sum", show=False),
-            Binding("ctrl+6", "activate_tab('tab-sparse')", "Sparse", show=False),
-            Binding("ctrl+7", "activate_tab('tab-sys')", "Sys", show=False),
-            Binding("ctrl+8", "activate_tab('tab-plan')", "Plan", show=False),
+            Binding("f1", "activate_tab('tab-chat')", "Chat", show=False),
+            Binding("f2", "activate_tab('tab-q')", "Q", show=False),
+            Binding("f3", "activate_tab('tab-q-summary')", "Q Sum", show=False),
+            Binding("f4", "activate_tab('tab-a')", "A", show=False),
+            Binding("f5", "activate_tab('tab-a-summary')", "A Sum", show=False),
+            Binding("f6", "activate_tab('tab-sparse')", "Sparse", show=False),
+            Binding("f7", "activate_tab('tab-sys')", "Sys", show=False),
+            Binding("f8", "activate_tab('tab-plan')", "Plan", show=False),
         ]
 
         def __init__(self, agent: "Agent", session=None, server=None, **kwargs):
@@ -320,7 +319,7 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                         else ""
                     )
                 )
-            sys_log.write(f"[{t.text_dim}]Type /help for commands  ·  F1 opens this tab[/{t.text_dim}]")
+            sys_log.write(f"[{t.text_dim}]Type /help for commands[/{t.text_dim}]")
             msgs = self._server.get_messages()
             self._reload_qa_views()
             if msgs:
@@ -390,10 +389,6 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                 logger.exception("graceful_exit: wait_background error (ignored)")
             os.system('echo -ne "\033]0;\007"')
             self.exit()
-
-        def action_show_help(self) -> None:
-            from agent.ui.readline_loop import _make_help_text
-            self._write_sys(_make_help_text(t))
 
         def action_activate_tab(self, tab_id: str) -> None:
             from textual.widgets import TabbedContent
