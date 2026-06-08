@@ -77,11 +77,12 @@ def _apply_plan(agent, arg: str) -> tuple[bool, str]:
     if sub in ("new", "create"):
         if not rest.strip():
             return False, "Usage: /plan new <goal>"
+        from agent.planning.plan import _switch_to_plan
         sid = getattr(getattr(agent, "session", None), "id", "") or ""
-        plan = create_plan(goal=rest.strip(), session_id=sid)
-        plan.status = "active"
-        save_plan(plan)
-        return True, f"Created plan {plan.id}. Add steps via /plan step add <description>."
+        plan = create_plan(goal=rest.strip(), session_id=sid, created_by="user")
+        paused = _switch_to_plan(plan)
+        suffix = f" (paused plan {paused.id})" if paused else ""
+        return True, f"Created plan {plan.id}.{suffix} Add steps via /plan step add <description>."
 
     if sub == "show":
         plan = _active_plan(agent)
@@ -213,20 +214,37 @@ def _apply_plan(agent, arg: str) -> tuple[bool, str]:
         save_plan(plan)
         return True, f"Plan {plan.id} stashed.\n{stash_out}"
 
+    if sub == "switch":
+        target = rest.strip()
+        if not target:
+            return False, "Usage: /plan switch <plan_id>"
+        from agent.planning.plan import _switch_to_plan
+        plan = load_plan(target)
+        if plan is None:
+            return False, f"Plan not found: {target}"
+        paused = _switch_to_plan(plan)
+        suffix = f" (paused plan {paused.id})" if paused else ""
+        return True, f"Switched to plan {plan.id}.{suffix}"
+
     if sub == "resume":
         target = rest.strip()
         if target:
             plan = load_plan(target)
         else:
+            # prefer the resume_to target of the current active plan
             plan = None
-            for p in list_plans():
-                if p.status in ("paused", "stashed"):
-                    plan = p
-                    break
+            active = _active_plan(agent)
+            if active and active.resume_to:
+                plan = load_plan(active.resume_to)
+            if plan is None:
+                for p in list_plans():
+                    if p.status in ("paused", "stashed"):
+                        plan = p
+                        break
         if plan is None:
             return False, "No plan to resume."
-        plan.status = "active"
-        save_plan(plan)
+        from agent.planning.plan import _switch_to_plan
+        _switch_to_plan(plan)
         return True, f"Plan {plan.id} resumed."
 
     if sub == "context":

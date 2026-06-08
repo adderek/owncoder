@@ -122,7 +122,27 @@ def tool_complete_step(plan_id: str, step_id: str, notes: str = "") -> dict:
         kw["notes"] = notes
     update_step(plan, step_id, **kw)
 
-    return {"ok": True, "message": f"Step {step_id} completed.", "squashed": squash_results}
+    done, total = plan.progress()
+    if done == total and total > 0:
+        plan.status = "completed"
+        from agent.planning import save_plan
+        save_plan(plan)
+        resume_msg = ""
+        if plan.resume_to:
+            prev = load_plan(plan.resume_to)
+            if prev is not None:
+                resume_msg = (
+                    f" Plan complete. Previous plan '{prev.goal}' ({prev.id}) is paused"
+                    f" — call set_current_plan('{prev.id}') to return to it."
+                )
+        return {
+            "ok": True,
+            "plan_completed": True,
+            "message": f"Step {step_id} completed. All {total} steps done.{resume_msg}",
+            "squashed": squash_results,
+        }
+
+    return {"ok": True, "message": f"Step {step_id} completed. ({done}/{total} steps done)", "squashed": squash_results}
 
 
 @register(
@@ -477,4 +497,138 @@ def tool_report_blocking_issue(
         "escalation_doc": str(doc_path),
         "doc_content": doc,
         "message": f"Step {step_id} marked blocked. Escalation doc: {doc_path}",
+    }
+
+
+@register(
+    "create_plan",
+    {
+        "description": (
+            "Create a structured execution plan with atomic steps. "
+            "Automatically becomes the active plan (previous active plan is paused; "
+            "after this plan completes you will be prompted to return to it). "
+            "Use plan_ready_steps to see which steps can start, "
+            "then snapshot_step → implement → complete_step for each."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "goal": {
+                    "type": "string",
+                    "description": "High-level goal this plan achieves.",
+                },
+                "steps": {
+                    "type": "array",
+                    "description": "Ordered list of atomic steps.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string", "description": "Short step id e.g. 's1'. Auto-assigned if omitted."},
+                            "description": {"type": "string", "description": "What this step does."},
+                            "introduction": {"type": "string", "description": "Why this step exists / what it builds on."},
+                            "acceptance_criteria": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Human-readable done conditions.",
+                            },
+                            "tests": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Verification commands or checks.",
+                            },
+                            "deps": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Step IDs that must complete before this one.",
+                            },
+                        },
+                        "required": ["description"],
+                    },
+                },
+                "context": {
+                    "type": "string",
+                    "description": "Shared context injected into every step brief (key files, constraints, arch decisions).",
+                },
+                "final_tests": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Acceptance checks run after ALL steps complete.",
+                },
+            },
+            "required": ["goal", "steps"],
+        },
+    },
+)
+def tool_create_plan(
+    goal: str,
+    steps: list,
+    context: str = "",
+    final_tests: list | None = None,
+) -> dict:
+    from agent.planning.plan import create_plan as _create_plan, _switch_to_plan
+
+    plan = _create_plan(
+        goal=goal,
+        session_id="",
+        steps=steps,
+        context=context,
+        final_tests=final_tests,
+        created_by="agent",
+    )
+    _switch_to_plan(plan)
+
+    cs = plan.current_step()
+    step_list = [{"id": s.id, "description": s.description} for s in plan.steps]
+    next_hint = (
+        f"Start with: get_step_brief(plan_id='{plan.id}', step_id='{cs.id}')"
+        f" then snapshot_step(plan_id='{plan.id}', step_id='{cs.id}')"
+        if cs else ""
+    )
+    return {
+        "ok": True,
+        "plan_id": plan.id,
+        "goal": plan.goal,
+        "steps_count": len(plan.steps),
+        "steps": step_list,
+        "first_step": {"id": cs.id, "description": cs.description} if cs else None,
+        "message": f"Plan '{plan.id}' created and active. {next_hint}".strip(),
+    }
+
+
+@register(
+    "set_current_plan",
+    {
+        "description": (
+            "Switch to a different existing plan, pausing the currently active one. "
+            "After the new plan completes, you will be prompted to return to the paused one."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "plan_id": {"type": "string", "description": "ID of the plan to make active."},
+            },
+            "required": ["plan_id"],
+        },
+    },
+)
+def tool_set_current_plan(plan_id: str) -> dict:
+    from agent.planning import load_plan
+    from agent.planning.plan import _switch_to_plan
+
+    plan = load_plan(plan_id)
+    if plan is None:
+        return {"ok": False, "error": f"plan not found: {plan_id}"}
+
+    paused = _switch_to_plan(plan)
+    cs = plan.current_step()
+    done, total = plan.progress()
+    return {
+        "ok": True,
+        "plan_id": plan.id,
+        "goal": plan.goal,
+        "status": plan.status,
+        "progress": f"{done}/{total}",
+        "paused_plan": paused.id if paused else None,
+        "next_step": {"id": cs.id, "description": cs.description} if cs else None,
+        "message": f"Switched to plan '{plan.id}'. {f'Previous plan {paused.id!r} paused.' if paused else ''}".strip(),
     }

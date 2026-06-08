@@ -127,6 +127,7 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             Binding("ctrl+5", "activate_tab('tab-a-summary')", "A Sum", show=False),
             Binding("ctrl+6", "activate_tab('tab-sparse')", "Sparse", show=False),
             Binding("ctrl+7", "activate_tab('tab-sys')", "Sys", show=False),
+            Binding("ctrl+8", "activate_tab('tab-plan')", "Plan", show=False),
         ]
 
         def __init__(self, agent: "Agent", session=None, server=None, **kwargs):
@@ -229,6 +230,8 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                     yield SparseView(id="sparse-log", markup=True, highlight=False)
                 with TabPane("sys", id="tab-sys"):
                     yield SysView(id="sys-log", markup=True, highlight=True)
+                with TabPane("plan", id="tab-plan"):
+                    yield RichLog(id="plan-log", markup=True, highlight=False)
             with Horizontal(id="loading-row"):
                 yield SpinnerWidget(self._spinner_frames, id="loading-indicator")
                 yield Static("", id="loading-tokens", markup=True)
@@ -269,6 +272,23 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                 out_bar.set_segments(self._server.output_breakdown("session"), scope_label="out")
             except Exception:
                 pass
+
+        def _reload_plan_view(self) -> None:
+            try:
+                plan_log = self.query_one("#plan-log", RichLog)
+            except Exception:
+                return
+            plan_log.clear()
+            plan = _active_plan(self._server._agent)
+            if plan is None:
+                plan_log.write("[dim]No active plan. Use /plan new <goal> to create one.[/dim]")
+                return
+            plan_log.write(_render_plan(plan))
+
+        def on_tabbed_content_tab_activated(self, event) -> None:
+            pane_id = getattr(getattr(event, "pane", None), "id", None) or ""
+            if pane_id == "tab-plan":
+                self._reload_plan_view()
 
         def on_mount(self) -> None:
             if self._terminal_title != "off":

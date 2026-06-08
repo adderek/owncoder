@@ -72,6 +72,10 @@ class Plan:
     final_tests: list[str] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
+    # "agent" | "user" | ""
+    created_by: str = ""
+    # plan_id to resume after this plan completes (plan-stack linked list)
+    resume_to: str = ""
 
     def current_step(self) -> Step | None:
         for s in self.steps:
@@ -123,6 +127,8 @@ class Plan:
             final_tests=data.get("final_tests", []) or [],
             created_at=data.get("created_at", time.time()),
             updated_at=data.get("updated_at", time.time()),
+            created_by=data.get("created_by", ""),
+            resume_to=data.get("resume_to", ""),
         )
 
 
@@ -132,12 +138,31 @@ def _new_plan_id() -> str:
     return now.strftime("%Y%m%dT%H%M%S.") + f"{ms:03d}Z_{secrets.token_hex(2)}"
 
 
+def _switch_to_plan(new_plan: "Plan") -> "Plan | None":
+    """Pause current active plan, link it as resume_to, activate new_plan.
+
+    Returns the paused plan (if any).
+    """
+    paused = None
+    for p in list_plans():
+        if p.status == "active" and p.id != new_plan.id:
+            p.status = "paused"
+            save_plan(p)
+            new_plan.resume_to = p.id
+            paused = p
+            break
+    new_plan.status = "active"
+    save_plan(new_plan)
+    return paused
+
+
 def create_plan(
     goal: str,
     session_id: str = "",
     steps: list[dict] | None = None,
     context: str = "",
     final_tests: list[str] | None = None,
+    created_by: str = "",
 ) -> Plan:
     pid = _new_plan_id()
     step_objs: list[Step] = []
@@ -162,6 +187,7 @@ def create_plan(
         steps=step_objs,
         context=context,
         final_tests=list(final_tests or []),
+        created_by=created_by,
     )
     save_plan(plan)
     return plan
