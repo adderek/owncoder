@@ -40,7 +40,14 @@ class EventHandlerMixin:
 
     def on_expand_turn(self, event) -> None:
         try:
-            self.push_screen(self._wt.TurnDetailScreen(event.ordinal, event.q_data, event.a_data))
+            session_dir = None
+            if getattr(self, "_session", None) is not None:
+                try:
+                    from agent.memory.session import get_session_full_dir
+                    session_dir = get_session_full_dir(self._session.id)
+                except Exception:
+                    pass
+            self.push_screen(self._wt.TurnDetailScreen(event.ordinal, event.q_data, event.a_data, session_dir=session_dir))
         except Exception:
             logger.exception("on_expand_turn: push_screen failed (ignored)")
 

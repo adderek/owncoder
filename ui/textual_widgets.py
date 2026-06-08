@@ -752,13 +752,18 @@ def build_widget_classes(t) -> SimpleNamespace:
             margin-top: 1;
             width: 100%;
         }
+        .tool-call-btn {
+            width: 100%;
+            margin-bottom: 0;
+        }
         """
 
-        def __init__(self, ordinal: int, q_data: dict, a_data: dict) -> None:
+        def __init__(self, ordinal: int, q_data: dict, a_data: dict, session_dir=None) -> None:
             super().__init__()
             self._ordinal = ordinal
             self._q_data = q_data
             self._a_data = a_data
+            self._session_dir = session_dir
 
         def compose(self):
             from textual.containers import Vertical, ScrollableContainer
@@ -772,8 +777,10 @@ def build_widget_classes(t) -> SimpleNamespace:
 
             tools = self._a_data.get("tool_calls") or []
             files = self._a_data.get("modified_files") or []
-            # Deduplicate while preserving order.
-            tools = list(dict.fromkeys(tools))
+            # Normalize: stored as strings (names) or dicts; extract name only for dedup.
+            tool_names = list(dict.fromkeys(
+                (n if isinstance(n, str) else n.get("name", "?")) for n in tools
+            ))
             files = list(dict.fromkeys(files))
 
             with Vertical(id="turn-detail-dialog"):
@@ -790,16 +797,137 @@ def build_widget_classes(t) -> SimpleNamespace:
                 with ScrollableContainer(id="turn-detail-a"):
                     a_display = _delatex(a_content.strip()) if a_content else ""
                     yield Static(_Md(a_display) if a_display else f"[{t.text_dim}](empty)[/{t.text_dim}]", id="turn-a-body", markup=not bool(a_display))
-                if tools or files:
+                if tool_names or files:
                     from agent.ui.render import tool_icon as _ti
-                    parts = []
-                    if tools:
-                        tool_strs = "  ".join(f"{_ti(n)} {_escape(n)}" for n in tools)
-                        parts.append(f"[{t.tool_color}]{tool_strs}[/{t.tool_color}]")
+                    if tool_names:
+                        yield Static(f"[{t.text_dim}]Tools (click for details):[/{t.text_dim}]", markup=True)
+                        for idx, name in enumerate(tool_names):
+                            yield Button(
+                                f"{_ti(name)} {name}",
+                                id=f"tool-btn-{idx}",
+                                classes="tool-call-btn",
+                            )
                     if files:
-                        parts.append(f"[{t.text_dim}]✎ {_escape('  '.join(files))}[/{t.text_dim}]")
-                    yield Static("  ".join(parts), markup=True, id="turn-detail-tools")
+                        yield Static(
+                            f"[{t.text_dim}]✎ {_escape('  '.join(files))}[/{t.text_dim}]",
+                            markup=True,
+                        )
                 yield Button("Close  [ESC]", id="turn-detail-close")
+
+        def on_button_pressed(self, event) -> None:
+            btn_id = event.button.id or ""
+            if btn_id == "turn-detail-close":
+                self.dismiss()
+                return
+            if btn_id.startswith("tool-btn-"):
+                idx = int(btn_id[len("tool-btn-"):])
+                tools = self._a_data.get("tool_calls") or []
+                tool_names = list(dict.fromkeys(
+                    (n if isinstance(n, str) else n.get("name", "?")) for n in tools
+                ))
+                if idx < len(tool_names):
+                    tool_name = tool_names[idx]
+                    tid = self._q_data.get("turn_id") or self._a_data.get("turn_id") or (self._ordinal + 1)
+                    self.app.push_screen(ToolCallDetailScreen(tool_name, tid, self._session_dir))
+
+        def on_key(self, event) -> None:
+            if event.key in ("escape", "q"):
+                self.dismiss()
+
+    class ToolCallDetailScreen(ModalScreen):
+        """Modal showing arguments and result for a single tool call."""
+
+        CSS = """
+        ToolCallDetailScreen {
+            align: center middle;
+        }
+        #tc-detail-dialog {
+            width: 90%;
+            max-width: 120;
+            height: auto;
+            max-height: 85%;
+            border: solid $accent;
+            background: $surface;
+            padding: 1 2;
+        }
+        #tc-detail-args {
+            max-height: 30;
+            overflow-y: auto;
+            margin-bottom: 1;
+        }
+        #tc-detail-result {
+            max-height: 30;
+            overflow-y: auto;
+            margin-bottom: 1;
+        }
+        #tc-detail-close {
+            width: 100%;
+        }
+        """
+
+        def __init__(self, tool_name: str, turn_id: int, session_dir=None) -> None:
+            super().__init__()
+            self._tool_name = tool_name
+            self._turn_id = turn_id
+            self._session_dir = session_dir
+
+        def _load_records(self) -> list[dict]:
+            if self._session_dir is None:
+                return []
+            try:
+                import json
+                from pathlib import Path
+                p = Path(self._session_dir) / "tool_calls.jsonl"
+                if not p.exists():
+                    return []
+                records = []
+                with p.open("r", encoding="utf-8") as f:
+                    for line in f:
+                        try:
+                            rec = json.loads(line)
+                        except Exception:
+                            continue
+                        if rec.get("tool") == self._tool_name and rec.get("turn") == self._turn_id:
+                            records.append(rec)
+                return records
+            except Exception:
+                return []
+
+        def compose(self):
+            import json as _json
+            from textual.containers import Vertical, ScrollableContainer
+            from textual.widgets import Button, Static
+            from rich.markup import escape as _esc
+
+            records = self._load_records()
+
+            with Vertical(id="tc-detail-dialog"):
+                from agent.ui.render import tool_icon as _ti
+                yield Static(
+                    f"[bold]{_ti(self._tool_name)} {_esc(self._tool_name)}[/bold]  [dim](turn {self._turn_id})[/dim]",
+                    markup=True,
+                )
+                if not records:
+                    yield Static(f"[dim]No side-log records found for this tool call.[/dim]", markup=True)
+                else:
+                    for i, rec in enumerate(records):
+                        if len(records) > 1:
+                            yield Static(f"[dim]— call {i+1}/{len(records)} —[/dim]", markup=True)
+                        args = rec.get("arguments", {})
+                        args_str = _json.dumps(args, indent=2, ensure_ascii=False) if args else "(none)"
+                        yield Static("[bold]Arguments:[/bold]", markup=True)
+                        with ScrollableContainer(id=f"tc-detail-args-{i}"):
+                            yield Static(_esc(args_str))
+                        result_raw = rec.get("result", "")
+                        try:
+                            result_parsed = _json.loads(result_raw)
+                            result_str = _json.dumps(result_parsed, indent=2, ensure_ascii=False)
+                        except Exception:
+                            result_str = result_raw or "(empty)"
+                        yield Static("[bold]Result:[/bold]", markup=True)
+                        with ScrollableContainer(id=f"tc-detail-result-{i}"):
+                            yield Static(_esc(result_str[:4000]))
+                yield Button("Back  [ESC]", id="tc-detail-close")
 
         def on_button_pressed(self, event) -> None:
             self.dismiss()
@@ -1160,6 +1288,7 @@ def build_widget_classes(t) -> SimpleNamespace:
         JumpToTurn=JumpToTurn,
         ExpandTurn=ExpandTurn,
         TurnDetailScreen=TurnDetailScreen,
+        ToolCallDetailScreen=ToolCallDetailScreen,
         _QALineTrackingMixin=_QALineTrackingMixin,
         QView=QView,
         AView=AView,
