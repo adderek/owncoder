@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 logger = logging.getLogger(__name__)
 
 # Result text shorter than this is treated as null/empty.
-_NULL_RESULT_CHARS = 30
+_NULL_RESULT_CHARS = 60
 
 
 def _result_hash(text: str) -> str:

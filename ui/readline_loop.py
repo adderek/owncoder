@@ -13,6 +13,15 @@ from agent.ui.colors import _hex_to_ansi
 
 logger = logging.getLogger(__name__)
 
+
+def _find_loop_guard_stop(messages: list[dict]) -> str | None:
+    """Return the loop-guard stop note from the last assistant message, or None."""
+    for m in reversed(messages):
+        if m.get("role") == "assistant":
+            content = (m.get("content") or "").strip()
+            return content if content.startswith("[loop guard:") else None
+    return None
+
 if TYPE_CHECKING:
     from agent.core.agent import Agent
     from agent.config import ThemeConfig
@@ -179,6 +188,13 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                             snippet = str(m["content"])[:120].replace("\n", " ")
                             console.print(f"[dim]  {role_label}: {snippet}[/dim]")
                         console.print("[dim]─── resumed ───[/dim]")
+                        _loop_guard_note = _find_loop_guard_stop(loaded_msgs)
+                        if _loop_guard_note:
+                            console.print(
+                                "[yellow]Note: session ended with loop-guard stop — "
+                                "type a message to redirect (e.g. 're-read the file and retry').[/yellow]"
+                            )
+                            console.print(f"[dim]  {_loop_guard_note[:200]}[/dim]")
 
             elif cmd == "/sessions":
                 from agent.memory.session import list_sessions

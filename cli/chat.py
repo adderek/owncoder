@@ -154,6 +154,21 @@ def _audit_crash(console, sentinel: Path, messages: list[dict]) -> None:
         console.print("  Restore: [bold]git checkout HEAD -- <file>[/bold]")
 
 
+def _warn_loop_guard_resume(console, messages: list[dict]) -> None:
+    """Warn user when resuming a session that was stopped by the loop guard."""
+    for m in reversed(messages):
+        if m.get("role") == "assistant":
+            content = m.get("content") or ""
+            if content.strip().startswith("[loop guard:"):
+                console.print("[yellow]Note: last session ended with a loop-guard stop:[/yellow]")
+                console.print(f"  {content.strip()[:200]}")
+                console.print(
+                    "[yellow]The agent will see this in history. "
+                    "Type a message to redirect it (e.g. 're-read the file and retry').[/yellow]"
+                )
+            break
+
+
 def cmd_chat(args, config):
     from agent.rag.store import VectorStore
     from agent.rag.embedder import Embedder
@@ -305,6 +320,7 @@ def cmd_chat(args, config):
             messages = [{k: v for k, v in m.items() if not k.startswith("_")} for m in messages]
             agent.messages = messages
             console.print(f"Loaded session: {session.id} ({len(messages)} messages)")
+            _warn_loop_guard_resume(console, messages)
     else:
         session = new_session()
         console.print(f"New session: {session.id}")

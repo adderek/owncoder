@@ -13,7 +13,7 @@ from .paths import _resolve, _working_dir, _undo_stack
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "File path to write"},
-                "content": {"type": "string", "description": "New file content"},
+                "content": {"type": "string", "description": "New file content. Escape double quotes inside the string as \\\""},
             },
             "required": ["path", "content"],
         },

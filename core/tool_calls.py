@@ -110,14 +110,56 @@ def _remap_params(name: str, args: dict) -> dict:
 def _try_parse_flat_args(raw: str) -> dict | None:
     """Fallback: parse {key=\"value\", key2=\"value2\"} when JSON fails.
 
-    Handles values with escaped chars (newlines, quotes) that break json.loads.
+    Character-level parser that handles: escaped chars, unescaped quotes inside
+    values (Python docstrings/strings), and model mistakes like trailing \\\" before
+    a field separator.
     """
     import re as _re
-    args = {}
-    # Match key=\"value\" pairs, allowing escaped \\\" inside values
-    for m in _re.finditer(r'(\w+)\s*=\s*\"((?:[^\"\\\\]|\\\\.)*)\"', raw):
-        args[m.group(1)] = m.group(2).replace('\\n', '\n').replace('\\t', '\t').replace('\\"', '"')
-        # Also handle Python-style \\n in the string (already literal by the time we get here)
+    args: dict = {}
+    i = 0
+    n = len(raw)
+    key_pat = _re.compile(r'(\w+)\s*[=:]\s*"')
+    while i < n:
+        m = key_pat.search(raw, i)
+        if not m:
+            break
+        key = m.group(1)
+        i = m.end()  # i now points to char after opening "
+        value_chars: list[str] = []
+        while i < n:
+            c = raw[i]
+            if c == '\\' and i + 1 < n:
+                next_c = raw[i + 1]
+                if next_c == '"':
+                    # \" — treat as end-of-value when followed by separator/end
+                    # (model mistakenly wrote \" instead of " to close the value)
+                    after = raw[i + 2 :]
+                    if _re.match(r'\s*[,}]', after) or not after.strip():
+                        i += 2
+                        break
+                    value_chars.append('"')
+                    i += 2
+                elif next_c == 'n':
+                    value_chars.append('\n')
+                    i += 2
+                elif next_c == 't':
+                    value_chars.append('\t')
+                    i += 2
+                else:
+                    value_chars.append(next_c)
+                    i += 2
+            elif c == '"':
+                # End of value when followed by separator/end; otherwise unescaped quote inside value
+                after = raw[i + 1 :]
+                if _re.match(r'\s*[,}]', after) or not after.strip():
+                    i += 1
+                    break
+                value_chars.append(c)
+                i += 1
+            else:
+                value_chars.append(c)
+                i += 1
+        args[key] = ''.join(value_chars)
     return args if args else None
 
 

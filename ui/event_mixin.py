@@ -160,7 +160,7 @@ class EventHandlerMixin:
             if removed:
                 stats += f"[{t.error}]-{removed}[/{t.error}]"
             if not stats:
-                stats = "[dim]0[/-dim]"
+                stats = "[dim]0[/dim]"
             lines.append(f"📄 {_escape(path)} {stats}")
         return lines
 

@@ -16,6 +16,15 @@ from agent.ui.render import _render_context_report, _OUT_SEGMENT_COLORS
 logger = logging.getLogger(__name__)
 
 
+def _find_loop_guard_stop(messages: list[dict]) -> str | None:
+    """Return the loop-guard stop note from the last assistant message, or None."""
+    for m in reversed(messages):
+        if m.get("role") == "assistant":
+            content = (m.get("content") or "").strip()
+            return content if content.startswith("[loop guard:") else None
+    return None
+
+
 class SlashHandlerMixin:
     """Handles /command dispatch for the Textual app."""
 
@@ -146,6 +155,13 @@ class SlashHandlerMixin:
                         f"[{t.text_dim}]Loaded session '{label}' "
                         f"({len(loaded_msgs)} messages).[/{t.text_dim}]"
                     )
+                    _loop_guard_resume_note = _find_loop_guard_stop(loaded_msgs)
+                    if _loop_guard_resume_note:
+                        self._write_sys(
+                            f"[{t.warning}]Note: session ended with loop-guard stop — "
+                            f"type a message to redirect (e.g. 're-read the file and retry').[/{t.warning}]"
+                        )
+                        self._write_sys(f"[{t.text_dim}]{_loop_guard_resume_note[:200]}[/{t.text_dim}]")
 
         elif cmd == "/sessions":
             from agent.memory.session import list_sessions

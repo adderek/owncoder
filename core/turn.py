@@ -54,6 +54,37 @@ async def _post_turn_capture_and_summarize(
         logger.exception("_post_turn_capture_and_summarize: error (ignored)")
 
 
+def _loop_guard_stop_note(summary: str, triggered: list[tuple[str, str, int, str]]) -> str:
+    """Build a tool-specific recovery message for loop-guard stops that persists in history."""
+    tool_names = {n for n, _, _, _ in triggered}
+    parts: list[str] = [f"[loop guard: stopped after repeated tool calls ({summary})."]
+
+    if "edit_file" in tool_names:
+        paths = []
+        for n, _, _, args_json in triggered:
+            if n == "edit_file":
+                try:
+                    p = json.loads(args_json).get("path", "")
+                    if p and p not in paths:
+                        paths.append(p)
+                except Exception:
+                    pass
+        if paths:
+            parts.append(f" The anchor used for {', '.join(paths)} was not found repeatedly.")
+            parts.append(" To recover: re-read the file to get current content and correct anchors, then retry the edit.")
+        else:
+            parts.append(" edit_file anchor was not found repeatedly. Re-read the target file for fresh anchors before retrying.")
+
+    if "read_file" in tool_names:
+        parts.append(" The same file range was read repeatedly without progress. Use search_files to locate the target or specify a different start_line/end_line range.")
+
+    if not tool_names & {"edit_file", "read_file"}:
+        parts.append(" Redirect: describe what you are trying to accomplish or ask the user for guidance.")
+
+    parts.append("]")
+    return "".join(parts)
+
+
 async def run_turn(
     messages: list[dict],
     config: "Config",
@@ -327,30 +358,30 @@ async def run_turn(
 
         if tool_calls:
             if loop_detector is not None:
-                triggered: list[tuple[str, str, int]] = []
+                triggered: list[tuple[str, str, int, str]] = []
                 for tc in tool_calls:
                     sig = LoopDetector.signature(tc.function.name, tc.function.arguments)
                     cnt = loop_detector.observe(sig)
                     if loop_detector.triggered(sig, cnt):
-                        triggered.append((tc.function.name, sig, cnt))
+                        triggered.append((tc.function.name, sig, cnt, tc.function.arguments or "{}"))
                 if triggered:
-                    summary = ", ".join(f"{n}×{c}" for n, _, c in triggered)
+                    summary = ", ".join(f"{n}×{c}" for n, _, c, _ in triggered)
                     logger.warning("loop_guard: repeated tool calls detected: %s", summary)
                     _phase("loop_guard", summary)
                     decision = False
                     if on_loop_detected is not None:
                         try:
-                            res = on_loop_detected(summary, max(c for _, _, c in triggered))
+                            res = on_loop_detected(summary, max(c for _, _, c, _ in triggered))
                             if asyncio.iscoroutine(res):
                                 res = await res
                             decision = bool(res)
                         except Exception:
                             logger.exception("on_loop_detected callback failed; stopping")
                     if decision:
-                        for _, sig, _ in triggered:
+                        for _, sig, _, _ in triggered:
                             loop_detector.acknowledge(sig)
                     else:
-                        note = f"[loop guard: stopped after repeated tool calls ({summary}). Reply 'continue' to override or redirect.]"
+                        note = _loop_guard_stop_note(summary, triggered)
                         messages = messages + [{"role": "assistant", "content": note}]
                         return "".join(content_parts + [note]), messages
 
@@ -446,16 +477,19 @@ async def run_turn(
                         a = json.loads(tc.function.arguments or "{}")
                         rpath = str(a.get("path", ""))
                         if rpath:
-                            _read_path_counts[rpath] = _read_path_counts.get(rpath, 0) + 1
-                            count = _read_path_counts[rpath]
+                            # Key on (path, start_line, end_line) so reading different
+                            # sections of the same large file doesn't trigger the guard.
+                            rkey = (rpath, a.get("start_line"), a.get("end_line"))
+                            _read_path_counts[rkey] = _read_path_counts.get(rkey, 0) + 1
+                            count = _read_path_counts[rkey]
                             if count >= _READ_PATH_STOP_THRESHOLD:
-                                # Hard stop: same file read too many times this turn.
+                                # Hard stop: same range read too many times this turn.
                                 stop_note = (
-                                    f"[loop guard: '{rpath}' read {count}× this turn without progress. "
+                                    f"[loop guard: '{rpath}' same range read {count}× this turn without progress. "
                                     f"Stop re-reading — use search_files to find a specific anchor, "
                                     f"or report what you need and ask the user for guidance.]"
                                 )
-                                logger.warning("loop_guard: read_file path '%s' count %d >= stop threshold", rpath, count)
+                                logger.warning("loop_guard: read_file path '%s' range %s-%s count %d >= stop threshold", rpath, a.get("start_line"), a.get("end_line"), count)
                                 messages = messages + [{"role": "assistant", "content": stop_note}]
                                 return "".join(content_parts + [stop_note]), messages
                             elif count >= _READ_PATH_WARN_THRESHOLD:
@@ -465,7 +499,7 @@ async def run_turn(
                                     r_parsed = {}
                                 if isinstance(r_parsed, dict):
                                     r_parsed["_loop_warning"] = (
-                                        f"[loop-guard] '{rpath}' read {count}× this turn. "
+                                        f"[loop-guard] '{rpath}' same range read {count}× this turn. "
                                         "If previous reads didn't give you the anchor, use search_files or "
                                         "specify start_line/end_line to target a different section. "
                                         "Do not re-read the same range again."
@@ -476,6 +510,13 @@ async def run_turn(
                 if tc.function.name == "edit_file":
                     try:
                         e_parsed = json.loads(result)
+                        if isinstance(e_parsed, dict) and not e_parsed.get("error"):
+                            # Successful edit — clear read-path counters for this file so
+                            # subsequent reads after an edit don't accumulate against the guard.
+                            a = json.loads(tc.function.arguments or "{}")
+                            e_path = str(a.get("path", "") or "")
+                            if e_path:
+                                _read_path_counts = {k: v for k, v in _read_path_counts.items() if k[0] != e_path}
                         if isinstance(e_parsed, dict) and e_parsed.get("error") == "atomic_rollback":
                             e_errors = e_parsed.get("errors", [])
                             # Find the file path from the arguments
