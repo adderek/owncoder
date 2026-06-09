@@ -211,6 +211,9 @@ def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool, seccomp_fd: int | 
 
 def _firejail_argv(argv: list[str], *, cwd: Path, network: bool) -> list[str]:
     pol = policy.get()
+    # --seccomp enables firejail's built-in default syscall blacklist.
+    # This is NOT the curated _BLOCKED_SYSCALLS from seccomp_filter.py (bwrap-only).
+    # See seccomp_filter.py module docstring for the asymmetry explanation.
     a = [
         "firejail",
         "--quiet",

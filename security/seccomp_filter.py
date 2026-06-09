@@ -16,6 +16,16 @@ Blocked syscalls (SCMP_ACT_ERRNO(EPERM)):
 
 Intentionally NOT blocked: clone/clone3/fork (threads/subprocesses),
 socket (network handled at bwrap --unshare-net level).
+
+BACKEND ASYMMETRY (P3):
+  This filter is only applied on the bwrap path (--add-seccomp-fd).
+  The firejail backend uses firejail's own built-in default seccomp filter
+  (--seccomp flag) which covers a broader but different syscall set and is
+  not controlled by _BLOCKED_SYSCALLS here. The curated list above documents
+  our threat model; firejail's filter provides overlapping but not identical
+  coverage. Prefer bwrap for stronger, reproducible seccomp guarantees.
+  To apply _BLOCKED_SYSCALLS on firejail too, pass --seccomp=<comma-list>
+  once firejail compatibility can be verified on a firejail-equipped system.
 """
 from __future__ import annotations
 
