@@ -324,13 +324,13 @@ def web_fetch(url: str) -> dict:
     if _config is None:
         return {"error": "Web fetch not configured"}
 
-    # Layer 1: URL gate (validates URL, DNS rebind check)
+    # Layer 1: URL gate (validates URL, DNS rebind check → pinned IP)
     gated = query_gate.gate_fetch(url)
     if isinstance(gated, dict):
         return gated
 
-    # Layer 2: Sandboxed HTTP
-    http_result = http_executor.fetch(gated)
+    # Layer 2: Sandboxed HTTP (pinned_ip prevents DNS rebind TOCTOU)
+    http_result = http_executor.fetch(gated.url, pinned_ip=gated.pinned_ip)
     if http_result.get("error"):
         return {"url": url, "error": http_result["error"]}
 

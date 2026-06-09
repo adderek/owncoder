@@ -18,6 +18,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+
+@dataclass(frozen=True)
+class GateFetchResult:
+    """Successful gate_fetch result: validated URL + pre-resolved pinned IP."""
+    url: str
+    pinned_ip: str
+
 if TYPE_CHECKING:
     from agent.config import Config
 
@@ -136,32 +143,33 @@ def _is_ip_safe(ip_str: str) -> bool:
     return True
 
 
-def _validate_url(url: str) -> str | None:
-    """Validate URL safety. Returns error string or None if safe."""
+def _validate_url(url: str) -> tuple[str | None, str | None]:
+    """Validate URL safety. Returns (error, pinned_ip): on success (None, ip), on error (msg, None)."""
     from urllib.parse import urlparse
 
     try:
         parsed = urlparse(url)
     except Exception:
-        return f"Invalid URL: {url[:100]}"
+        return f"Invalid URL: {url[:100]}", None
 
     scheme = parsed.scheme.lower()
     if scheme not in ("http", "https"):
-        return f"Blocked URL scheme: {scheme}"
+        return f"Blocked URL scheme: {scheme}", None
 
     hostname = parsed.hostname
     if not hostname:
-        return f"URL has no hostname: {url[:100]}"
+        return f"URL has no hostname: {url[:100]}", None
 
-    # Check for raw IP in hostname
+    # Check for raw IP in hostname — skip DNS, validate directly
     try:
         ip = ipaddress.ip_address(hostname)
         if not _is_ip_safe(str(ip)):
-            return f"Blocked IP address: {hostname}"
+            return f"Blocked IP address: {hostname}", None
+        return None, str(ip)
     except ValueError:
-        pass  # Not an IP, proceed to DNS check
+        pass  # Not a raw IP, proceed to DNS
 
-    # DNS rebind check: resolve hostname, verify resolved IPs
+    # DNS resolution: resolve + validate all returned IPs, pin the first safe one
     _DNS_TIMEOUT_S = 5.0
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _ex:
@@ -169,18 +177,21 @@ def _validate_url(url: str) -> str | None:
                 socket.getaddrinfo, hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM
             )
             resolved = _fut.result(timeout=_DNS_TIMEOUT_S)
+        if not resolved:
+            return f"DNS returned no results for: {hostname}", None
         for family, _, _, _, sockaddr in resolved:
             ip = sockaddr[0]
             if not _is_ip_safe(ip):
-                return f"DNS resolved to blocked IP: {hostname} → {ip}"
+                return f"DNS resolved to blocked IP: {hostname} → {ip}", None
+        pinned_ip = resolved[0][4][0]
     except concurrent.futures.TimeoutError:
-        return f"DNS resolution timed out for: {hostname}"
+        return f"DNS resolution timed out for: {hostname}", None
     except socket.gaierror:
-        return f"DNS resolution failed for: {hostname}"
+        return f"DNS resolution failed for: {hostname}", None
     except Exception as e:
-        return f"DNS check error for {hostname}: {e}"
+        return f"DNS check error for {hostname}: {e}", None
 
-    return None
+    return None, pinned_ip
 
 
 def _sanitize_unicode(text: str) -> str:
@@ -246,8 +257,8 @@ def gate_query(query: str, session_id: str = "") -> str | dict:
     return query
 
 
-def gate_fetch(url: str, session_id: str = "") -> str | dict:
-    """Validate and sanitize a fetch URL. Returns cleaned URL or error dict."""
+def gate_fetch(url: str, session_id: str = "") -> GateFetchResult | dict:
+    """Validate and sanitize a fetch URL. Returns GateFetchResult or error dict."""
     if _config and not _config.web_search.enabled:
         return {"error": "Web search is disabled (config.web_search.enabled = false)"}
 
@@ -257,8 +268,8 @@ def gate_fetch(url: str, session_id: str = "") -> str | dict:
         _audit({"event": "fetch.rate_limited", "url": url}, session_id)
         return {"error": rl_err}
 
-    # URL validation
-    url_err = _validate_url(url)
+    # URL validation + DNS resolution → pinned IP
+    url_err, pinned_ip = _validate_url(url)
     if url_err:
         _audit({"event": "fetch.url_blocked", "url": url, "reason": url_err}, session_id)
         return {"error": url_err}
@@ -267,7 +278,7 @@ def gate_fetch(url: str, session_id: str = "") -> str | dict:
     url = _sanitize_unicode(url)
 
     _audit({"event": "fetch.query", "url": url}, session_id)
-    return url
+    return GateFetchResult(url=url, pinned_ip=pinned_ip)
 
 
 def _query_hash(text: str) -> str:

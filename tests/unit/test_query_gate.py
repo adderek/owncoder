@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 from agent.security import query_gate
+from agent.security.query_gate import GateFetchResult
 from agent.config.models import Config, WebSearchConfig
 
 
@@ -98,14 +99,16 @@ class TestURLValidation:
     def test_http_url_allowed(self, enabled_config):
         query_gate.setup(enabled_config)
         result = query_gate.gate_fetch("http://example.com/page")
-        assert isinstance(result, str)
-        assert "example.com" in result
+        assert isinstance(result, GateFetchResult)
+        assert "example.com" in result.url
+        assert result.pinned_ip  # non-empty
 
     def test_https_url_allowed(self, enabled_config):
         query_gate.setup(enabled_config)
         result = query_gate.gate_fetch("https://docs.python.org/3/")
-        assert isinstance(result, str)
-        assert "python.org" in result
+        assert isinstance(result, GateFetchResult)
+        assert "python.org" in result.url
+        assert result.pinned_ip
 
 
 class TestDisabledBehavior:
@@ -149,7 +152,7 @@ class TestRateLimiting:
 
         for _ in range(5):
             result = query_gate.gate_fetch("http://example.com/test")
-            assert isinstance(result, str)
+            assert isinstance(result, GateFetchResult)
         # 6th should be rate limited
         result = query_gate.gate_fetch("http://example.com/extra")
         assert isinstance(result, dict)
