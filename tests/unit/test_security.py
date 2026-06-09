@@ -17,8 +17,10 @@ from agent.security import runner as sec_runner
 @pytest.fixture(autouse=True)
 def _reset_backend():
     sec_runner._BACKEND = None
+    sec_runner._DEGRADED_WARNING_SHOWN = False
     yield
     sec_runner._BACKEND = None
+    sec_runner._DEGRADED_WARNING_SHOWN = False
 
 
 @pytest.fixture

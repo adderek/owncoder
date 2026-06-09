@@ -54,6 +54,7 @@ class RunResult:
 
 
 _BACKEND: str | None = None
+_DEGRADED_WARNING_SHOWN: bool = False
 
 
 def _probe_backend(name: str) -> bool:
@@ -110,7 +111,27 @@ def select_backend() -> str:
         )
     _BACKEND = "none"
     logger.warning("No sandbox backend available — running commands on host!")
+    _warn_degraded(candidates)
     return _BACKEND
+
+
+def _warn_degraded(tried: list[str]) -> None:
+    global _DEGRADED_WARNING_SHOWN
+    if _DEGRADED_WARNING_SHOWN:
+        return
+    _DEGRADED_WARNING_SHOWN = True
+    import sys
+    # Print to stderr so it's visible in the terminal regardless of log config.
+    print(
+        "\n"
+        "WARNING: No sandbox backend found (tried: " + ", ".join(tried) + ").\n"
+        "  Commands will run on the HOST with no filesystem isolation.\n"
+        "  Install bubblewrap (bwrap) or firejail to enable sandboxing.\n"
+        "  To silence this warning (acknowledge unsandboxed execution), set:\n"
+        "    sandbox_backend = 'none'  # in agent.toml [security]\n",
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def _rlimit_preexec(sandbox_backend: str = "none") -> None:
