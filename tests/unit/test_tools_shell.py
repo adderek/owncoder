@@ -146,6 +146,23 @@ class TestRunArgvNetworkGuard:
         # Guard must not reject — downstream may fail for other reasons but not the guard
         assert "network=true blocked" not in result.get("error", "")
 
+    def test_run_argv_dangerous_blocked(self, tmp_path):
+        cfg = Config()
+        cfg.tools.working_dir = str(tmp_path)
+        cfg.tools.allow_shell = True
+        shell_setup(cfg)
+        result = run_argv(["rm", "-rf", "foo"])
+        assert result.get("requires_confirm") is True
+        assert "rm" in result.get("error", "").lower() or "destructive" in result.get("error", "").lower()
+
+    def test_run_argv_sudo_blocked(self, tmp_path):
+        cfg = Config()
+        cfg.tools.working_dir = str(tmp_path)
+        cfg.tools.allow_shell = True
+        shell_setup(cfg)
+        result = run_argv(["sudo", "apt", "install", "something"])
+        assert result.get("requires_confirm") is True
+
     def test_run_command_stdout_truncation(self, tmp_path):
         cfg = Config()
         cfg.tools.working_dir = str(tmp_path)

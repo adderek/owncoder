@@ -77,10 +77,23 @@ def grep_code(
     max_results: int | None = None,
 ) -> dict:
     working_dir = (_config.tools.working_dir if _config else None) or os.getcwd()
-    search_root = Path(path) if path else Path(working_dir)
+    search_root = Path(path).expanduser() if path else Path(working_dir)
     if not search_root.is_absolute():
         search_root = Path(working_dir) / search_root
     search_root = search_root.resolve()
+
+    # Confine to project root — reject paths outside working_dir.
+    # Uses a manual check (not security.fs.safe_resolve) so the result is always
+    # relative to *this tool's* working_dir, not the shared security policy root.
+    root = Path(working_dir).resolve()
+    try:
+        search_root.relative_to(root)
+    except ValueError:
+        if search_root != root:
+            return {
+                "error": f"path escapes project root: {path!r} -> {search_root}",
+                "pattern": pattern,
+            }
 
     limit = max_results or _DEFAULT_MAX
 

@@ -284,6 +284,15 @@ def run_argv(argv: list[str], cwd: str | None = None, timeout: int | None = None
         raise ToolDisabledError("Shell commands are disabled (tools.allow_shell = false)")
     if not argv:
         return {"error": "argv must be non-empty"}
+
+    danger = _check_dangerous(shlex.join(argv))
+    if danger:
+        return {
+            "error": f"Destructive command '{danger}' requires explicit confirmation before running.",
+            "argv": argv,
+            "requires_confirm": True,
+        }
+
     if network and _config is not None and _config.security.network != "on":
         return {
             "error": (
