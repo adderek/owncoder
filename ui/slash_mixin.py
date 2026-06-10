@@ -47,6 +47,79 @@ class SlashHandlerMixin:
             from textual.widgets import TabbedContent
             self.query_one(TabbedContent).active = "tab-sparse"
 
+        elif cmd == "/paths":
+            from textual.widgets import TabbedContent
+            subcmd = arg.strip().split(None, 1)
+            sub = subcmd[0].lower() if subcmd else ""
+            rest = subcmd[1] if len(subcmd) > 1 else ""
+
+            if not sub or sub == "show":
+                self.query_one(TabbedContent).active = "tab-paths"
+                try:
+                    self._reload_paths_view()
+                except Exception:
+                    pass
+
+            elif sub == "add":
+                parts = rest.split()
+                if not parts:
+                    self._write_sys(
+                        f"[{t.warning}]Usage: /paths add <path> [ro|rw][/{t.warning}]"
+                    )
+                else:
+                    raw_path = parts[0]
+                    mode = parts[1].lower() if len(parts) > 1 else "rw"
+                    if mode not in ("ro", "rw"):
+                        mode = "rw"
+                    from agent.security import path_grants as _pg
+                    from pathlib import Path as _Path
+                    resolved = _Path(raw_path).resolve()
+                    _pg.add_grant(resolved, mode, origin="user")
+                    self._write_sys(
+                        f"[{t.success}]✓ Added path grant: {resolved} ({mode})[/{t.success}]"
+                    )
+                    self.query_one(TabbedContent).active = "tab-paths"
+                    try:
+                        self._reload_paths_view()
+                    except Exception:
+                        pass
+
+            elif sub == "remove":
+                if not rest.strip():
+                    self._write_sys(
+                        f"[{t.warning}]Usage: /paths remove <path>[/{t.warning}]"
+                    )
+                else:
+                    from agent.security import path_grants as _pg
+                    from pathlib import Path as _Path
+                    resolved = _Path(rest.strip()).resolve()
+                    ok = _pg.remove_grant(resolved)
+                    if ok:
+                        self._write_sys(f"[{t.success}]Removed grant: {resolved}[/{t.success}]")
+                    else:
+                        self._write_sys(f"[{t.warning}]No removable grant found for: {resolved}[/{t.warning}]")
+                    try:
+                        self._reload_paths_view()
+                    except Exception:
+                        pass
+
+            elif sub == "list":
+                from agent.security import path_grants as _pg
+                grants = _pg.get_all()
+                if not grants:
+                    self._write_sys(f"[{t.text_dim}](no path grants)[/{t.text_dim}]")
+                else:
+                    lines = ["[bold]Path grants:[/bold]"]
+                    for g in grants:
+                        state = f"[{t.warning}]pending[/{t.warning}]" if g.state == "pending" else f"[{t.success}]granted[/{t.success}]"
+                        lines.append(f"  {g.path}  [{t.text_dim}]{g.origin}[/{t.text_dim}]  {g.mode.upper()}  {state}")
+                    self._write_sys("\n".join(lines))
+
+            else:
+                self._write_sys(
+                    f"[{t.warning}]Usage: /paths [show|add <path> [ro|rw]|remove <path>|list][/{t.warning}]"
+                )
+
         elif cmd == "/compact":
             before = self._server.token_estimate()
             self._write_sys(f"[{t.text_dim}]Compacting…[/{t.text_dim}]")

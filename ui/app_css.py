@@ -216,4 +216,59 @@ def build_app_css(t) -> str:
         color: {t.text_dim};
         padding: 0 1;
     }}
+    #paths-tab-pane {{
+        height: 1fr;
+        background: {t.chat_bg};
+        padding: 0;
+    }}
+    #paths-view {{
+        height: 1fr;
+        background: {t.chat_bg};
+        padding: 1 2;
+    }}
+    #paths-header {{
+        height: 2;
+        padding: 0 0 1 0;
+        color: {t.text};
+    }}
+    #paths-rows {{
+        height: 1fr;
+        background: {t.chat_bg};
+        {_scrollbar_css}
+    }}
+    PathGrantRow {{
+        height: auto;
+        padding: 0;
+    }}
+    .grant-row {{
+        height: 1;
+        padding: 0;
+    }}
+    .grant-path-label {{
+        width: 1fr;
+        height: 1;
+    }}
+    .grant-btn {{
+        height: 1;
+        min-width: 9;
+        border: none;
+        padding: 0 1;
+        margin-left: 1;
+    }}
+    #paths-actions-row {{
+        height: 1;
+        margin-top: 1;
+    }}
+    .add-path-btn {{
+        height: 1;
+        min-width: 12;
+        background: {t.panel_bg};
+        color: {t.active};
+        border: none;
+        padding: 0 1;
+    }}
+    .add-path-btn:hover {{
+        background: {t.active};
+        color: white;
+    }}
     """

@@ -1364,6 +1364,105 @@ def build_widget_classes(t) -> SimpleNamespace:
                         self.clear()
                         self.post_message(self.HintChanged(""))
 
+    # ── paths view ────────────────────────────────────────────────────────────
+
+    def _path_id(path) -> str:
+        """Safe widget ID from a path string."""
+        return "pg-" + str(path).replace("/", "_").replace(".", "_").replace(" ", "_")[-60:]
+
+    class PathGrantRow(Static):
+        """One row per PathGrant in the paths tab."""
+
+        DEFAULT_CSS = "PathGrantRow { height: auto; }"
+
+        class Accepted(Message):
+            def __init__(self, path) -> None:
+                super().__init__()
+                self.path = path
+
+        class Rejected(Message):
+            def __init__(self, path) -> None:
+                super().__init__()
+                self.path = path
+
+        def __init__(self, grant, **kwargs) -> None:
+            super().__init__(**kwargs)
+            self._grant = grant
+
+        def compose(self):
+            from textual.containers import Horizontal as _H
+            from textual.widgets import Button as _Btn
+            g = self._grant
+            mode_color = t.success if g.mode == "rw" else t.warning
+            origin_colors = {
+                "default": t.text_dim,
+                "user": t.success,
+                "agent": t.warning,
+            }
+            oc = origin_colors.get(g.origin, t.text_dim)
+            state_icon = "⚠ " if g.state == "pending" else "  "
+            label = (
+                f"{state_icon}[bold]{_escape(str(g.path))}[/bold]"
+                f"  [{oc}]{g.origin}[/{oc}]"
+                f"  [{mode_color}]{g.mode.upper()}[/{mode_color}]"
+            )
+            if g.state == "pending":
+                label += f"  [{t.warning}][pending][/{t.warning}]"
+            with _H(classes="grant-row"):
+                yield Static(label, markup=True, classes="grant-path-label")
+                if g.state == "pending":
+                    yield _Btn("Accept", id=f"accept-{_path_id(g.path)}", variant="success", classes="grant-btn")
+                    yield _Btn("Reject", id=f"reject-{_path_id(g.path)}", variant="error", classes="grant-btn")
+
+        def on_button_pressed(self, event) -> None:
+            bid = event.button.id or ""
+            path = self._grant.path
+            if bid.startswith("accept-"):
+                self.post_message(PathGrantRow.Accepted(path))
+                event.stop()
+            elif bid.startswith("reject-"):
+                self.post_message(PathGrantRow.Rejected(path))
+                event.stop()
+
+    class PathsView(Static):
+        """Paths tab: list of accessible paths with Accept/Reject for pending."""
+
+        DEFAULT_CSS = "PathsView { height: 1fr; }"
+
+        class AddPathClicked(Message):
+            pass
+
+        def compose(self):
+            from textual.containers import VerticalScroll as _VS, Horizontal as _H
+            from textual.widgets import Button as _Btn
+            yield Static(
+                f"[bold]Accessible Paths[/bold]  [{t.text_dim}]— paths the agent can read/write[/{t.text_dim}]",
+                markup=True,
+                id="paths-header",
+            )
+            yield _VS(id="paths-rows")
+            with _H(id="paths-actions-row"):
+                yield _Btn("+ Add path", id="btn-add-path", classes="add-path-btn")
+
+        def refresh_grants(self) -> None:
+            from agent.security import path_grants as _pg
+            try:
+                rows = self.query_one("#paths-rows")
+            except Exception:
+                return
+            for child in list(rows.children):
+                child.remove()
+            grants = _pg.get_all()
+            if not grants:
+                rows.mount(Static(f"[{t.text_dim}](no grants)[/{t.text_dim}]", markup=True))
+            for g in grants:
+                rows.mount(PathGrantRow(g))
+
+        def on_button_pressed(self, event) -> None:
+            if (event.button.id or "") == "btn-add-path":
+                self.post_message(PathsView.AddPathClicked())
+                event.stop()
+
     # ── async event messages ──────────────────────────────────────────────────
 
     ToolCallEvent = _events.ToolCallEvent
@@ -1428,4 +1527,6 @@ def build_widget_classes(t) -> SimpleNamespace:
         _PLACEHOLDER_Q=_PLACEHOLDER_Q,
         _PLACEHOLDER_A=_PLACEHOLDER_A,
         _PLACEHOLDER_SPARSE=_PLACEHOLDER_SPARSE,
+        PathGrantRow=PathGrantRow,
+        PathsView=PathsView,
     )

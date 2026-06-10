@@ -46,6 +46,8 @@ def setup(config: "Config") -> Policy:
     if not agent_dir.is_absolute():
         agent_dir = root / agent_dir
     _policy = Policy(root=root, agent_dir=agent_dir, cfg=config.security)
+    from . import path_grants as _pg
+    _pg.setup(config)
     return _policy
 
 

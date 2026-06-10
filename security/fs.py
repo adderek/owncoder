@@ -64,6 +64,7 @@ _DEFAULT_WRITE_DENY_GLOBS: list[str] = [
     "AGENT.md",
     ".claude/**",
     ".agent/**/*.toml",
+    ".agent/path_grants.json",  # agent must not self-grant paths
 ]
 
 
@@ -137,8 +138,9 @@ def _within(root: Path, candidate: Path) -> bool:
 
 
 def safe_resolve(path: str | os.PathLike, *, must_exist: bool = False) -> Path:
-    """Resolve *path* relative to the project root and confirm it stays
-    inside. Uses ``os.path.realpath`` for symlink resolution; the caller is
+    """Resolve *path* and confirm it falls within a granted path.
+
+    Uses ``os.path.realpath`` for symlink resolution; the caller is
     responsible for honoring ``follow_symlinks`` at open time.
     """
     pol = policy.get()
@@ -147,16 +149,22 @@ def safe_resolve(path: str | os.PathLike, *, must_exist: bool = False) -> Path:
     if not p.is_absolute():
         p = pol.root / p
     # realpath resolves symlinks that already exist; for new files the
-    # parent must still be inside the root.
+    # parent must still be inside a granted root.
     real = Path(os.path.realpath(p))
-    if not _within(pol.root, real):
-        raise PathEscape(f"path escapes project root: {path!r} -> {real}")
+
+    from . import path_grants as _pg
+    grant = _pg.grant_for(real)
+    if grant is None:
+        raise PathEscape(f"path outside any granted directory: {path!r} -> {real}")
+
+    grant.assert_unchanged()
+
     if must_exist and not real.exists():
         raise FileNotFoundError(path)
     if not pol.cfg.follow_symlinks:
         # Reject if any component on the *requested* path (before realpath
-        # collapsed it) is a symlink. Walk the requested path component-wise.
-        _reject_symlink_components(p, pol.root)
+        # collapsed it) is a symlink. Walk from the grant root.
+        _reject_symlink_components(p, grant.path)
     return real
 
 
@@ -193,16 +201,21 @@ def safe_open(path: str | os.PathLike, mode: str = "r", *, encoding: str | None 
     """Open *path* for reading or writing with the gate enforced.
 
     Uses O_NOFOLLOW on the final component. For write modes the parent
-    directory must already exist inside the project root (callers that want
-    to create directories should do so via ``safe_mkdir``).
+    directory must already exist inside a granted root.
     """
     pol = policy.get()
     real = safe_resolve(path)
+
+    from . import path_grants as _pg
+    grant = _pg.grant_for(real)
+
     if "w" in mode or "a" in mode or "+" in mode:
+        if grant is not None and grant.mode != "rw":
+            raise WriteProtected(f"write denied: path is in a read-only grant: {real}")
         if _is_write_protected(pol.root, real):
-            raise WriteProtected(f"write to protected path denied: {real.relative_to(pol.root)}")
+            raise WriteProtected(f"write to protected path denied: {real}")
     elif _is_read_protected(pol.root, real):
-        raise ReadProtected(f"secret file read blocked: {real.relative_to(pol.root)}")
+        raise ReadProtected(f"secret file read blocked: {real}")
     flags = _flags_for_mode(mode)
     if not pol.cfg.follow_symlinks:
         flags |= os.O_NOFOLLOW

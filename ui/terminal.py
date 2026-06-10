@@ -98,6 +98,8 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
     ModelStatusBar = _w.ModelStatusBar
     HintBar = _w.HintBar
     CompletionBar = _w.CompletionBar
+    PathsView = _w.PathsView
+    PathGrantRow = _w.PathGrantRow
     PromptInput = _w.PromptInput
     ToolCallEvent = _w.ToolCallEvent
     ToolResultEvent = _w.ToolResultEvent
@@ -127,6 +129,7 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             Binding("f6", "activate_tab('tab-sparse')", "Sparse", show=False),
             Binding("f7", "activate_tab('tab-sys')", "Sys", show=False),
             Binding("f8", "activate_tab('tab-plan')", "Plan", show=False),
+            Binding("f9", "activate_tab('tab-paths')", "Paths", show=False),
         ]
 
         def __init__(self, agent: "Agent", session=None, server=None, **kwargs):
@@ -232,6 +235,8 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                     yield SysView(id="sys-log", markup=True, highlight=True)
                 with TabPane("plan", id="tab-plan"):
                     yield RichLog(id="plan-log", markup=True, highlight=False)
+                with TabPane("paths", id="tab-paths"):
+                    yield PathsView(id="paths-view")
             with Horizontal(id="loading-row"):
                 yield SpinnerWidget(self._spinner_frames, id="loading-indicator")
                 yield Static("", id="loading-tokens", markup=True)
@@ -285,10 +290,19 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                 return
             plan_log.write(_render_plan(plan))
 
+        def _reload_paths_view(self) -> None:
+            try:
+                pv = self.query_one("#paths-view", PathsView)
+                pv.refresh_grants()
+            except Exception:
+                pass
+
         def on_tabbed_content_tab_activated(self, event) -> None:
             pane_id = getattr(getattr(event, "pane", None), "id", None) or ""
             if pane_id == "tab-plan":
                 self._reload_plan_view()
+            elif pane_id == "tab-paths":
+                self._reload_paths_view()
 
         def on_mount(self) -> None:
             if self._terminal_title != "off":
@@ -332,6 +346,23 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                     app_ref.call_from_thread(app_ref._reload_qa_views)
 
                 self._server._agent.on_turn_summarized = _on_turn_summarized
+            except Exception:
+                pass
+            # Register path-grant notify callback so agent requests surface in UI.
+            try:
+                from agent.security import path_grants as _pg
+
+                def _on_path_requested() -> None:
+                    def _refresh():
+                        self._reload_paths_view()
+                        self._write_sys(
+                            f"[{t.warning}]⚠ agent requested path access — open paths tab (F9) to review[/{t.warning}]",
+                            switch_tab=False,
+                        )
+
+                    self.call_from_thread(_refresh)
+
+                _pg.register_notify(_on_path_requested)
             except Exception:
                 pass
 
@@ -678,6 +709,31 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             if getattr(self, "_rating_prompted", False):
                 self._rating_prompted = False
                 self.action_quit()
+
+        def on_path_grant_row_accepted(self, event) -> None:
+            from agent.security import path_grants as _pg
+            _pg.accept_grant(event.path)
+            self._reload_paths_view()
+            self._write_chat(
+                f"[{t.success}]✓ Path access granted: {event.path}[/{t.success}]"
+            )
+
+        def on_path_grant_row_rejected(self, event) -> None:
+            from agent.security import path_grants as _pg
+            _pg.reject_grant(event.path)
+            self._reload_paths_view()
+            self._write_chat(
+                f"[{t.text_dim}]✗ Path access rejected: {event.path}[/{t.text_dim}]"
+            )
+
+        def on_paths_view_add_path_clicked(self, event) -> None:
+            try:
+                from textual.widgets import TabbedContent
+                inp = self.query_one("#input-bar", PromptInput)
+                inp.load_text("/paths add ")
+                inp.focus()
+            except Exception:
+                pass
 
         def on_button_pressed(self, event) -> None:
             bid = event.button.id
