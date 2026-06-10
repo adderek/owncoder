@@ -101,6 +101,13 @@ def select_backend() -> str:
             continue
         if _probe_backend(c):
             _BACKEND = c
+            if c == "firejail":
+                logger.warning(
+                    "Sandbox backend: firejail selected. "
+                    "Note: curated seccomp blocklist (_BLOCKED_SYSCALLS) is NOT applied "
+                    "on the firejail path — firejail uses its own generic seccomp filter. "
+                    "Prefer bwrap for full syscall coverage."
+                )
             return _BACKEND
         logger.warning("Sandbox backend %s present but non-functional here", c)
     if policy.get().cfg.require_sandbox:
@@ -125,10 +132,10 @@ def _warn_degraded(tried: list[str]) -> None:
     print(
         "\n"
         "WARNING: No sandbox backend found (tried: " + ", ".join(tried) + ").\n"
-        "  Commands will run on the HOST with no filesystem isolation.\n"
-        "  Install bubblewrap (bwrap) or firejail to enable sandboxing.\n"
-        "  To silence this warning (acknowledge unsandboxed execution), set:\n"
-        "    sandbox_backend = 'none'  # in agent.toml [security]\n",
+        "  Running on HOST with no filesystem isolation (require_sandbox=false).\n"
+        "  Install bubblewrap (bwrap) or firejail for full sandboxing.\n"
+        "  To re-enable the safety default, remove require_sandbox override from\n"
+        "    agent.toml [security] (default is require_sandbox = true).\n",
         file=sys.stderr,
         flush=True,
     )
@@ -172,6 +179,20 @@ def _rlimit_preexec(sandbox_backend: str = "none") -> None:
         pass
 
 
+# Paths (root-relative) to mount read-only inside the sandbox so a hostile
+# agent cannot overwrite them via shell argv even when root is writable.
+_PROTECTED_PATHS = [
+    ".git",
+    "agent.toml",
+    ".agent.toml",
+    "CLAUDE.md",
+    "AGENT.md",
+    ".claude",
+    ".agent.ignore",
+    ".agent.priorities.toml",
+]
+
+
 def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool, seccomp_fd: int | None = None) -> list[str]:
     pol = policy.get()
     root = pol.root
@@ -201,6 +222,10 @@ def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool, seccomp_fd: int | 
         "--bind", str(root), str(root),
         "--chdir", str(cwd),
     ]
+    # Layer read-only overlays over sensitive paths. --ro-bind-try skips missing paths.
+    for rel in _PROTECTED_PATHS:
+        p = root / rel
+        a += ["--ro-bind-try", str(p), str(p)]
     if not network:
         a += ["--unshare-net"]
     if seccomp_fd is not None:
@@ -226,6 +251,11 @@ def _firejail_argv(argv: list[str], *, cwd: Path, network: bool) -> list[str]:
         f"--whitelist={pol.root}",
         f"--chdir={cwd}",
     ]
+    # Mark the same sensitive paths read-only inside firejail.
+    for rel in _PROTECTED_PATHS:
+        p = pol.root / rel
+        if p.exists():
+            a += [f"--read-only={p}"]
     if not network:
         a += ["--net=none"]
     a += ["--"] + argv

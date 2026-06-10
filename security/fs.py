@@ -11,6 +11,7 @@ All file I/O the agent performs on behalf of the LLM should go through
 """
 from __future__ import annotations
 
+import fnmatch
 import os
 import stat
 from pathlib import Path
@@ -24,6 +25,83 @@ class PathEscape(ValueError):
 
 class SymlinkDenied(ValueError):
     """Raised when a symlink is encountered and follow_symlinks is off."""
+
+
+class WriteProtected(ValueError):
+    """Raised when a write targets a protected path (config/git/credentials)."""
+
+
+class ReadProtected(ValueError):
+    """Raised when a read targets a secret file (credentials/keys)."""
+
+
+# Default globs (root-relative) that the agent must never write.
+# Prevents self-config rewrite and git-hook escape by a hostile model.
+# Override via SecurityConfig.write_deny_globs (empty list = disable).
+_DEFAULT_READ_DENY_GLOBS: list[str] = [
+    ".env",
+    ".env.*",
+    "*.pem",
+    "*.key",
+    "*.p12",
+    "id_rsa",
+    "id_rsa.*",
+    "id_ed25519",
+    "id_ed25519.*",
+    "id_ecdsa",
+    "id_ecdsa.*",
+    ".netrc",
+    "**/.aws/credentials",
+    "**/.ssh/*",
+]
+
+_DEFAULT_WRITE_DENY_GLOBS: list[str] = [
+    ".git/**",
+    "agent.toml",
+    ".agent.toml",
+    ".agent.*",
+    "CLAUDE.md",
+    "AGENT.md",
+    ".claude/**",
+    ".agent/**/*.toml",
+]
+
+
+def _is_write_protected(root: Path, resolved: Path) -> bool:
+    """Return True if *resolved* matches any write-deny glob relative to *root*."""
+    pol = policy.get()
+    globs = pol.cfg.write_deny_globs
+    if globs is None:
+        globs = _DEFAULT_WRITE_DENY_GLOBS
+    if not globs:
+        return False
+    try:
+        rel = str(resolved.relative_to(root))
+    except ValueError:
+        return False
+    for g in globs:
+        if fnmatch.fnmatch(rel, g):
+            return True
+    return False
+
+
+def _is_read_protected(root: Path, resolved: Path) -> bool:
+    """Return True if *resolved* matches a secret-file glob relative to *root*."""
+    pol = policy.get()
+    globs = pol.cfg.read_deny_globs
+    if globs is None:
+        globs = _DEFAULT_READ_DENY_GLOBS
+    if not globs:
+        return False
+    try:
+        rel = str(resolved.relative_to(root))
+    except ValueError:
+        return False
+    name = resolved.name
+    for g in globs:
+        if fnmatch.fnmatch(rel, g) or fnmatch.fnmatch(name, g):
+            return True
+    return False
 
 
 _root_dev: int | None = None
@@ -120,6 +198,11 @@ def safe_open(path: str | os.PathLike, mode: str = "r", *, encoding: str | None 
     """
     pol = policy.get()
     real = safe_resolve(path)
+    if "w" in mode or "a" in mode or "+" in mode:
+        if _is_write_protected(pol.root, real):
+            raise WriteProtected(f"write to protected path denied: {real.relative_to(pol.root)}")
+    elif _is_read_protected(pol.root, real):
+        raise ReadProtected(f"secret file read blocked: {real.relative_to(pol.root)}")
     flags = _flags_for_mode(mode)
     if not pol.cfg.follow_symlinks:
         flags |= os.O_NOFOLLOW

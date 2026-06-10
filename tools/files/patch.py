@@ -19,11 +19,23 @@ def _apply_unified_diff(original: str, patch: str) -> str:
         patch_path = f.name
 
     try:
-        result = subprocess.run(["patch", "--dry-run", orig_path, patch_path], capture_output=True, text=True)
+        try:
+            result = subprocess.run(
+                ["patch", "--dry-run", orig_path, patch_path],
+                capture_output=True, text=True, timeout=15,
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("patch dry-run timed out")
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or "patch dry-run failed")
 
-        result = subprocess.run(["patch", orig_path, patch_path], capture_output=True, text=True)
+        try:
+            result = subprocess.run(
+                ["patch", orig_path, patch_path],
+                capture_output=True, text=True, timeout=15,
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("patch apply timed out")
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip())
 

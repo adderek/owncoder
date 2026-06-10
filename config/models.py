@@ -242,7 +242,7 @@ class ToolCompactionConfig:
 class SecurityConfig:
     """Sandbox + filesystem confinement for tool calls."""
     sandbox_backend: str = "auto"
-    require_sandbox: bool = False
+    require_sandbox: bool = True
     network: str = "off"
     cpu_seconds: int = 20
     wall_seconds: int = 30
@@ -268,6 +268,11 @@ class SecurityConfig:
     ])
     argv_allow: list = field(default_factory=list)
     allow_legacy_shell: bool = False
+    # Write-deny globs (root-relative). None = use built-in defaults.
+    # Set to [] to disable entirely (opt-out for trusted dev environments).
+    write_deny_globs: list | None = None
+    # Read-deny globs for secret files. None = use built-in defaults.
+    read_deny_globs: list | None = None
 
 
 @dataclass

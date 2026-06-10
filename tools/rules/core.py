@@ -82,6 +82,16 @@ class Rules:
         """
         if self.ignore.matches(rel_path):
             return False, None
+        try:
+            from agent.security import fs as _sec_fs, policy as _sec_policy
+            if _sec_policy.is_configured():
+                pol = _sec_policy.get()
+                from pathlib import Path as _Path
+                resolved = pol.root / rel_path
+                if _sec_fs._is_read_protected(pol.root, resolved):
+                    return False, f"secret file read blocked: {rel_path}"
+        except Exception:
+            pass
         return True, None
 
     # ── Write checks ───────────────────────────────────────────────────
@@ -92,6 +102,18 @@ class Rules:
         """Can the agent write this file?  Returns (allowed, error_msg)."""
         if self.ignore.matches(rel_path):
             return False, f"Cannot write to ignored path: {rel_path}"
+
+        # Delegate to the security fs gate for protected-path check.
+        try:
+            from agent.security import fs as _sec_fs, policy as _sec_policy
+            if _sec_policy.is_configured():
+                pol = _sec_policy.get()
+                from pathlib import Path as _Path
+                resolved = pol.root / rel_path
+                if _sec_fs._is_write_protected(pol.root, resolved):
+                    return False, f"write to protected path denied: {rel_path}"
+        except Exception:
+            pass
 
         ro_match, reason = self.readonly.matches(rel_path)
         if ro_match:

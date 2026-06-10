@@ -181,6 +181,134 @@ class TestRunnerHostFallback:
             sec_runner.run(["echo", "x"], cwd="/tmp")
 
 
+class TestWriteDenylist:
+    """H1 — write-denylist in safe_open and Rules.check_write."""
+
+    def test_blocks_git_hook_write(self, project):
+        git_dir = project / ".git"
+        git_dir.mkdir()
+        with pytest.raises(sec_fs.WriteProtected):
+            sec_fs.safe_open(".git/hooks/pre-commit", "w")
+
+    def test_blocks_agent_toml_write(self, project):
+        with pytest.raises(sec_fs.WriteProtected):
+            sec_fs.safe_open("agent.toml", "w")
+
+    def test_blocks_claude_md_write(self, project):
+        with pytest.raises(sec_fs.WriteProtected):
+            sec_fs.safe_open("CLAUDE.md", "w")
+
+    def test_allows_normal_source_write(self, project):
+        from agent.tools.rules.core import Rules
+        rules = Rules()
+        allowed, msg = rules.check_write("src/foo.py")
+        assert allowed is True
+
+    def test_check_write_blocks_git(self, project):
+        from agent.tools.rules.core import Rules
+        (project / ".git").mkdir()
+        rules = Rules()
+        allowed, msg = rules.check_write(".git/hooks/pre-commit")
+        assert allowed is False
+        assert "protected" in (msg or "")
+
+    def test_check_write_blocks_agent_toml(self, project):
+        from agent.tools.rules.core import Rules
+        rules = Rules()
+        allowed, msg = rules.check_write("agent.toml")
+        assert allowed is False
+
+    def test_check_write_blocks_claude_md(self, project):
+        from agent.tools.rules.core import Rules
+        rules = Rules()
+        allowed, msg = rules.check_write("CLAUDE.md")
+        assert allowed is False
+
+
+class TestReadDenylist:
+    """H5 — secret file read guard."""
+
+    def test_blocks_env_file_read(self, project):
+        (project / ".env").write_text("SECRET=abc")
+        with pytest.raises(sec_fs.ReadProtected):
+            sec_fs.safe_open(".env", "r")
+
+    def test_blocks_pem_read(self, project):
+        (project / "server.pem").write_text("-----BEGIN CERTIFICATE-----")
+        with pytest.raises(sec_fs.ReadProtected):
+            sec_fs.safe_open("server.pem", "r")
+
+    def test_blocks_id_rsa_read(self, project):
+        (project / "id_rsa").write_text("-----BEGIN RSA PRIVATE KEY-----")
+        with pytest.raises(sec_fs.ReadProtected):
+            sec_fs.safe_open("id_rsa", "r")
+
+    def test_allows_normal_source_read(self, project):
+        (project / "main.py").write_text("print('hello')")
+        f = sec_fs.safe_open("main.py", "r")
+        f.close()
+
+    def test_check_read_blocks_env(self, project):
+        from agent.tools.rules.core import Rules
+        (project / ".env").write_text("SECRET=abc")
+        rules = Rules()
+        allowed, msg = rules.check_read(".env")
+        assert allowed is False
+        assert "secret" in (msg or "").lower()
+
+    def test_check_read_allows_normal_file(self, project):
+        from agent.tools.rules.core import Rules
+        (project / "main.py").write_text("x=1")
+        rules = Rules()
+        allowed, msg = rules.check_read("main.py")
+        assert allowed is True
+
+
+class TestH6FailClosed:
+    """H6 — default require_sandbox=True, fail-closed when no backend."""
+
+    def test_default_require_sandbox_is_true(self):
+        from agent.config.models import SecurityConfig
+        assert SecurityConfig().require_sandbox is True
+
+    def test_fail_closed_no_backend(self, project, monkeypatch):
+        sec_policy.get().cfg.require_sandbox = True
+        sec_policy.get().cfg.sandbox_backend = "auto"
+        sec_runner._BACKEND = None
+        monkeypatch.setattr(shutil, "which", lambda _n: None)
+        with pytest.raises(sec_runner.SandboxUnavailable):
+            sec_runner.run(["echo", "x"])
+
+    def test_explicit_opt_out_runs_host(self, project):
+        sec_policy.get().cfg.require_sandbox = False
+        sec_policy.get().cfg.sandbox_backend = "none"
+        sec_runner._BACKEND = None
+        r = sec_runner.run(["echo", "opt-out"], timeout=5)
+        assert r.returncode == 0
+        assert "opt-out" in r.stdout
+
+
+class TestH2PatchTimeout:
+    """H2 — patch_file subprocess calls carry timeout."""
+
+    def test_patch_subprocess_has_timeout(self):
+        import ast, textwrap
+        src = Path(__file__).parent.parent.parent / "tools/files/patch.py"
+        tree = ast.parse(src.read_text())
+        calls = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "run"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "subprocess"
+        ]
+        assert calls, "no subprocess.run calls found in patch.py"
+        for call in calls:
+            kw_names = [kw.arg for kw in call.keywords]
+            assert "timeout" in kw_names, f"subprocess.run at line {call.lineno} missing timeout="
+
+
 class TestAuditLog:
     def test_run_emits_audit(self, project):
         sec_policy.get().cfg.sandbox_backend = "none"
