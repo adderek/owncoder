@@ -200,13 +200,14 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
 
         def compose(self) -> ComposeResult:
             _info = self._server.get_llm_info()
+            _project_name = os.path.basename(os.path.realpath(self._server._agent.config.tools.working_dir)) or "agent"
             session_label = ""
             if self._session:
                 label = self._session.short_name or self._session.id
                 session_label = f"  [{t.text_dim}]{label}[/{t.text_dim}]"
             with Horizontal(id="header-bar"):
                 yield Static(
-                    f"[bold]local-code-agent[/bold]  [{t.text_dim}]{_info['model']}[/{t.text_dim}]{session_label}",
+                    f"[bold]{_escape(_project_name)}[/bold]  [{t.text_dim}]{_info['model']}[/{t.text_dim}]{session_label}",
                     id="header-title",
                 )
                 yield ModelStatusBar("", id="model-status")
