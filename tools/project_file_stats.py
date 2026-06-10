@@ -1,8 +1,12 @@
-"""Git-based file churn analysis: modification frequency, recently reworked
-files, and refactoring candidates (large + frequently modified)."""
+"""File churn analysis: git history + agent-tracked edit events.
+
+Combines git commit frequency/size with the persistent `.agent/edit_stats.jsonl`
+log to identify refactoring candidates — large files edited repeatedly.
+"""
 
 from __future__ import annotations
 
+import json
 import subprocess
 from collections import defaultdict
 from pathlib import Path
@@ -59,15 +63,107 @@ def _format_size(bytes_val: int) -> str:
     return f"{bytes_val:.0f}TB"
 
 
+def _read_agent_edit_log(wd: str) -> list[dict]:
+    """Read .agent/edit_stats.jsonl records. Returns [] if missing or unreadable."""
+    if _config:
+        agent_dir = Path(_config.tools.agent_dir)
+        if not agent_dir.is_absolute():
+            agent_dir = Path(wd) / agent_dir
+    else:
+        agent_dir = Path(wd) / ".agent"
+    log_path = agent_dir / "edit_stats.jsonl"
+    if not log_path.is_file():
+        return []
+    records = []
+    try:
+        for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    except OSError:
+        pass
+    return records
+
+
+def _agent_tracked_stats(wd: str, scope: str, max_files: int) -> dict:
+    """Aggregate agent edit-log into per-file stats and refactor candidates."""
+    import fnmatch
+
+    records = _read_agent_edit_log(wd)
+    if not records:
+        return {"available": False, "reason": "no edit_stats.jsonl found"}
+
+    per_file: dict[str, dict] = {}
+    for rec in records:
+        path = rec.get("path", "")
+        if not path or path == "<multi>":
+            continue
+        if not fnmatch.fnmatch(path, scope):
+            continue
+        outcome = rec.get("outcome", "")
+        if path not in per_file:
+            per_file[path] = {"path": path, "agent_edits": 0, "size_bytes": 0, "lines": 0, "last_edit_ts": 0.0}
+        entry = per_file[path]
+        if outcome == "ok":
+            entry["agent_edits"] += 1
+            ts = rec.get("ts", 0.0)
+            if ts > entry["last_edit_ts"]:
+                entry["last_edit_ts"] = ts
+                if "size_bytes" in rec:
+                    entry["size_bytes"] = rec["size_bytes"]
+                if "lines" in rec:
+                    entry["lines"] = rec["lines"]
+
+    if not per_file:
+        return {"available": True, "files": [], "refactoring_candidates": []}
+
+    # For files with no size snapshot yet (edited before this feature), read live
+    for entry in per_file.values():
+        if entry["size_bytes"] == 0:
+            fpath = Path(wd) / entry["path"]
+            if fpath.is_file():
+                entry["size_bytes"] = fpath.stat().st_size
+                try:
+                    with open(fpath, "rb") as f:
+                        entry["lines"] = sum(1 for _ in f)
+                except OSError:
+                    pass
+
+    files_list = sorted(per_file.values(), key=lambda e: -e["agent_edits"])[:max_files]
+    for entry in files_list:
+        entry["size_str"] = _format_size(entry["size_bytes"])
+        entry["days_since_edit"] = round(max(0.0, (time() - entry["last_edit_ts"]) / 86400), 1) if entry["last_edit_ts"] else None
+
+    refactor = [
+        e for e in per_file.values()
+        if e["lines"] >= 300 and e["agent_edits"] >= 3
+    ]
+    refactor.sort(key=lambda e: -(e["agent_edits"] * max(e["lines"], 1)))
+    for entry in refactor[:max_files]:
+        entry.setdefault("size_str", _format_size(entry["size_bytes"]))
+
+    return {
+        "available": True,
+        "total_edit_events": sum(e["agent_edits"] for e in per_file.values()),
+        "files": files_list,
+        "refactoring_candidates": refactor[:max_files],
+    }
+
+
 @register(
     "project_file_stats",
     {
         "description": (
-            "Analyze git commit history for file-level statistics: modification frequency, "
-            "churn rate, recently-reworked files, and refactoring candidates. "
-            "Returns files sorted by churn (most-modified first), plus a refactoring-candidates "
-            "section identifying large files that are also frequently modified. "
-            "This helps decide what to refactor, split, or simplify."
+            "Analyze file-level statistics for refactoring decisions: git commit frequency/churn "
+            "and agent-tracked edit events from .agent/edit_stats.jsonl. "
+            "Returns files sorted by churn (most-modified first), recently-reworked files, "
+            "refactoring candidates (large + frequently modified), and an agent_tracked section "
+            "showing files the agent has edited most — including size/line count snapshots and "
+            "candidates not yet visible in git history."
         ),
         "parameters": {
             "type": "object",
@@ -221,5 +317,6 @@ def project_file_stats(
             "most_modified": len(by_churn) > 0 and by_churn[0]["path"] or "",
             "most_churned": len(by_churn) > 0 and by_churn[0]["path"] or "",
         },
+        "agent_tracked": _agent_tracked_stats(wd, scope, max_files),
     }
     return result

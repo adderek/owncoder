@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from agent.tools import register
 from agent.tools.rules import get_rules
-from .paths import _resolve, _working_dir, _undo_stack
+from .paths import _resolve, _working_dir, _undo_stack, _log_edit
 
 
 @register(
@@ -82,6 +82,8 @@ def write_file(path: str, content: str) -> dict:
             import ast
             ast.parse(content)
         except SyntaxError as e:
+            _log_edit("write_file", path, "syntax_error")
             return {"error": f"File written but has syntax error: {e}. Use undo_file to revert.", "path": path}
 
+    _log_edit("write_file", path, "ok")
     return {"ok": path, "diff": diff_summary}

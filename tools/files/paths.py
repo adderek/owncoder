@@ -90,7 +90,17 @@ def _log_edit(tool: str, path: str, outcome: str, **extra) -> None:
         if not agent_dir.is_absolute():
             agent_dir = _working_dir() / agent_dir
         agent_dir.mkdir(parents=True, exist_ok=True)
-        rec = {"ts": time.time(), "tool": tool, "path": path, "outcome": outcome, **extra}
+        rec: dict = {"ts": time.time(), "tool": tool, "path": path, "outcome": outcome, **extra}
+        if outcome == "ok" and path not in ("<multi>",):
+            try:
+                fpath = _working_dir() / path if not Path(path).is_absolute() else Path(path)
+                if fpath.is_file():
+                    st = fpath.stat()
+                    rec["size_bytes"] = st.st_size
+                    with open(fpath, "rb") as _f:
+                        rec["lines"] = sum(1 for _ in _f)
+            except Exception:
+                pass
         with (agent_dir / "edit_stats.jsonl").open("a", encoding="utf-8") as f:
             f.write(json.dumps(rec) + "\n")
     except Exception:

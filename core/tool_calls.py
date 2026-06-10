@@ -383,6 +383,7 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
 
         if isinstance(result, dict):
             rules.log_action(name, args, result)
+            result = _maybe_add_refactor_hints(name, result, config)
 
         serialised = json.dumps(result, ensure_ascii=False)
         logger.debug("execute_tool: %s  result_len=%d", name, len(serialised))
@@ -422,6 +423,50 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
             "tool_call_id": getattr(tool_call, "id", None),
         }, config=config)
         return json.dumps({"error": str(e), "tool": name, "error_type": type(e).__name__})
+
+
+_EDIT_TOOL_NAMES = {"edit_file", "write_file", "patch_file", "replace_text", "replace_symbol"}
+
+
+def _extract_edited_paths(tool_name: str, result: dict) -> list[str]:
+    """Extract file paths touched by a successful edit tool call."""
+    paths: list[str] = []
+    if tool_name == "write_file":
+        p = result.get("ok")
+        if isinstance(p, str):
+            paths.append(p)
+    elif tool_name in ("patch_file", "replace_text", "replace_symbol"):
+        p = result.get("path") or result.get("ok")
+        if isinstance(p, str):
+            paths.append(p)
+    elif tool_name == "edit_file":
+        for entry in result.get("applied", []):
+            if isinstance(entry, dict):
+                p = entry.get("path")
+                if isinstance(p, str) and p not in paths:
+                    paths.append(p)
+    return paths
+
+
+def _maybe_add_refactor_hints(tool_name: str, result: dict, config) -> dict:
+    """Append refactor-hint notes to edit-tool results when thresholds crossed."""
+    if tool_name not in _EDIT_TOOL_NAMES:
+        return result
+    if result.get("error") or result.get("dry_run"):
+        return result
+    try:
+        from agent.tools.files.hint import check_refactor_hint
+        hints = []
+        for path in _extract_edited_paths(tool_name, result):
+            h = check_refactor_hint(path, config)
+            if h:
+                hints.append(h)
+        if hints:
+            result = dict(result)
+            result["_hints"] = hints
+    except Exception:
+        pass
+    return result
 
 
 def _get_output_store(config: "Config | None" = None):

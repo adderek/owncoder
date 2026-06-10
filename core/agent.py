@@ -199,6 +199,11 @@ class Agent:
         recall_tool.setup(self._facts_store)
         recall_history_tool.setup(self._qa_logger)
         rate_session_tool.set_session(session_id)
+        try:
+            from agent.tools.files.hint import reset_session_hints
+            reset_session_hints()
+        except Exception:
+            pass
 
     def _inject_similar_sessions(self, query: str, top_k: int = 3, embedding=None) -> None:
         """On first turn, inject top-K similar rated sessions as context.

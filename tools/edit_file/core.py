@@ -108,9 +108,11 @@ def edit_file(
         if rules.config.dry_run:
             continue
         fpath.write_text(content, encoding="utf-8")
+        _log_edit("edit_file", path, "ok")
 
     outcome = "ok" if not errors else "skip_partial"
-    _log_edit("edit_file", "<multi>", outcome, chunk_count=len(chunks), paths=attempted_paths, applied=len(applied), error_kinds=[e["kind"] for e in errors] or None)
+    if errors:
+        _log_edit("edit_file", "<multi>", outcome, chunk_count=len(chunks), paths=attempted_paths, applied=len(applied), error_kinds=[e["kind"] for e in errors])
 
     result: dict = {"ok": True, "applied": applied}
     if errors:

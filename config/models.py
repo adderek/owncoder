@@ -79,6 +79,8 @@ class ToolsConfig:
     agent_dir: str = ".agent"
     preamble_path: str = ".agent/agent.preamble"
     search_parents: bool = True
+    refactor_hint_min_lines: int = 400   # file must be at least this many lines
+    refactor_hint_min_edits: int = 4     # agent must have edited it at least this many times
 
 
 @dataclass
