@@ -1,4 +1,4 @@
-"""Config loading: TOML merge, env overrides, reachability check."""
+"""Config loading: TOML/YAML merge, env overrides, reachability check."""
 from __future__ import annotations
 
 import os
@@ -7,7 +7,7 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 
-from .models import Config, KbConfig, AEIConfig, ModelEntry
+from .models import Config, KbConfig, AEIConfig, ModelEntry, NotifyChannelConfig
 
 
 def _apply_env_overrides(config: Config) -> None:
@@ -95,6 +95,10 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_CONFIDENCE_GUARD_DUP_THRESHOLD": ("confidence_guard", "dup_rate_threshold"),
         "AGENT_CONFIDENCE_GUARD_SCORE_THRESHOLD": ("confidence_guard", "score_threshold"),
         "AGENT_CONFIDENCE_GUARD_COOLDOWN": ("confidence_guard", "inject_cooldown"),
+        "AGENT_NOTIFY_ENABLED": ("notify", "enabled"),
+        "AGENT_NOTIFY_ANSWER_TIMEOUT": ("notify", "answer_timeout_s"),
+        "AGENT_NOTIFY_ON_TIMEOUT": ("notify", "on_timeout"),
+        "AGENT_NOTIFY_REMOTE_ANSWERS": ("notify", "remote_answers"),
     }
     for env_key, (section, attr) in env_map.items():
         val = os.environ.get(env_key)
@@ -130,7 +134,17 @@ def _apply_env_overrides(config: Config) -> None:
             config.model_roles[role] = val
 
 
-def _load_toml(path: Path) -> dict:
+def _load_file(path: Path) -> dict:
+    """Parse a config file by extension: .toml via tomllib, .yaml/.yml via pyyaml."""
+    if path.suffix in (".yaml", ".yml"):
+        import yaml
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        if data is None:
+            return {}
+        if not isinstance(data, dict):
+            raise ValueError(f"top-level YAML value must be a mapping, got {type(data).__name__}")
+        return data
     with open(path, "rb") as f:
         return tomllib.load(f)
 
@@ -170,9 +184,27 @@ def _merge(config: Config, data: dict) -> None:
         ("concurrency", config.concurrency),
         ("kb", config.kb),
         ("aei", config.aei),
+        ("notify", config.notify),
     ):
         section_data = data.get(section_name, {})
         _merge_obj(obj, section_data)
+
+
+def _coerce_notify_channels(config: Config) -> None:
+    """Convert notify.channels dicts (TOML [[notify.channels]] / YAML list) to NotifyChannelConfig."""
+    coerced = []
+    for ch in config.notify.channels:
+        if isinstance(ch, NotifyChannelConfig):
+            coerced.append(ch)
+            continue
+        if not isinstance(ch, dict):
+            raise ValueError(f"notify.channels entries must be mappings, got {type(ch).__name__}")
+        entry = NotifyChannelConfig()
+        for k, v in ch.items():
+            if hasattr(entry, k):
+                setattr(entry, k, v)
+        coerced.append(entry)
+    config.notify.channels = coerced
 
 
 _KNOWN_ROLES = {"default", "summarizer", "embeddings"}
@@ -303,33 +335,37 @@ def _ensure_model_registry_keys(config: Config) -> None:
         )
 
 
-def load_config(extra_path: Path | None = None) -> Config:
+CONFIG_FILENAMES = ("agent.toml", "agent.yaml", "agent.yml")
+
+
+def load_config(extra_path: Path | list[Path] | None = None) -> Config:
     config = Config()
 
     # Search order (later files override earlier ones):
-    #   1. ~/.config/agent/agent.toml  — user-global settings
-    #   2. extra_path                  — project-specific agent.toml (absolute)
-    # Note: we deliberately omit Path("agent.toml") (CWD-relative) to avoid
-    # accidentally loading a config from a subdirectory of the project.
-    search_paths = [
-        Path.home() / ".config" / "agent" / "agent.toml",
-    ]
-    if extra_path:
+    #   1. ~/.config/agent/agent.{toml,yaml,yml}  — user-global settings
+    #   2. extra_path                             — project config(s) (absolute)
+    # Note: we deliberately omit CWD-relative paths to avoid accidentally
+    # loading a config from a subdirectory of the project.
+    global_dir = Path.home() / ".config" / "agent"
+    search_paths = [global_dir / name for name in CONFIG_FILENAMES]
+    if isinstance(extra_path, Path):
         search_paths.append(extra_path)
+    elif extra_path:
+        search_paths.extend(extra_path)
 
     raw_data: list[dict] = []
     for p in search_paths:
         if p.exists():
             try:
-                data = _load_toml(p)
-            except tomllib.TOMLDecodeError as exc:
+                data = _load_file(p)
+            except Exception as exc:
                 import sys
                 print(
                     f"\nConfig error in {p}:\n"
                     f"  {exc}\n"
                     f"\nCommon causes:\n"
                     f"  - Duplicate section headers (e.g. two [planning] blocks) — merge them into one\n"
-                    f"  - Invalid TOML syntax (missing quotes, bad value types)\n"
+                    f"  - Invalid TOML/YAML syntax (missing quotes, bad indentation, bad value types)\n"
                     f"\nFix: open {p} and resolve the issue, then retry.\n",
                     file=sys.stderr,
                 )
@@ -351,6 +387,7 @@ def load_config(extra_path: Path | None = None) -> Config:
     config.llm.narration_fallback = config.agent.narration_fallback
     # Ensure registry fallback keys exist (uses now-correct config.llm values)
     _ensure_model_registry_keys(config)
+    _coerce_notify_channels(config)
     return config
 
 

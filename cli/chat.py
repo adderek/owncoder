@@ -93,9 +93,10 @@ def _pick_ui_mode(current: str) -> str:
 
 
 def _is_first_run() -> bool:
+    from agent.config.loader import CONFIG_FILENAMES
     paths = [
-        Path.home() / ".config" / "agent" / "agent.toml",
-        Path("agent.toml"),
+        *(Path.home() / ".config" / "agent" / name for name in CONFIG_FILENAMES),
+        *(Path(name) for name in CONFIG_FILENAMES),
     ]
     return not any(p.exists() for p in paths)
 

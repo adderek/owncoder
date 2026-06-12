@@ -23,6 +23,8 @@ class LocalUIServer:
         self._agent = agent
         self._stop_event: asyncio.Event | None = None
         self._default_max_iterations: int | None = getattr(agent.config.llm, "max_iterations", 10)
+        from agent.notify import NotifyBroker
+        self._notify = NotifyBroker(agent.config)
 
     # ── chat ────────────────────────────────────────────────────────────────
 
@@ -90,6 +92,24 @@ class LocalUIServer:
                     on_signal(signal, clean_response)
                 except Exception:
                     logger.exception("on_signal callback failed")
+
+            # External notification channels (off by default).
+            if signal.kind in ("ask_user", "blocked") and self._notify.remote_answers:
+                # Bidirectional: push as Question, wait for a remote answer
+                # (timeout falls through to the normal return-to-UI path).
+                from agent.notify.messages import Question
+                answer = await self._notify.ask(Question(
+                    kind=signal.kind, text=signal.payload,
+                    free_text=True, session=session_id,
+                ))
+                if answer is not None and (answer.text or answer.choice):
+                    auto_step = 0  # remote answer counts as user input
+                    self._stop_event = asyncio.Event()
+                    current_input = answer.text or answer.choice
+                    continue
+            else:
+                # Fire-and-forget notice (non-blocking).
+                self._notify.handle_signal(signal.kind, signal.payload, session_id)
 
             if signal.kind == "next_step" and auto_step < max_auto_steps:
                 if self._stop_event is not None and self._stop_event.is_set():
@@ -323,6 +343,10 @@ class LocalUIServer:
     def set_plan(self, arg: str, session_id: str = "") -> "tuple[bool, str]":
         from agent.ui.slash import _apply_plan
         return _apply_plan(self._agent, arg)
+
+    def set_notify(self, arg: str, session_id: str = "") -> "tuple[bool, str]":
+        from agent.ui.slash import _apply_notify
+        return _apply_notify(self._agent, arg, self._notify)
 
     # ── session persistence ────────────────────────────────────────────────────
 

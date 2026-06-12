@@ -154,10 +154,13 @@ def main() -> None:
 
     if args.config:
         config = load_config(Path(args.config))
-    elif project_root and (project_root / "agent.toml").exists():
-        config = load_config(project_root / "agent.toml")
     else:
-        config = load_config(None)
+        from agent.config.loader import CONFIG_FILENAMES
+        project_cfgs = [
+            p for name in CONFIG_FILENAMES
+            if project_root and (p := project_root / name).exists()
+        ]
+        config = load_config(project_cfgs or None)
 
     if project_root:
         config.tools.working_dir = str(project_root)

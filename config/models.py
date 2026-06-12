@@ -469,6 +469,49 @@ class TurnSignalsConfig:
 
 
 @dataclass
+class NotifyChannelConfig:
+    """One notification endpoint.
+
+    type:
+      "command" — pipe message to a shell command's stdin (ntfy, signal-cli, ...).
+                  Outbound only; capability forced to "display".
+      "relay"   — websocket to a relay server (bidirectional; phase 2).
+    capability: display | choices | chat — what the endpoint can send back.
+    format: "text" (human-readable) | "json" (wire envelope) — command channels.
+    """
+    type: str = "command"
+    capability: str = "display"
+    format: str = "text"
+    cmd: str = ""          # command channel: shell command, message on stdin
+    url: str = ""          # relay channel: websocket URL
+    token_file: str = ""   # relay channel: auth token path
+    name: str = ""         # optional label shown in /notify status
+
+
+@dataclass
+class NotifyConfig:
+    """Push progress/questions to external channels. Off by default.
+
+    events: turn-signal kinds that trigger a push. Valid kinds:
+      ask_user, blocked, done, request_feedback, request_review,
+      consult_crows, next_step.
+    on_timeout: what to do when a Question gets no answer in answer_timeout_s:
+      "continue" — resolve with the question's default option (or no answer),
+      "wait"     — keep waiting indefinitely.
+    remote_answers: when True and an answer-capable (choices/chat) channel is
+      configured, ask_user/blocked signals wait for a remote answer (up to
+      answer_timeout_s) and feed it back into the turn instead of returning to
+      the terminal UI immediately. Terminal input is blocked while waiting.
+    """
+    enabled: bool = False
+    events: list = field(default_factory=lambda: ["ask_user", "blocked", "done"])
+    answer_timeout_s: int = 600
+    on_timeout: str = "continue"
+    remote_answers: bool = False
+    channels: list = field(default_factory=list)  # list[NotifyChannelConfig]
+
+
+@dataclass
 class KbConfig:
     """Knowledge-base integration. Off by default."""
     enabled: bool = False
@@ -531,3 +574,4 @@ class Config:
     turn_signals: TurnSignalsConfig = field(default_factory=TurnSignalsConfig)
     kb: KbConfig = field(default_factory=KbConfig)
     aei: AEIConfig = field(default_factory=AEIConfig)
+    notify: NotifyConfig = field(default_factory=NotifyConfig)

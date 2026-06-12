@@ -25,7 +25,7 @@ from .models import (
 )
 from .loader import (
     load_config, check_reachability,
-    _apply_env_overrides, _merge_obj, _merge, _load_toml,
+    _apply_env_overrides, _merge_obj, _merge, _load_file,
 )
 from .registry import ModelRegistry
 
@@ -40,6 +40,6 @@ __all__ = [
     "LoopGuardConfig", "LogsConfig", "TokenLimitsConfig", "ToolCompactionConfig",
     "SecurityConfig", "PlanningConfig", "RecoveryConfig", "WebSearchConfig", "OutputStoreConfig", "TurnSignalsConfig", "ModelEntry", "AEIConfig", "Config",
     "load_config", "check_reachability",
-    "_apply_env_overrides", "_merge_obj", "_merge", "_load_toml",
+    "_apply_env_overrides", "_merge_obj", "_merge", "_load_file",
     "ModelRegistry", "make_registry",
 ]

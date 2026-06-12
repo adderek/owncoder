@@ -53,6 +53,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/abort-plan", [], "mark active plan aborted (no stash)", False),
     ("/stash-plan", [], "git stash current changes + mark plan stashed", False),
     ("/pause-plan", [], "mark active plan paused; resume later", False),
+    ("/notify", [], "notification channels  [on | off | status]", True),
     ("/model", [], "switch active model  [<entry> | role=<entry> | role=? | refresh]", True),
     ("/models", [], "show all configured model entries with capabilities", False),
     ("/recoveries", [], "list pending crash-recovery records", False),
@@ -103,6 +104,22 @@ def _apply_autonomy(agent, arg: str) -> tuple[bool, str]:
     resolved = _resolve_autonomy(v)
     agent.config.agent.autonomy = resolved
     return True, f"autonomy = {_fmt(resolved)}"
+
+
+def _apply_notify(agent, arg: str, broker=None) -> tuple[bool, str]:
+    """Returns (ok, message)."""
+    v = arg.strip().lower()
+    cfg = agent.config.notify
+    if v in ("", "status"):
+        if broker is not None:
+            return True, broker.status()
+        return True, f"notify {'on' if cfg.enabled else 'off'} — {len(cfg.channels)} channel(s) configured"
+    if v in ("on", "off"):
+        cfg.enabled = v == "on"
+        if cfg.enabled and not cfg.channels:
+            return True, "notify on — but no channels configured ([notify] in agent.toml/agent.yaml)"
+        return True, f"notify {v}"
+    return False, "Usage: /notify [on | off | status]"
 
 
 def _apply_temperature(agent, arg: str) -> tuple[bool, str]:

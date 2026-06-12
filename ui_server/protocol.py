@@ -160,6 +160,10 @@ class UIServerProtocol(Protocol):
         """Handle plan subcommands. Returns (ok, message)."""
         ...
 
+    def set_notify(self, arg: str, session_id: str = "") -> "tuple[bool, str]":
+        """Set/query notification channel state (on|off|status). Returns (ok, message)."""
+        ...
+
     # ── session persistence ───────────────────────────────────────────────────
 
     def save_session(self, session: "Session", session_id: str = "") -> None:
