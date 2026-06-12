@@ -21,12 +21,23 @@ if TYPE_CHECKING:
 
 _config: "Config | None" = None
 _graph_cache: dict | None = None
-_graph_mtime: float | None = None
+_graph_key: tuple | None = None
+_stale_cache: tuple[float, str | None] | None = None  # (checked_at, warning)
+_STALE_TTL = 30.0
 
 
-def setup(config) -> None:
+def setup(config, data_provider=None) -> None:
     global _config
     _config = config
+    from agent.tools.graph import asm_export
+    asm_export.setup(data_provider)
+
+
+def invalidate_caches() -> None:
+    global _graph_cache, _graph_key, _stale_cache
+    _graph_cache = None
+    _graph_key = None
+    _stale_cache = None
 
 
 def _graphify_bin() -> Path | None:
@@ -47,17 +58,53 @@ def _graph_json_path() -> Path:
     return _root() / "graphify-out" / "graph.json"
 
 
+def _asm_graph_path() -> Path:
+    return _root() / "graphify-out" / "asm-graph.json"
+
+
+def _merged_graph_path() -> Path:
+    return _root() / "graphify-out" / "graph-merged.json"
+
+
 def _load_graph() -> dict | None:
-    global _graph_cache, _graph_mtime
-    p = _graph_json_path()
-    if not p.exists():
+    """Load graph.json merged with asm-graph.json (either may be absent)."""
+    global _graph_cache, _graph_key
+    paths = [p for p in (_graph_json_path(), _asm_graph_path()) if p.exists()]
+    if not paths:
         return None
-    mtime = p.stat().st_mtime
-    if _graph_cache is None or mtime != _graph_mtime:
-        with p.open() as f:
-            _graph_cache = json.load(f)
-        _graph_mtime = mtime
+    key = tuple((str(p), p.stat().st_mtime) for p in paths)
+    if _graph_cache is None or key != _graph_key:
+        nodes: list = []
+        links: list = []
+        for p in paths:
+            try:
+                with p.open() as f:
+                    g = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                continue
+            nodes.extend(g.get("nodes", []))
+            links.extend(g.get("links", []))
+        _graph_cache = {"nodes": nodes, "links": links}
+        _graph_key = key
     return _graph_cache
+
+
+def _query_graph_arg() -> str | None:
+    """Graph file to pass to the graphify CLI; merges source+asm graphs lazily."""
+    gp, ap = _graph_json_path(), _asm_graph_path()
+    if not gp.exists() and not ap.exists():
+        return None
+    if not ap.exists():
+        return str(gp)
+    if not gp.exists():
+        return str(ap)
+    mp = _merged_graph_path()
+    src_mtime = max(gp.stat().st_mtime, ap.stat().st_mtime)
+    if not mp.exists() or mp.stat().st_mtime < src_mtime:
+        merged = _load_graph()
+        with mp.open("w") as f:
+            json.dump(merged, f)
+    return str(mp)
 
 
 def _run(cmd: list[str], timeout: int = 300) -> dict:
@@ -108,15 +155,25 @@ def _newest_source_mtime(root: Path) -> float:
 
 
 def _graph_stale_warning() -> str | None:
-    """Return a warning string if graph.json is older than newest source file, else None."""
+    """Return a warning string if graph.json is older than newest source file, else None.
+
+    Result is cached for _STALE_TTL seconds — the source-tree mtime walk is
+    O(files) and this runs on every graph_query/graph_path/graph_context call.
+    """
+    global _stale_cache
+    import time
+    now = time.time()
+    if _stale_cache is not None and now - _stale_cache[0] < _STALE_TTL:
+        return _stale_cache[1]
     p = _graph_json_path()
-    if not p.exists():
-        return None  # no graph yet — handled separately
-    graph_mtime = p.stat().st_mtime
-    source_mtime = _newest_source_mtime(_root())
-    if source_mtime > graph_mtime:
-        return "graph may be stale (source files changed since last graph_build). Run graph_build(update_only=True) to refresh."
-    return None
+    warn = None
+    if p.exists():
+        graph_mtime = p.stat().st_mtime
+        source_mtime = _newest_source_mtime(_root())
+        if source_mtime > graph_mtime:
+            warn = "graph may be stale (source files changed since last graph_build). Run graph_build to refresh."
+    _stale_cache = (now, warn)
+    return warn
 
 
 @register(
@@ -133,9 +190,10 @@ def _graph_stale_warning() -> str | None:
 def graph_status(**_kwargs) -> dict:
     import datetime
     p = _graph_json_path()
+    asm_p = _asm_graph_path()
     bin_ok = _graphify_bin() is not None
 
-    if not p.exists():
+    if not p.exists() and not asm_p.exists():
         return {
             "exists": False,
             "stale": None,
@@ -143,25 +201,34 @@ def graph_status(**_kwargs) -> dict:
             "hint": "Run graph_build() to create the graph." if bin_ok else "Install graphifyy first: agent/.venv/bin/pip install graphifyy",
         }
 
-    graph_mtime = p.stat().st_mtime
-    source_mtime = _newest_source_mtime(_root())
-    stale = source_mtime > graph_mtime
-    age_s = int(__import__("time").time() - graph_mtime)
-
     graph = _load_graph()
     node_count = len(graph.get("nodes", [])) if graph else 0
     edge_count = len(graph.get("links", [])) if graph else 0
 
-    return {
+    out = {
         "exists": True,
-        "stale": stale,
         "nodes": node_count,
         "edges": edge_count,
-        "built": datetime.datetime.fromtimestamp(graph_mtime).isoformat(timespec="seconds"),
-        "age_seconds": age_s,
+        "asm_graph": asm_p.exists(),
         "graphify_installed": bin_ok,
-        "hint": "Run graph_build() to refresh." if stale else "Graph is current.",
     }
+
+    if p.exists():
+        graph_mtime = p.stat().st_mtime
+        source_mtime = _newest_source_mtime(_root())
+        stale = source_mtime > graph_mtime
+        out.update({
+            "stale": stale,
+            "built": datetime.datetime.fromtimestamp(graph_mtime).isoformat(timespec="seconds"),
+            "age_seconds": int(__import__("time").time() - graph_mtime),
+            "hint": "Run graph_build() to refresh." if stale else "Graph is current.",
+        })
+    else:
+        out.update({
+            "stale": None,
+            "hint": "Only asm-graph.json present. Run graph_build() to add source code graph.",
+        })
+    return out
 
 
 def _node_matches(node: dict, term: str) -> bool:
@@ -196,18 +263,18 @@ def _node_matches(node: dict, term: str) -> bool:
     },
 )
 def graph_build(path: str | None = None, **_kwargs) -> dict:
-    global _graph_cache, _graph_mtime
-    _graph_cache = None
-    _graph_mtime = None
+    invalidate_caches()
 
     if _graphify_bin() is None:
         return {"error": "graphify not found. Install: agent/.venv/bin/pip install graphifyy"}
 
     target = str(Path(path).resolve() if path else _root())
 
-    # Always use `update` — processes code only, no LLM/API key needed.
-    # --force ensures it works on first run (no existing graph.json required).
-    cmd = ["update", target, "--no-cluster", "--force"]
+    # `update` processes code only, no LLM/API key needed.
+    # --force only on first run (incremental update when graph.json exists).
+    cmd = ["update", target, "--no-cluster"]
+    if not _graph_json_path().exists():
+        cmd.append("--force")
     result = _run(cmd, timeout=600)
 
     if "error" in result:
@@ -260,9 +327,9 @@ def graph_build(path: str | None = None, **_kwargs) -> dict:
     },
 )
 def graph_query(query: str, budget: int = 2000) -> dict:
-    if not _graph_json_path().exists():
-        return {"error": "graph.json not found. Run graph_build first."}
-    graph_arg = str(_graph_json_path())
+    graph_arg = _query_graph_arg()
+    if graph_arg is None:
+        return {"error": "No graph found. Run graph_build (and/or graph_build_asm) first."}
     result = _run(["query", query, "--graph", graph_arg, "--budget", str(budget)])
     if "error" in result:
         return result
@@ -302,9 +369,9 @@ def graph_query(query: str, budget: int = 2000) -> dict:
     },
 )
 def graph_path(from_node: str, to_node: str) -> dict:
-    if not _graph_json_path().exists():
-        return {"error": "graph.json not found. Run graph_build first."}
-    graph_arg = str(_graph_json_path())
+    graph_arg = _query_graph_arg()
+    if graph_arg is None:
+        return {"error": "No graph found. Run graph_build (and/or graph_build_asm) first."}
     result = _run(["path", from_node, to_node, "--graph", graph_arg])
     if "error" in result:
         return result
@@ -348,7 +415,7 @@ def graph_path(from_node: str, to_node: str) -> dict:
 def graph_context(symbol: str) -> dict:
     graph = _load_graph()
     if graph is None:
-        return {"error": "graph.json not found. Run graph_build first."}
+        return {"error": "No graph found. Run graph_build (and/or graph_build_asm) first."}
 
     nodes = graph.get("nodes", [])
     edges = graph.get("links", [])
@@ -393,6 +460,8 @@ def graph_context(symbol: str) -> dict:
         "contains": contains,
         "contained_by": contained_by,
     }
+    if len(matched) > 1:
+        out["also_matched"] = [n["id"] for n in matched[1:11]]
     warn = _graph_stale_warning()
     if warn:
         out["warning"] = warn

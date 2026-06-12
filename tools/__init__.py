@@ -110,7 +110,7 @@ def load_all_tools(config=None, store=None, embedder=None, asm_store=None, data_
         increment_tools.setup(config)
 
     from agent.tools import graph  # noqa: F401
-    graph.setup(config)
+    graph.setup(config, data_provider)
 
     if config is not None and getattr(getattr(config, "parallel", None), "enabled", False):
         from agent.tools import parallel  # noqa: F401

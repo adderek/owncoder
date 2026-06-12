@@ -186,6 +186,18 @@ class AsmStore:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_all_units(self, level: int | None = None) -> list[dict]:
+        if level is None:
+            rows = self._conn.execute(
+                "SELECT * FROM asm_units ORDER BY path, level, start_line"
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM asm_units WHERE level = ? ORDER BY path, start_line",
+                (level,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def get_children(self, parent_id: str) -> list[dict]:
         rows = self._conn.execute("""
             SELECT u.* FROM asm_units u
