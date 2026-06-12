@@ -52,8 +52,18 @@ channel; per-question policy decides whether agent answers are accepted.
   injection path into the agent.
 - Command channels: message goes to the command's stdin, never interpolated
   into the command line.
-- Relay (phase 2): agent connects outbound only (no listening port), token
-  auth, TLS required.
+- Relay: agent connects outbound only (no listening port), token auth, TLS
+  via reverse proxy when exposed.
+- End-to-end encryption (`e2e_key_file`): second secret known only to agent +
+  client — never to the relay. All payloads AES-256-GCM
+  (key = HKDF-SHA256(secret, salt="owncoder-notify", info="e2e-v1"), random
+  12-byte nonce, AAD "owncoder-notify-v1"); relay forwards opaque
+  `{"type":"enc","v":1,"n":...,"c":...}` envelopes and can neither read nor
+  forge messages. Fail closed both ways: key unreadable / cryptography missing
+  → channel disabled (no plaintext fallback); incoming plaintext dropped when
+  e2e on (no downgrade). Cross-implementation vector pinned in
+  `tests/unit/test_notify_e2e.py` and the Android client's `CryptoTest.kt`.
+  Generate: `openssl rand -base64 32 > ~/.config/agent/notify-e2e.key`.
 
 ## Config
 
@@ -102,6 +112,7 @@ notify:
     - type: relay
       url: wss://myhost:8970
       token_file: ~/.config/agent/relay.token
+      e2e_key_file: ~/.config/agent/notify-e2e.key   # E2E; relay sees ciphertext only
       capability: chat
 ```
 
@@ -132,6 +143,7 @@ wscat -c ws://localhost:8970
    `choices` tier with zero app code.
 2. **(done)** `relay` channel + `relay_server.py` + `remote_answers` loop —
    answer from any websocket client steers the agent mid-run.
-3. Dedicated Android app speaking the relay protocol (full `chat` tier:
-   option lists, free text, session picker, push via FCM or persistent
-   connection). Only when ntfy/wscat-grade clients are outgrown.
+3. **(done)** Android client `clients/android/` (repo root): foreground
+   service holds the relay connection; questions arrive as notifications with
+   option action buttons; free-text answers in-app; E2E encryption with 🔒
+   indicator. See `clients/android/README.md`.

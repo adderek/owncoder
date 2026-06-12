@@ -36,6 +36,7 @@ graph = [
 ]
 notify = [
     "websockets>=12",
+    "cryptography>=42",
 ]
 
 [project.scripts]

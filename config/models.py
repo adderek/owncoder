@@ -482,10 +482,12 @@ class NotifyChannelConfig:
     type: str = "command"
     capability: str = "display"
     format: str = "text"
-    cmd: str = ""          # command channel: shell command, message on stdin
-    url: str = ""          # relay channel: websocket URL
-    token_file: str = ""   # relay channel: auth token path
-    name: str = ""         # optional label shown in /notify status
+    cmd: str = ""           # command channel: shell command, message on stdin
+    url: str = ""           # relay channel: websocket URL
+    token_file: str = ""    # relay channel: auth token path (relay sees this)
+    e2e_key_file: str = ""  # relay channel: end-to-end key (relay must NOT see this);
+                            # set → all payloads AES-GCM encrypted, fail-closed
+    name: str = ""          # optional label shown in /notify status
 
 
 @dataclass

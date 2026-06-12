@@ -94,18 +94,22 @@ class RelayChannel:
     on the agent loop.
     """
 
-    def __init__(self, cfg: NotifyChannelConfig, token: str, on_answer=None) -> None:
+    def __init__(self, cfg: NotifyChannelConfig, token: str, on_answer=None, e2e=None) -> None:
         self.url = cfg.url
         self.capability = cfg.capability
         self.name = cfg.name or f"relay({cfg.url})"
         self._token = token
         self._on_answer = on_answer
+        self._e2e = e2e  # E2EBox | None; when set, payloads encrypted both ways
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=RELAY_QUEUE_MAX)
         self._task: asyncio.Task | None = None
 
     async def send(self, msg: "Notice | Question") -> bool:
         self._ensure_task()
-        wire = json.dumps(msg.to_wire())
+        wire_dict = msg.to_wire()
+        if self._e2e is not None:
+            wire_dict = self._e2e.encrypt(wire_dict)
+        wire = json.dumps(wire_dict)
         while True:
             try:
                 self._queue.put_nowait(wire)
@@ -169,7 +173,20 @@ class RelayChannel:
                 data = json.loads(raw)
             except ValueError:
                 continue
-            if isinstance(data, dict) and data.get("type") == "answer":
+            if not isinstance(data, dict):
+                continue
+            if self._e2e is not None:
+                # E2E mode: only encrypted envelopes accepted — a plaintext
+                # message here is a downgrade attempt or misconfigured client.
+                if data.get("type") != "enc":
+                    logger.warning("notify channel %s: plaintext message dropped (e2e enabled)", self.name)
+                    continue
+                inner = self._e2e.decrypt(data)
+                if inner is None:
+                    logger.warning("notify channel %s: undecryptable envelope dropped", self.name)
+                    continue
+                data = inner
+            if data.get("type") == "answer":
                 self._on_answer(data)
 
 
@@ -215,6 +232,14 @@ def build_channel(
         except ImportError:
             logger.warning("notify: websockets not installed (pip install 'local-code-agent[notify]') — skipping relay")
             return None
-        return RelayChannel(cfg, token, on_answer)
+        e2e = None
+        if cfg.e2e_key_file:
+            from agent.notify.crypto import load_box
+            e2e = load_box(cfg.e2e_key_file)
+            if e2e is None:
+                # Fail closed: e2e was requested — never fall back to plaintext.
+                logger.warning("notify: e2e key unavailable — skipping relay channel %s", cfg.url)
+                return None
+        return RelayChannel(cfg, token, on_answer, e2e=e2e)
     logger.warning("notify: unknown channel type %r — skipping", cfg.type)
     return None
