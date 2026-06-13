@@ -15,8 +15,11 @@ from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
-# Result text shorter than this is treated as null/empty.
-_NULL_RESULT_CHARS = 60
+# Result text shorter than this is treated as null/empty. Kept small so a
+# legitimate compact tool ack (e.g. a short JSON success blob) is not
+# mis-flagged as a null result — only genuinely empty/near-empty payloads
+# (e.g. "", "{}", "[]", '{"results":[]}') fall under it.
+_NULL_RESULT_CHARS = 20
 
 
 def _result_hash(text: str) -> str:

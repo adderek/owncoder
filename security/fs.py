@@ -80,8 +80,11 @@ def _is_write_protected(root: Path, resolved: Path) -> bool:
         rel = str(resolved.relative_to(root))
     except ValueError:
         return False
+    name = resolved.name
     for g in globs:
-        if fnmatch.fnmatch(rel, g):
+        # Match on rel path or bare filename so e.g. `sub/agent.toml` is caught
+        # by the `agent.toml` glob, matching read-deny behaviour.
+        if fnmatch.fnmatch(rel, g) or fnmatch.fnmatch(name, g):
             return True
     return False
 

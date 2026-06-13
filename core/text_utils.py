@@ -8,7 +8,10 @@ def truncate_to_lines(text: str, max_lines: int) -> str:
     is not actually truncated (i.e. the text fits within max_lines).
     """
     lines = text.splitlines()
-    return "\n".join(lines[:max_lines])  # BUG: always drops trailing newline
+    if len(lines) <= max_lines:
+        # Not actually truncated — return original verbatim (keeps trailing newline).
+        return text
+    return "\n".join(lines[:max_lines])
 
 
 def count_non_blank_lines(text: str) -> int:

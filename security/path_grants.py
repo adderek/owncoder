@@ -34,13 +34,16 @@ class PathGrant:
     _ino: int | None = field(default=None, repr=False)
 
     def pin(self) -> None:
+        # Narrow to OSError: a stat failure should leave the grant unpinned
+        # (assert_unchanged becomes a no-op) but a programming error here must
+        # not be silently swallowed.
         try:
             if self.path.exists():
                 st = os.stat(self.path, follow_symlinks=False)
                 if stat.S_ISDIR(st.st_mode):
                     self._dev, self._ino = st.st_dev, st.st_ino
-        except Exception:
-            pass
+        except OSError as e:
+            logger.warning("path_grants: pin failed for %s: %s", self.path, e)
 
     def assert_unchanged(self) -> None:
         if self._dev is None:
@@ -50,8 +53,10 @@ class PathGrant:
             if (st.st_dev, st.st_ino) != (self._dev, self._ino):
                 from agent.security.fs import PathEscape
                 raise PathEscape(f"grant root identity changed: {self.path}")
-        except (FileNotFoundError, PermissionError):
-            pass
+        except (FileNotFoundError, PermissionError) as e:
+            # Grant root vanished or became unreadable mid-session — can't
+            # confirm identity, but surface it rather than hiding the change.
+            logger.warning("path_grants: cannot verify grant %s: %s", self.path, e)
 
     def contains(self, resolved: Path) -> bool:
         try:

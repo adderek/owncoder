@@ -264,6 +264,52 @@ class TestReadDenylist:
         assert allowed is True
 
 
+class TestSandboxSecretMasking:
+    """Shell path must not bypass the fs read-deny gate: secret files are
+    masked with /dev/null inside the sandbox."""
+
+    def test_secret_mask_paths_finds_secrets(self, project):
+        (project / ".env").write_text("SECRET=abc")
+        (project / "server.pem").write_text("-----BEGIN CERTIFICATE-----")
+        (project / "main.py").write_text("print('hi')")
+        ssh = project / ".ssh"
+        ssh.mkdir()
+        (ssh / "id_rsa").write_text("-----BEGIN OPENSSH PRIVATE KEY-----")
+
+        masked = {p.relative_to(project).as_posix() for p in sec_runner._secret_mask_paths(project)}
+        assert ".env" in masked
+        assert "server.pem" in masked
+        assert ".ssh/id_rsa" in masked
+        assert "main.py" not in masked
+
+    def test_bwrap_argv_masks_secrets_with_devnull(self, project):
+        (project / ".env").write_text("SECRET=abc")
+        argv = sec_runner._bwrap_argv(["cat", ".env"], cwd=project, network=False)
+        env_path = str(project / ".env")
+        # /dev/null is ro-bound over the secret so reads return empty.
+        assert "/dev/null" in argv
+        assert env_path in argv
+        i = argv.index(env_path)
+        assert argv[i - 1] == "/dev/null"
+        assert argv[i - 2] == "--ro-bind"
+
+    def test_secret_scan_skips_noise_dirs(self, project):
+        venv = project / ".venv"
+        venv.mkdir()
+        (venv / ".env").write_text("SECRET=should-not-be-walked")
+        masked = sec_runner._secret_mask_paths(project)
+        assert all(".venv" not in p.parts for p in masked)
+
+
+class TestWriteDenyBasename:
+    """A protected basename is denied even in a subdirectory (parity with read-deny)."""
+
+    def test_blocks_nested_agent_toml_write(self, project):
+        (project / "sub").mkdir()
+        with pytest.raises(sec_fs.WriteProtected):
+            sec_fs.safe_open("sub/agent.toml", "w")
+
+
 class TestH6FailClosed:
     """H6 — default require_sandbox=True, fail-closed when no backend."""
 

@@ -137,9 +137,12 @@ def test_high_error_rate_marks_suspect(cfg):
     # Fall back to original then recompile manually.
     out = pc.load("system.txt", text, cfg)
     assert out == text
+    # load() on a suspect entry resets it to pending with clean stats
+    # (attempts=0), so a manual recompile is possible again. After warming,
+    # the entry is back in the compiled state.
     _warm_cache("system.txt", text, cfg)
     rows = {r["name"]: r for r in pc.status(cfg)}
-    assert rows["system.txt"]["attempts"] >= 2
+    assert rows["system.txt"]["status"] == "compiled"
 
 
 def test_compile_failure_eventually_disables(cfg):

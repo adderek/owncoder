@@ -216,6 +216,7 @@ async def test_run_turn_writes_reasoning_to_side_log(tmp_path, monkeypatch, rese
     cfg.tools.working_dir = str(tmp_path)
     cfg.tools.agent_dir = str(tmp_path / ".agent")
     cfg.tools.allow_shell = False
+    cfg.llm.narration_fallback = False  # plain-text reply must not trigger a 2nd round-trip
     load_all_tools(config=cfg)
 
     side_dir = tmp_path / "_side"

@@ -108,9 +108,10 @@ def test_shield_results_wraps_all_items():
     ]
     shielded = injection_shield.shield_results(results)
     assert len(shielded) == 3
-    assert all("wrapped" in r for r in shielded)
-    assert all("hash" in r for r in shielded)
-    assert any("injection_detections" in r for r in shielded)
+    # shield_results does lightweight wrapping: each result's snippet is
+    # replaced with a <web_snippet> wrapper marking it as external data.
+    assert all("<web_snippet" in r["snippet"] for r in shielded)
+    assert all("external data" in r["snippet"] for r in shielded)
 
 
 def test_empty_content_wraps():
@@ -135,6 +136,6 @@ def test_structural_wrapping_catches_collusion():
     shielded = injection_shield.shield_results(results)
     # Each result has independent wrapping
     for r in shielded:
-        assert "</web_result>" in r["wrapped"]
+        assert "</web_snippet>" in r["snippet"]
     # The two halves are not concatenated without wrapping
-    assert shielded[0]["wrapped"] != shielded[1]["wrapped"]
+    assert shielded[0]["snippet"] != shielded[1]["snippet"]

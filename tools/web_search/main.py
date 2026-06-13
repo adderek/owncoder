@@ -98,7 +98,11 @@ def _search_duckduckgo(query: str, num_results: int) -> list[dict]:
     if proc.get("binary_rejected") or proc.get("error"):
         return []
 
-    # lite.duckduckgo.com uses class="result-link" / class="result-snippet"
+    # Two DDG HTML variants seen in the wild; tolerate both:
+    #   lite.duckduckgo.com : <a class="result-link"> + <td class="result-snippet">
+    #   html.duckduckgo.com : <a class="result__a">   + <a|td class="result__snippet">
+    # Match on class substrings regardless of tag, and remember which tag
+    # opened the snippet so the matching end tag closes it.
     class DDGParser(HTMLParser):
         def __init__(self):
             super().__init__()
@@ -108,7 +112,16 @@ def _search_duckduckgo(query: str, num_results: int) -> list[dict]:
             self.current_snippet = ""
             self.in_link = False
             self.in_snippet = False
+            self.snippet_tag = None
             self.last_link_data = None
+
+        @staticmethod
+        def _is_link(classes):
+            return 'result-link' in classes or 'result__a' in classes
+
+        @staticmethod
+        def _is_snippet(classes):
+            return 'result-snippet' in classes or 'result__snippet' in classes
 
         def handle_starttag(self, tag, attrs):
             attrs_dict = dict(attrs)
@@ -116,12 +129,13 @@ def _search_duckduckgo(query: str, num_results: int) -> list[dict]:
             if isinstance(classes, list):
                 classes = ' '.join(classes)
 
-            if tag == 'a' and 'result-link' in classes:
+            if tag == 'a' and self._is_link(classes):
                 self.in_link = True
                 self.current_link = attrs_dict.get('href', '')
                 self.current_title = ""
-            elif tag == 'td' and 'result-snippet' in classes:
+            elif self._is_snippet(classes):
                 self.in_snippet = True
+                self.snippet_tag = tag
                 self.current_snippet = ""
 
         def handle_data(self, data):
@@ -134,8 +148,9 @@ def _search_duckduckgo(query: str, num_results: int) -> list[dict]:
             if tag == 'a' and self.in_link:
                 self.in_link = False
                 self.last_link_data = {'url': self.current_link, 'title': self.current_title}
-            elif tag == 'td' and self.in_snippet:
+            elif self.in_snippet and tag == self.snippet_tag:
                 self.in_snippet = False
+                self.snippet_tag = None
                 if self.last_link_data:
                     self.results.append({
                         'url': self.last_link_data['url'],

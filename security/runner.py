@@ -193,6 +193,54 @@ _PROTECTED_PATHS = [
 ]
 
 
+# Bound the secret-scan so a single command never walks an unbounded tree.
+_SECRET_SCAN_FILE_CAP = 50_000
+_SECRET_MASK_MATCH_CAP = 500
+
+
+def _secret_mask_paths(root: Path) -> list[Path]:
+    """Return concrete files under *root* matching the read-deny secret globs.
+
+    The fs gate (fs._is_read_protected) blocks the agent's *Python* file tools
+    from reading these, but the sandbox bind-mounts the project root read-write,
+    so a shell `cat .env` would otherwise bypass that protection. We mask each
+    matching file with /dev/null inside the sandbox to close the gap.
+
+    Matching mirrors fs._is_read_protected: a glob matches on either the
+    root-relative path or the bare filename. Bounded so it can't hang on a
+    huge tree.
+    """
+    import fnmatch as _fnmatch
+    from . import fs as _fs
+
+    globs = policy.get().cfg.read_deny_globs
+    if globs is None:
+        globs = _fs._DEFAULT_READ_DENY_GLOBS
+    if not globs:
+        return []
+
+    matches: list[Path] = []
+    scanned = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        # Don't descend into VCS/venv noise; secrets there aren't the threat
+        # model and they dominate the file count.
+        dirnames[:] = [d for d in dirnames if d not in (".git", ".venv", "node_modules", "__pycache__")]
+        for fn in filenames:
+            scanned += 1
+            if scanned > _SECRET_SCAN_FILE_CAP:
+                return matches
+            p = Path(dirpath) / fn
+            try:
+                rel = str(p.relative_to(root))
+            except ValueError:
+                continue
+            if any(_fnmatch.fnmatch(rel, g) or _fnmatch.fnmatch(fn, g) for g in globs):
+                matches.append(p)
+                if len(matches) >= _SECRET_MASK_MATCH_CAP:
+                    return matches
+    return matches
+
+
 def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool, seccomp_fd: int | None = None) -> list[str]:
     pol = policy.get()
     root = pol.root
@@ -226,6 +274,10 @@ def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool, seccomp_fd: int | 
     for rel in _PROTECTED_PATHS:
         p = root / rel
         a += ["--ro-bind-try", str(p), str(p)]
+    # Mask secret files (.env, keys, .ssh/*) with /dev/null so a shell read
+    # can't exfiltrate what the fs gate already denies the Python file tools.
+    for p in _secret_mask_paths(root):
+        a += ["--ro-bind", "/dev/null", str(p)]
     if not network:
         a += ["--unshare-net"]
     if seccomp_fd is not None:
@@ -256,6 +308,10 @@ def _firejail_argv(argv: list[str], *, cwd: Path, network: bool) -> list[str]:
         p = pol.root / rel
         if p.exists():
             a += [f"--read-only={p}"]
+    # Mask secret files (.env, keys, .ssh/*) so shell reads can't bypass the
+    # fs gate's read-deny protection. --blacklist makes the path inaccessible.
+    for p in _secret_mask_paths(pol.root):
+        a += [f"--blacklist={p}"]
     if not network:
         a += ["--net=none"]
     a += ["--"] + argv
