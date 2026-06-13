@@ -11,7 +11,7 @@ websockets = pytest.importorskip("websockets")
 from agent.config.models import Config, NotifyChannelConfig
 from agent.notify.broker import NotifyBroker
 from agent.notify.messages import Question
-from agent.notify.relay_server import CLOSE_UNAUTHORIZED, RelayHub
+from agent.notify.relay_server import CLOSE_TOO_MANY, CLOSE_UNAUTHORIZED, RelayHub
 
 TOKEN = "test-token"
 
@@ -118,6 +118,102 @@ async def test_broker_relay_roundtrip(relay, tmp_path):
         await client_ws.close()
     finally:
         broker.stop()
+
+
+@pytest.fixture
+async def rbac_relay():
+    """Relay with distinct per-role tokens."""
+    hub = RelayHub(agent_token="agent-secret", client_token="client-secret", replay_size=10)
+    server = await websockets.serve(hub.handler, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    yield f"ws://127.0.0.1:{port}"
+    server.close()
+    await server.wait_closed()
+
+
+async def test_per_role_token_blocks_impersonation(rbac_relay):
+    # client token cannot become an agent: role is derived from the matching
+    # token, so this connects as a *client* despite claiming role=agent.
+    ws = await _connect(rbac_relay, role="agent", token="client-secret")
+    # a real client also connects; an agent notice would reach it. Our impostor
+    # is a client, so its "notice" must NOT be routed to other clients.
+    victim = await _connect(rbac_relay, role="client", token="client-secret")
+    await asyncio.sleep(0.05)
+    await ws.send(json.dumps({"type": "notice", "id": "n-x", "kind": "done", "text": "forged"}))
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(victim.recv(), 0.3)  # forged notice not delivered
+    for w in (ws, victim):
+        await w.close()
+
+
+async def test_per_role_agent_token_works(rbac_relay):
+    agent_ws = await _connect(rbac_relay, role="agent", token="agent-secret")
+    client_ws = await _connect(rbac_relay, role="client", token="client-secret")
+    await asyncio.sleep(0.05)
+    notice = {"type": "notice", "id": "n-1", "kind": "done", "text": "ok"}
+    await agent_ws.send(json.dumps(notice))
+    got = json.loads(await asyncio.wait_for(client_ws.recv(), 5))
+    assert got == notice
+    for w in (agent_ws, client_ws):
+        await w.close()
+
+
+async def test_wrong_token_rejected_rbac(rbac_relay):
+    ws = await _connect(rbac_relay, token="nope")
+    with pytest.raises(websockets.exceptions.ConnectionClosed) as ei:
+        await asyncio.wait_for(ws.recv(), 5)
+    assert getattr(ei.value.rcvd, "code", None) == CLOSE_UNAUTHORIZED
+
+
+async def test_connection_cap():
+    hub = RelayHub("t", max_clients=1)
+    server = await websockets.serve(hub.handler, "127.0.0.1", 0)
+    url = f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+    try:
+        first = await _connect(url, token="t")
+        await asyncio.sleep(0.05)
+        second = await _connect(url, token="t")
+        with pytest.raises(websockets.exceptions.ConnectionClosed) as ei:
+            await asyncio.wait_for(second.recv(), 5)
+        assert getattr(ei.value.rcvd, "code", None) == CLOSE_TOO_MANY
+        await first.close()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+async def test_rate_limit_closes_flooder():
+    hub = RelayHub("t", msg_rate=1.0, msg_burst=3)
+    server = await websockets.serve(hub.handler, "127.0.0.1", 0)
+    url = f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+    try:
+        ws = await _connect(url, role="agent", token="t")
+        await asyncio.sleep(0.05)
+        with pytest.raises(websockets.exceptions.ConnectionClosed) as ei:
+            for _ in range(50):
+                await ws.send(json.dumps({"type": "notice", "id": "n", "kind": "done", "text": "x"}))
+                await asyncio.sleep(0.005)
+            await asyncio.wait_for(ws.recv(), 5)
+        assert getattr(ei.value.rcvd, "code", None) == CLOSE_TOO_MANY
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+async def test_oversize_message_closed():
+    hub = RelayHub("t", max_msg_bytes=64)
+    server = await websockets.serve(hub.handler, "127.0.0.1", 0, max_size=None)
+    url = f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+    try:
+        ws = await _connect(url, role="agent", token="t")
+        await asyncio.sleep(0.05)
+        await ws.send(json.dumps({"type": "notice", "text": "z" * 500}))
+        with pytest.raises(websockets.exceptions.ConnectionClosed) as ei:
+            await asyncio.wait_for(ws.recv(), 5)
+        assert getattr(ei.value.rcvd, "code", None) == CLOSE_TOO_MANY
+    finally:
+        server.close()
+        await server.wait_closed()
 
 
 async def test_remote_answers_requires_capable_channel(tmp_path):
