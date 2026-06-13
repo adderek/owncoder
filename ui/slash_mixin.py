@@ -200,6 +200,10 @@ class SlashHandlerMixin:
             from agent.skills import run_skills_command
             self._write_sys(_escape(run_skills_command(self._server._agent.config, arg)))
 
+        elif cmd in ("/checkpoint", "/cp"):
+            from agent.core.checkpoint import run_checkpoint_command
+            self._write_sys(_escape(run_checkpoint_command(arg)))
+
         elif cmd == "/save":
             if arg.strip():
                 from agent.memory.session import _sanitize_short_name

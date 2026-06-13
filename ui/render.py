@@ -214,6 +214,9 @@ TOOL_ICONS: dict[str, str] = {
     "skill_history":        "🕑",
     "rollback_skill":       "⏪",
     "manage_skills":        "🛠",
+    "create_checkpoint":    "📍",
+    "list_checkpoints":     "📋",
+    "rollback_checkpoint":  "⏮",
     "spawn_agents":         "🤖",
     # Knowledge base
     "kb_search":            "🔍",

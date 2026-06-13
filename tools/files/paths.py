@@ -16,6 +16,12 @@ _undo_stack: dict[str, str] = {}
 def setup(config: "Config") -> None:
     global _config
     _config = config
+    # New tools-layer session → drop stale edit journal / checkpoints.
+    try:
+        from agent.core.checkpoint import reset as _ckpt_reset
+        _ckpt_reset()
+    except Exception:
+        pass
     # Keep the security harness synchronised with the working directory the
     # tools layer is using. Without this, a second setup() (common in tests
     # that iterate through tmp_paths) leaves the security policy pinned to
@@ -85,6 +91,14 @@ def _resolve(path: str) -> Path:
 
 
 def _log_edit(tool: str, path: str, outcome: str, **extra) -> None:
+    # Journal successful single-file edits for checkpoint/rollback. The undo
+    # stack holds this edit's pre-image (None → file was created).
+    if outcome == "ok" and path not in ("<multi>",):
+        try:
+            from agent.core.checkpoint import journal_record
+            journal_record(path, _undo_stack.get(path))
+        except Exception:
+            pass
     try:
         agent_dir = Path(_config.tools.agent_dir) if _config else Path(".agent")
         if not agent_dir.is_absolute():
