@@ -455,6 +455,10 @@ class ConcurrencyConfig:
     """
     gpu_pool: list[str] = field(default_factory=list)
     gpu_slots: int = 1
+    # Cross-process GPU lock (flock) so the cap holds across multiple agents
+    # sharing one endpoint. "" = auto (shared dir keyed by endpoint, enabled);
+    # "off"/"none" = disable; or an explicit shared directory path.
+    gpu_lock_dir: str = ""
 
 
 @dataclass

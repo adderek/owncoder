@@ -89,10 +89,18 @@ class Agent:
         # Initialise GPU concurrency semaphore from config
         if config.concurrency.gpu_pool and config.concurrency.gpu_slots > 0:
             from agent.core.model_status import init_gpu_semaphore
-            init_gpu_semaphore(config.concurrency.gpu_slots)
+            from agent.core.gpu_lock import resolve_lock_dir
+            # Key the shared lock on the GPU endpoint so agents in different
+            # working dirs hitting the same server coordinate.
+            lock_dir = resolve_lock_dir(
+                getattr(config.concurrency, "gpu_lock_dir", ""),
+                config.llm.base_url,
+            )
+            init_gpu_semaphore(config.concurrency.gpu_slots, lock_dir)
             logger.info(
-                "gpu_semaphore: initialised with %d slot(s) for pool %r",
+                "gpu_semaphore: %d slot(s) for pool %r; cross-process lock: %s",
                 config.concurrency.gpu_slots, config.concurrency.gpu_pool,
+                lock_dir or "disabled",
             )
 
         load_all_tools(config=config, data_provider=data_provider)

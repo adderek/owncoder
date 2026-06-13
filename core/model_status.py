@@ -6,6 +6,7 @@ Thread-safe via a lock; safe to call from async contexts.
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import time
 from contextlib import asynccontextmanager, contextmanager
@@ -17,6 +18,9 @@ _listeners: list = []
 # GPU concurrency semaphore — limits parallel calls to GPU models.
 # Initialized by init_gpu_semaphore() during agent startup.
 _gpu_sem: asyncio.Semaphore | None = None
+# Cross-process counting semaphore (flock-based) — bounds GPU calls across all
+# agent processes sharing one endpoint. None = in-process limit only.
+_gpu_xsem = None
 
 # Per-worker detail records for parallel agent fan-out.
 _worker_seq: int = 0
@@ -86,10 +90,24 @@ def track_sync(role: str):
 
 # ── GPU concurrency semaphore ────────────────────────────────────────────────
 
-def init_gpu_semaphore(slots: int) -> None:
-    """Initialise (or re-init) the GPU request semaphore with *slots* permits."""
-    global _gpu_sem
+def init_gpu_semaphore(slots: int, lock_dir=None) -> None:
+    """Initialise (or re-init) the GPU request semaphore with *slots* permits.
+
+    If *lock_dir* is given, also create a cross-process flock semaphore there so
+    the cap holds across multiple agent processes sharing one GPU endpoint.
+    """
+    global _gpu_sem, _gpu_xsem
     _gpu_sem = asyncio.Semaphore(slots)
+    if lock_dir is not None:
+        try:
+            from agent.core.gpu_lock import CrossProcessSemaphore
+            _gpu_xsem = CrossProcessSemaphore(slots, lock_dir)
+        except Exception as exc:  # never let lock setup break startup
+            logging.getLogger(__name__).warning(
+                "gpu cross-process lock disabled (%s): %s", lock_dir, exc)
+            _gpu_xsem = None
+    else:
+        _gpu_xsem = None
 
 
 def get_gpu_semaphore() -> asyncio.Semaphore | None:
@@ -100,13 +118,19 @@ def get_gpu_semaphore() -> asyncio.Semaphore | None:
 @asynccontextmanager
 async def gpu_slot():
     """Acquire a GPU request slot, blocking until one is free. No-op if no
-    GPU semaphore is configured (pure CPU setup)."""
+    GPU semaphore is configured (pure CPU setup). When a cross-process lock is
+    configured, the in-process permit is taken first (fast, fair) and then the
+    global file-lock slot."""
     sem = _gpu_sem
     if sem is None:
         yield
         return
     async with sem:
-        yield
+        if _gpu_xsem is None:
+            yield
+        else:
+            async with _gpu_xsem.acquire():
+                yield
 
 
 # ── Parallel worker registry ──────────────────────────────────────────────────
