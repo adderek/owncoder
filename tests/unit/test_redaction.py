@@ -91,3 +91,41 @@ def test_idempotent():
     s = "sk-abcdefghijklmnopqrstuvwxyz012345"
     once = redact(s)
     assert redact(once) == once
+
+
+def _fr_config(tmp_path, redact_on=True):
+    return SimpleNamespace(
+        tools=SimpleNamespace(working_dir=str(tmp_path), agent_dir=".agent"),
+        security=SimpleNamespace(redact_tool_output=redact_on),
+        llm=SimpleNamespace(model="m", ctx_window=0, api_key="local"),
+        models=None,
+        notify=None,
+    )
+
+
+def test_failure_report_redacts_on_disk(tmp_path):
+    from agent import failure_report as fr
+    secret = "sk-abcdefghijklmnopqrstuvwxyz012345"
+    path = fr.report(
+        "tool_error",
+        {"tool": "shell", "error": f"boom token={secret}", "raw_arguments": secret},
+        config=_fr_config(tmp_path),
+    )
+    assert path is not None
+    content = path.read_text()
+    assert secret not in content
+    assert "REDACTED" in content
+    # index.jsonl too
+    idx = (tmp_path / ".agent" / "failures" / "index.jsonl").read_text()
+    assert secret not in idx
+
+
+def test_failure_report_redaction_can_be_disabled(tmp_path):
+    from agent import failure_report as fr
+    secret = "sk-abcdefghijklmnopqrstuvwxyz012345"
+    path = fr.report(
+        "tool_error",
+        {"tool": "shell", "error": secret},
+        config=_fr_config(tmp_path, redact_on=False),
+    )
+    assert secret in path.read_text()

@@ -47,6 +47,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/wrap", [], "toggle line wrapping", False),
     ("/round-summary", ["/summary"], "toggle gray Q/A summary after each turn", False),
     ("/tools", [], "list available tools", False),
+    ("/skills", [], "skills: list | show <name> | history <name> | rm <name>", True),
     ("/undo", [], "restore last file snapshot", False),
     ("/plan", [], "plan: new <goal> | show | steps | step <id> <status> | dep <step> <dep> | assign <step> <agent> | compact | abort | pause | stash | resume", True),
     ("/plans", [], "list saved plans", False),

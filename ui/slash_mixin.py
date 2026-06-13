@@ -196,6 +196,10 @@ class SlashHandlerMixin:
             names = [s["function"]["name"] for s in get_schemas()]
             self._write_sys("Tools: " + "  ".join(names))
 
+        elif cmd == "/skills":
+            from agent.skills import run_skills_command
+            self._write_sys(_escape(run_skills_command(self._server._agent.config, arg)))
+
         elif cmd == "/save":
             if arg.strip():
                 from agent.memory.session import _sanitize_short_name

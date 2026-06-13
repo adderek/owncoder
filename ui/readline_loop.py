@@ -43,6 +43,7 @@ def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
   [{c}]/load <name>[/{c}]        load a saved session into the current conversation
   [{c}]/sessions[/{c}]           list saved sessions
   [{c}]/tools[/{c}]              list available tools
+  [{c}]/skills [show|history|rm <name>][/{c}]  manage saved skills
   [{c}]/exec <command>[/{c}]      run an OS command and show output
   [{c}]/apply [file][/{c}]       write last code block to file (bypass tool calling)
   [{c}]/undo [file][/{c}]        restore last pre-write snapshot of a file
@@ -227,6 +228,10 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                     console.print(
                         f"  [cyan]{fn['name']}[/cyan]  [dim]{fn.get('description', '')[:60]}[/dim]"
                     )
+
+            elif cmd == "/skills":
+                from agent.skills import run_skills_command
+                console.print(run_skills_command(agent.config, arg))
 
             elif cmd == "/models":
                 from agent.ui.slash import _render_models_table

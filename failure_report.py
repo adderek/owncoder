@@ -76,8 +76,19 @@ def report(kind: str, details: dict, config: Any = None) -> Path | None:
                 pass
         payload.update(details)
 
+        # Failure details (raw_arguments, error strings, tracebacks) can carry
+        # secrets — redact before they hit disk, unless disabled.
+        def _maybe_redact(text: str) -> str:
+            try:
+                if cfg is None or getattr(cfg.security, "redact_tool_output", True):
+                    from agent.security.redaction import redact
+                    return redact(text, cfg)
+            except Exception:
+                pass
+            return text
+
         path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+            _maybe_redact(json.dumps(payload, ensure_ascii=False, indent=2, default=str)),
             encoding="utf-8",
         )
 
@@ -91,7 +102,7 @@ def report(kind: str, details: dict, config: Any = None) -> Path | None:
             "file": path.name,
         }
         with (d / "index.jsonl").open("a", encoding="utf-8") as f:
-            f.write(json.dumps(brief, ensure_ascii=False, default=str) + "\n")
+            f.write(_maybe_redact(json.dumps(brief, ensure_ascii=False, default=str)) + "\n")
         return path
     except Exception:
         logger.exception("failure_report.report failed (kind=%s)", kind)

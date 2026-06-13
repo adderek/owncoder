@@ -361,6 +361,7 @@ class AgentConfig:
     think_level: str = "normal"
     autonomy: float = 0.5  # 0.0=supervised … 1.0=autopilot; >1.0 treated as percentage
     distill_skills: bool = True  # session-end: distill reusable skills into .agent/skills/
+    skills_index_max: int = 40   # cap skills listed in the per-prompt index (token bound)
 
 
 @dataclass

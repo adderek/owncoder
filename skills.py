@@ -112,6 +112,7 @@ def _atomic_write(path: Path, text: str) -> None:
 
 class SkillLoader:
     def __init__(self, config: "Config") -> None:
+        self._config = config
         self._project_dir = Path(config.tools.working_dir) / config.tools.agent_dir / "skills"
         self._bundled_dir = _BUNDLED_DIR
 
@@ -147,15 +148,48 @@ class SkillLoader:
                 parts.append(f"# Skill: {name}\n{body}")
         return "\n\n".join(parts)
 
-    def index_summary(self) -> str:
-        """One-liner skill list for injection into system prompt."""
+    def index_summary(self, max_entries: int | None = None, max_desc: int = 100) -> str:
+        """One-liner skill list for injection into system prompt.
+
+        Bounded so the per-prompt token cost stays flat as skills accumulate:
+        descriptions are truncated and the list is capped (default from
+        config.agent.skills_index_max), with an overflow note.
+        """
         skills = self.available()
         if not skills:
             return ""
+        if max_entries is None:
+            max_entries = getattr(getattr(self._config, "agent", None), "skills_index_max", 40)
+        if not isinstance(max_entries, int):
+            max_entries = 40
         lines = ["Available skills (reference by name in plan step `skills` field):"]
-        for name, desc in skills:
+        shown = skills[:max_entries] if max_entries and max_entries > 0 else skills
+        for name, desc in shown:
+            if len(desc) > max_desc:
+                desc = desc[: max_desc - 1].rstrip() + "…"
             lines.append(f"  - {name}: {desc}")
+        hidden = len(skills) - len(shown)
+        if hidden > 0:
+            lines.append(f"  … and {hidden} more (use search_skills to find them).")
         return "\n".join(lines)
+
+    def delete(self, name: str) -> bool:
+        """Remove a project skill (archiving a final copy). Returns True if removed.
+
+        Only project-local skills are deletable; bundled skills are read-only.
+        """
+        slug = normalize_name(name)
+        path = self._project_dir / f"{slug}.md"
+        if not path.exists():
+            return False
+        try:
+            prev = parse_skill(path)
+            archive = self._history_dir(slug) / f"v{prev['version']}.md"
+            _atomic_write(archive, path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        path.unlink()
+        return True
 
     # ---- authoring / versioning -------------------------------------------
 
@@ -226,6 +260,12 @@ class SkillLoader:
             out.append(parse_skill(cur))
         return out
 
+    def project_names(self) -> set[str]:
+        """Names of writable project-local skills (excludes bundled)."""
+        if not self._project_dir.is_dir():
+            return set()
+        return {p.stem for p in self._project_dir.glob("*.md")}
+
     def rollback(self, name: str, version: int) -> dict:
         """Restore an archived version as a new save (forward-only history)."""
         slug = normalize_name(name)
@@ -234,3 +274,51 @@ class SkillLoader:
             raise ValueError(f"no archived version {version} for skill {slug!r}")
         old = parse_skill(archive)
         return self.save(slug, old["body"], description=old["description"], origin="rollback")
+
+
+def run_skills_command(config: "Config", arg: str) -> str:
+    """Text handler for the /skills slash command, shared by both UIs.
+
+    Subcommands: (list) | show <name> | history <name> | rm <name>.
+    """
+    loader = SkillLoader(config)
+    parts = arg.strip().split(None, 1)
+    sub = parts[0].lower() if parts else "list"
+    rest = parts[1].strip() if len(parts) > 1 else ""
+
+    if sub in ("", "list", "ls"):
+        skills = loader.available()
+        if not skills:
+            return "No skills. The agent saves them via save_skill / session-end distillation."
+        project = loader.project_names()
+        lines = [f"Skills ({len(skills)}):"]
+        for name, desc in skills:
+            tag = "project" if name in project else "bundled"
+            lines.append(f"  - {name} [{tag}]: {desc}")
+        return "\n".join(lines)
+
+    if sub == "show":
+        if not rest:
+            return "Usage: /skills show <name>"
+        body = loader.load([rest])
+        return body if "(skill not found)" not in body else f"Skill '{rest}' not found."
+
+    if sub in ("history", "hist", "log"):
+        if not rest:
+            return "Usage: /skills history <name>"
+        versions = loader.history(rest)
+        if not versions:
+            return f"No history for skill '{rest}'."
+        lines = [f"History for '{rest}':"]
+        for v in versions:
+            lines.append(f"  v{v['version']} [{v['origin'] or '?'}] {v['updated_at']} — {v['description']}")
+        return "\n".join(lines)
+
+    if sub in ("rm", "delete", "del"):
+        if not rest:
+            return "Usage: /skills rm <name>"
+        if loader.delete(rest):
+            return f"Deleted project skill '{normalize_name(rest)}' (final version archived)."
+        return f"No deletable project skill '{rest}' (bundled skills are read-only)."
+
+    return f"Unknown subcommand '{sub}'. Use: list | show <name> | history <name> | rm <name>"
