@@ -26,6 +26,7 @@ CAPABILITIES = ("display", "choices", "chat")
 SEND_TIMEOUT_S = 10
 RELAY_QUEUE_MAX = 100
 RELAY_BACKOFF_MAX_S = 60
+RELAY_MAX_FRAME_BYTES = 64 * 1024  # cap inbound frames from a hostile relay
 
 
 @runtime_checkable
@@ -135,7 +136,10 @@ class RelayChannel:
         backoff = 1
         while True:
             try:
-                async with websockets.connect(self.url) as ws:
+                # max_size caps inbound frames: a hostile/compromised relay can
+                # only ever feed us tiny answer envelopes, so bound memory and
+                # parse cost rather than accept the 1 MiB websockets default.
+                async with websockets.connect(self.url, max_size=RELAY_MAX_FRAME_BYTES) as ws:
                     await ws.send(json.dumps({
                         "type": "hello", "role": "agent",
                         "token": self._token, "name": self.name,

@@ -10,7 +10,7 @@ websockets = pytest.importorskip("websockets")
 
 from agent.config.models import Config, NotifyChannelConfig
 from agent.notify.broker import NotifyBroker
-from agent.notify.messages import Question
+from agent.notify.messages import Answer, Question
 from agent.notify.relay_server import CLOSE_TOO_MANY, CLOSE_UNAUTHORIZED, RelayHub
 
 TOKEN = "test-token"
@@ -214,6 +214,33 @@ async def test_oversize_message_closed():
     finally:
         server.close()
         await server.wait_closed()
+
+
+async def test_answer_single_use_blocks_replay(tmp_path):
+    """A compromised relay can replay a captured answer envelope. The broker's
+    single-use, per-process-unique question ids must neutralise that."""
+    out = tmp_path / "out.txt"
+    cfg = Config()
+    cfg.notify.enabled = True
+    cfg.notify.answer_timeout_s = 5
+    cfg.notify.channels = [NotifyChannelConfig(type="command", cmd=f"cat >> {out}")]
+    broker = NotifyBroker(cfg)
+    try:
+        q = Question(kind="ask_user", text="deploy?", options=["yes", "no"])
+        task = asyncio.create_task(broker.ask(q))
+        await asyncio.sleep(0.02)  # let ask() register the pending question
+
+        ans = Answer(question_id=q.id, choice="yes")
+        assert broker.submit_answer(ans) is True            # legit answer accepted
+        res = await asyncio.wait_for(task, 2)
+        assert res.choice == "yes"
+
+        # replay of the exact same answer -> dropped (id no longer pending)
+        assert broker.submit_answer(ans) is False
+        # answer for an id from a different process (different nonce) -> dropped
+        assert broker.submit_answer(Answer(question_id="q-deadbeefcafe-1", choice="yes")) is False
+    finally:
+        broker.stop()
 
 
 async def test_remote_answers_requires_capable_channel(tmp_path):
