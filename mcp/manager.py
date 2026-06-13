@@ -52,17 +52,23 @@ def load_mcp_tools(config: "Config | None") -> int:
         return 0
 
     from agent.mcp.client import MCPClient
+    from agent.mcp.http_client import MCPHttpClient
 
     _status.clear()
     registered = 0
     for server in config.mcp.servers:
         if not getattr(server, "enabled", True):
             continue
-        if getattr(server, "transport", "stdio") != "stdio":
-            logger.warning("mcp[%s]: unsupported transport %r, skipping", server.name, server.transport)
+        transport = getattr(server, "transport", "stdio")
+        name = server.name or server.command or server.url
+        if transport == "stdio":
+            client = MCPClient(server)
+        elif transport == "http":
+            client = MCPHttpClient(server)
+        else:
+            logger.warning("mcp[%s]: unsupported transport %r, skipping", name, transport)
+            _status[name] = {"ok": False, "tools": [], "error": f"unsupported transport {transport!r}"}
             continue
-        name = server.name or server.command
-        client = MCPClient(server)
         try:
             client.start()
             tools = client.list_tools()
@@ -115,7 +121,7 @@ def run_mcp_command(config, arg: str) -> str:
         return "MCP enabled but no servers configured."
     lines = [f"MCP servers ({len(servers)}):"]
     for s in servers:
-        name = s.name or s.command
+        name = s.name or s.command or getattr(s, "url", "")
         if not getattr(s, "enabled", True):
             lines.append(f"  {name}: disabled (config)")
             continue

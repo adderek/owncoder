@@ -533,11 +533,15 @@ class MCPServerConfig:
     registered as ``mcp__<name>__<tool>`` in the agent tool registry.
     """
     name: str = ""                              # short id; used in the tool prefix
-    transport: str = "stdio"                    # only "stdio" for now
+    transport: str = "stdio"                    # "stdio" | "http" (Streamable HTTP)
+    # stdio transport
     command: str = ""                           # executable, e.g. "npx" or "python"
     args: list = field(default_factory=list)    # argv after command
     env: dict = field(default_factory=dict)     # extra env vars for the subprocess
     cwd: str = ""                               # working dir ("" = inherit)
+    # http transport
+    url: str = ""                               # endpoint, e.g. https://host/mcp
+    headers: dict = field(default_factory=dict) # extra HTTP headers (auth, etc.)
     enabled: bool = True
     init_timeout_s: int = 20                     # handshake/list deadline
     call_timeout_s: int = 120                    # per tool-call deadline

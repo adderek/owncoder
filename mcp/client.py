@@ -31,6 +31,24 @@ class MCPError(RuntimeError):
     pass
 
 
+def flatten_tool_result(result: dict) -> Any:
+    """Normalise an MCP tools/call result into a string or structured dict.
+
+    Shared by every transport. Text-only content collapses to a string; an
+    error result becomes {"error", "isError"}; mixed content is handed back raw.
+    """
+    content = result.get("content") or []
+    text_parts = [c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"]
+    joined = "\n".join(p for p in text_parts if p)
+    if result.get("isError"):
+        return {"error": joined or "MCP tool reported an error", "isError": True}
+    if not content:
+        return {"ok": True}
+    if joined and len(text_parts) == len(content):
+        return joined
+    return {"content": content}
+
+
 class MCPClient:
     def __init__(self, server: "MCPServerConfig") -> None:
         self._server = server
@@ -113,18 +131,7 @@ class MCPClient:
             {"name": name, "arguments": arguments or {}},
             timeout=self._server.call_timeout_s,
         )
-        # MCP returns {content: [{type, text|...}], isError?}
-        content = result.get("content") or []
-        text_parts = [c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"]
-        joined = "\n".join(p for p in text_parts if p)
-        if result.get("isError"):
-            return {"error": joined or "MCP tool reported an error", "isError": True}
-        if not content:
-            return {"ok": True}
-        if joined and len(text_parts) == len(content):
-            return joined
-        # Mixed / non-text content: hand back the raw structure.
-        return {"content": content}
+        return flatten_tool_result(result)
 
     # ── transport internals ──────────────────────────────────────────────────
 
