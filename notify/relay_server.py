@@ -33,8 +33,10 @@ Abuse limits (per connection / per role):
   Offenders are closed with code 4429.
 
 Security: the relay only ever forwards opaque JSON between authenticated
-parties — it executes nothing. Run it behind TLS (reverse proxy such as
-caddy/nginx, wss://) when exposed beyond localhost; the token is sent in-band.
+parties — it executes nothing. Do not expose it directly on the WAN: the token
+is sent in-band. Run it behind WireGuard (bind to the wg0 address) so the wire
+is encrypted and only authenticated peers reach it; e2e protects payloads from
+the relay host itself.
 """
 from __future__ import annotations
 

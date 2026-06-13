@@ -52,8 +52,9 @@ channel; per-question policy decides whether agent answers are accepted.
   injection path into the agent.
 - Command channels: message goes to the command's stdin, never interpolated
   into the command line.
-- Relay: agent connects outbound only (no listening port), token auth, TLS
-  via reverse proxy when exposed.
+- Relay: agent connects outbound only (no listening port), token auth. Do not
+  expose the relay on the WAN (token is in-band) — run it behind WireGuard
+  (bind to wg0); WG encrypts the wire and admits only authenticated peers.
 - End-to-end encryption (`e2e_key_file`): second secret known only to agent +
   client — never to the relay. All payloads AES-256-GCM
   (key = HKDF-SHA256(secret, salt="owncoder-notify", info="e2e-v1"), random
@@ -87,7 +88,8 @@ Slash: `/notify [on | off | status]`.
 
 ## Relay (phase 2)
 
-Server (runs on your own host; TLS via reverse proxy when exposed):
+Server (runs on your own host; bind to the wg0 address and reach it over
+WireGuard when exposed — no TLS terminator, the WG tunnel encrypts the wire):
 
 ```
 pip install 'local-code-agent[notify]'   # websockets
@@ -110,7 +112,7 @@ notify:
   remote_answers: true        # ask_user/blocked wait for remote answer
   channels:
     - type: relay
-      url: wss://myhost:8970
+      url: ws://10.0.0.1:8970                          # relay wg0 address; ws:// — WireGuard encrypts the wire
       token_file: ~/.config/agent/relay.token
       e2e_key_file: ~/.config/agent/notify-e2e.key   # E2E; relay sees ciphertext only
       capability: chat
