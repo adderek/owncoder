@@ -9,14 +9,19 @@ JSON envelope (one object per message) shared by all channel types:
 from __future__ import annotations
 
 import itertools
-import time
+import uuid
 from dataclasses import dataclass, field
 
+# Per-process nonce: ids must be globally unique so that when several agents
+# share one relay, an answer broadcast to all agents only matches the pending
+# question of the agent that actually asked it. A bare per-process counter
+# (the old scheme) collided across processes; the nonce disambiguates them.
+_PROC_NONCE = uuid.uuid4().hex[:12]
 _id_counter = itertools.count(1)
 
 
 def _next_id(prefix: str) -> str:
-    return f"{prefix}-{int(time.time())}-{next(_id_counter)}"
+    return f"{prefix}-{_PROC_NONCE}-{next(_id_counter)}"
 
 
 @dataclass
