@@ -116,4 +116,12 @@ def load_all_tools(config=None, store=None, embedder=None, asm_store=None, data_
         from agent.tools import parallel  # noqa: F401
         parallel.setup(config, data_provider)
 
+    if config is not None and getattr(getattr(config, "mcp", None), "enabled", False):
+        try:
+            from agent.mcp import load_mcp_tools
+            load_mcp_tools(config)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning("mcp tool load failed", exc_info=True)
+
     _tools_loaded = True

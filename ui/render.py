@@ -210,6 +210,9 @@ TOOL_ICONS: dict[str, str] = {
     # Skills / agents
     "search_skills":        "🛠",
     "load_skill":           "⚡",
+    "save_skill":           "💾",
+    "skill_history":        "🕑",
+    "rollback_skill":       "⏪",
     "manage_skills":        "🛠",
     "spawn_agents":         "🤖",
     # Knowledge base

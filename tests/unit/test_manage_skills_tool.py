@@ -6,7 +6,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agent.tools.manage_skills.main import search_skills, load_skill, setup
+from agent.tools.manage_skills.main import (
+    search_skills,
+    load_skill,
+    save_skill,
+    skill_history,
+    rollback_skill,
+    setup,
+)
 
 
 @pytest.fixture()
@@ -86,3 +93,60 @@ class TestLoadSkill:
         result = load_skill("foo")
         assert not result["content"].startswith("# Skill: foo")
         assert "foo content" in result["content"]
+
+
+class TestSaveSkill:
+    def test_create_then_load(self, skill_env):
+        project, _ = skill_env
+        res = save_skill("deploy-flow", "step 1\nstep 2", description="how to deploy")
+        assert res["version"] == 1
+        assert res["action"] == "created"
+        assert (project / "deploy-flow.md").exists()
+        loaded = load_skill("deploy-flow")
+        assert "step 1" in loaded["content"]
+        # description surfaces in search
+        assert search_skills("deploy")["skills"][0]["description"] == "how to deploy"
+
+    def test_name_normalized(self, skill_env):
+        project, _ = skill_env
+        res = save_skill("Deploy Flow!", "body")
+        assert res["name"] == "deploy-flow"
+        assert (project / "deploy-flow.md").exists()
+
+    def test_empty_content_errors(self, skill_env):
+        assert "error" in save_skill("x", "   ")
+
+    def test_invalid_name_errors(self, skill_env):
+        assert "error" in save_skill("!!!", "body")
+
+    def test_update_bumps_version_and_archives(self, skill_env):
+        save_skill("flow", "v1 body", description="d1")
+        res = save_skill("flow", "v2 body", description="d2")
+        assert res["version"] == 2
+        assert res["action"] == "updated"
+        # current is v2
+        assert "v2 body" in load_skill("flow")["content"]
+        # history has both
+        hist = skill_history("flow")
+        assert hist["count"] == 2
+        assert [v["version"] for v in hist["versions"]] == [1, 2]
+
+    def test_update_preserves_description_when_omitted(self, skill_env):
+        save_skill("flow", "body", description="keep me")
+        save_skill("flow", "new body")
+        assert search_skills("flow")["skills"][0]["description"] == "keep me"
+
+    def test_rollback_restores_old_body(self, skill_env):
+        save_skill("flow", "original", description="d")
+        save_skill("flow", "broken change")
+        res = rollback_skill("flow", 1)
+        assert res["version"] == 3
+        assert res["restored_from"] == 1
+        assert "original" in load_skill("flow")["content"]
+
+    def test_rollback_missing_version_errors(self, skill_env):
+        save_skill("flow", "body")
+        assert "error" in rollback_skill("flow", 99)
+
+    def test_history_missing_skill(self, skill_env):
+        assert "error" in skill_history("nope")

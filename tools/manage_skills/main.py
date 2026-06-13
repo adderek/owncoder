@@ -119,3 +119,122 @@ def load_skill(name: str) -> dict[str, Any]:
         "content": body,
         "note": "Apply the skill instructions to your current task.",
     }
+
+
+@register(
+    "save_skill",
+    {
+        "description": (
+            "Create or update a reusable skill (procedural memory). Writes to the "
+            "project skills dir (.agent/skills/). If the skill exists, the prior "
+            "version is archived and the version counter bumps. Use this to capture "
+            "a workflow you just figured out so future sessions can load it."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Skill name. Normalized to [a-z0-9_-]; used as filename.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Skill body — the instructions/workflow in Markdown.",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "One-line summary shown in the skill index. Keep it specific.",
+                },
+            },
+            "required": ["name", "content"],
+        },
+    },
+)
+def save_skill(name: str, content: str, description: str = "") -> dict[str, Any]:
+    loader = _get_loader()
+    if loader is None:
+        return {"error": "Skills loader not configured."}
+    try:
+        meta = loader.save(
+            name,
+            content,
+            description=description.strip() or None,
+            origin="agent",
+        )
+    except ValueError as e:
+        return {"error": str(e)}
+    action = "created" if meta["version"] == 1 else "updated"
+    return {
+        "name": meta["name"],
+        "version": meta["version"],
+        "action": action,
+        "note": f"Skill '{meta['name']}' {action} (v{meta['version']}).",
+    }
+
+
+@register(
+    "skill_history",
+    {
+        "description": "List saved versions of a skill (oldest→newest), with version, origin and timestamps.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Skill name."},
+            },
+            "required": ["name"],
+        },
+    },
+)
+def skill_history(name: str) -> dict[str, Any]:
+    loader = _get_loader()
+    if loader is None:
+        return {"error": "Skills loader not configured."}
+    versions = loader.history(name)
+    if not versions:
+        return {"error": f"No history for skill '{name}'."}
+    return {
+        "name": name.strip(),
+        "versions": [
+            {
+                "version": v["version"],
+                "origin": v["origin"],
+                "updated_at": v["updated_at"],
+                "description": v["description"],
+            }
+            for v in versions
+        ],
+        "count": len(versions),
+    }
+
+
+@register(
+    "rollback_skill",
+    {
+        "description": (
+            "Restore an archived skill version as a new save (history is forward-only — "
+            "this does not delete newer versions, it re-applies the old body on top)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Skill name."},
+                "version": {"type": "integer", "description": "Archived version number to restore."},
+            },
+            "required": ["name", "version"],
+        },
+    },
+)
+def rollback_skill(name: str, version: int) -> dict[str, Any]:
+    loader = _get_loader()
+    if loader is None:
+        return {"error": "Skills loader not configured."}
+    try:
+        meta = loader.rollback(name, version)
+    except ValueError as e:
+        return {"error": str(e)}
+    return {
+        "name": meta["name"],
+        "version": meta["version"],
+        "restored_from": version,
+        "note": f"Restored v{version} of '{meta['name']}' as new v{meta['version']}.",
+    }

@@ -386,6 +386,14 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
             result = _maybe_add_refactor_hints(name, result, config)
 
         serialised = json.dumps(result, ensure_ascii=False)
+
+        # Mask secrets before the output enters context, the output store, or
+        # truncation — so neither the live result nor a retrieve_output() of the
+        # stored full copy can leak credentials.
+        if config is None or getattr(config.security, "redact_tool_output", True):
+            from agent.security.redaction import redact
+            serialised = redact(serialised, config)
+
         logger.debug("execute_tool: %s  result_len=%d", name, len(serialised))
 
         # Output-store truncation: store full result, return head+tail envelope

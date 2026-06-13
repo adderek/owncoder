@@ -397,6 +397,21 @@ def cmd_chat(args, config):
         except Exception:
             logger.debug("reflect_session teardown failed", exc_info=True)
             pass
+        try:
+            from agent.memory.skill_distiller import distill_session_skills
+            distill_session_skills(
+                session_id=session.id,
+                config=config,
+                facts_store=getattr(agent, "_facts_store", None),
+            )
+        except Exception:
+            logger.debug("distill_session_skills teardown failed", exc_info=True)
+            pass
+        try:
+            from agent.mcp import shutdown_mcp
+            shutdown_mcp()
+        except Exception:
+            pass
         if _bg_thread and _bg_thread.is_alive():
             _bg_thread.join(timeout=5)
         if _bg_result.get("error"):

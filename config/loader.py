@@ -185,6 +185,7 @@ def _merge(config: Config, data: dict) -> None:
         ("kb", config.kb),
         ("aei", config.aei),
         ("notify", config.notify),
+        ("mcp", config.mcp),
     ):
         section_data = data.get(section_name, {})
         _merge_obj(obj, section_data)
@@ -205,6 +206,24 @@ def _coerce_notify_channels(config: Config) -> None:
                 setattr(entry, k, v)
         coerced.append(entry)
     config.notify.channels = coerced
+
+
+def _coerce_mcp_servers(config: Config) -> None:
+    """Convert mcp.servers dicts (TOML [[mcp.servers]] / YAML list) to MCPServerConfig."""
+    from agent.config.models import MCPServerConfig
+    coerced = []
+    for sv in config.mcp.servers:
+        if isinstance(sv, MCPServerConfig):
+            coerced.append(sv)
+            continue
+        if not isinstance(sv, dict):
+            raise ValueError(f"mcp.servers entries must be mappings, got {type(sv).__name__}")
+        entry = MCPServerConfig()
+        for k, v in sv.items():
+            if hasattr(entry, k):
+                setattr(entry, k, v)
+        coerced.append(entry)
+    config.mcp.servers = coerced
 
 
 _KNOWN_ROLES = {"default", "summarizer", "embeddings"}
@@ -388,6 +407,7 @@ def load_config(extra_path: Path | list[Path] | None = None) -> Config:
     # Ensure registry fallback keys exist (uses now-correct config.llm values)
     _ensure_model_registry_keys(config)
     _coerce_notify_channels(config)
+    _coerce_mcp_servers(config)
     return config
 
 

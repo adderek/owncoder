@@ -275,6 +275,11 @@ class SecurityConfig:
     write_deny_globs: list | None = None
     # Read-deny globs for secret files. None = use built-in defaults.
     read_deny_globs: list | None = None
+    # Mask secrets (API keys, tokens, private keys, credential env-assignments)
+    # in tool output before it enters the LLM context. Defence-in-depth: the
+    # sandbox blocks reading secret files, this catches secrets that leak via
+    # command stdout, env dumps, diffs, or non-protected files.
+    redact_tool_output: bool = True
 
 
 @dataclass
@@ -355,6 +360,7 @@ class AgentConfig:
     auto_detect_ctx: bool = True
     think_level: str = "normal"
     autonomy: float = 0.5  # 0.0=supervised … 1.0=autopilot; >1.0 treated as percentage
+    distill_skills: bool = True  # session-end: distill reusable skills into .agent/skills/
 
 
 @dataclass
@@ -518,6 +524,38 @@ class NotifyConfig:
 
 
 @dataclass
+class MCPServerConfig:
+    """One Model Context Protocol server providing external tools.
+
+    Currently only the stdio transport is supported: a subprocess speaking
+    newline-delimited JSON-RPC 2.0 on stdin/stdout. Discovered tools are
+    registered as ``mcp__<name>__<tool>`` in the agent tool registry.
+    """
+    name: str = ""                              # short id; used in the tool prefix
+    transport: str = "stdio"                    # only "stdio" for now
+    command: str = ""                           # executable, e.g. "npx" or "python"
+    args: list = field(default_factory=list)    # argv after command
+    env: dict = field(default_factory=dict)     # extra env vars for the subprocess
+    cwd: str = ""                               # working dir ("" = inherit)
+    enabled: bool = True
+    init_timeout_s: int = 20                     # handshake/list deadline
+    call_timeout_s: int = 120                    # per tool-call deadline
+
+
+@dataclass
+class MCPConfig:
+    """Model Context Protocol client. Off by default.
+
+    SECURITY: MCP servers run as ordinary subprocesses OUTSIDE the tool
+    sandbox — they are trusted integrations the user configured, not agent
+    output. Only enable servers you trust; their tools can do whatever the
+    server process can.
+    """
+    enabled: bool = False
+    servers: list = field(default_factory=list)  # list[MCPServerConfig]
+
+
+@dataclass
 class KbConfig:
     """Knowledge-base integration. Off by default."""
     enabled: bool = False
@@ -581,3 +619,4 @@ class Config:
     kb: KbConfig = field(default_factory=KbConfig)
     aei: AEIConfig = field(default_factory=AEIConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
+    mcp: MCPConfig = field(default_factory=MCPConfig)
