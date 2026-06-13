@@ -47,6 +47,8 @@ class MemoryStore:
         if not hasattr(self._local, "conn"):
             conn = sqlite3.connect(self._db_path, timeout=30, check_same_thread=False)
             conn.row_factory = sqlite3.Row
+            from agent.core.sqlite_util import apply_concurrency_pragmas
+            apply_concurrency_pragmas(conn)
             conn.enable_load_extension(True)
             try:
                 import sqlite_vec
