@@ -204,6 +204,10 @@ class SlashHandlerMixin:
             from agent.core.checkpoint import run_checkpoint_command
             self._write_sys(_escape(run_checkpoint_command(arg)))
 
+        elif cmd == "/mcp":
+            from agent.mcp import run_mcp_command
+            self._write_sys(_escape(run_mcp_command(self._server._agent.config, arg)))
+
         elif cmd == "/save":
             if arg.strip():
                 from agent.memory.session import _sanitize_short_name

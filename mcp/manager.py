@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 
 # Live clients, kept alive for the session; shut down in teardown.
 _clients: list = []
+# Per-server load outcome for /mcp visibility: name → {ok, tools, error}.
+_status: dict = {}
 _NAME_RE = re.compile(r"[^a-z0-9_]+")
 
 
@@ -51,6 +53,7 @@ def load_mcp_tools(config: "Config | None") -> int:
 
     from agent.mcp.client import MCPClient
 
+    _status.clear()
     registered = 0
     for server in config.mcp.servers:
         if not getattr(server, "enabled", True):
@@ -65,6 +68,7 @@ def load_mcp_tools(config: "Config | None") -> int:
             tools = client.list_tools()
         except Exception as e:
             logger.warning("mcp[%s]: startup failed: %s", name, e)
+            _status[name] = {"ok": False, "tools": [], "error": str(e)}
             try:
                 client.close()
             except Exception:
@@ -72,6 +76,7 @@ def load_mcp_tools(config: "Config | None") -> int:
             continue
 
         _clients.append(client)
+        tool_names: list[str] = []
         for tool in tools:
             tname = tool.get("name")
             if not tname:
@@ -82,7 +87,9 @@ def load_mcp_tools(config: "Config | None") -> int:
             }
             full = _make_tool_name(name, tname)
             register(full, schema)(_wrap(client, name, tname))
+            tool_names.append(full)
             registered += 1
+        _status[name] = {"ok": True, "tools": tool_names, "error": None}
         logger.info("mcp[%s]: registered %d tool(s)", name, len(tools))
 
     return registered
@@ -96,3 +103,28 @@ def shutdown_mcp() -> None:
             client.close()
         except Exception:
             pass
+
+
+def run_mcp_command(config, arg: str) -> str:
+    """Text handler for the /mcp slash command: status of configured servers."""
+    mcp_cfg = getattr(config, "mcp", None)
+    if mcp_cfg is None or not getattr(mcp_cfg, "enabled", False):
+        return "MCP disabled. Enable with [mcp] enabled = true and configure [[mcp.servers]]."
+    servers = list(getattr(mcp_cfg, "servers", []) or [])
+    if not servers:
+        return "MCP enabled but no servers configured."
+    lines = [f"MCP servers ({len(servers)}):"]
+    for s in servers:
+        name = s.name or s.command
+        if not getattr(s, "enabled", True):
+            lines.append(f"  {name}: disabled (config)")
+            continue
+        st = _status.get(name)
+        if st is None:
+            lines.append(f"  {name}: not loaded")
+        elif st["ok"]:
+            tools = ", ".join(t.split("__", 2)[-1] for t in st["tools"]) or "(none)"
+            lines.append(f"  {name}: ok — {len(st['tools'])} tools: {tools}")
+        else:
+            lines.append(f"  {name}: FAILED — {st['error']}")
+    return "\n".join(lines)

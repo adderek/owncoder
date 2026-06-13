@@ -45,6 +45,7 @@ def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
   [{c}]/tools[/{c}]              list available tools
   [{c}]/skills [show|history|rm <name>][/{c}]  manage saved skills
   [{c}]/checkpoint [new|rollback <id>][/{c}]  restore point across all files
+  [{c}]/mcp[/{c}]                MCP server status + tools
   [{c}]/exec <command>[/{c}]      run an OS command and show output
   [{c}]/apply [file][/{c}]       write last code block to file (bypass tool calling)
   [{c}]/undo [file][/{c}]        restore last pre-write snapshot of a file
@@ -237,6 +238,10 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
             elif cmd in ("/checkpoint", "/cp"):
                 from agent.core.checkpoint import run_checkpoint_command
                 console.print(run_checkpoint_command(arg))
+
+            elif cmd == "/mcp":
+                from agent.mcp import run_mcp_command
+                console.print(run_mcp_command(agent.config, arg))
 
             elif cmd == "/models":
                 from agent.ui.slash import _render_models_table

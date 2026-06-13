@@ -74,6 +74,7 @@ def clean_registry():
     t._registry.clear(); t._registry.update(reg)
     t._schemas[:] = sch
     manager._clients.clear()
+    manager._status.clear()
 
 
 class TestClient:
@@ -136,3 +137,27 @@ class TestManager:
         fn = t.get_tool("mcp__fake__echo")
         out = fn(text="x")
         assert isinstance(out, dict) and "error" in out
+
+
+class TestMcpCommand:
+    def test_disabled(self):
+        out = manager.run_mcp_command(SimpleNamespace(mcp=MCPConfig(enabled=False, servers=[])), "")
+        assert "disabled" in out.lower()
+
+    def test_enabled_no_servers(self):
+        out = manager.run_mcp_command(SimpleNamespace(mcp=MCPConfig(enabled=True, servers=[])), "")
+        assert "no servers" in out.lower()
+
+    def test_status_after_load(self, fake_server, clean_registry):
+        cfg = SimpleNamespace(mcp=MCPConfig(enabled=True, servers=[fake_server]))
+        manager.load_mcp_tools(cfg)
+        out = manager.run_mcp_command(cfg, "")
+        assert "fake" in out and "ok" in out and "echo" in out
+        manager.shutdown_mcp()
+
+    def test_status_reports_failure(self, clean_registry):
+        bad = MCPServerConfig(name="bad", command="this-cmd-does-not-exist-zzz")
+        cfg = SimpleNamespace(mcp=MCPConfig(enabled=True, servers=[bad]))
+        manager.load_mcp_tools(cfg)
+        out = manager.run_mcp_command(cfg, "")
+        assert "bad" in out and "FAILED" in out

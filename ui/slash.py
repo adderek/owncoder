@@ -50,6 +50,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/skills", [], "skills: list | show <name> | history <name> | rm <name>", True),
     ("/undo", [], "restore last file snapshot", False),
     ("/checkpoint", ["/cp"], "checkpoint: list | new [label] | rollback <id>", True),
+    ("/mcp", [], "show MCP server status + their tools", False),
     ("/plan", [], "plan: new <goal> | show | steps | step <id> <status> | dep <step> <dep> | assign <step> <agent> | compact | abort | pause | stash | resume", True),
     ("/plans", [], "list saved plans", False),
     ("/abort-plan", [], "mark active plan aborted (no stash)", False),
