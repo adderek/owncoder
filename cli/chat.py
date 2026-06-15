@@ -338,6 +338,16 @@ def cmd_chat(args, config):
 
     # Expose session on agent so planning helpers can tag plans with session_id.
     agent.session = session
+
+    # Tamper check: warn if sealed skills/config drifted since last seal.
+    try:
+        from agent.security.integrity import warn_if_tampered
+        _tw = warn_if_tampered(agent.config)
+        if _tw:
+            console.print(f"[red]{_tw}[/red]")
+    except Exception:
+        pass
+
     try:
         active_session = run_ui(agent, session=session)
         if active_session is not None:

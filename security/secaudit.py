@@ -421,6 +421,7 @@ def run_security_command(config, arg: str) -> str:
       baseline clear    delete the baseline (un-suppress everything)
       baseline show     list suppressed entries
       airgap [on|off|status]  toggle/report non-local egress block
+      integrity [seal|check]  sign skills+config / detect tampering
     """
     parts = arg.strip().split()
     sub = parts[0].lower() if parts else "scan"
@@ -432,6 +433,11 @@ def run_security_command(config, arg: str) -> str:
     if sub == "airgap":
         from agent.security.airgap import run_airgap_command
         return run_airgap_command(config, rest)
+
+    # ── integrity (tamper detection for skills + config) ─────────────────
+    if sub == "integrity":
+        from agent.security.integrity import run_integrity_command
+        return run_integrity_command(config, rest)
 
     # ── baseline management ──────────────────────────────────────────────
     if sub == "baseline":
