@@ -424,6 +424,7 @@ def run_security_command(config, arg: str) -> str:
       integrity [seal|check]  sign skills+config / detect tampering
       weights [pin <p>|verify|list]  pin/verify local model weight files
       sbom [path]       list dependencies + flag known-vulnerable (offline DB)
+      verify [<i>|run]  generate/run sandboxed PoC test for finding #i (fix check)
     """
     parts = arg.strip().split()
     sub = parts[0].lower() if parts else "scan"
@@ -440,6 +441,11 @@ def run_security_command(config, arg: str) -> str:
     if sub == "integrity":
         from agent.security.integrity import run_integrity_command
         return run_integrity_command(config, rest)
+
+    # ── fix-verification PoC tests ───────────────────────────────────────
+    if sub == "verify":
+        from agent.security.verify import run_verify_command
+        return run_verify_command(config, arg.strip()[len("verify"):].strip())
 
     # ── SBOM + dependency vuln audit ─────────────────────────────────────
     if sub == "sbom":
