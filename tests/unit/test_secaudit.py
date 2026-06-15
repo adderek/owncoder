@@ -111,3 +111,33 @@ def test_diff_only_scopes_to_changed(tmp_path):
     paths = {f.path for f in res.findings}
     assert "new.py" in paths
     assert "old.py" not in paths
+
+
+def _full_cfg(tmp_path):
+    import types
+    return types.SimpleNamespace(
+        tools=types.SimpleNamespace(working_dir=str(tmp_path), agent_dir=".agent"),
+        security=types.SimpleNamespace(airgap=False),
+        llm=types.SimpleNamespace(base_url="http://localhost:8080/v1"),
+        web_search=types.SimpleNamespace(enabled=False),
+        mcp=types.SimpleNamespace(servers=[]),
+        notify=types.SimpleNamespace(channels=[]),
+    )
+
+
+def test_full_posture_aggregates_sections(tmp_path):
+    (tmp_path / "bad.py").write_text("def run(x):\n    return eval(x)\n")
+    (tmp_path / "requirements.txt").write_text("requests==2.20.0\n")
+    out = secaudit.run_security_command(_full_cfg(tmp_path), "full")
+    assert "Security posture" in out
+    assert "**Verdict:**" in out
+    for section in ("## Dependencies", "## Integrity", "## Weights", "## Egress"):
+        assert section in out
+    # eval finding is high severity -> verdict flags it.
+    assert "high/critical" in out
+
+
+def test_full_posture_clean_project(tmp_path):
+    (tmp_path / "ok.py").write_text("def add(a, b):\n    return a + b\n")
+    out = secaudit.run_security_command(_full_cfg(tmp_path), "full")
+    assert "No high-severity concerns" in out

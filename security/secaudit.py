@@ -408,6 +408,83 @@ def apply_baseline(res: "ScanResult", baseline: dict) -> tuple[list[Finding], in
     return new, len(res.findings) - len(new)
 
 
+def _full_posture(config, target: str, workdir: str) -> str:
+    """Aggregate every security check into one consolidated report + verdict."""
+    sections: list[str] = [f"# Security posture — {os.path.abspath(target)}", ""]
+    concerns: list[str] = []
+
+    # 1. Code scan (baseline-filtered).
+    try:
+        res = scan(target)
+        new, suppressed = apply_baseline(res, load_baseline(workdir))
+        res.findings = new
+        counts = res.by_severity()
+        high = counts.get("critical", 0) + counts.get("high", 0)
+        if high:
+            concerns.append(f"{high} high/critical code finding(s)")
+        sections.append(to_markdown(res))
+        if suppressed:
+            sections.append(f"_{suppressed} suppressed by baseline._")
+    except Exception as e:  # noqa: BLE001
+        sections.append(f"## Code scan\n(error: {e})")
+
+    # 2. Dependencies / SBOM.
+    try:
+        from agent.security.sbom import run_sbom_command
+        sbom_md = run_sbom_command(config, target)
+        if "known vulnerable" in sbom_md and "→ 0 known" not in sbom_md:
+            concerns.append("known-vulnerable dependencies")
+        sections += ["", "## Dependencies", sbom_md]
+    except Exception as e:  # noqa: BLE001
+        sections += ["", f"## Dependencies\n(error: {e})"]
+
+    # 3. Integrity of trusted files.
+    try:
+        from agent.security.integrity import check as _icheck
+        ic = _icheck(config)
+        if ic["sealed"] and not ic["ok"]:
+            concerns.append("trusted files drifted since seal")
+            sections += ["", "## Integrity", "DRIFT: " + ", ".join(
+                f"{k}={len(ic[k])}" for k in ("modified", "added", "deleted") if ic[k])]
+        elif ic["sealed"]:
+            sections += ["", "## Integrity", "OK — sealed files unchanged."]
+        else:
+            sections += ["", "## Integrity", "not sealed (run /security integrity seal)."]
+    except Exception as e:  # noqa: BLE001
+        sections += ["", f"## Integrity\n(error: {e})"]
+
+    # 4. Weight vault.
+    try:
+        from agent.security.weightvault import quickcheck as _wqc
+        wq = _wqc(config)
+        if wq["pinned"] and not wq["ok"]:
+            concerns.append("pinned model weights changed/missing")
+            sections += ["", "## Weights", "DRIFT detected — run /security weights verify."]
+        elif wq["pinned"]:
+            sections += ["", "## Weights", "OK — pinned weights unchanged (quickcheck)."]
+        else:
+            sections += ["", "## Weights", "none pinned."]
+    except Exception as e:  # noqa: BLE001
+        sections += ["", f"## Weights\n(error: {e})"]
+
+    # 5. Egress posture.
+    try:
+        from agent.security.airgap import report as _agreport, is_enabled
+        sections += ["", "## Egress", _agreport(config)]
+        base_url = getattr(getattr(config, "llm", None), "base_url", "") or ""
+        from agent.security.airgap import is_local_url
+        if is_enabled(config) and not is_local_url(base_url):
+            concerns.append("air-gap on but LLM endpoint is remote")
+    except Exception as e:  # noqa: BLE001
+        sections += ["", f"## Egress\n(error: {e})"]
+
+    # Verdict up top.
+    verdict = ("ATTENTION — " + "; ".join(concerns)) if concerns else \
+        "No high-severity concerns from the deterministic floor (not proof of safety)."
+    sections.insert(1, f"**Verdict:** {verdict}\n")
+    return "\n".join(sections)
+
+
 def run_security_command(config, arg: str) -> str:
     """Text handler for the /security slash command (both UIs).
 
@@ -425,12 +502,18 @@ def run_security_command(config, arg: str) -> str:
       weights [pin <p>|verify|list]  pin/verify local model weight files
       sbom [path]       list dependencies + flag known-vulnerable (offline DB)
       verify [<i>|run]  generate/run sandboxed PoC test for finding #i (fix check)
+      full [path]       consolidated posture: scan+sbom+integrity+weights+egress
     """
     parts = arg.strip().split()
     sub = parts[0].lower() if parts else "scan"
     rest = parts[1] if len(parts) > 1 else ""
 
     workdir = getattr(getattr(config, "tools", None), "working_dir", ".") or "."
+
+    # ── full posture: chain every check into one report ──────────────────
+    if sub in ("full", "audit", "posture"):
+        target = rest or workdir
+        return _full_posture(config, target, workdir)
 
     # ── air-gap (egress posture / toggle) ────────────────────────────────
     if sub == "airgap":
