@@ -43,6 +43,9 @@ _SKIP_DIRS = {
     ".git", ".venv", "venv", "node_modules", "__pycache__", ".mypy_cache",
     ".ruff_cache", "dist", "build", "target", ".tox", ".idea", ".gradle",
     "vendor", ".cache", ".agent",
+    # vendored / third-party trees — not your code to fix
+    "_vendor", "vendored", "third_party", "third-party", "thirdparty", "3rdparty",
+    "site-packages", "bower_components", "Pods", ".next", ".nuxt",
 }
 _MAX_FILE_BYTES = 2 * 1024 * 1024  # skip huge files / blobs
 
@@ -335,6 +338,29 @@ def _walk_files(root: str) -> list[str]:
     return out
 
 
+def _ignore_matcher(target: str):
+    """Gitignore-style matcher from the TARGET project's .agent.ignore (if any).
+
+    Lets a project exclude vendored/third-party paths from security scans the same
+    way the rest of the agent honors .agent.ignore. Returns None if no patterns.
+    """
+    try:
+        from agent.tools.rules.matchers import PathMatcher
+        from agent.tools.rules.loaders import _load_pattern_file
+    except Exception:  # noqa: BLE001 - pathspec/rules unavailable
+        return None
+    pats: list[str] = []
+    for p in (Path(target) / ".agent.ignore", Path(target) / ".agent" / ".agent.ignore"):
+        try:
+            pats += _load_pattern_file(p)
+        except Exception:  # noqa: BLE001
+            pass
+    if not pats:
+        return None
+    m = PathMatcher(pats)
+    return None if m.empty else m
+
+
 def _scannable(files: list[str]) -> list[str]:
     return [
         f for f in files
@@ -373,6 +399,11 @@ def scan(target: str, diff_only: bool = False) -> ScanResult:
         files = _scannable(changed) if changed is not None else _walk_files(root)
     else:
         files = _walk_files(root)
+
+    # Honor the project's .agent.ignore (vendored/third-party exclusions).
+    matcher = _ignore_matcher(root)
+    if matcher is not None:
+        files = [f for f in files if not matcher.matches(f)]
 
     used, missing = [], []
     findings: list[Finding] = []

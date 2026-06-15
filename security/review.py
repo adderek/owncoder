@@ -27,7 +27,9 @@ _SRC_EXTS = {
     ".tsx", ".jsx", ".java", ".kt", ".rb", ".php", ".vala", ".swift", ".m", ".mm",
 }
 _SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", "build",
-              "dist", "target", "vendor", ".agent", "test", "tests", "testdata"}
+              "dist", "target", "vendor", ".agent", "test", "tests", "testdata",
+              "_vendor", "vendored", "third_party", "third-party", "thirdparty",
+              "3rdparty", "site-packages", "bower_components", "Pods", ".next", ".nuxt"}
 
 _WINDOW_LINES = 320
 _OVERLAP = 30
@@ -77,15 +79,26 @@ _SYSTEM = (
 
 
 def _select_files(target: str) -> list[Path]:
+    import os
     root = Path(target)
     if root.is_file():
         return [root]
+    # Honor the project's .agent.ignore (vendored/third-party exclusions).
+    try:
+        from agent.security.secaudit import _ignore_matcher
+        matcher = _ignore_matcher(str(root))
+    except Exception:  # noqa: BLE001
+        matcher = None
     out = []
-    for dp, dirnames, filenames in __import__("os").walk(root):
+    for dp, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d.lower() not in _SKIP_DIRS]
         for fn in filenames:
-            if Path(fn).suffix.lower() in _SRC_EXTS:
-                out.append(Path(dp) / fn)
+            if Path(fn).suffix.lower() not in _SRC_EXTS:
+                continue
+            fp = Path(dp) / fn
+            if matcher is not None and matcher.matches(os.path.relpath(fp, root)):
+                continue
+            out.append(fp)
     # Largest files first — more code, likelier to hold the interesting bug.
     out.sort(key=lambda p: p.stat().st_size if p.exists() else 0, reverse=True)
     return out

@@ -212,3 +212,25 @@ def test_python_rules_not_applied_to_c(tmp_path):
     (tmp_path / "x.c").write_text("pickle.loads(data);\n")
     res = secaudit.scan(str(tmp_path))
     assert all(f.rule_id != "pickle-load" for f in res.findings)
+
+
+def test_skips_underscore_vendor_dir(tmp_path):
+    v = tmp_path / "bleach" / "_vendor"
+    v.mkdir(parents=True)
+    (v / "html5lib.py").write_text("eval(x)\n")
+    (tmp_path / "app.py").write_text("eval(y)\n")
+    res = secaudit.scan(str(tmp_path))
+    assert all("_vendor" not in f.path for f in res.findings)
+    assert any(f.path == "app.py" for f in res.findings)
+
+
+def test_honors_agent_ignore(tmp_path):
+    (tmp_path / "app.py").write_text("eval(y)\n")
+    sub = tmp_path / "generated"
+    sub.mkdir()
+    (sub / "g.py").write_text("eval(z)\n")
+    (tmp_path / ".agent.ignore").write_text("generated/\n")
+    res = secaudit.scan(str(tmp_path))
+    paths = {f.path for f in res.findings}
+    assert "app.py" in paths
+    assert all("generated" not in p for p in paths)
