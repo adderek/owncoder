@@ -621,6 +621,8 @@ def run_security_command(config, arg: str) -> str:
       airgap [on|off|status]  toggle/report non-local egress block
       integrity [seal|check]  sign skills+config / detect tampering
       weights [pin <p>|verify|list]  pin/verify local model weight files
+      evolve            distill lessons from own findings + quarantine → KB
+      knowledge [clear] show/clear learned security lessons (used by review)
       taint [path]      cross-file source→sink call-path reachability (heuristic)
       sbom [path]       list dependencies + flag known-vulnerable (offline DB)
       verify [<i>|run]  generate/run sandboxed PoC test for finding #i (fix check)
@@ -656,6 +658,14 @@ def run_security_command(config, arg: str) -> str:
     if sub == "verify":
         from agent.security.verify import run_verify_command
         return run_verify_command(config, arg.strip()[len("verify"):].strip())
+
+    # ── self-evolution: distill lessons into the knowledge base ──────────
+    if sub == "evolve":
+        from agent.security.evolve import run_evolve_command
+        return run_evolve_command(config, rest)
+    if sub == "knowledge":
+        from agent.security.knowledge import run_knowledge_command
+        return run_knowledge_command(config, rest)
 
     # ── cross-file taint reachability ────────────────────────────────────
     if sub == "taint":

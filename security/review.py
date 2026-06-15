@@ -162,7 +162,7 @@ def _context_block(chunk: list[str], base_line: int, rel: str, symbols: dict | N
 
 async def _review_window(client, model, rel: str, base_line: int, chunk: list[str],
                          symbols: dict | None = None, samples: int = 1,
-                         base_temp: float = 0.1) -> list[dict]:
+                         base_temp: float = 0.1, system: str = _SYSTEM) -> list[dict]:
     numbered = "\n".join(f"{base_line + i}: {ln}" for i, ln in enumerate(chunk))
     ctx = _context_block(chunk, base_line, rel, symbols)
     user = (ctx + f"File: {rel} (lines {base_line}-{base_line + len(chunk) - 1})\n"
@@ -173,7 +173,7 @@ async def _review_window(client, model, rel: str, base_line: int, chunk: list[st
     for s in range(max(1, samples)):
         resp = await client.chat.completions.create(
             model=model,
-            messages=[{"role": "system", "content": _SYSTEM},
+            messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
             max_tokens=_MAX_OUTPUT_TOKENS,
             temperature=min(base_temp + 0.2 * s, 1.2),
@@ -489,6 +489,14 @@ async def review(config, target: str, *, incremental: bool = False, on_progress=
     tasks = tasks[:_MAX_WINDOWS]
     planned = len(tasks)
 
+    # Carry forward learned lessons (self-evolution): inject the trusted KB into
+    # the review system prompt so the model applies what it has learned.
+    try:
+        from agent.security.knowledge import load_for_prompt
+        sys_prompt = _SYSTEM + load_for_prompt(config)
+    except Exception:  # noqa: BLE001
+        sys_prompt = _SYSTEM
+
     samples, base_temp, judge = _REVIEW_MODES.get(mode, _REVIEW_MODES["normal"])
     if mode == "deep":
         sec = getattr(config, "security", None)
@@ -512,7 +520,7 @@ async def review(config, target: str, *, incremental: bool = False, on_progress=
                 async with _track("sec"):
                     return await _review_window(
                         client, entry.model, rel, bl, chunk, symbols,
-                        samples=samples, base_temp=base_temp)
+                        samples=samples, base_temp=base_temp, system=sys_prompt)
             except Exception:  # noqa: BLE001 - one bad window must not abort the run
                 return []
 
