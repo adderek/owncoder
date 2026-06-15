@@ -35,10 +35,12 @@ _MAX_WINDOWS = 50          # hard cap on LLM calls per review
 _CONCURRENCY = 4           # windows reviewed in parallel (bounded pool)
 _SELF_CRITIQUE = True      # cold-judge pass to drop likely false positives
 _ENSEMBLE_SAMPLES = 2      # samples per window in ensemble mode (opt-in)
-_HOT_SAMPLES = 3           # samples per window in deep (hot-explore) mode
+_HOT_SAMPLES = 5           # default hot passes per window in deep mode (config-overridable)
 _HOT_TEMP = 0.8            # high base temperature for creative generation
+_MAX_HOT_SAMPLES = 20      # safety cap on per-window passes
 
 # mode -> (samples, base_temp, judge): judge=True runs the cold self-critique.
+# deep's samples/base_temp are resolved from config at call time (see review()).
 _REVIEW_MODES = {
     "normal":   (1, 0.1, True),
     "ensemble": (_ENSEMBLE_SAMPLES, 0.1, False),   # keep by agreement, no judge
@@ -411,7 +413,7 @@ async def _self_critique(client, model, findings: list[dict], target: str, base)
 
 
 async def review(config, target: str, *, incremental: bool = False, on_progress=None,
-                 mode: str = "normal") -> str:
+                 mode: str = "normal", hot_samples: int | None = None) -> str:
     """Deep-read audit of *target* (file or dir). Returns Markdown. Never raises.
 
     incremental: review only files new or modified since the last review (state in
@@ -488,6 +490,12 @@ async def review(config, target: str, *, incremental: bool = False, on_progress=
     planned = len(tasks)
 
     samples, base_temp, judge = _REVIEW_MODES.get(mode, _REVIEW_MODES["normal"])
+    if mode == "deep":
+        sec = getattr(config, "security", None)
+        if hot_samples is None:
+            hot_samples = getattr(sec, "review_hot_samples", _HOT_SAMPLES)
+        samples = max(2, min(int(hot_samples), _MAX_HOT_SAMPLES))
+        base_temp = getattr(sec, "review_hot_temp", _HOT_TEMP)
     symbols = _collect_symbols(config, files, base) if _SYMBOL_CONTEXT else {}
 
     client = AsyncOpenAI(base_url=entry.base_url, api_key=entry.api_key)
@@ -567,7 +575,7 @@ async def review(config, target: str, *, incremental: bool = False, on_progress=
         if n_new or n_fixed:
             delta = f"  (since last review: +{n_new} new, -{n_fixed} fixed/gone)"
 
-    mode_note = {"deep": "  [deep: hot-explore ×%d + cold judge]" % _HOT_SAMPLES,
+    mode_note = {"deep": f"  [deep: hot-explore ×{samples} @ T{base_temp} + cold judge]",
                  "ensemble": "  [ensemble: agreement confidence]"}.get(mode, "")
     lines_out = [
         f"# LLM vulnerability review — {Path(target).resolve()}{mode_note}",
@@ -683,6 +691,10 @@ def _resolve_target(config, arg: str):
         return None, f"bad path: {raw}"
     if not p.exists():
         return None, f"path not found: {raw}"
+    # The project root (working_dir) and anything under it is always allowed —
+    # that IS the project. Only paths OUTSIDE it need an explicit path grant.
+    if p == workdir or workdir in p.parents:
+        return p, None
     try:
         from agent.security import policy, path_grants
         if policy.is_configured() and path_grants.grant_for(p) is None:
@@ -709,11 +721,17 @@ def run_review_command(config, arg: str, on_progress=None) -> str:
         kw = _first[0]
         mode = "ensemble" if kw == "ensemble" else "deep"
         rest = _a[len(kw):].strip()
+        # Optional inline sample count for deep: "deep 8 [path]".
+        hot = None
+        parts = rest.split()
+        if mode == "deep" and parts and parts[0].isdigit():
+            hot = int(parts[0])
+            rest = rest[len(parts[0]):].strip()
         target, err = _resolve_target(config, rest)
         if err:
             return f"Error: {err}"
         return asyncio.run(review(config, str(target), incremental=False,
-                                  on_progress=on_progress, mode=mode))
+                                  on_progress=on_progress, mode=mode, hot_samples=hot))
     if _a.lower().split()[:1] == ["confirm"]:
         rest = _a[len("confirm"):].strip()
         target, err = _resolve_target(config, rest)

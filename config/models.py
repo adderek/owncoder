@@ -290,6 +290,11 @@ class SecurityConfig:
     # enters context. MCP servers run outside the sandbox, so their output is the
     # likeliest injection vector. See docs/MYTHOS_security_suite.md #12.
     guard_tool_injection: bool = True
+    # `/security review deep` (hot-explore + cold-judge): how many high-temperature
+    # generation passes per window, and the base temperature. More passes = higher
+    # recall (more creative candidates) at proportional cost; the cold judge filters.
+    review_hot_samples: int = 5
+    review_hot_temp: float = 0.8
 
 
 @dataclass

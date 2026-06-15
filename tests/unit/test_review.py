@@ -401,3 +401,41 @@ def test_deep_mode_hot_explore_cold_judge(tmp_path, monkeypatch):
     assert "overflow" in out
     assert "dropped by self-critique" in out
     assert "fixture" in out
+
+
+def test_deep_inline_sample_count(tmp_path, monkeypatch):
+    calls = {"gen": 0}
+
+    class _Counter:
+        def __init__(self, *a, **k):
+            self.chat = types.SimpleNamespace(
+                completions=types.SimpleNamespace(create=self._create))
+
+        async def _create(self, *, model, messages, temperature=0.1, **k):
+            if "skeptical" not in messages[0]["content"]:
+                calls["gen"] += 1
+            return _hresp("[]")
+
+        async def close(self):
+            pass
+
+    fake = types.ModuleType("openai")
+    fake.AsyncOpenAI = _Counter
+    monkeypatch.setitem(sys.modules, "openai", fake)
+    entry = types.SimpleNamespace(base_url="http://localhost:8081/v1", api_key="local", model="m")
+    monkeypatch.setattr("agent.config.make_registry",
+                        lambda c: types.SimpleNamespace(default=entry))
+    (tmp_path / "a.c").write_text("int x;\n")           # one window
+    out = review.run_review_command(_cfg(tmp_path), "deep 7 .")
+    assert "hot-explore ×7" in out
+    assert calls["gen"] == 7                              # 7 hot generation passes
+
+
+def test_deep_uses_config_default(tmp_path, monkeypatch):
+    _patch_llm(monkeypatch, payload="[]")
+    cfg = _cfg(tmp_path)
+    cfg.security.review_hot_samples = 4
+    cfg.security.review_hot_temp = 0.9
+    (tmp_path / "a.c").write_text("int x;\n")
+    out = review.run_review_command(cfg, "deep .")
+    assert "hot-explore ×4" in out
