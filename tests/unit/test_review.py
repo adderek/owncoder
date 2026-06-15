@@ -274,3 +274,37 @@ def test_autoconfirm_no_findings(tmp_path, monkeypatch):
     _patch_llm(monkeypatch, payload="[]")
     out = review.run_review_command(cfg, "confirm .")
     assert "no findings to confirm" in out
+
+
+class _RoutingClient:
+    """Returns a window payload, but a 'drop' verdict for the critique call."""
+    window_payload = '[{"line": 2, "severity": "high", "class": "eval", "detail": "eval of input"}]'
+
+    def __init__(self, *a, **k):
+        self.chat = types.SimpleNamespace(
+            completions=types.SimpleNamespace(create=self._create))
+
+    async def _create(self, *, model, messages, **k):
+        sysmsg = messages[0]["content"]
+        if "skeptical" in sysmsg:   # critique pass
+            content = '[{"i": 0, "verdict": "drop", "confidence": "low", "reason": "test fixture"}]'
+        else:
+            content = _RoutingClient.window_payload
+        msg = types.SimpleNamespace(content=content)
+        return types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg)])
+
+    async def close(self):
+        pass
+
+
+def test_self_critique_drops_false_positive(tmp_path, monkeypatch):
+    fake = types.ModuleType("openai")
+    fake.AsyncOpenAI = _RoutingClient
+    monkeypatch.setitem(sys.modules, "openai", fake)
+    entry = types.SimpleNamespace(base_url="http://localhost:8081/v1", api_key="local", model="m")
+    monkeypatch.setattr("agent.config.make_registry",
+                        lambda c: types.SimpleNamespace(default=entry))
+    (tmp_path / "a.py").write_text("def run(x):\n    return eval(x)\n")
+    out = review.run_review_command(_cfg(tmp_path), str(tmp_path))
+    assert "dropped by self-critique" in out
+    assert "test fixture" in out          # the drop reason shown

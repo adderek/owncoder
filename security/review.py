@@ -33,6 +33,18 @@ _WINDOW_LINES = 320
 _OVERLAP = 30
 _MAX_WINDOWS = 50          # hard cap on LLM calls per review
 _CONCURRENCY = 4           # windows reviewed in parallel (bounded pool)
+_SELF_CRITIQUE = True      # second LLM pass to drop likely false positives
+_SEV_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+
+_CRITIQUE_SYSTEM = (
+    "You are a skeptical senior reviewer auditing a junior's vulnerability findings. "
+    "For each finding you are given its location, class, claim, and the source line. "
+    "Decide if it is a TRUE POSITIVE worth a human's time. Be strict: drop findings that "
+    "are test/example code, already-mitigated, theoretical with no reachable input, or "
+    "misread of safe code. Output STRICT JSON: a list of "
+    '{"i": <int>, "verdict": "keep|drop", "confidence": "high|medium|low", '
+    '"reason": "<short>"}. JSON only, no prose."'
+)
 _MAX_OUTPUT_TOKENS = 1100
 
 _SYSTEM = (
@@ -268,6 +280,48 @@ def clear_history(config) -> str:
             ". Next review starts fresh (full, no new/fixed diff).")
 
 
+def _dedupe_sort(findings: list[dict]) -> list[dict]:
+    seen, uniq = set(), []
+    for it in findings:
+        k = (it["file"], it["line"], it["class"])
+        if k in seen:
+            continue
+        seen.add(k)
+        uniq.append(it)
+    uniq.sort(key=lambda x: (_SEV_ORDER.get(x["severity"], 9), x["file"], x["line"] or 0))
+    return uniq
+
+
+async def _self_critique(client, model, findings: list[dict], target: str, base) -> dict:
+    """One LLM pass judging each finding keep/drop. Returns {index: verdict-dict}."""
+    items = []
+    for i, it in enumerate(findings[:60]):
+        src = ""
+        try:
+            fp = (base / it["file"]) if not Path(it["file"]).is_absolute() else Path(it["file"])
+            lines = fp.read_text(errors="ignore").splitlines()
+            ln = it.get("line") or 0
+            if 0 < ln <= len(lines):
+                src = lines[ln - 1].strip()[:200]
+        except OSError:
+            pass
+        items.append({"i": i, "loc": f"{it['file']}:{it.get('line')}",
+                      "class": it.get("class"), "claim": it.get("detail"), "src": src})
+    user = "Findings to judge:\n```json\n" + json.dumps(items, indent=0) + "\n```"
+    resp = await client.chat.completions.create(
+        model=model,
+        messages=[{"role": "system", "content": _CRITIQUE_SYSTEM},
+                  {"role": "user", "content": user}],
+        max_tokens=1200, temperature=0.1,
+    )
+    raw = (resp.choices[0].message.content or "") if resp.choices else ""
+    out = {}
+    for v in _parse(raw):
+        if isinstance(v, dict) and "i" in v:
+            out[v["i"]] = v
+    return out
+
+
 async def review(config, target: str, *, incremental: bool = False, on_progress=None) -> str:
     """Deep-read audit of *target* (file or dir). Returns Markdown. Never raises.
 
@@ -360,10 +414,32 @@ async def review(config, target: str, *, incremental: bool = False, on_progress=
             except Exception:  # noqa: BLE001 - one bad window must not abort the run
                 return []
 
+    filtered: list[dict] = []
     try:
         results = await asyncio.gather(*[_do(t) for t in tasks])
         for r in results:
             findings += r
+        uniq = _dedupe_sort(findings)
+        # Second pass: the model critiques its own findings to drop likely false
+        # positives (cheap accuracy win for a weak local model). Kept findings get
+        # a confidence; dropped ones move to a separate section, not deleted.
+        if uniq and _SELF_CRITIQUE:
+            _emit(f"self-critique pass over {len(uniq)} finding(s)…")
+            try:
+                async with _track("sec"):
+                    verdicts = await _self_critique(client, entry.model, uniq, target, base)
+                kept = []
+                for i, it in enumerate(uniq):
+                    v = verdicts.get(i, {})
+                    it["confidence"] = v.get("confidence", "unrated")
+                    if v.get("verdict") == "drop":
+                        it["dropped_reason"] = v.get("reason", "")[:200]
+                        filtered.append(it)
+                    else:
+                        kept.append(it)
+                uniq = kept
+            except Exception:  # noqa: BLE001 - critique optional, never abort
+                pass
     finally:
         try:
             await client.close()
@@ -383,17 +459,6 @@ async def review(config, target: str, *, incremental: bool = False, on_progress=
             pass
     _save_state(config, state_now)
 
-    # Dedupe + sort by severity.
-    order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
-    seen, uniq = set(), []
-    for it in findings:
-        k = (it["file"], it["line"], it["class"])
-        if k in seen:
-            continue
-        seen.add(k)
-        uniq.append(it)
-    uniq.sort(key=lambda x: (order.get(x["severity"], 9), x["file"], x["line"] or 0))
-
     # Persist + diff against the previous review (full runs only; incremental
     # sees a subset so its diff would be misleading).
     delta = ""
@@ -406,7 +471,8 @@ async def review(config, target: str, *, incremental: bool = False, on_progress=
         f"# LLM vulnerability review — {Path(target).resolve()}",
         f"- files reviewed: {files_done}/{len(files)}  windows: {planned}"
         + ("  (window cap hit — not all code seen)" if truncated else ""),
-        f"- reported issues: {len(uniq)}{delta}",
+        f"- reported issues: {len(uniq)}{delta}"
+        + (f"  ({len(filtered)} dropped by self-critique)" if filtered else ""),
         "",
         "> **LLM-REPORTED, UNVERIFIED.** A local model misses real bugs and invents "
         "some. Treat as leads, not facts — confirm each with code review or "
@@ -414,14 +480,25 @@ async def review(config, target: str, *, incremental: bool = False, on_progress=
         "replace it.",
         "",
     ]
-    if not uniq:
+    if not uniq and not filtered:
         lines_out.append("No vulnerabilities reported by the model (NOT proof of safety).")
         return "\n".join(lines_out)
-    lines_out += ["| sev | class | location | detail |", "|---|---|---|---|"]
-    for it in uniq:
-        loc = f"{it['file']}:{it['line']}"
-        detail = it["detail"].replace("|", "/").replace("\n", " ")
-        lines_out.append(f"| {it['severity']} | {it['class']} | {loc} | {detail} |")
+    if uniq:
+        lines_out += ["| sev | conf | class | location | detail |", "|---|---|---|---|---|"]
+        for it in uniq:
+            loc = f"{it['file']}:{it['line']}"
+            detail = it["detail"].replace("|", "/").replace("\n", " ")
+            lines_out.append(f"| {it['severity']} | {it.get('confidence', '—')} | "
+                             f"{it['class']} | {loc} | {detail} |")
+    else:
+        lines_out.append("No findings survived self-critique (all flagged as likely false positives).")
+    if filtered:
+        lines_out += ["", f"<details><summary>{len(filtered)} dropped by self-critique "
+                      "(likely false positives)</summary>", ""]
+        for it in filtered:
+            loc = f"{it['file']}:{it['line']}"
+            lines_out.append(f"- {loc} {it['class']} — {it.get('dropped_reason', '')}")
+        lines_out += ["", "</details>"]
     return "\n".join(lines_out)
 
 
