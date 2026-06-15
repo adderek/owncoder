@@ -422,6 +422,7 @@ def run_security_command(config, arg: str) -> str:
       baseline show     list suppressed entries
       airgap [on|off|status]  toggle/report non-local egress block
       integrity [seal|check]  sign skills+config / detect tampering
+      weights [pin <p>|verify|list]  pin/verify local model weight files
     """
     parts = arg.strip().split()
     sub = parts[0].lower() if parts else "scan"
@@ -438,6 +439,12 @@ def run_security_command(config, arg: str) -> str:
     if sub == "integrity":
         from agent.security.integrity import run_integrity_command
         return run_integrity_command(config, rest)
+
+    # ── weight vault (pin/verify local model files) ──────────────────────
+    if sub == "weights":
+        from agent.security.weightvault import run_weights_command
+        # pass the full remainder (pin needs path + source words)
+        return run_weights_command(config, arg.strip()[len("weights"):].strip())
 
     # ── baseline management ──────────────────────────────────────────────
     if sub == "baseline":

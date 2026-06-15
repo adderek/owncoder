@@ -339,12 +339,13 @@ def cmd_chat(args, config):
     # Expose session on agent so planning helpers can tag plans with session_id.
     agent.session = session
 
-    # Tamper check: warn if sealed skills/config drifted since last seal.
+    # Tamper check: warn if sealed skills/config drifted, or pinned weights moved.
     try:
         from agent.security.integrity import warn_if_tampered
-        _tw = warn_if_tampered(agent.config)
-        if _tw:
-            console.print(f"[red]{_tw}[/red]")
+        from agent.security.weightvault import warn_if_drift
+        for _w in (warn_if_tampered(agent.config), warn_if_drift(agent.config)):
+            if _w:
+                console.print(f"[red]{_w}[/red]")
     except Exception:
         pass
 
