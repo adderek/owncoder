@@ -610,8 +610,9 @@ def run_security_command(config, arg: str) -> str:
       triage [path]     scan + LLM ranks/explains existing findings
       review [.|path]   LLM READS source for NEW vulns (memory/logic bugs);
                         no arg = incremental; also: review confirm [path]
-                        (auto-PoC each finding), review ensemble [path]
-                        (2x sampling, agreement confidence), history, clear
+                        (auto-PoC each finding), review deep [path]
+                        (hot-explore ×N + cold judge — max recall),
+                        review ensemble, review history, review clear
       selfaudit         scan owncoder itself (config.tools.working_dir's repo)
       report [path]     scan + write Markdown+JSON report under .agent/security/
       baseline [path]   accept current findings as baseline (suppress as known)

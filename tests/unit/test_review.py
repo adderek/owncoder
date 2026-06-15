@@ -365,3 +365,39 @@ def test_ensemble_confidence_by_agreement(tmp_path, monkeypatch):
     # A agreed across both samples -> high; B/C one-off -> low.
     assert "| high |" in out      # the agreed finding
     assert "| low |" in out       # a one-off
+
+
+class _HotClient:
+    def __init__(self, *a, **k):
+        self.chat = types.SimpleNamespace(
+            completions=types.SimpleNamespace(create=self._create))
+
+    async def _create(self, *, model, messages, temperature=0.1, **k):
+        if "skeptical" in messages[0]["content"]:
+            return _hresp('[{"i":0,"verdict":"keep","confidence":"high","reason":"real"},'
+                          '{"i":1,"verdict":"drop","confidence":"low","reason":"fixture"}]')
+        return _hresp('[{"line":1,"severity":"high","class":"overflow","detail":"a"},'
+                      '{"line":2,"severity":"low","class":"style","detail":"b"}]')
+
+    async def close(self):
+        pass
+
+
+def _hresp(content):
+    msg = types.SimpleNamespace(content=content)
+    return types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg)])
+
+
+def test_deep_mode_hot_explore_cold_judge(tmp_path, monkeypatch):
+    fake = types.ModuleType("openai")
+    fake.AsyncOpenAI = _HotClient
+    monkeypatch.setitem(sys.modules, "openai", fake)
+    entry = types.SimpleNamespace(base_url="http://localhost:8081/v1", api_key="local", model="m")
+    monkeypatch.setattr("agent.config.make_registry",
+                        lambda c: types.SimpleNamespace(default=entry))
+    (tmp_path / "a.c").write_text("\n".join(f"l{i}" for i in range(5)))
+    out = review.run_review_command(_cfg(tmp_path), "deep .")
+    assert "deep: hot-explore" in out
+    assert "overflow" in out
+    assert "dropped by self-critique" in out
+    assert "fixture" in out
