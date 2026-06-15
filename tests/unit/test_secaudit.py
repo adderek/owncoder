@@ -141,3 +141,11 @@ def test_full_posture_clean_project(tmp_path):
     (tmp_path / "ok.py").write_text("def add(a, b):\n    return a + b\n")
     out = secaudit.run_security_command(_full_cfg(tmp_path), "full")
     assert "No high-severity concerns" in out
+
+
+def test_tool_package_exposes_setup():
+    # load_all_tools imports the package and calls .setup(); the package must
+    # re-export it from .main (regression: empty __init__ broke chat startup).
+    from agent.tools import security_audit as pkg
+    assert hasattr(pkg, "setup")
+    assert hasattr(pkg, "security_audit")
