@@ -491,7 +491,8 @@ def run_security_command(config, arg: str) -> str:
     Subcommands:
       scan [path]       full-tree scan of path (default: working dir)
       diff [path]       scan only git-changed files (fast pre-push gate)
-      triage [path]     scan + LLM ranks/explains/flags false positives
+      triage [path]     scan + LLM ranks/explains existing findings
+      review [path]     LLM READS source to find NEW vulns (memory/logic bugs)
       selfaudit         scan owncoder itself (config.tools.working_dir's repo)
       report [path]     scan + write Markdown+JSON report under .agent/security/
       baseline [path]   accept current findings as baseline (suppress as known)
@@ -524,6 +525,11 @@ def run_security_command(config, arg: str) -> str:
     if sub == "integrity":
         from agent.security.integrity import run_integrity_command
         return run_integrity_command(config, rest)
+
+    # ── LLM deep-read vulnerability audit (reads source, not just findings) ─
+    if sub == "review":
+        from agent.security.review import run_review_command
+        return run_review_command(config, arg.strip()[len("review"):].strip())
 
     # ── fix-verification PoC tests ───────────────────────────────────────
     if sub == "verify":
