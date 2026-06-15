@@ -34,6 +34,8 @@ _OVERLAP = 30
 _MAX_WINDOWS = 50          # hard cap on LLM calls per review
 _CONCURRENCY = 4           # windows reviewed in parallel (bounded pool)
 _SELF_CRITIQUE = True      # second LLM pass to drop likely false positives
+_SYMBOL_CONTEXT = True     # feed called-function signatures into each window
+_MAX_CONTEXT_SYMS = 8
 _SEV_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
 _CRITIQUE_SYSTEM = (
@@ -110,9 +112,48 @@ def _parse(out: str) -> list[dict]:
         return []
 
 
-async def _review_window(client, model, rel: str, base_line: int, chunk: list[str]) -> list[dict]:
+_CALL_RE = re.compile(r"\b([A-Za-z_]\w{2,})\s*\(")
+
+
+def _context_block(chunk: list[str], base_line: int, rel: str, symbols: dict | None) -> str:
+    """Signatures of functions this window CALLS but defines elsewhere.
+
+    Gives the model cross-window understanding: it can judge whether a callee
+    validates input / bounds before this code trusts it. symbols maps
+    name -> (file, start_line, signature).
+    """
+    if not symbols:
+        return ""
+    text = "\n".join(chunk)
+    win_end = base_line + len(chunk)
+    called, seen = [], set()
+    for m in _CALL_RE.finditer(text):
+        name = m.group(1)
+        if name in seen:
+            continue
+        seen.add(name)
+        sig = symbols.get(name)
+        if not sig:
+            continue
+        sfile, sline, stext = sig
+        # Skip if the definition is inside this very window (already visible).
+        if sfile == rel and base_line <= sline < win_end:
+            continue
+        called.append(f"  {name}: {stext}")
+        if len(called) >= _MAX_CONTEXT_SYMS:
+            break
+    if not called:
+        return ""
+    return ("Referenced functions (defined elsewhere — context only, do NOT report "
+            "issues in them):\n" + "\n".join(called) + "\n\n")
+
+
+async def _review_window(client, model, rel: str, base_line: int, chunk: list[str],
+                         symbols: dict | None = None) -> list[dict]:
     numbered = "\n".join(f"{base_line + i}: {ln}" for i, ln in enumerate(chunk))
-    user = f"File: {rel} (lines {base_line}-{base_line + len(chunk) - 1})\n```\n{numbered}\n```"
+    ctx = _context_block(chunk, base_line, rel, symbols)
+    user = (ctx + f"File: {rel} (lines {base_line}-{base_line + len(chunk) - 1})\n"
+            f"```\n{numbered}\n```")
     resp = await client.chat.completions.create(
         model=model,
         messages=[{"role": "system", "content": _SYSTEM},
@@ -280,6 +321,33 @@ def clear_history(config) -> str:
             ". Next review starts fresh (full, no new/fixed diff).")
 
 
+def _collect_symbols(config, files, base) -> dict:
+    """Map function/method name -> (rel_file, start_line, signature) across the project.
+
+    Used to give each review window the signatures of callees defined elsewhere.
+    Tree-sitter only; silently empty if unavailable.
+    """
+    syms: dict = {}
+    try:
+        from agent.rag.chunker import chunk_file
+        cfg = getattr(config, "rag", None)
+        if cfg is None:
+            return syms
+        for f in files:
+            rel = str(f.relative_to(base)) if base in f.parents or base == f.parent else str(f)
+            for c in chunk_file(str(f), cfg) or []:
+                name = c.get("name")
+                if not name or name in syms:
+                    continue
+                if "function" not in (c.get("node_type") or "") and "method" not in (c.get("node_type") or ""):
+                    continue
+                sig = next((ln.strip() for ln in (c.get("content") or "").splitlines() if ln.strip()), "")
+                syms[name] = (rel, c.get("start_line", 0), sig[:160])
+    except Exception:  # noqa: BLE001
+        pass
+    return syms
+
+
 def _dedupe_sort(findings: list[dict]) -> list[dict]:
     seen, uniq = set(), []
     for it in findings:
@@ -398,6 +466,8 @@ async def review(config, target: str, *, incremental: bool = False, on_progress=
     tasks = tasks[:_MAX_WINDOWS]
     planned = len(tasks)
 
+    symbols = _collect_symbols(config, files, base) if _SYMBOL_CONTEXT else {}
+
     client = AsyncOpenAI(base_url=entry.base_url, api_key=entry.api_key)
     findings: list[dict] = []
     sem = asyncio.Semaphore(_CONCURRENCY)
@@ -410,7 +480,7 @@ async def review(config, target: str, *, incremental: bool = False, on_progress=
             _emit(f"[{done['n']}/{planned}] {rel}:{bl}  ({len(findings)} issue(s) so far)")
             try:
                 async with _track("sec"):
-                    return await _review_window(client, entry.model, rel, bl, chunk)
+                    return await _review_window(client, entry.model, rel, bl, chunk, symbols)
             except Exception:  # noqa: BLE001 - one bad window must not abort the run
                 return []
 

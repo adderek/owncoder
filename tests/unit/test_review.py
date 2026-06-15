@@ -308,3 +308,25 @@ def test_self_critique_drops_false_positive(tmp_path, monkeypatch):
     out = review.run_review_command(_cfg(tmp_path), str(tmp_path))
     assert "dropped by self-critique" in out
     assert "test fixture" in out          # the drop reason shown
+
+
+def test_context_block_includes_called_symbols():
+    syms = {"parse_token": ("scanner.c", 100, "int parse_token(yaml_parser_t *p)"),
+            "helper": ("other.c", 5, "void helper(void)")}
+    chunk = ["void run(yaml_parser_t *p){", "  parse_token(p);", "}"]
+    block = review._context_block(chunk, base_line=200, rel="main.c", symbols=syms)
+    assert "parse_token" in block
+    assert "int parse_token" in block
+    assert "helper" not in block
+
+
+def test_context_block_skips_self_defined_in_window():
+    syms = {"parse_token": ("scanner.c", 205, "int parse_token(int x)")}
+    chunk = ["int parse_token(int x){", "  return parse_token(x-1);", "}"]
+    block = review._context_block(chunk, base_line=205, rel="scanner.c", symbols=syms)
+    assert block == ""
+
+
+def test_context_block_empty_without_symbols():
+    assert review._context_block(["foo();"], 1, "a.c", None) == ""
+    assert review._context_block(["foo();"], 1, "a.c", {}) == ""
