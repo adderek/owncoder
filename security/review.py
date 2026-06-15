@@ -34,6 +34,7 @@ _OVERLAP = 30
 _MAX_WINDOWS = 50          # hard cap on LLM calls per review
 _CONCURRENCY = 4           # windows reviewed in parallel (bounded pool)
 _SELF_CRITIQUE = True      # second LLM pass to drop likely false positives
+_ENSEMBLE_SAMPLES = 2      # samples per window in ensemble mode (opt-in)
 _SYMBOL_CONTEXT = True     # feed called-function signatures into each window
 _MAX_CONTEXT_SYMS = 8
 _SEV_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
@@ -149,31 +150,40 @@ def _context_block(chunk: list[str], base_line: int, rel: str, symbols: dict | N
 
 
 async def _review_window(client, model, rel: str, base_line: int, chunk: list[str],
-                         symbols: dict | None = None) -> list[dict]:
+                         symbols: dict | None = None, samples: int = 1) -> list[dict]:
     numbered = "\n".join(f"{base_line + i}: {ln}" for i, ln in enumerate(chunk))
     ctx = _context_block(chunk, base_line, rel, symbols)
     user = (ctx + f"File: {rel} (lines {base_line}-{base_line + len(chunk) - 1})\n"
             f"```\n{numbered}\n```")
-    resp = await client.chat.completions.create(
-        model=model,
-        messages=[{"role": "system", "content": _SYSTEM},
-                  {"role": "user", "content": user}],
-        max_tokens=_MAX_OUTPUT_TOKENS,
-        temperature=0.1,
-    )
-    raw = (resp.choices[0].message.content or "") if resp.choices else ""
-    issues = []
-    for it in _parse(raw):
-        if not isinstance(it, dict) or "line" not in it:
-            continue
-        issues.append({
-            "file": rel,
-            "line": it.get("line"),
-            "severity": str(it.get("severity", "medium")).lower(),
-            "class": str(it.get("class", "?"))[:40],
-            "detail": str(it.get("detail", ""))[:300],
-        })
-    return issues
+    # Ensemble: sample more than once with diverging temperature, then keep
+    # findings by agreement across samples (a hallucination rarely repeats).
+    agg: dict = {}
+    for s in range(max(1, samples)):
+        resp = await client.chat.completions.create(
+            model=model,
+            messages=[{"role": "system", "content": _SYSTEM},
+                      {"role": "user", "content": user}],
+            max_tokens=_MAX_OUTPUT_TOKENS,
+            temperature=0.1 + 0.3 * s,
+        )
+        raw = (resp.choices[0].message.content or "") if resp.choices else ""
+        for it in _parse(raw):
+            if not isinstance(it, dict) or "line" not in it:
+                continue
+            key = (it.get("line"), str(it.get("class", "?"))[:40])
+            if key in agg:
+                agg[key]["_agree"] += 1
+                continue
+            agg[key] = {
+                "file": rel,
+                "line": it.get("line"),
+                "severity": str(it.get("severity", "medium")).lower(),
+                "class": str(it.get("class", "?"))[:40],
+                "detail": str(it.get("detail", ""))[:300],
+                "_agree": 1,
+                "_samples": max(1, samples),
+            }
+    return list(agg.values())
 
 
 def _boundary_windows(lines: list[str], boundaries: list[int]):
@@ -390,7 +400,8 @@ async def _self_critique(client, model, findings: list[dict], target: str, base)
     return out
 
 
-async def review(config, target: str, *, incremental: bool = False, on_progress=None) -> str:
+async def review(config, target: str, *, incremental: bool = False, on_progress=None,
+                 ensemble: bool = False) -> str:
     """Deep-read audit of *target* (file or dir). Returns Markdown. Never raises.
 
     incremental: review only files new or modified since the last review (state in
@@ -480,7 +491,9 @@ async def review(config, target: str, *, incremental: bool = False, on_progress=
             _emit(f"[{done['n']}/{planned}] {rel}:{bl}  ({len(findings)} issue(s) so far)")
             try:
                 async with _track("sec"):
-                    return await _review_window(client, entry.model, rel, bl, chunk, symbols)
+                    return await _review_window(
+                        client, entry.model, rel, bl, chunk, symbols,
+                        samples=_ENSEMBLE_SAMPLES if ensemble else 1)
             except Exception:  # noqa: BLE001 - one bad window must not abort the run
                 return []
 
@@ -490,10 +503,16 @@ async def review(config, target: str, *, incremental: bool = False, on_progress=
         for r in results:
             findings += r
         uniq = _dedupe_sort(findings)
+        if ensemble:
+            # Confidence from cross-sample agreement; a finding seen in every
+            # sample is high-confidence, a one-off is likely a hallucination.
+            for it in uniq:
+                ag, sm = it.get("_agree", 1), it.get("_samples", 1)
+                it["confidence"] = "high" if ag >= sm and sm > 1 else ("medium" if ag > 1 else "low")
         # Second pass: the model critiques its own findings to drop likely false
         # positives (cheap accuracy win for a weak local model). Kept findings get
         # a confidence; dropped ones move to a separate section, not deleted.
-        if uniq and _SELF_CRITIQUE:
+        if uniq and _SELF_CRITIQUE and not ensemble:
             _emit(f"self-critique pass over {len(uniq)} finding(s)…")
             try:
                 async with _track("sec"):
@@ -672,6 +691,13 @@ def run_review_command(config, arg: str, on_progress=None) -> str:
     _a = arg.strip()
     if _a.lower() == "clear":
         return clear_history(config)
+    if _a.lower().split()[:1] == ["ensemble"]:
+        rest = _a[len("ensemble"):].strip()
+        target, err = _resolve_target(config, rest)
+        if err:
+            return f"Error: {err}"
+        return asyncio.run(review(config, str(target), incremental=False,
+                                  on_progress=on_progress, ensemble=True))
     if _a.lower().split()[:1] == ["confirm"]:
         rest = _a[len("confirm"):].strip()
         target, err = _resolve_target(config, rest)
