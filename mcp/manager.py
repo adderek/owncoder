@@ -64,6 +64,11 @@ def load_mcp_tools(config: "Config | None") -> int:
         if transport == "stdio":
             client = MCPClient(server)
         elif transport == "http":
+            from agent.security import airgap
+            if airgap.is_enabled(config) and not airgap.is_local_url(getattr(server, "url", "")):
+                logger.warning("mcp[%s]: blocked by air-gap (non-local http)", name)
+                _status[name] = {"ok": False, "tools": [], "error": "blocked by air-gap (non-local http)"}
+                continue
             client = MCPHttpClient(server)
         else:
             logger.warning("mcp[%s]: unsupported transport %r, skipping", name, transport)

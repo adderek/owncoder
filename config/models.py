@@ -280,6 +280,11 @@ class SecurityConfig:
     # sandbox blocks reading secret files, this catches secrets that leak via
     # command stdout, env dumps, diffs, or non-protected files.
     redact_tool_output: bool = True
+    # Air-gap mode: fail-closed against all NON-LOCAL network egress. The local
+    # LLM endpoint (localhost) keeps working; web search, MCP http transports,
+    # and remote notify relay channels are disabled. Best-effort at the feature
+    # layer (not a kernel firewall) — see docs/MYTHOS_security_suite.md #13.
+    airgap: bool = False
 
 
 @dataclass

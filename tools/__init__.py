@@ -32,10 +32,15 @@ def load_all_tools(config=None, store=None, embedder=None, asm_store=None, data_
 
     # ── Explicit imports (known tool modules) ──────────────────────────────
     # ADD NEW TOOL MODULES HERE if they are standalone packages:
-    from agent.tools import files, shell, git, search, analyze_asm, edit_file, recall, notes, recall_sessions, rate_session, recall_history, retrieve_output, project_file_stats, index_code, manage_skills, ideas, request_path  # noqa: F401
+    from agent.tools import files, shell, git, search, analyze_asm, edit_file, recall, notes, recall_sessions, rate_session, recall_history, retrieve_output, project_file_stats, index_code, manage_skills, ideas, request_path, security_audit  # noqa: F401
     from agent.tools.rules import load_rules
 
-    if config is not None and getattr(config.web_search, "enabled", False):
+    _airgap = False
+    if config is not None:
+        from agent.security import airgap as _ag
+        _airgap = _ag.is_enabled(config)
+
+    if config is not None and getattr(config.web_search, "enabled", False) and not _airgap:
         from agent.tools import web_search  # noqa: F401
 
     # ── Auto-discovery (catches model-created tools, new .py modules, etc.) ─
@@ -97,8 +102,9 @@ def load_all_tools(config=None, store=None, embedder=None, asm_store=None, data_
     manage_skills.setup(config)
     ideas.setup(config)
     request_path.setup(config)
+    security_audit.setup(config)
 
-    if config is not None and getattr(config.web_search, "enabled", False):
+    if config is not None and getattr(config.web_search, "enabled", False) and not _airgap:
         web_search.setup(config)
 
     if config is not None and getattr(getattr(config, "kb", None), "enabled", False):

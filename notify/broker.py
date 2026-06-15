@@ -30,10 +30,19 @@ class NotifyBroker:
         # Tolerate partial configs (test fakes, older callers): no [notify]
         # section behaves as disabled with zero channels.
         self._cfg = getattr(config, "notify", None) or NotifyConfig()
-        self._channels = [
-            ch for cfg in self._cfg.channels
-            if (ch := build_channel(cfg, on_answer=self._on_wire_answer)) is not None
-        ]
+        from agent.security import airgap
+        _airgap = airgap.is_enabled(config)
+        self._channels = []
+        for cfg in self._cfg.channels:
+            if _airgap and not airgap.is_local_url(getattr(cfg, "url", "")):
+                import logging
+                logging.getLogger(__name__).warning(
+                    "notify: relay channel %s blocked by air-gap (non-local)", getattr(cfg, "url", ""),
+                )
+                continue
+            ch = build_channel(cfg, on_answer=self._on_wire_answer)
+            if ch is not None:
+                self._channels.append(ch)
         self._pending: dict[str, tuple[Question, asyncio.Future]] = {}
         self._tasks: set[asyncio.Task] = set()
 
