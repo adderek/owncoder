@@ -619,6 +619,7 @@ def run_security_command(config, arg: str) -> str:
       airgap [on|off|status]  toggle/report non-local egress block
       integrity [seal|check]  sign skills+config / detect tampering
       weights [pin <p>|verify|list]  pin/verify local model weight files
+      taint [path]      cross-file source→sink call-path reachability (heuristic)
       sbom [path]       list dependencies + flag known-vulnerable (offline DB)
       verify [<i>|run]  generate/run sandboxed PoC test for finding #i (fix check)
       full [path]       consolidated posture: scan+sbom+integrity+weights+egress
@@ -653,6 +654,11 @@ def run_security_command(config, arg: str) -> str:
     if sub == "verify":
         from agent.security.verify import run_verify_command
         return run_verify_command(config, arg.strip()[len("verify"):].strip())
+
+    # ── cross-file taint reachability ────────────────────────────────────
+    if sub == "taint":
+        from agent.security.taint import run_taint_command
+        return run_taint_command(config, rest)
 
     # ── SBOM + dependency vuln audit ─────────────────────────────────────
     if sub == "sbom":
