@@ -32,6 +32,7 @@ _SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", "build",
 _WINDOW_LINES = 320
 _OVERLAP = 30
 _MAX_WINDOWS = 50          # hard cap on LLM calls per review
+_CONCURRENCY = 4           # windows reviewed in parallel (bounded pool)
 _MAX_OUTPUT_TOKENS = 1100
 
 _SYSTEM = (
@@ -273,6 +274,7 @@ async def review(config, target: str, *, incremental: bool = False, on_progress=
     incremental: review only files new or modified since the last review (state in
     .agent/security/review_state.json). on_progress(msg): optional per-window callback.
     """
+    import asyncio
     import time as _time
     from contextlib import asynccontextmanager
     from openai import AsyncOpenAI
@@ -329,46 +331,57 @@ async def review(config, target: str, *, incremental: bool = False, on_progress=
 
     root = Path(target)
     base = root if root.is_dir() else root.parent
+
+    # Flatten to a task list (capped), then review windows concurrently with a
+    # bounded pool — a local model serves a few requests at once, so this is much
+    # faster than strictly sequential calls without overwhelming the endpoint.
+    tasks = []  # (file, rel, base_line, chunk)
+    for f in files:
+        rel = str(f.relative_to(base)) if base in f.parents or base == f.parent else str(f)
+        for bl, chunk in file_windows.get(f, []):
+            tasks.append((f, rel, bl, chunk))
+    truncated = len(tasks) > _MAX_WINDOWS
+    tasks = tasks[:_MAX_WINDOWS]
+    planned = len(tasks)
+
     client = AsyncOpenAI(base_url=entry.base_url, api_key=entry.api_key)
     findings: list[dict] = []
-    windows_used = 0
-    files_done = 0
-    truncated = False
-    state_now = _load_state(config)
-    try:
-        for f in files:
-            if windows_used >= _MAX_WINDOWS:
-                truncated = True
-                break
-            rel = str(f.relative_to(base)) if base in f.parents or base == f.parent else str(f)
-            before = len(findings)
-            for bl, chunk in file_windows.get(f, []):
-                if windows_used >= _MAX_WINDOWS:
-                    truncated = True
-                    break
-                windows_used += 1
-                _emit(f"[{windows_used}/{planned}] {rel}:{bl}  ({len(findings)} issue(s) so far)")
-                try:
-                    async with _track("sec"):
-                        findings += await _review_window(client, entry.model, rel, bl, chunk)
-                except Exception:  # noqa: BLE001 - one bad window must not abort the run
-                    continue
-            files_done += 1
-            # Mark this file reviewed (mtime now) so incremental skips it next time.
+    sem = asyncio.Semaphore(_CONCURRENCY)
+    done = {"n": 0}
+
+    async def _do(task):
+        f, rel, bl, chunk = task
+        async with sem:
+            done["n"] += 1
+            _emit(f"[{done['n']}/{planned}] {rel}:{bl}  ({len(findings)} issue(s) so far)")
             try:
-                state_now[str(f.resolve())] = {
-                    "mtime": int(f.stat().st_mtime),
-                    "reviewed_at": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
-                    "issues": len(findings) - before,
-                }
-            except OSError:
-                pass
+                async with _track("sec"):
+                    return await _review_window(client, entry.model, rel, bl, chunk)
+            except Exception:  # noqa: BLE001 - one bad window must not abort the run
+                return []
+
+    try:
+        results = await asyncio.gather(*[_do(t) for t in tasks])
+        for r in results:
+            findings += r
     finally:
         try:
             await client.close()
         except Exception:  # noqa: BLE001
             pass
-        _save_state(config, state_now)
+
+    # Mark every attempted file reviewed (mtime now) so incremental skips it next time.
+    files_done = len({t[0] for t in tasks})
+    state_now = _load_state(config)
+    for f in {t[0] for t in tasks}:
+        try:
+            state_now[str(f.resolve())] = {
+                "mtime": int(f.stat().st_mtime),
+                "reviewed_at": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+            }
+        except OSError:
+            pass
+    _save_state(config, state_now)
 
     # Dedupe + sort by severity.
     order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
@@ -391,7 +404,7 @@ async def review(config, target: str, *, incremental: bool = False, on_progress=
 
     lines_out = [
         f"# LLM vulnerability review — {Path(target).resolve()}",
-        f"- files reviewed: {files_done}/{len(files)}  windows: {windows_used}"
+        f"- files reviewed: {files_done}/{len(files)}  windows: {planned}"
         + ("  (window cap hit — not all code seen)" if truncated else ""),
         f"- reported issues: {len(uniq)}{delta}",
         "",
