@@ -149,3 +149,35 @@ def test_tool_package_exposes_setup():
     from agent.tools import security_audit as pkg
     assert hasattr(pkg, "setup")
     assert hasattr(pkg, "security_audit")
+
+
+def test_cppcheck_parsing(monkeypatch):
+    monkeypatch.setattr(secaudit.shutil, "which", lambda n: "/usr/bin/cppcheck")
+    err = ("src/scanner.c::512::error::bufferAccessOutOfBounds::buffer overflow\n"
+           "src/x.c::3::style::unusedVariable::unused var\n"
+           "garbage line\n")
+    monkeypatch.setattr(secaudit, "_run", lambda *a, **k: (1, "", err))
+    fs = secaudit._scan_cppcheck("/proj", None)
+    assert len(fs) == 2
+    assert fs[0].rule_id == "bufferAccessOutOfBounds"
+    assert fs[0].severity == "high"      # error -> high
+    assert fs[0].line == 512
+    assert fs[1].severity == "low"       # style -> low
+
+
+def test_gosec_parsing(monkeypatch):
+    monkeypatch.setattr(secaudit.shutil, "which", lambda n: "/usr/bin/gosec")
+    out = json.dumps({"Issues": [
+        {"rule_id": "G401", "severity": "HIGH", "file": "/proj/main.go",
+         "line": "42", "details": "weak crypto MD5"}
+    ]})
+    monkeypatch.setattr(secaudit, "_run", lambda *a, **k: (0, out, ""))
+    fs = secaudit._scan_gosec("/proj", None)
+    assert len(fs) == 1
+    assert fs[0].rule_id == "G401" and fs[0].severity == "high"
+    assert fs[0].line == 42 and fs[0].path == "main.go"
+
+
+def test_external_registry_has_c_and_go():
+    assert "cppcheck" in secaudit._EXTERNAL
+    assert "gosec" in secaudit._EXTERNAL

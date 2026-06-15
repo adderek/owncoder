@@ -151,9 +151,60 @@ def _scan_bandit(root: str, files: list[str] | None) -> list[Finding]:
     return findings
 
 
+def _scan_cppcheck(root: str, files: list[str] | None) -> list[Finding]:
+    """C/C++ static analysis — catches buffer overflows, bounds, null-deref, etc."""
+    if not shutil.which("cppcheck"):
+        return []
+    tmpl = "{file}::{line}::{severity}::{id}::{message}"
+    cmd = ["cppcheck", "--quiet", "--enable=warning,portability", "--inline-suppr",
+           f"--template={tmpl}"]
+    cmd += files if files else ["."]
+    _rc, _out, err = _run(cmd, root, timeout=300)  # cppcheck prints findings to stderr
+    findings = []
+    for line in err.splitlines():
+        parts = line.split("::", 4)
+        if len(parts) != 5:
+            continue
+        fpath, lno, sev, rid, msg = parts
+        sev = "low" if sev in ("style", "performance", "information") else sev
+        findings.append(Finding(
+            detector="cppcheck", rule_id=rid, severity=_norm_sev(sev),
+            path=os.path.relpath(fpath, root) if os.path.isabs(fpath) else fpath,
+            line=int(lno) if lno.isdigit() else None,
+            message=msg.strip()[:300],
+        ))
+    return findings
+
+
+def _scan_gosec(root: str, files: list[str] | None) -> list[Finding]:
+    """Go security scanner. Operates on packages (./...), so it ignores file lists."""
+    if not shutil.which("gosec"):
+        return []
+    _rc, out, _err = _run(["gosec", "-fmt=json", "-quiet", "./..."], root, timeout=300)
+    if not out:
+        return []
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        return []
+    findings = []
+    for iss in data.get("Issues", []):
+        ln = str(iss.get("line", "")).split("-")[0]
+        findings.append(Finding(
+            detector="gosec", rule_id=iss.get("rule_id", "?"),
+            severity=_norm_sev(iss.get("severity", "")),
+            path=os.path.relpath(iss.get("file", "?"), root) if os.path.isabs(iss.get("file", "")) else iss.get("file", "?"),
+            line=int(ln) if ln.isdigit() else None,
+            message=(iss.get("details") or "").strip()[:300],
+        ))
+    return findings
+
+
 _EXTERNAL = {
     "semgrep": _scan_semgrep,
     "bandit": _scan_bandit,
+    "cppcheck": _scan_cppcheck,
+    "gosec": _scan_gosec,
 }
 
 
