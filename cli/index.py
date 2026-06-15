@@ -46,7 +46,7 @@ def _run_summarization_loop(console, code_store, worker) -> None:
                 stale = by_status.get("stale", 0)
                 described = by_status.get("described", 0)
                 if pending == 0 and stale == 0:
-                    progress.update(task, completed=task.total)
+                    progress.update(task, completed=max(work_total, 1))
                     break
 
                 now = _time.monotonic()
