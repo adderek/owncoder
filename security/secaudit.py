@@ -485,6 +485,31 @@ def _full_posture(config, target: str, workdir: str) -> str:
     return "\n".join(sections)
 
 
+def _security_start_banner(config, parts: list[str]) -> str:
+    """Short 'work started' line for slow LLM subcommands, shown before the run.
+
+    Returns '' for subcommands that are already fast / interactive.
+    """
+    sub = parts[0].lower() if parts else ""
+    workdir = getattr(getattr(config, "tools", None), "working_dir", ".") or "."
+    target = parts[1] if len(parts) > 1 else workdir
+    if sub == "review":
+        try:
+            from agent.security.review import estimate
+            nfiles, nwin = estimate(target)
+        except Exception:  # noqa: BLE001
+            nfiles = nwin = 0
+        return (f"⏳ LLM review starting: reading {nfiles} source file(s) in ~{nwin} "
+                f"window(s), one model call each. This can take a while…")
+    if sub == "triage":
+        return "⏳ Scanning, then asking the model to triage findings…"
+    if sub == "verify":
+        return "⏳ Generating sandboxed PoC test and running it…"
+    if sub == "full":
+        return "⏳ Running full posture (scan + deps + integrity + weights + egress)…"
+    return ""
+
+
 def run_security_command(config, arg: str) -> str:
     """Text handler for the /security slash command (both UIs).
 

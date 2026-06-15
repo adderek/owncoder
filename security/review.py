@@ -122,6 +122,25 @@ async def _review_window(client, model, rel: str, base_line: int, chunk: list[st
     return issues
 
 
+def estimate(target: str) -> tuple[int, int]:
+    """Cheap pre-scan (no LLM): (source file count, windows that will be sent).
+
+    Windows are capped at _MAX_WINDOWS — the returned count reflects what will
+    actually run, so the UI banner is honest.
+    """
+    files = _select_files(target)
+    windows = 0
+    for f in files:
+        try:
+            n = len(f.read_text(errors="ignore").splitlines())
+        except OSError:
+            continue
+        windows += sum(1 for _ in _windows([""] * max(n, 1)))
+        if windows >= _MAX_WINDOWS:
+            return len(files), _MAX_WINDOWS
+    return len(files), windows
+
+
 async def review(config, target: str) -> str:
     """Deep-read audit of *target* (file or dir). Returns Markdown. Never raises."""
     from openai import AsyncOpenAI

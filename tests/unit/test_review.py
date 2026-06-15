@@ -110,3 +110,21 @@ def test_airgap_refuses_remote(tmp_path, monkeypatch):
 def test_missing_path(tmp_path):
     out = review.run_review_command(_cfg(tmp_path), str(tmp_path / "nope"))
     assert "path not found" in out
+
+
+def test_estimate_counts_files_and_windows(tmp_path):
+    (tmp_path / "small.c").write_text("\n".join(f"l{i}" for i in range(10)))
+    big = "\n".join(f"l{i}" for i in range(900))
+    (tmp_path / "big.c").write_text(big)
+    nfiles, nwin = review.estimate(str(tmp_path))
+    assert nfiles == 2
+    assert nwin >= 3  # small=1 window, big=multiple
+
+
+def test_estimate_caps_at_max_windows(tmp_path, monkeypatch):
+    monkeypatch.setattr(review, "_MAX_WINDOWS", 5)
+    monkeypatch.setattr(review, "_WINDOW_LINES", 10)
+    monkeypatch.setattr(review, "_OVERLAP", 0)
+    (tmp_path / "huge.c").write_text("\n".join(f"l{i}" for i in range(1000)))
+    _, nwin = review.estimate(str(tmp_path))
+    assert nwin == 5

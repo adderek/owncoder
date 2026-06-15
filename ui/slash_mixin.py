@@ -209,8 +209,19 @@ class SlashHandlerMixin:
             self._write_sys(_escape(run_mcp_command(self._server._agent.config, arg)))
 
         elif cmd in ("/security", "/sec", "/audit"):
-            from agent.security.secaudit import run_security_command
-            self._write_sys(_escape(run_security_command(self._server._agent.config, arg)))
+            import asyncio
+            from agent.security.secaudit import run_security_command, _security_start_banner
+            _cfg = self._server._agent.config
+            _parts = arg.strip().split()
+            _slow = bool(_parts) and _parts[0].lower() in ("review", "triage", "verify", "full")
+            if _slow:
+                self._write_sys(_escape(_security_start_banner(_cfg, _parts)))
+                # Offload the blocking run so the banner paints and the UI stays
+                # responsive during the long LLM/scan work.
+                _out = await asyncio.to_thread(run_security_command, _cfg, arg)
+            else:
+                _out = run_security_command(_cfg, arg)
+            self._write_sys(_escape(_out))
 
         elif cmd == "/save":
             if arg.strip():

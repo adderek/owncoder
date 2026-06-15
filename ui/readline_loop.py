@@ -246,6 +246,10 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
 
             elif cmd in ("/security", "/sec", "/audit"):
                 from agent.security.secaudit import run_security_command
+                from agent.security.secaudit import _security_start_banner
+                _parts = arg.strip().split()
+                if _parts and _parts[0].lower() in ("review", "triage", "verify", "full"):
+                    console.print(f"[dim]{_security_start_banner(agent.config, _parts)}[/dim]")
                 console.print(run_security_command(agent.config, arg))
 
             elif cmd == "/models":
