@@ -239,29 +239,69 @@ def _scan_secrets(root: str, files: list[str]) -> list[Finding]:
 
 # ── hygiene / config lint ──────────────────────────────────────────────────
 
-_HYGIENE_RULES: list[tuple[re.Pattern, str, str, str]] = [
-    (re.compile(r"\bverify\s*=\s*False\b"), "tls-verify-off", "high", "TLS verification disabled"),
-    (re.compile(r"\bshell\s*=\s*True\b"), "subprocess-shell", "medium", "subprocess shell=True (injection risk)"),
-    (re.compile(r"\beval\s*\("), "eval-use", "high", "use of eval()"),
-    (re.compile(r"\bpickle\.loads?\b"), "pickle-load", "high", "pickle deserialization (RCE risk)"),
-    (re.compile(r"\byaml\.load\s*\((?!.*Loader)"), "yaml-unsafe-load", "high", "yaml.load without SafeLoader"),
+# Cross-language rules — applied to every source file.
+_HYGIENE_GENERIC: list[tuple[re.Pattern, str, str, str]] = [
     (re.compile(r"\bmd5\b|\bsha1\b", re.I), "weak-hash", "low", "weak hash (md5/sha1)"),
     (re.compile(r"0\.0\.0\.0"), "bind-all", "low", "binds all interfaces (0.0.0.0)"),
-    (re.compile(r"DEBUG\s*=\s*True"), "debug-on", "medium", "DEBUG=True"),
     (re.compile(r"--no-check-certificate|--insecure\b|curl\s+.*-k\b"), "insecure-fetch", "high", "certificate check disabled in fetch"),
 ]
+
+# Language-specific packs, keyed by a normalized language tag.
+_HYGIENE_BY_LANG: dict[str, list[tuple[re.Pattern, str, str, str]]] = {
+    "py": [
+        (re.compile(r"\bverify\s*=\s*False\b"), "tls-verify-off", "high", "TLS verification disabled"),
+        (re.compile(r"\bshell\s*=\s*True\b"), "subprocess-shell", "medium", "subprocess shell=True (injection risk)"),
+        (re.compile(r"\beval\s*\(|\bexec\s*\("), "eval-use", "high", "use of eval()/exec()"),
+        (re.compile(r"\bpickle\.loads?\b"), "pickle-load", "high", "pickle deserialization (RCE risk)"),
+        (re.compile(r"\byaml\.load\s*\((?!.*Loader)"), "yaml-unsafe-load", "high", "yaml.load without SafeLoader"),
+        (re.compile(r"\bos\.system\s*\("), "os-system", "high", "os.system() shell injection risk"),
+        (re.compile(r"DEBUG\s*=\s*True"), "debug-on", "medium", "DEBUG=True"),
+    ],
+    "c": [
+        (re.compile(r"\bgets\s*\("), "unsafe-gets", "critical", "gets() — unbounded read, never safe"),
+        (re.compile(r"\b(strcpy|strcat|sprintf|vsprintf|stpcpy)\s*\("), "unsafe-str", "high", "unbounded string op (use strn*/snprintf)"),
+        (re.compile(r"\bscanf\s*\([^)]*%s"), "scanf-unbounded", "high", "scanf %s without field width"),
+        (re.compile(r"\bsystem\s*\("), "system-call", "high", "system() — shell injection risk"),
+        (re.compile(r"\bpopen\s*\("), "popen-call", "medium", "popen() — shell injection risk"),
+        (re.compile(r"\balloca\s*\("), "alloca-use", "low", "alloca() — stack overflow risk on large/var size"),
+        (re.compile(r"\b(printf|fprintf|syslog)\s*\(\s*[A-Za-z_]\w*\s*\)"), "format-string", "high", "non-literal format string"),
+        (re.compile(r"\bmemcpy\s*\([^,]+,[^,]+,\s*strlen\s*\("), "memcpy-strlen", "medium", "memcpy length from strlen — off-by-one/overflow risk"),
+    ],
+    "go": [
+        (re.compile(r"InsecureSkipVerify\s*:\s*true"), "tls-verify-off", "high", "InsecureSkipVerify: true — TLS verification disabled"),
+        (re.compile(r"exec\.Command\s*\(\s*\"(sh|bash|/bin/sh|cmd)\""), "go-shell-exec", "high", "exec.Command with a shell — injection risk"),
+        (re.compile(r"\bmath/rand\b"), "weak-rand", "low", "math/rand is not cryptographically secure"),
+        (re.compile(r"\bMinVersion\s*:\s*tls\.VersionSSL30\b|\bMinVersion\s*:\s*tls\.VersionTLS10\b"), "weak-tls", "medium", "weak TLS MinVersion"),
+    ],
+    "js": [
+        (re.compile(r"\beval\s*\(|new\s+Function\s*\("), "eval-use", "high", "eval()/new Function() — code injection"),
+        (re.compile(r"\.innerHTML\s*="), "js-innerhtml", "medium", "innerHTML assignment — XSS risk"),
+        (re.compile(r"\bdocument\.write\s*\("), "document-write", "medium", "document.write() — XSS risk"),
+        (re.compile(r"dangerouslySetInnerHTML"), "react-dangerous-html", "medium", "dangerouslySetInnerHTML — XSS risk"),
+        (re.compile(r"child_process[^\n]*\bexec\s*\("), "node-exec", "high", "child_process.exec — shell injection risk"),
+    ],
+}
+
+_LANG_BY_EXT = {
+    ".py": "py",
+    ".c": "c", ".cc": "c", ".cpp": "c", ".cxx": "c", ".h": "c", ".hpp": "c", ".hxx": "c",
+    ".go": "go",
+    ".js": "js", ".jsx": "js", ".ts": "js", ".tsx": "js", ".mjs": "js", ".cjs": "js",
+}
 
 
 def _scan_hygiene(root: str, files: list[str]) -> list[Finding]:
     findings = []
     for rel in files:
         ap = os.path.join(root, rel)
+        lang = _LANG_BY_EXT.get(os.path.splitext(rel)[1].lower())
+        rules = _HYGIENE_GENERIC + _HYGIENE_BY_LANG.get(lang, [])
         try:
             if os.path.getsize(ap) > _MAX_FILE_BYTES:
                 continue
             with open(ap, "r", errors="ignore") as fh:
                 for n, line in enumerate(fh, 1):
-                    for pat, rid, sev, msg in _HYGIENE_RULES:
+                    for pat, rid, sev, msg in rules:
                         if pat.search(line):
                             findings.append(Finding("hygiene", rid, sev, rel, n, msg))
         except OSError:

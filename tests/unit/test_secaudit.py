@@ -181,3 +181,34 @@ def test_gosec_parsing(monkeypatch):
 def test_external_registry_has_c_and_go():
     assert "cppcheck" in secaudit._EXTERNAL
     assert "gosec" in secaudit._EXTERNAL
+
+
+def test_c_hygiene_pack(tmp_path):
+    (tmp_path / "p.c").write_text(
+        '#include <stdio.h>\nvoid f(char*s){\n  char b[8];\n  strcpy(b,s);\n  gets(b);\n  system(s);\n}\n')
+    res = secaudit.scan(str(tmp_path))
+    rules = {f.rule_id for f in res.findings}
+    assert "unsafe-str" in rules
+    assert "unsafe-gets" in rules
+    assert "system-call" in rules
+    assert any(f.rule_id == "unsafe-gets" and f.severity == "critical" for f in res.findings)
+
+
+def test_go_hygiene_pack(tmp_path):
+    (tmp_path / "m.go").write_text(
+        'package main\nimport "crypto/tls"\nfunc f(){\n  c := &tls.Config{InsecureSkipVerify: true}\n  _ = c\n}\n')
+    res = secaudit.scan(str(tmp_path))
+    assert "tls-verify-off" in {f.rule_id for f in res.findings}
+
+
+def test_js_hygiene_pack(tmp_path):
+    (tmp_path / "a.js").write_text("el.innerHTML = userInput;\neval(x);\n")
+    rules = {f.rule_id for f in secaudit.scan(str(tmp_path)).findings}
+    assert "js-innerhtml" in rules
+    assert "eval-use" in rules
+
+
+def test_python_rules_not_applied_to_c(tmp_path):
+    (tmp_path / "x.c").write_text("pickle.loads(data);\n")
+    res = secaudit.scan(str(tmp_path))
+    assert all(f.rule_id != "pickle-load" for f in res.findings)
