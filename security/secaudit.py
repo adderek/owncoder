@@ -414,6 +414,7 @@ def run_security_command(config, arg: str) -> str:
     Subcommands:
       scan [path]       full-tree scan of path (default: working dir)
       diff [path]       scan only git-changed files (fast pre-push gate)
+      triage [path]     scan + LLM ranks/explains/flags false positives
       selfaudit         scan owncoder itself (config.tools.working_dir's repo)
       report [path]     scan + write Markdown+JSON report under .agent/security/
       baseline [path]   accept current findings as baseline (suppress as known)
@@ -459,7 +460,7 @@ def run_security_command(config, arg: str) -> str:
         return (f"Accepted {n} finding(s) into baseline at {baseline_path(workdir)}. "
                 f"Future scans show only NEW findings.")
 
-    if sub in ("scan", "diff", "report"):
+    if sub in ("scan", "diff", "report", "triage"):
         target = rest or workdir
     elif sub == "selfaudit":
         # owncoder repo root = two levels up from this file (agent/security/..)
@@ -480,6 +481,10 @@ def run_security_command(config, arg: str) -> str:
     md = to_markdown(res)
     if suppressed:
         md += f"\n\n_{suppressed} finding(s) suppressed by baseline (see /security baseline show)._"
+
+    if sub == "triage":
+        from agent.security.triage import run_triage
+        md += "\n\n## LLM triage\n\n" + run_triage(config, res)
 
     if sub == "report":
         out_dir = Path(workdir) / ".agent" / "security"
