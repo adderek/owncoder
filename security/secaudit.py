@@ -621,7 +621,9 @@ def run_security_command(config, arg: str) -> str:
       airgap [on|off|status]  toggle/report non-local egress block
       integrity [seal|check]  sign skills+config / detect tampering
       weights [pin <p>|verify|list]  pin/verify local model weight files
-      evolve            distill lessons from own findings + quarantine → KB
+      research <q|url>  HARVEST CVE/OSV/advisories/urls into quarantine (sandboxed,
+                        online phase; refused under air-gap) — then run evolve
+      evolve            distill lessons from own findings + quarantine → KB (offline)
       knowledge [clear] show/clear learned security lessons (used by review)
       taint [path]      cross-file source→sink call-path reachability (heuristic)
       sbom [path]       list dependencies + flag known-vulnerable (offline DB)
@@ -660,6 +662,9 @@ def run_security_command(config, arg: str) -> str:
         return run_verify_command(config, arg.strip()[len("verify"):].strip())
 
     # ── self-evolution: distill lessons into the knowledge base ──────────
+    if sub == "research":
+        from agent.security.harvest import run_research_command
+        return run_research_command(config, arg.strip()[len("research"):].strip())
     if sub == "evolve":
         from agent.security.evolve import run_evolve_command
         return run_evolve_command(config, rest)
