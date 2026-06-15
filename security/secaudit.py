@@ -518,7 +518,7 @@ def run_security_command(config, arg: str) -> str:
       diff [path]       scan only git-changed files (fast pre-push gate)
       triage [path]     scan + LLM ranks/explains existing findings
       review [.|path]   LLM READS source for NEW vulns (memory/logic bugs);
-                        no arg = only files changed since last review (incremental)
+                        no arg = incremental; also: review history | review clear
       selfaudit         scan owncoder itself (config.tools.working_dir's repo)
       report [path]     scan + write Markdown+JSON report under .agent/security/
       baseline [path]   accept current findings as baseline (suppress as known)

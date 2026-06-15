@@ -215,3 +215,37 @@ def test_file_windows_fallback_without_rag(tmp_path):
     assert wins
     total = sum(len(c) for _, c in wins)
     assert total >= 50
+
+
+def test_persist_and_diff_new_fixed(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    (tmp_path / "a.c").write_text("memcpy(d,s,n);\n")
+    # First run reports one finding.
+    _patch_llm(monkeypatch, payload='[{"line":1,"severity":"high","class":"overflow","detail":"x"}]')
+    out1 = review.run_review_command(cfg, ".")
+    assert "reported issues: 1" in out1
+    # Second run reports nothing -> the prior finding is "fixed/gone".
+    _patch_llm(monkeypatch, payload="[]")
+    out2 = review.run_review_command(cfg, ".")
+    assert "-1 fixed" in out2
+
+
+def test_clear_history(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    (tmp_path / "a.c").write_text("int x;\n")
+    _patch_llm(monkeypatch, payload="[]")
+    review.run_review_command(cfg, ".")
+    assert review._history_dir(cfg).exists()
+    out = review.run_review_command(cfg, "clear")
+    assert "Cleared" in out
+    assert not review._history_dir(cfg).exists()
+    assert not review._state_path(cfg).exists()
+
+
+def test_history_listing(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    (tmp_path / "a.c").write_text("int x;\n")
+    _patch_llm(monkeypatch, payload="[]")
+    assert "No review history" in review.run_review_command(cfg, "history")
+    review.run_review_command(cfg, ".")
+    assert "Review history:" in review.run_review_command(cfg, "history")

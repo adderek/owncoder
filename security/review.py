@@ -211,6 +211,62 @@ def _save_state(config, state: dict) -> None:
     p.write_text(json.dumps(state, indent=0))
 
 
+def _history_dir(config) -> Path:
+    return _state_path(config).parent / "review_history"
+
+
+def _latest_path(config) -> Path:
+    return _history_dir(config) / "latest.json"
+
+
+def _fkey(it: dict) -> str:
+    return f"{it.get('file')}:{it.get('line')}:{it.get('class')}"
+
+
+def _load_latest(config) -> list[dict]:
+    p = _latest_path(config)
+    if not p.exists():
+        return []
+    try:
+        return json.loads(p.read_text()).get("findings", [])
+    except (json.JSONDecodeError, OSError, AttributeError):
+        return []
+
+
+def _persist_findings(config, target: str, findings: list[dict]) -> tuple[int, int]:
+    """Save findings as latest + timestamped history. Returns (new, fixed) vs prior."""
+    import time as _t
+    prev = {_fkey(x) for x in _load_latest(config)}
+    now = {_fkey(x) for x in findings}
+    new = len(now - prev)
+    fixed = len(prev - now)
+    d = _history_dir(config)
+    d.mkdir(parents=True, exist_ok=True)
+    stamp = _t.strftime("%Y%m%dT%H%M%SZ", _t.gmtime())
+    payload = {"reviewed_at": stamp, "target": target, "findings": findings}
+    (d / f"review-{stamp}.json").write_text(json.dumps(payload, indent=2))
+    _latest_path(config).write_text(json.dumps(payload, indent=2))
+    return new, fixed
+
+
+def clear_history(config) -> str:
+    """Delete review history + incremental state. For re-testing the same bugs."""
+    import shutil
+    removed = []
+    d = _history_dir(config)
+    if d.exists():
+        shutil.rmtree(d, ignore_errors=True)
+        removed.append("review_history/")
+    sp = _state_path(config)
+    if sp.exists():
+        sp.unlink()
+        removed.append("review_state.json")
+    if not removed:
+        return "Nothing to clear (no review history or state)."
+    return ("Cleared: " + ", ".join(removed) +
+            ". Next review starts fresh (full, no new/fixed diff).")
+
+
 async def review(config, target: str, *, incremental: bool = False, on_progress=None) -> str:
     """Deep-read audit of *target* (file or dir). Returns Markdown. Never raises.
 
@@ -325,11 +381,19 @@ async def review(config, target: str, *, incremental: bool = False, on_progress=
         uniq.append(it)
     uniq.sort(key=lambda x: (order.get(x["severity"], 9), x["file"], x["line"] or 0))
 
+    # Persist + diff against the previous review (full runs only; incremental
+    # sees a subset so its diff would be misleading).
+    delta = ""
+    if not incremental:
+        n_new, n_fixed = _persist_findings(config, str(Path(target).resolve()), uniq)
+        if n_new or n_fixed:
+            delta = f"  (since last review: +{n_new} new, -{n_fixed} fixed/gone)"
+
     lines_out = [
         f"# LLM vulnerability review — {Path(target).resolve()}",
         f"- files reviewed: {files_done}/{len(files)}  windows: {windows_used}"
         + ("  (window cap hit — not all code seen)" if truncated else ""),
-        f"- reported issues: {len(uniq)}",
+        f"- reported issues: {len(uniq)}{delta}",
         "",
         "> **LLM-REPORTED, UNVERIFIED.** A local model misses real bugs and invents "
         "some. Treat as leads, not facts — confirm each with code review or "
@@ -387,7 +451,18 @@ def run_review_command(config, arg: str, on_progress=None) -> str:
     """
     import asyncio
 
-    incremental = arg.strip() == ""
+    _a = arg.strip()
+    if _a.lower() == "clear":
+        return clear_history(config)
+    if _a.lower() == "history":
+        d = _history_dir(config)
+        runs = sorted(d.glob("review-*.json")) if d.is_dir() else []
+        if not runs:
+            return "No review history. Run /security review first."
+        return "Review history:\n" + "\n".join(f"  {r.name}" for r in runs) + \
+               f"\n({len(runs)} run(s); /security review clear to wipe)"
+
+    incremental = _a == ""
     target, err = _resolve_target(config, arg)
     if err:
         return f"Error: {err}"
