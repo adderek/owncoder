@@ -496,7 +496,7 @@ def _security_start_banner(config, parts: list[str]) -> str:
     if sub == "review":
         try:
             from agent.security.review import estimate
-            nfiles, nwin = estimate(target)
+            nfiles, nwin = estimate(config, target)
         except Exception:  # noqa: BLE001
             nfiles = nwin = 0
         return (f"⏳ LLM review starting: reading {nfiles} source file(s) in ~{nwin} "

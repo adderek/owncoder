@@ -122,7 +122,58 @@ async def _review_window(client, model, rel: str, base_line: int, chunk: list[st
     return issues
 
 
-def estimate(target: str) -> tuple[int, int]:
+def _boundary_windows(lines: list[str], boundaries: list[int]):
+    """Yield (base_line, chunk) cutting at function *boundaries* (0-based line idx).
+
+    Covers every line; prefers to break at a function start near the target size so
+    a function is not split across windows. No overlap needed — cuts are clean.
+    """
+    import bisect
+    n = len(lines)
+    bset = sorted(b for b in set(boundaries) if 0 < b < n)
+    start = 0
+    while start < n:
+        target = start + _WINDOW_LINES
+        if target >= n:
+            yield start + 1, lines[start:]
+            return
+        i = bisect.bisect_left(bset, target)
+        cut = target
+        if i < len(bset) and bset[i] <= target + _WINDOW_LINES // 2:
+            cut = bset[i]                       # next boundary just past target
+        elif i > 0 and bset[i - 1] > start:
+            cut = bset[i - 1]                   # last boundary before target
+        if cut <= start:
+            cut = target
+        yield start + 1, lines[start:cut]
+        start = cut
+
+
+def _file_windows(config, path: Path):
+    """Windows for one file, function-aligned via tree-sitter when possible.
+
+    Returns list of (base_line, chunk_lines). Falls back to fixed overlapping
+    line windows for languages tree-sitter can't parse.
+    """
+    try:
+        lines = path.read_text(errors="ignore").splitlines()
+    except OSError:
+        return []
+    boundaries: list[int] = []
+    try:
+        from agent.rag.chunker import chunk_file
+        cfg = getattr(config, "rag", None)
+        if cfg is not None:
+            chunks = chunk_file(str(path), cfg) or []
+            boundaries = [c["start_line"] - 1 for c in chunks if c.get("start_line")]
+    except Exception:  # noqa: BLE001 - tree-sitter missing/unparseable
+        boundaries = []
+    if boundaries:
+        return list(_boundary_windows(lines, boundaries))
+    return list(_windows(lines))
+
+
+def estimate(config, target: str) -> tuple[int, int]:
     """Cheap pre-scan (no LLM): (source file count, windows that will be sent).
 
     Windows are capped at _MAX_WINDOWS — the returned count reflects what will
@@ -131,11 +182,7 @@ def estimate(target: str) -> tuple[int, int]:
     files = _select_files(target)
     windows = 0
     for f in files:
-        try:
-            n = len(f.read_text(errors="ignore").splitlines())
-        except OSError:
-            continue
-        windows += sum(1 for _ in _windows([""] * max(n, 1)))
+        windows += len(_file_windows(config, f))
         if windows >= _MAX_WINDOWS:
             return len(files), _MAX_WINDOWS
     return len(files), windows
@@ -221,14 +268,8 @@ async def review(config, target: str, *, incremental: bool = False, on_progress=
                     f"since last run. Nothing changed. (Use `/security review .` to force.)")
 
     # Plan total windows (capped) for an honest w/W denominator.
-    planned = 0
-    for f in files:
-        try:
-            n = len(f.read_text(errors="ignore").splitlines())
-        except OSError:
-            continue
-        planned += sum(1 for _ in _windows([""] * max(n, 1)))
-    planned = min(planned, _MAX_WINDOWS)
+    file_windows = {f: _file_windows(config, f) for f in files}
+    planned = min(sum(len(w) for w in file_windows.values()), _MAX_WINDOWS)
 
     root = Path(target)
     base = root if root.is_dir() else root.parent
@@ -243,13 +284,9 @@ async def review(config, target: str, *, incremental: bool = False, on_progress=
             if windows_used >= _MAX_WINDOWS:
                 truncated = True
                 break
-            try:
-                lines = f.read_text(errors="ignore").splitlines()
-            except OSError:
-                continue
             rel = str(f.relative_to(base)) if base in f.parents or base == f.parent else str(f)
             before = len(findings)
-            for bl, chunk in _windows(lines):
+            for bl, chunk in file_windows.get(f, []):
                 if windows_used >= _MAX_WINDOWS:
                     truncated = True
                     break

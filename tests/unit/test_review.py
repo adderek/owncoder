@@ -116,7 +116,7 @@ def test_estimate_counts_files_and_windows(tmp_path):
     (tmp_path / "small.c").write_text("\n".join(f"l{i}" for i in range(10)))
     big = "\n".join(f"l{i}" for i in range(900))
     (tmp_path / "big.c").write_text(big)
-    nfiles, nwin = review.estimate(str(tmp_path))
+    nfiles, nwin = review.estimate(_cfg(tmp_path), str(tmp_path))
     assert nfiles == 2
     assert nwin >= 3  # small=1 window, big=multiple
 
@@ -126,7 +126,7 @@ def test_estimate_caps_at_max_windows(tmp_path, monkeypatch):
     monkeypatch.setattr(review, "_WINDOW_LINES", 10)
     monkeypatch.setattr(review, "_OVERLAP", 0)
     (tmp_path / "huge.c").write_text("\n".join(f"l{i}" for i in range(1000)))
-    _, nwin = review.estimate(str(tmp_path))
+    _, nwin = review.estimate(_cfg(tmp_path), str(tmp_path))
     assert nwin == 5
 
 
@@ -180,3 +180,38 @@ def test_resolve_target_dot_is_workdir(tmp_path):
     p, err = review._resolve_target(cfg, ".")
     assert err is None
     assert p == tmp_path.resolve()
+
+
+def test_boundary_windows_cut_at_function_starts(monkeypatch):
+    monkeypatch.setattr(review, "_WINDOW_LINES", 10)
+    lines = [f"l{i}" for i in range(30)]
+    # Function starts at lines 8 and 18 (0-based).
+    wins = list(review._boundary_windows(lines, [8, 18]))
+    # Every line covered exactly once, in order.
+    rebuilt = []
+    for bl, chunk in wins:
+        rebuilt += chunk
+    assert rebuilt == lines
+    # A cut lands on a boundary (window 1 ends at line 8).
+    starts = [bl for bl, _ in wins]
+    assert 9 in starts or 19 in starts  # 1-based start after a boundary cut
+
+
+def test_boundary_windows_no_boundaries_still_covers(monkeypatch):
+    monkeypatch.setattr(review, "_WINDOW_LINES", 10)
+    lines = [f"l{i}" for i in range(25)]
+    wins = list(review._boundary_windows(lines, []))
+    rebuilt = []
+    for _, chunk in wins:
+        rebuilt += chunk
+    assert rebuilt == lines
+
+
+def test_file_windows_fallback_without_rag(tmp_path):
+    # _cfg has no .rag -> falls back to line windows, still covers the file.
+    f = tmp_path / "x.c"
+    f.write_text("\n".join(f"l{i}" for i in range(50)))
+    wins = review._file_windows(_cfg(tmp_path), f)
+    assert wins
+    total = sum(len(c) for _, c in wins)
+    assert total >= 50
