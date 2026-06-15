@@ -584,7 +584,7 @@ def build_widget_classes(t) -> SimpleNamespace:
             else:
                 self.write(f"[{t.text_dim}]No responses to summarize yet.[/{t.text_dim}]")
 
-    _MODEL_STATUS_ROLES = [("llm", "main"), ("emb", "emb"), ("sum", "sum")]
+    _MODEL_STATUS_ROLES = [("llm", "main"), ("emb", "emb"), ("sum", "sum"), ("sec", "sec")]
 
     class ModelConfigScreen:
         pass  # defined below after ModalScreen import

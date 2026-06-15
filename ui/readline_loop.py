@@ -245,12 +245,19 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                 console.print(run_mcp_command(agent.config, arg))
 
             elif cmd in ("/security", "/sec", "/audit"):
-                from agent.security.secaudit import run_security_command
-                from agent.security.secaudit import _security_start_banner
+                from agent.security.secaudit import run_security_command, _security_start_banner
                 _parts = arg.strip().split()
-                if _parts and _parts[0].lower() in ("review", "triage", "verify", "full"):
+                _sub = _parts[0].lower() if _parts else ""
+                if _sub in ("review", "triage", "verify", "full"):
                     console.print(f"[dim]{_security_start_banner(agent.config, _parts)}[/dim]")
-                console.print(run_security_command(agent.config, arg))
+                if _sub == "review":
+                    from agent.security.review import run_review_command
+                    _rest = arg.strip()[len("review"):].strip()
+                    console.print(run_review_command(
+                        agent.config, _rest,
+                        lambda m: console.print(f"[dim]{m}[/dim]")))
+                else:
+                    console.print(run_security_command(agent.config, arg))
 
             elif cmd == "/models":
                 from agent.ui.slash import _render_models_table

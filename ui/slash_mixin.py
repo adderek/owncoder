@@ -213,8 +213,16 @@ class SlashHandlerMixin:
             from agent.security.secaudit import run_security_command, _security_start_banner
             _cfg = self._server._agent.config
             _parts = arg.strip().split()
-            _slow = bool(_parts) and _parts[0].lower() in ("review", "triage", "verify", "full")
-            if _slow:
+            _sub = _parts[0].lower() if _parts else ""
+            _slow = _sub in ("review", "triage", "verify", "full")
+            if _sub == "review":
+                # Direct call with live per-window progress marshalled to the UI thread.
+                self._write_sys(_escape(_security_start_banner(_cfg, _parts)))
+                from agent.security.review import run_review_command
+                _rest = arg.strip()[len("review"):].strip()
+                _prog = lambda m: self.call_from_thread(self._write_sys, _escape(m))  # noqa: E731
+                _out = await asyncio.to_thread(run_review_command, _cfg, _rest, _prog)
+            elif _slow:
                 self._write_sys(_escape(_security_start_banner(_cfg, _parts)))
                 # Offload the blocking run so the banner paints and the UI stays
                 # responsive during the long LLM/scan work.

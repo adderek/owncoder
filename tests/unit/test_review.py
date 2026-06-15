@@ -128,3 +128,55 @@ def test_estimate_caps_at_max_windows(tmp_path, monkeypatch):
     (tmp_path / "huge.c").write_text("\n".join(f"l{i}" for i in range(1000)))
     _, nwin = review.estimate(str(tmp_path))
     assert nwin == 5
+
+
+def test_progress_callback_fires(tmp_path, monkeypatch):
+    _patch_llm(monkeypatch, payload="[]")
+    (tmp_path / "a.c").write_text("\n".join(f"l{i}" for i in range(5)))
+    msgs = []
+    review.run_review_command(_cfg(tmp_path), str(tmp_path), msgs.append)
+    assert msgs and any("a.c" in m for m in msgs)
+    assert any(m.startswith("[1/") for m in msgs)
+
+
+def test_incremental_skips_unchanged(tmp_path, monkeypatch):
+    _patch_llm(monkeypatch, payload="[]")
+    cfg = _cfg(tmp_path)
+    (tmp_path / "a.c").write_text("int x;\n")
+    # First full review of '.' records state.
+    review.run_review_command(cfg, ".")
+    # No-arg incremental: nothing changed -> skipped.
+    out = review.run_review_command(cfg, "")
+    assert "Nothing changed" in out or "already reviewed" in out
+
+
+def test_incremental_reviews_modified(tmp_path, monkeypatch):
+    _patch_llm(monkeypatch, payload="[]")
+    cfg = _cfg(tmp_path)
+    f = tmp_path / "a.c"
+    f.write_text("int x;\n")
+    review.run_review_command(cfg, ".")
+    import os, time
+    # Bump mtime to look modified.
+    future = time.time() + 100
+    os.utime(f, (future, future))
+    out = review.run_review_command(cfg, "")
+    assert "LLM vulnerability review" in out  # ran, did not skip
+
+
+def test_resolve_target_confined_by_grants(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    # Simulate configured policy that denies a path outside the project.
+    monkeypatch.setattr("agent.security.policy.is_configured", lambda: True)
+    monkeypatch.setattr("agent.security.path_grants.grant_for", lambda p: None)
+    p, err = review._resolve_target(cfg, "/etc")
+    assert p is None
+    assert "not granted" in err
+    assert "/paths add" in err
+
+
+def test_resolve_target_dot_is_workdir(tmp_path):
+    cfg = _cfg(tmp_path)
+    p, err = review._resolve_target(cfg, ".")
+    assert err is None
+    assert p == tmp_path.resolve()
