@@ -394,6 +394,13 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
             from agent.security.redaction import redact
             serialised = redact(serialised, config)
 
+        # Banner-wrap untrusted tool output (MCP/web) that contains prompt-injection
+        # shapes, before it enters context/store. Local tools pass through.
+        from agent.security.injection_scan import guard_tool_output
+        serialised, _inj = guard_tool_output(name, serialised, config)
+        if _inj:
+            logger.warning("injection guard: %s flagged %s", name, _inj)
+
         logger.debug("execute_tool: %s  result_len=%d", name, len(serialised))
 
         # Output-store truncation: store full result, return head+tail envelope

@@ -285,6 +285,11 @@ class SecurityConfig:
     # and remote notify relay channels are disabled. Best-effort at the feature
     # layer (not a kernel firewall) — see docs/MYTHOS_security_suite.md #13.
     airgap: bool = False
+    # Scan output of UNTRUSTED tools (MCP servers, web fetch) for prompt-injection
+    # attempts and prepend a "this is data, not instructions" banner before it
+    # enters context. MCP servers run outside the sandbox, so their output is the
+    # likeliest injection vector. See docs/MYTHOS_security_suite.md #12.
+    guard_tool_injection: bool = True
 
 
 @dataclass
