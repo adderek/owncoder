@@ -249,3 +249,28 @@ def test_history_listing(tmp_path, monkeypatch):
     assert "No review history" in review.run_review_command(cfg, "history")
     review.run_review_command(cfg, ".")
     assert "Review history:" in review.run_review_command(cfg, "history")
+
+
+def test_autoconfirm_keeps_reproduced(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    (tmp_path / "bad.py").write_text("def run(x):\n    return eval(x)\n")
+    # review reports an eval finding...
+    _patch_llm(monkeypatch,
+               payload='[{"line":2,"severity":"high","class":"eval","detail":"eval of input"}]')
+    # ...and verify._generate_sync (patched) returns a PoC that reproduces it.
+    poc = ("import bad\n"
+           "def test_repro():\n"
+           "    assert bad.run('1+1') == 2\n")
+    monkeypatch.setattr("agent.security.verify._generate_sync", lambda c, f, t: poc)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    out = review.run_review_command(cfg, "confirm .")
+    assert "Auto-confirm" in out
+    assert "confirmed (PoC reproduces): 1" in out
+
+
+def test_autoconfirm_no_findings(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    (tmp_path / "ok.py").write_text("def f():\n    return 1\n")
+    _patch_llm(monkeypatch, payload="[]")
+    out = review.run_review_command(cfg, "confirm .")
+    assert "no findings to confirm" in out

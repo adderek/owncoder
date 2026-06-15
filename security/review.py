@@ -412,6 +412,64 @@ async def review(config, target: str, *, incremental: bool = False, on_progress=
     return "\n".join(lines_out)
 
 
+_CONFIRM_CAP = 10
+
+
+def _confirm_findings(config, target: str, findings: list[dict], on_progress=None) -> str:
+    """For each review finding, generate + run a sandboxed PoC (reuses verify.py).
+
+    Keeps reproduced PoCs as regression tests. Best for Python targets; for C/Go a
+    pytest PoC usually can't exercise the code, so those come back 'inconclusive'.
+    Caller must NOT be on a running event loop (verify uses asyncio.run internally).
+    """
+    from agent.security import verify, secaudit
+
+    subset = findings[:_CONFIRM_CAP]
+    reproduced, other = [], []
+    for i, it in enumerate(subset):
+        f = secaudit.Finding(
+            detector="llm-review", rule_id=str(it.get("class", "?")),
+            severity=str(it.get("severity", "medium")), path=str(it.get("file", "?")),
+            line=it.get("line"), message=str(it.get("detail", "")),
+        )
+        if on_progress:
+            on_progress(f"confirming {i + 1}/{len(subset)}: {f.path}:{f.line}")
+        code = verify._generate_sync(config, f, target)
+        if not code or code.startswith("# air-gap"):
+            other.append((it, "inconclusive (no PoC)", None))
+            continue
+        d = verify.poc_dir(config)
+        d.mkdir(parents=True, exist_ok=True)
+        tp = d / f"test_poc_{verify._slug(f)}.py"
+        tp.write_text(code)
+        rc, _ = verify._run_test(target, tp)
+        if rc == 0:
+            reproduced.append((it, tp))
+        elif rc == 1:
+            other.append((it, "not reproduced (fixed/false-positive)", tp))
+        else:
+            other.append((it, "inconclusive", tp))
+
+    lines = ["", "## Auto-confirm (PoC per finding)",
+             f"- confirmed (PoC reproduces): {len(reproduced)} / {len(subset)} checked"
+             + (f"  (capped at {_CONFIRM_CAP})" if len(findings) > _CONFIRM_CAP else ""),
+             ""]
+    if reproduced:
+        lines.append("**Confirmed vulnerabilities (regression tests saved):**")
+        for it, tp in reproduced:
+            lines.append(f"- [{it.get('severity')}] {it.get('file')}:{it.get('line')} "
+                         f"{it.get('class')} → `{tp.name}`")
+    if other:
+        lines.append("")
+        lines.append("**Unconfirmed:**")
+        for it, status, _tp in other:
+            lines.append(f"- {it.get('file')}:{it.get('line')} {it.get('class')} — {status}")
+    lines.append("")
+    lines.append("_PoC tests live in .agent/security/poc/. Re-run anytime with "
+                 "`/security verify run`. Note: pytest PoCs mainly fit Python targets._")
+    return "\n".join(lines)
+
+
 def _resolve_target(config, arg: str):
     """Resolve a review target, confined to granted paths. Returns (path, error).
 
@@ -454,6 +512,16 @@ def run_review_command(config, arg: str, on_progress=None) -> str:
     _a = arg.strip()
     if _a.lower() == "clear":
         return clear_history(config)
+    if _a.lower().split()[:1] == ["confirm"]:
+        rest = _a[len("confirm"):].strip()
+        target, err = _resolve_target(config, rest)
+        if err:
+            return f"Error: {err}"
+        md = asyncio.run(review(config, str(target), incremental=False, on_progress=on_progress))
+        findings = _load_latest(config)
+        if not findings:
+            return md + "\n\n_(no findings to confirm)_"
+        return md + "\n" + _confirm_findings(config, str(target), findings, on_progress)
     if _a.lower() == "history":
         d = _history_dir(config)
         runs = sorted(d.glob("review-*.json")) if d.is_dir() else []
