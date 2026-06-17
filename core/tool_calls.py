@@ -473,7 +473,9 @@ def _maybe_add_refactor_hints(tool_name: str, result: dict, config) -> dict:
             result = dict(result)
             result["_hints"] = hints
     except Exception:
-        pass
+        # Hints are advisory — never fail the edit over them, but log so a bug
+        # in the hint path doesn't become a silent permanent no-op.
+        logger.debug("refactor-hint generation failed for %s (ignored)", tool_name, exc_info=True)
     return result
 
 
