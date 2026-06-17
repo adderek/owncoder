@@ -85,6 +85,29 @@ def _loop_guard_stop_note(summary: str, triggered: list[tuple[str, str, int, str
     return "".join(parts)
 
 
+async def _compact_tool_result(tc, parsed_arg: dict, purpose: str, raw: str,
+                               config: "Config", client, side_log, turn_index) -> str:
+    """Compact one tool result and (optionally) record the compaction to side_log."""
+    from agent.tool_compactor import compact_result
+    compacted, info = await compact_result(
+        tc.function.name, parsed_arg, purpose, raw, config, client,
+    )
+    if side_log is not None and not info.get("skipped"):
+        try:
+            side_log.append("tool_compactions.jsonl", {
+                "turn": turn_index,
+                "tool_call_id": tc.id,
+                "tool": tc.function.name,
+                "purpose": purpose,
+                "original_len": info["original_len"],
+                "compacted_len": info["compacted_len"],
+                "seconds": info["seconds"],
+            })
+        except Exception as e:
+            logger.warning("side_log append failed (compaction): %s", e)
+    return compacted
+
+
 async def run_turn(
     messages: list[dict],
     config: "Config",
@@ -429,31 +452,13 @@ async def run_turn(
             unique_results = await asyncio.gather(*[execute_tool(tc, config) for tc in unique_tool_calls])
 
             if compaction_on:
-                from agent.tool_compactor import compact_result
-
-                async def _maybe_compact(unique_idx: int, raw: str) -> str:
-                    original_idx = unique_indices[unique_idx]
-                    tc = tool_calls[original_idx]
-                    compacted, info = await compact_result(
-                        tc.function.name, parsed_args[original_idx], purposes[original_idx],
-                        raw, config, client,
+                unique_results = list(await asyncio.gather(*[
+                    _compact_tool_result(
+                        tool_calls[unique_indices[i]], parsed_args[unique_indices[i]],
+                        purposes[unique_indices[i]], raw, config, client, side_log, turn_index,
                     )
-                    if side_log is not None and not info.get("skipped"):
-                        try:
-                            side_log.append("tool_compactions.jsonl", {
-                                "turn": turn_index,
-                                "tool_call_id": tc.id,
-                                "tool": tc.function.name,
-                                "purpose": purposes[original_idx],
-                                "original_len": info["original_len"],
-                                "compacted_len": info["compacted_len"],
-                                "seconds": info["seconds"],
-                            })
-                        except Exception as e:
-                            logger.warning("side_log append failed (compaction): %s", e)
-                    return compacted
-
-                unique_results = list(await asyncio.gather(*[_maybe_compact(i, r) for i, r in enumerate(unique_results)]))
+                    for i, raw in enumerate(unique_results)
+                ]))
 
             # Map unique results back to all positions
             results_map: dict[int, str] = {}
