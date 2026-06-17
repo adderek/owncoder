@@ -86,6 +86,142 @@ def _loop_guard_stop_note(summary: str, triggered: list[tuple[str, str, int, str
     return "".join(parts)
 
 
+def _patch_read_file_result(tc, result: str, read_path_counts: dict,
+                            warn_threshold: int, stop_threshold: int) -> tuple[str, str | None]:
+    """Track repeated read_file of the same range; warn or hard-stop the turn.
+
+    Mutates *read_path_counts* in place. Returns (result, stop_note): stop_note is
+    non-None when the same range was read past the stop threshold and the turn
+    must end.
+    """
+    try:
+        a = json.loads(tc.function.arguments or "{}")
+        rpath = str(a.get("path", ""))
+        if not rpath:
+            return result, None
+        # Key on (path, start_line, end_line) so reading different sections of
+        # the same large file doesn't trigger the guard.
+        rkey = (rpath, a.get("start_line"), a.get("end_line"))
+        read_path_counts[rkey] = read_path_counts.get(rkey, 0) + 1
+        count = read_path_counts[rkey]
+        if count >= stop_threshold:
+            logger.warning("loop_guard: read_file path '%s' range %s-%s count %d >= stop threshold",
+                           rpath, a.get("start_line"), a.get("end_line"), count)
+            return result, (
+                f"[loop guard: '{rpath}' same range read {count}× this turn without progress. "
+                f"Stop re-reading — use search_files to find a specific anchor, "
+                f"or report what you need and ask the user for guidance.]"
+            )
+        if count >= warn_threshold:
+            try:
+                r_parsed = json.loads(result)
+            except Exception:
+                r_parsed = {}
+            if isinstance(r_parsed, dict):
+                r_parsed["_loop_warning"] = (
+                    f"[loop-guard] '{rpath}' same range read {count}× this turn. "
+                    "If previous reads didn't give you the anchor, use search_files or "
+                    "specify start_line/end_line to target a different section. "
+                    "Do not re-read the same range again."
+                )
+                result = json.dumps(r_parsed)
+    except Exception:
+        pass
+    return result, None
+
+
+def _patch_edit_file_result(tc, result: str, read_path_counts: dict,
+                            edit_file_fails: dict, fail_threshold: int) -> str:
+    """On successful edit clear that file's read counters; on repeated
+    anchor_not_found inject a structure hint. Mutates both count dicts in place."""
+    try:
+        e_parsed = json.loads(result)
+        if not isinstance(e_parsed, dict):
+            return result
+        a = json.loads(tc.function.arguments or "{}")
+        e_path = str(a.get("path", "") or "")
+        if not e_parsed.get("error"):
+            # Successful edit — drop read-path counters for this file so reads
+            # after the edit don't accumulate against the guard.
+            if e_path:
+                for k in [k for k in read_path_counts if k[0] == e_path]:
+                    del read_path_counts[k]
+            return result
+        if e_parsed.get("error") == "atomic_rollback":
+            for e_chunk in e_parsed.get("errors", []):
+                if isinstance(e_chunk, dict) and e_chunk.get("kind") == "anchor_not_found":
+                    fail_key = f"{e_path}:{e_chunk.get('chunk_index', 0)}"
+                    edit_file_fails[fail_key] = edit_file_fails.get(fail_key, 0) + 1
+                    if edit_file_fails[fail_key] >= fail_threshold:
+                        structure = e_chunk.get("file_structure") or []
+                        def_names = [s["name"] for s in structure if s["kind"] == "def"]
+                        class_names = [s["name"] for s in structure if s["kind"] == "class"]
+                        hint_parts = []
+                        if class_names:
+                            hint_parts.append(f"classes: {', '.join(class_names[:5])}")
+                        if def_names:
+                            hint_parts.append(f"methods: {', '.join(def_names[:10])}")
+                        hint = (
+                            f"[loop-guard] The anchor you used is not in this file "
+                            f"({edit_file_fails[fail_key]}×). "
+                        )
+                        if hint_parts:
+                            hint += "File has " + "; ".join(hint_parts) + ". "
+                        hint += "Search the file with search_files or read different sections to find the right anchor."
+                        e_parsed["_error_hint"] = hint
+                        result = json.dumps(e_parsed)
+                    break  # only process first anchor_not_found per call
+    except Exception:
+        pass
+    return result
+
+
+def _normalize_api_messages(messages: list[dict]) -> list[dict]:
+    """Strip internal keys and apply model-quirk fixups to produce API-ready messages.
+
+    Pure transform (no side effects): drops _-prefixed keys, surfaces stored
+    reasoning, merges consecutive assistants, merges leading system messages,
+    strips a trailing prefill assistant, and fills reasoning_content for
+    thinking-mode sessions.
+    """
+    def _to_api_msg(m: dict) -> dict:
+        result = {k: v for k, v in m.items() if not k.startswith("_")}
+        if rc := m.get("_reasoning_content"):
+            result["reasoning_content"] = rc
+        return result
+
+    api_messages = [_to_api_msg(m) for m in messages]
+    api_messages = _merge_consecutive_assistants(api_messages)
+    # Merge consecutive leading system messages into one — some models (e.g.
+    # Qwen3.6 with --jinja) raise a Jinja exception if any system message has
+    # loop.first=False, meaning only the very first message may be a system msg.
+    leading_sys = []
+    rest: list[dict] = []
+    for _m in api_messages:
+        if not rest and _m.get("role") == "system":
+            leading_sys.append(_m)
+        else:
+            rest.append(_m)
+    if len(leading_sys) > 1:
+        merged_content = "\n\n".join(m["content"] for m in leading_sys if m.get("content"))
+        api_messages = [{**leading_sys[0], "content": merged_content}] + rest
+    # Trailing assistant without tool_calls = unintentional prefill; reject by
+    # most APIs (and always incompatible with enable_thinking). Strip it.
+    if api_messages and api_messages[-1].get("role") == "assistant" and not api_messages[-1].get("tool_calls"):
+        logger.warning("run_turn: stripping trailing assistant message (prefill) before API call")
+        api_messages = api_messages[:-1]
+    # DeepSeek / reasoning models require reasoning_content on ALL assistant
+    # messages in a thinking-mode session. Fill absent ones with "".
+    if any(m.get("role") == "assistant" and m.get("reasoning_content") for m in api_messages):
+        api_messages = [
+            {**m, "reasoning_content": m.get("reasoning_content", "")}
+            if m.get("role") == "assistant" and "reasoning_content" not in m
+            else m
+            for m in api_messages
+        ]
+    return api_messages
+
+
 async def _compact_tool_result(tc, parsed_arg: dict, purpose: str, raw: str,
                                config: "Config", client, side_log, turn_index) -> str:
     """Compact one tool result and (optionally) record the compaction to side_log."""
@@ -231,40 +367,7 @@ async def run_turn(
                 messages = _truncate_large_messages(messages, budget)
                 logger.warning("Post-truncation: %d tokens (budget %d)", _count_tokens_approx(messages), budget)
 
-        def _to_api_msg(m: dict) -> dict:
-            result = {k: v for k, v in m.items() if not k.startswith("_")}
-            if rc := m.get("_reasoning_content"):
-                result["reasoning_content"] = rc
-            return result
-        api_messages = [_to_api_msg(m) for m in messages]
-        api_messages = _merge_consecutive_assistants(api_messages)
-        # Merge consecutive leading system messages into one — some models (e.g.
-        # Qwen3.6 with --jinja) raise a Jinja exception if any system message has
-        # loop.first=False, meaning only the very first message may be a system msg.
-        leading_sys = []
-        rest: list[dict] = []
-        for _m in api_messages:
-            if not rest and _m.get("role") == "system":
-                leading_sys.append(_m)
-            else:
-                rest.append(_m)
-        if len(leading_sys) > 1:
-            merged_content = "\n\n".join(m["content"] for m in leading_sys if m.get("content"))
-            api_messages = [{**leading_sys[0], "content": merged_content}] + rest
-        # Trailing assistant without tool_calls = unintentional prefill; reject by
-        # most APIs (and always incompatible with enable_thinking). Strip it.
-        if api_messages and api_messages[-1].get("role") == "assistant" and not api_messages[-1].get("tool_calls"):
-            logger.warning("run_turn: stripping trailing assistant message (prefill) before API call")
-            api_messages = api_messages[:-1]
-        # DeepSeek / reasoning models require reasoning_content on ALL assistant
-        # messages in a thinking-mode session. Fill absent ones with "".
-        if any(m.get("role") == "assistant" and m.get("reasoning_content") for m in api_messages):
-            api_messages = [
-                {**m, "reasoning_content": m.get("reasoning_content", "")}
-                if m.get("role") == "assistant" and "reasoning_content" not in m
-                else m
-                for m in api_messages
-            ]
+        api_messages = _normalize_api_messages(messages)
 
         turn_reasoning: str = ""
         try:
@@ -472,80 +575,17 @@ async def run_turn(
             patched_results: list[str] = []
             for tc, result in zip(tool_calls, results):
                 if tc.function.name == "read_file":
-                    try:
-                        a = json.loads(tc.function.arguments or "{}")
-                        rpath = str(a.get("path", ""))
-                        if rpath:
-                            # Key on (path, start_line, end_line) so reading different
-                            # sections of the same large file doesn't trigger the guard.
-                            rkey = (rpath, a.get("start_line"), a.get("end_line"))
-                            _read_path_counts[rkey] = _read_path_counts.get(rkey, 0) + 1
-                            count = _read_path_counts[rkey]
-                            if count >= _READ_PATH_STOP_THRESHOLD:
-                                # Hard stop: same range read too many times this turn.
-                                stop_note = (
-                                    f"[loop guard: '{rpath}' same range read {count}× this turn without progress. "
-                                    f"Stop re-reading — use search_files to find a specific anchor, "
-                                    f"or report what you need and ask the user for guidance.]"
-                                )
-                                logger.warning("loop_guard: read_file path '%s' range %s-%s count %d >= stop threshold", rpath, a.get("start_line"), a.get("end_line"), count)
-                                messages = messages + [{"role": "assistant", "content": stop_note}]
-                                return "".join(content_parts + [stop_note]), messages
-                            elif count >= _READ_PATH_WARN_THRESHOLD:
-                                try:
-                                    r_parsed = json.loads(result)
-                                except Exception:
-                                    r_parsed = {}
-                                if isinstance(r_parsed, dict):
-                                    r_parsed["_loop_warning"] = (
-                                        f"[loop-guard] '{rpath}' same range read {count}× this turn. "
-                                        "If previous reads didn't give you the anchor, use search_files or "
-                                        "specify start_line/end_line to target a different section. "
-                                        "Do not re-read the same range again."
-                                    )
-                                    result = json.dumps(r_parsed)
-                    except Exception:
-                        pass
-                if tc.function.name == "edit_file":
-                    try:
-                        e_parsed = json.loads(result)
-                        if isinstance(e_parsed, dict) and not e_parsed.get("error"):
-                            # Successful edit — clear read-path counters for this file so
-                            # subsequent reads after an edit don't accumulate against the guard.
-                            a = json.loads(tc.function.arguments or "{}")
-                            e_path = str(a.get("path", "") or "")
-                            if e_path:
-                                _read_path_counts = {k: v for k, v in _read_path_counts.items() if k[0] != e_path}
-                        if isinstance(e_parsed, dict) and e_parsed.get("error") == "atomic_rollback":
-                            e_errors = e_parsed.get("errors", [])
-                            # Find the file path from the arguments
-                            a = json.loads(tc.function.arguments or "{}")
-                            e_path = str(a.get("path", "") or "")
-                            for e_chunk in e_errors:
-                                if isinstance(e_chunk, dict) and e_chunk.get("kind") == "anchor_not_found":
-                                    fail_key = f"{e_path}:{e_chunk.get('chunk_index', 0)}"
-                                    _edit_file_fails[fail_key] = _edit_file_fails.get(fail_key, 0) + 1
-                                    if _edit_file_fails[fail_key] >= _EDIT_FILE_FAIL_THRESHOLD:
-                                        structure = e_chunk.get("file_structure") or []
-                                        def_names = [s["name"] for s in structure if s["kind"] == "def"]
-                                        class_names = [s["name"] for s in structure if s["kind"] == "class"]
-                                        hint_parts = []
-                                        if class_names:
-                                            hint_parts.append(f"classes: {', '.join(class_names[:5])}")
-                                        if def_names:
-                                            hint_parts.append(f"methods: {', '.join(def_names[:10])}")
-                                        hint = (
-                                            f"[loop-guard] The anchor you used is not in this file "
-                                            f"({_edit_file_fails[fail_key]}×). "
-                                        )
-                                        if hint_parts:
-                                            hint += "File has " + "; ".join(hint_parts) + ". "
-                                        hint += "Search the file with search_files or read different sections to find the right anchor."
-                                        e_parsed["_error_hint"] = hint
-                                        result = json.dumps(e_parsed)
-                            break  # only process first anchor_not_found per call
-                    except Exception:
-                        pass
+                    result, stop_note = _patch_read_file_result(
+                        tc, result, _read_path_counts,
+                        _READ_PATH_WARN_THRESHOLD, _READ_PATH_STOP_THRESHOLD,
+                    )
+                    if stop_note is not None:
+                        messages = messages + [{"role": "assistant", "content": stop_note}]
+                        return "".join(content_parts + [stop_note]), messages
+                elif tc.function.name == "edit_file":
+                    result = _patch_edit_file_result(
+                        tc, result, _read_path_counts, _edit_file_fails, _EDIT_FILE_FAIL_THRESHOLD,
+                    )
                 patched_results.append(result)
             for tc, result in zip(tool_calls, patched_results):
                 messages.append(_tool_result_message(tc.id, result))
