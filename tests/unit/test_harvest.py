@@ -30,18 +30,53 @@ def test_build_targets_empty():
     assert harvest._build_targets("", []) == []
 
 
-def test_harvester_fetches_to_quarantine_via_file_url(tmp_path):
-    # No network: use a file:// URL so the fetcher writes a quarantine file.
-    src = tmp_path / "intel.txt"
-    src.write_text("CVE-2014-9130 libyaml overflow details")
-    out = tmp_path / "q"
-    out.mkdir()
-    ok, path = _harvester.fetch_one({"name": "intel", "url": src.as_uri()}, str(out))
+def test_harvester_fetches_to_quarantine_via_http(tmp_path):
+    # Hermetic: serve the intel over loopback HTTP (the harvester only accepts
+    # http(s) schemes — file:// is refused, see test below).
+    import http.server
+    import socketserver
+    import threading
+
+    payload = b"CVE-2014-9130 libyaml overflow details"
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *a):  # silence test output
+            pass
+
+    with socketserver.TCPServer(("127.0.0.1", 0), _Handler) as srv:
+        port = srv.server_address[1]
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        try:
+            out = tmp_path / "q"
+            out.mkdir()
+            ok, path = _harvester.fetch_one(
+                {"name": "intel", "url": f"http://127.0.0.1:{port}/intel.txt"}, str(out)
+            )
+        finally:
+            srv.shutdown()
     assert ok
     content = Path(path).read_text()
     assert "# SOURCE:" in content
     assert "untrusted external content" in content
     assert "CVE-2014-9130" in content
+
+
+def test_harvester_refuses_file_url(tmp_path):
+    # file:// must be rejected so a crafted spec can't read the local filesystem.
+    src = tmp_path / "secret.txt"
+    src.write_text("local secret")
+    out = tmp_path / "q"
+    out.mkdir()
+    ok, info = _harvester.fetch_one({"name": "evil", "url": src.as_uri()}, str(out))
+    assert ok is False
+    assert "non-http(s)" in info
 
 
 def test_harvester_failure_is_nonfatal(tmp_path):
