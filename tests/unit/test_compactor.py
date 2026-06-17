@@ -352,3 +352,36 @@ class TestCompactionRobustness:
             result[0]["content"]
             == "[SESSION SUMMARY ERROR: stage 2 call failed: LLM error]"
         )
+
+    @pytest.mark.asyncio
+    async def test_verbatim_tail_does_not_start_with_orphan_tool(self, cfg, tmp_path):
+        """If the verbatim window would begin on a tool result whose assistant
+        (tool_calls) got compacted away, that result must be pushed into the
+        compacted half — never left as a leading orphan tool message."""
+        store = FactsStore("sess-orphan", base_dir=tmp_path)
+        stage2 = "<facts>{}</facts><summary>s</summary><q>q</q>"
+        client = _client_returning("draft", stage2)
+
+        big = "x" * 400
+        # Tail of 4 (keep_last=2) starts on a tool result; a user message later
+        # in the tail keeps the last-user adjustment from moving the split.
+        messages = [{"role": "system", "content": "sys"}]
+        for i in range(8):
+            messages.append({"role": "user", "content": f"q{i} {big}"})
+            messages.append({"role": "assistant", "content": f"a{i} {big}"})
+        messages.append({"role": "assistant", "content": None,
+                         "tool_calls": [{"id": "t1", "type": "function",
+                                         "function": {"name": "read_file", "arguments": "{}"}}]})
+        messages.append({"role": "tool", "tool_call_id": "t1", "content": "file body"})
+        messages.append({"role": "user", "content": f"follow-up {big}"})
+        messages.append({"role": "assistant", "content": f"reply {big}"})
+        messages.append({"role": "assistant", "content": f"more {big}"})
+
+        result = await compact(messages, cfg, client, keep_last=2,
+                               facts_store=store, turn_index=20)
+
+        # No tool message may appear without a preceding assistant carrying tool_calls.
+        for idx, m in enumerate(result):
+            if m.get("role") == "tool":
+                prev = result[idx - 1] if idx > 0 else {}
+                assert prev.get("tool_calls"), f"orphan tool message at result[{idx}]"

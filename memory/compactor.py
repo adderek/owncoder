@@ -465,6 +465,15 @@ async def compact(
     )
     if last_user_idx is not None and last_user_idx < verbatim_start:
         verbatim_start = last_user_idx
+    # Don't let the verbatim tail begin on an orphan tool result: its originating
+    # assistant (with tool_calls) sits earlier and is about to be compacted away,
+    # while the inserted summary assistant carries no tool_calls — a leading tool
+    # message would make the next API call 400. Push such results into to_compact.
+    while (
+        verbatim_start < len(conversation)
+        and conversation[verbatim_start].get("role") == "tool"
+    ):
+        verbatim_start += 1
     to_compact = conversation[:verbatim_start]
     verbatim = conversation[verbatim_start:]
 
