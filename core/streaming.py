@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from .prompts import _inject_think_hint, _inject_autonomy_hint, _log_llm_request, _build_call_kwargs
@@ -13,6 +14,32 @@ if TYPE_CHECKING:
     from agent.config import Config
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class StreamedMessage:
+    """OpenAI-message-shaped wrapper around a streamed response."""
+    content: str | None
+    tool_calls: list | None
+    reasoning_content: str = ""
+
+
+@dataclass
+class StreamedChoice:
+    """OpenAI-choice-shaped wrapper so streaming and non-streaming paths converge."""
+    message: StreamedMessage
+    finish_reason: str | None
+
+
+def build_streamed_choice(finish_reason, full_content, raw_tool_calls, reasoning) -> StreamedChoice:
+    return StreamedChoice(
+        message=StreamedMessage(
+            content=full_content,
+            tool_calls=raw_tool_calls or None,
+            reasoning_content=reasoning or "",
+        ),
+        finish_reason=finish_reason,
+    )
 
 # Repetition guard: break stream if last N content/reasoning chunks are identical
 _REPEAT_WINDOW = 10

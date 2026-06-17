@@ -11,7 +11,7 @@ from openai import BadRequestError
 
 from .prompts import _build_call_kwargs, _inject_think_hint, _inject_autonomy_hint, _inject_aei_hint, _log_llm_request
 from .tool_calls import _tool_result_message, _FakeToolCall, execute_tool, _parse_raw_tool_calls
-from .streaming import _stream_response, _strip_tool_blocks, _is_narrating_tool_use, _gpu_slot
+from .streaming import _stream_response, _strip_tool_blocks, _is_narrating_tool_use, _gpu_slot, build_streamed_choice
 from .cache_tracker import check_cache, mark_request
 from .history_ops import (
     _merge_consecutive_assistants, _collapse_tool_rounds, _truncate_large_messages,
@@ -255,17 +255,8 @@ async def run_turn(
                 if config.llm.cache_ttl > 0:
                     mark_request(config.llm.base_url, config.llm.model)
 
-                class _Msg:
-                    pass
-                msg = _Msg()
-                msg.content = full_content
-                msg.tool_calls = raw_tool_calls or None
-
-                class _Choice:
-                    pass
-                choice = _Choice()
-                choice.message = msg
-                choice.finish_reason = finish_reason
+                choice = build_streamed_choice(finish_reason, full_content, raw_tool_calls, turn_reasoning)
+                msg = choice.message
             else:
                 if config.llm.cache_ttl > 0:
                     _warm, _rem, _cache_msg = check_cache(config.llm.base_url, config.llm.model, config.llm.cache_ttl)
