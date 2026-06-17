@@ -1,6 +1,7 @@
 """Config loading: TOML/YAML merge, env overrides, reachability check."""
 from __future__ import annotations
 
+import logging
 import os
 import tomllib
 import urllib.request
@@ -8,6 +9,8 @@ import urllib.error
 from pathlib import Path
 
 from .models import Config, KbConfig, AEIConfig, ModelEntry, NotifyChannelConfig
+
+logger = logging.getLogger(__name__)
 
 
 def _apply_env_overrides(config: Config) -> None:
@@ -149,14 +152,20 @@ def _load_file(path: Path) -> dict:
         return tomllib.load(f)
 
 
-def _merge_obj(obj: object, data: dict) -> None:
-    """Recursively apply *data* dict onto a dataclass *obj*."""
+def _merge_obj(obj: object, data: dict, path: str = "") -> None:
+    """Recursively apply *data* dict onto a dataclass *obj*.
+
+    Unknown keys are skipped with a warning so a config typo (e.g.
+    ``max_iteration`` for ``max_iterations``) is surfaced instead of silently
+    doing nothing.
+    """
     for key, val in data.items():
         if not hasattr(obj, key):
+            logger.warning("config: ignoring unknown key %r", f"{path}{key}" if path else key)
             continue
         attr = getattr(obj, key)
         if isinstance(val, dict) and hasattr(attr, "__dataclass_fields__"):
-            _merge_obj(attr, val)
+            _merge_obj(attr, val, path=f"{path}{key}.")
         elif isinstance(val, dict) and isinstance(attr, dict):
             attr.update(val)
         else:
@@ -191,39 +200,36 @@ def _merge(config: Config, data: dict) -> None:
         _merge_obj(obj, section_data)
 
 
-def _coerce_notify_channels(config: Config) -> None:
-    """Convert notify.channels dicts (TOML [[notify.channels]] / YAML list) to NotifyChannelConfig."""
+def _coerce_dataclass_list(items: list, cls: type, label: str) -> list:
+    """Coerce a list of mapping/instances (TOML [[table]] / YAML list) to *cls* instances."""
     coerced = []
-    for ch in config.notify.channels:
-        if isinstance(ch, NotifyChannelConfig):
-            coerced.append(ch)
+    for it in items:
+        if isinstance(it, cls):
+            coerced.append(it)
             continue
-        if not isinstance(ch, dict):
-            raise ValueError(f"notify.channels entries must be mappings, got {type(ch).__name__}")
-        entry = NotifyChannelConfig()
-        for k, v in ch.items():
+        if not isinstance(it, dict):
+            raise ValueError(f"{label} entries must be mappings, got {type(it).__name__}")
+        entry = cls()
+        for k, v in it.items():
             if hasattr(entry, k):
                 setattr(entry, k, v)
         coerced.append(entry)
-    config.notify.channels = coerced
+    return coerced
+
+
+def _coerce_notify_channels(config: Config) -> None:
+    """Convert notify.channels dicts (TOML [[notify.channels]] / YAML list) to NotifyChannelConfig."""
+    config.notify.channels = _coerce_dataclass_list(
+        config.notify.channels, NotifyChannelConfig, "notify.channels"
+    )
 
 
 def _coerce_mcp_servers(config: Config) -> None:
     """Convert mcp.servers dicts (TOML [[mcp.servers]] / YAML list) to MCPServerConfig."""
     from agent.config.models import MCPServerConfig
-    coerced = []
-    for sv in config.mcp.servers:
-        if isinstance(sv, MCPServerConfig):
-            coerced.append(sv)
-            continue
-        if not isinstance(sv, dict):
-            raise ValueError(f"mcp.servers entries must be mappings, got {type(sv).__name__}")
-        entry = MCPServerConfig()
-        for k, v in sv.items():
-            if hasattr(entry, k):
-                setattr(entry, k, v)
-        coerced.append(entry)
-    config.mcp.servers = coerced
+    config.mcp.servers = _coerce_dataclass_list(
+        config.mcp.servers, MCPServerConfig, "mcp.servers"
+    )
 
 
 _KNOWN_ROLES = {"default", "summarizer", "embeddings"}
@@ -348,7 +354,7 @@ def _ensure_model_registry_keys(config: Config) -> None:
         emb = config.embeddings
         config.model_entries["embeddings"] = ModelEntry(
             base_url=emb.base_url,
-            api_key=getattr(emb, "api_key", "local"),
+            api_key="local",  # EmbeddingsConfig has no api_key; embeddings endpoint is local
             model=emb.model,
             dimensions=emb.dimensions,
         )
