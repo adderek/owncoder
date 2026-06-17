@@ -94,7 +94,7 @@ class Agent:
             # Key the shared lock on the GPU endpoint so agents in different
             # working dirs hitting the same server coordinate.
             lock_dir = resolve_lock_dir(
-                getattr(config.concurrency, "gpu_lock_dir", ""),
+                config.concurrency.gpu_lock_dir,
                 config.llm.base_url,
             )
             init_gpu_semaphore(config.concurrency.gpu_slots, lock_dir)
@@ -606,7 +606,7 @@ class Agent:
             on_user_message()
         _run_turn_fn = run_turn if not self.config.parallel.enabled else run_turn_ipc
         _excluded: set[str] = set()
-        if getattr(self.config.web_search, "require_worker", False):
+        if self.config.web_search.require_worker:
             _excluded.update({"web_search", "web_fetch"})
         try:
             response, self.messages = await _run_turn_fn(
@@ -655,7 +655,7 @@ class Agent:
             self._pending_bg_tasks.add(task)
             task.add_done_callback(self._pending_bg_tasks.discard)
 
-        idle_sec = getattr(self.config.token_limits, "idle_compaction_seconds", 0.0)
+        idle_sec = self.config.token_limits.idle_compaction_seconds
         if idle_sec > 0:
             if self._idle_compact_task is not None and not self._idle_compact_task.done():
                 self._idle_compact_task.cancel()
