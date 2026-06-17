@@ -34,7 +34,10 @@ class AsmStore:
         """
         if not hasattr(self._local, "conn"):
             from agent.core.sqlite_util import open_threadlocal_conn
-            conn = open_threadlocal_conn(self._db_path, foreign_keys=True)
+            # load_vec on every conn: the vec0 module must be registered for BOTH
+            # the write path (_ensure_vec_table / upsert) and the search path,
+            # not just at query time on one connection.
+            conn = open_threadlocal_conn(self._db_path, load_vec=True, foreign_keys=True)
             self._local.conn = conn
             # Re-run idempotent DDL so the new connection knows about all tables.
             self._setup_conn(conn)
@@ -260,13 +263,12 @@ class AsmStore:
     def semantic_search(self, embedding: list[float], top_k: int = 10) -> list[dict]:
         if self._vec_dims is None or self._vec_dims != len(embedding):
             return []
-        conn = self._conn  # thread-local connection
+        conn = self._conn  # thread-local connection — vec0 already loaded by _conn
         try:
             import sqlite_vec
-            sqlite_vec.load(conn)
+            query_blob = sqlite_vec.serialize_float32(embedding)
         except Exception:
             return []
-        query_blob = sqlite_vec.serialize_float32(embedding)
         rows = conn.execute("""
             SELECT v.unit_id, v.distance,
                    u.id, u.path, u.level, u.start_line, u.end_line,
