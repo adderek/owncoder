@@ -255,7 +255,6 @@ async def run_turn(
     on_usage=None,
     on_progress=None,
     on_loop_detected=None,
-    on_blind_detected=None,
     on_phase=None,
     on_reasoning=None,
     on_context_size=None,
@@ -679,13 +678,6 @@ async def run_turn(
                         conf_sig.null_rate * 100, conf_sig.dup_rate * 100,
                     )
                     _phase("confidence_guard", f"score={conf_sig.score:.2f}")
-                    if on_blind_detected is not None:
-                        try:
-                            result_cb = on_blind_detected(conf_sig)
-                            if asyncio.iscoroutine(result_cb):
-                                result_cb = await result_cb
-                        except Exception:
-                            logger.exception("on_blind_detected callback failed")
                     if side_log is not None:
                         try:
                             side_log.append("confidence_guard.jsonl", {
