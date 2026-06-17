@@ -194,7 +194,7 @@ def _parse_text_tool_calls(text: str) -> list[dict] | None:
                     args = flat
                 else:
                     continue
-        calls.append({"name": m.group(1), "arguments": _remap_params(m.group(1), args)})
+        calls.append({"name": m.group(1), "arguments": args})
     return calls if calls else None
 
 
@@ -209,7 +209,7 @@ def _parse_qwen_function_xml(text: str) -> list[dict] | None:
         for pm in _re.finditer(r"<parameter=(\w+)>(.*?)</parameter>", inner, _re.DOTALL):
             args[pm.group(1)] = pm.group(2).strip()
         if args:
-            calls.append({"name": name, "arguments": _remap_params(name, args)})
+            calls.append({"name": name, "arguments": args})
     return calls if calls else None
 
 
@@ -256,7 +256,7 @@ def _parse_agent_exec_xml(text: str) -> list[dict] | None:
         name = m.group(1)
         args = _parse_agent_exec_args(m.group(2))
         if args:
-            calls.append({"name": name, "arguments": _remap_params(name, args)})
+            calls.append({"name": name, "arguments": args})
         seen_starts.add(m.start())
 
     # Fallback: malformed — args=" present but attribute is never closed with "
@@ -268,7 +268,7 @@ def _parse_agent_exec_xml(text: str) -> list[dict] | None:
         raw_content = text[m.end():]
         args = _parse_agent_exec_args(raw_content)
         if args:
-            calls.append({"name": name, "arguments": _remap_params(name, args)})
+            calls.append({"name": name, "arguments": args})
 
     return calls if calls else None
 
@@ -337,7 +337,9 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
 
     logger.debug("execute_tool: %s  args=%s", name, args)
 
-    # Remap args for all calls (not just text-based) — handles aliases, auto-wrapping
+    # Single remap point for every call path (native tool_calls and text-parsed
+    # alike) — handles aliases and edit_file flat→chunks auto-wrapping. Text
+    # parsers deliberately return raw model names; remapping only happens here.
     args = _remap_params(name, args)
 
     fn = get_tool(name)
