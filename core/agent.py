@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from agent.memory.compactor import _count_tokens_approx
@@ -256,7 +257,6 @@ class Agent:
         if not hits:
             return
 
-        import json as _json
         lines = ["# Similar past sessions (rated successful)\n"]
         for h in hits:
             title = h.get("title") or "(untitled)"
@@ -304,7 +304,6 @@ class Agent:
         if not hits:
             return
 
-        import json as _json
         lines = ["# Relevant saved notes\n"]
         for h in hits:
             title = h.get("title") or "(untitled)"
@@ -312,7 +311,7 @@ class Agent:
             tags = h.get("tags")
             if isinstance(tags, str):
                 try:
-                    tags = _json.loads(tags)
+                    tags = json.loads(tags)
                 except Exception:
                     tags = []
             tag_str = f" [{', '.join(tags)}]" if tags else ""
@@ -407,7 +406,6 @@ class Agent:
 
     async def _idle_compact_loop(self, delay: float) -> None:
         """Wait `delay` seconds; if no new turn started, compact messages."""
-        import time as _time
         stamp = self._last_turn_time
         await asyncio.sleep(delay)
         if self._last_turn_time != stamp:
@@ -639,8 +637,7 @@ class Agent:
             self.messages = self.messages[:pre_turn_len]
             raise
 
-        import time as _time
-        self._last_turn_time = _time.monotonic()
+        self._last_turn_time = time.monotonic()
 
         if self._qa_logger is not None:
             task = asyncio.create_task(

@@ -105,10 +105,9 @@ def _strip_text_tool_calls(text: str) -> str:
     Uses the same bracket-matching logic as _parse_text_tool_calls so nested
     braces (rare in args) are handled correctly.
     """
-    import re as _re
     parts = []
     last_end = 0
-    for m in _re.finditer(r"call:\w+\s*\{", text):
+    for m in re.finditer(r"call:\w+\s*\{", text):
         start = m.start()
         brace_start = text.index("{", start)
         depth = 1
@@ -127,8 +126,7 @@ def _strip_text_tool_calls(text: str) -> str:
 
 def _strip_qwen_function_xml(text: str) -> str:
     """Strip <function=name>...</function> blocks, keeping surrounding text."""
-    import re as _re
-    return _re.sub(r"<function=\w+>.*?</function>", "", text, flags=_re.DOTALL).strip()
+    return re.sub(r"<function=\w+>.*?</function>", "", text, flags=re.DOTALL).strip()
 
 
 def _strip_agent_exec_xml(text: str) -> str:
@@ -137,13 +135,12 @@ def _strip_agent_exec_xml(text: str) -> str:
     Also handles malformed tags where args attribute is unclosed (no terminating ">)
     and tags whose attribute values contain > (e.g. Python -> syntax).
     """
-    import re as _re
     # Attribute content: handles quoted values that may contain >
     _AV = r'(?:"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|[^>\'"])*'
-    text = _re.sub(r'<agent_exec\s+' + _AV + r'\s*/>', "", text, flags=_re.DOTALL)
-    text = _re.sub(r'<agent_exec\s+' + _AV + r'\s*>.*?</agent_exec>', "", text, flags=_re.DOTALL)
+    text = re.sub(r'<agent_exec\s+' + _AV + r'\s*/>', "", text, flags=re.DOTALL)
+    text = re.sub(r'<agent_exec\s+' + _AV + r'\s*>.*?</agent_exec>', "", text, flags=re.DOTALL)
     # Malformed: args=" is never closed — strip from tag start to end of string
-    text = _re.sub(r'<agent_exec\s+tool="\w+"\s+args="(?:[^"\\]|\\.)*$', "", text, flags=_re.DOTALL)
+    text = re.sub(r'<agent_exec\s+tool="\w+"\s+args="(?:[^"\\]|\\.)*$', "", text, flags=re.DOTALL)
     return text.strip()
 
 

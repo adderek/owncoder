@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from agent.memory.compactor import compact, _count_tokens_approx
@@ -290,7 +291,6 @@ async def run_turn(
                 api_messages_sent = _inject_autonomy_hint(api_messages_sent, config)
                 api_messages_sent = _inject_aei_hint(api_messages_sent, config)
                 _log_llm_request(api_messages_sent, tools, config)
-                import time
                 t_start = time.monotonic()
                 async with _gpu_slot(config):
                     response = await client.chat.completions.create(

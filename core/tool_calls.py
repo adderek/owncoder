@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+import traceback
 import uuid
 from typing import TYPE_CHECKING
 
@@ -114,11 +115,10 @@ def _try_parse_flat_args(raw: str) -> dict | None:
     values (Python docstrings/strings), and model mistakes like trailing \\\" before
     a field separator.
     """
-    import re as _re
     args: dict = {}
     i = 0
     n = len(raw)
-    key_pat = _re.compile(r'(\w+)\s*[=:]\s*"')
+    key_pat = re.compile(r'(\w+)\s*[=:]\s*"')
     while i < n:
         m = key_pat.search(raw, i)
         if not m:
@@ -134,7 +134,7 @@ def _try_parse_flat_args(raw: str) -> dict | None:
                     # \" — treat as end-of-value when followed by separator/end
                     # (model mistakenly wrote \" instead of " to close the value)
                     after = raw[i + 2 :]
-                    if _re.match(r'\s*[,}]', after) or not after.strip():
+                    if re.match(r'\s*[,}]', after) or not after.strip():
                         i += 2
                         break
                     value_chars.append('"')
@@ -151,7 +151,7 @@ def _try_parse_flat_args(raw: str) -> dict | None:
             elif c == '"':
                 # End of value when followed by separator/end; otherwise unescaped quote inside value
                 after = raw[i + 1 :]
-                if _re.match(r'\s*[,}]', after) or not after.strip():
+                if re.match(r'\s*[,}]', after) or not after.strip():
                     i += 1
                     break
                 value_chars.append(c)
@@ -165,10 +165,8 @@ def _try_parse_flat_args(raw: str) -> dict | None:
 
 def _parse_text_tool_calls(text: str) -> list[dict] | None:
     """Parse call:function_name{...} text-based tool calls (Gemma 4, some local models)."""
-    import json as _json
-    import re as _re
     calls = []
-    for m in _re.finditer(r"call:(\w+)\s*\{", text):
+    for m in re.finditer(r"call:(\w+)\s*\{", text):
         start = m.start()
         brace_start = text.index("{", start)
         depth = 1
@@ -181,14 +179,14 @@ def _parse_text_tool_calls(text: str) -> list[dict] | None:
             i += 1
         raw = text[brace_start:i]
         try:
-            args = _json.loads(raw)
-        except _json.JSONDecodeError:
-            q = _re.sub(r'(?<=[{,])\s*(\w+)(?=\s*:)', r'"\1"', raw)
+            args = json.loads(raw)
+        except json.JSONDecodeError:
+            q = re.sub(r'(?<=[{,])\s*(\w+)(?=\s*:)', r'"\1"', raw)
             q = q.replace("'", '"')
-            q = _re.sub(r'(?<=[{,])\s*(\w+)\s*=', r'"\1":', q)
+            q = re.sub(r'(?<=[{,])\s*(\w+)\s*=', r'"\1":', q)
             try:
-                args = _json.loads(q)
-            except _json.JSONDecodeError:
+                args = json.loads(q)
+            except json.JSONDecodeError:
                 flat = _try_parse_flat_args(raw)
                 if flat is not None:
                     args = flat
@@ -200,13 +198,12 @@ def _parse_text_tool_calls(text: str) -> list[dict] | None:
 
 def _parse_qwen_function_xml(text: str) -> list[dict] | None:
     """Parse Qwen3 <function=name>...<parameter=key>val</parameter>...</function> XML."""
-    import re as _re
     calls = []
-    for m in _re.finditer(r"<function=(\w+)>(.*?)</function>", text, _re.DOTALL):
+    for m in re.finditer(r"<function=(\w+)>(.*?)</function>", text, re.DOTALL):
         name = m.group(1)
         inner = m.group(2)
         args = {}
-        for pm in _re.finditer(r"<parameter=(\w+)>(.*?)</parameter>", inner, _re.DOTALL):
+        for pm in re.finditer(r"<parameter=(\w+)>(.*?)</parameter>", inner, re.DOTALL):
             args[pm.group(1)] = pm.group(2).strip()
         if args:
             calls.append({"name": name, "arguments": args})
@@ -215,23 +212,22 @@ def _parse_qwen_function_xml(text: str) -> list[dict] | None:
 
 def _parse_agent_exec_args(raw: str) -> dict:
     """Extract key=value pairs from agent_exec args content."""
-    import re as _re
     args: dict = {}
     # Single-quoted values (handle escaped single-quotes and backslash sequences)
-    for pm in _re.finditer(r"""(\w+)\s*=\s*'((?:[^'\\]|\\.)*)'""", raw):
+    for pm in re.finditer(r"""(\w+)\s*=\s*'((?:[^'\\]|\\.)*)'""", raw):
         args[pm.group(1)] = pm.group(2)
     # Double-quoted values (handle escaped double-quotes)
-    for pm in _re.finditer(r'(\w+)\s*=\s*"((?:[^"\\]|\\.)*)"', raw):
+    for pm in re.finditer(r'(\w+)\s*=\s*"((?:[^"\\]|\\.)*)"', raw):
         if pm.group(1) not in args:
             args[pm.group(1)] = pm.group(2)
     # Integer values
-    for pm in _re.finditer(r"""(\w+)\s*=\s*(\d+)""", raw):
+    for pm in re.finditer(r"""(\w+)\s*=\s*(\d+)""", raw):
         key = pm.group(1)
         if key not in args:
             val = pm.group(2)
             args[key] = int(val) if val.isdigit() else val
     # Bare-word values
-    for pm in _re.finditer(r"""(\w+)\s*=\s*(\w+)""", raw):
+    for pm in re.finditer(r"""(\w+)\s*=\s*(\w+)""", raw):
         key = pm.group(1)
         if key not in args:
             args[key] = pm.group(2)
@@ -244,12 +240,11 @@ def _parse_agent_exec_xml(text: str) -> list[dict] | None:
     Also handles malformed tags where the args attribute is unclosed (no terminating ")
     — common when args contain complex code with embedded escaped double-quotes.
     """
-    import re as _re
     calls = []
     seen_starts: set[int] = set()
 
     # Primary: properly closed args="..." attribute
-    for m in _re.finditer(
+    for m in re.finditer(
         r'<agent_exec\s+tool="(\w+)"\s+args="((?:[^"\\]|\\.)*?)"\s*/?>',
         text,
     ):
@@ -261,7 +256,7 @@ def _parse_agent_exec_xml(text: str) -> list[dict] | None:
 
     # Fallback: malformed — args=" present but attribute is never closed with "
     # (e.g. new_source contains escaped \" throughout and the closing "> is missing)
-    for m in _re.finditer(r'<agent_exec\s+tool="(\w+)"\s+args="', text):
+    for m in re.finditer(r'<agent_exec\s+tool="(\w+)"\s+args="', text):
         if m.start() in seen_starts:
             continue
         name = m.group(1)
@@ -307,9 +302,6 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
     from agent import failure_report as _fr
     from agent.tools import get_tool, get_schemas
     from agent.tools.rules import get_rules
-    import json
-    import asyncio
-    import logging
 
     name = tool_call.function.name
     raw_args = tool_call.function.arguments or "{}"
@@ -431,7 +423,6 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
         return serialised
 
     except Exception as e:
-        import traceback
         logger.error("execute_tool: %s raised %s: %s\\n%s", name, type(e).__name__, e, traceback.format_exc())
         rules.record_tool_usage(name, False)
         _fr.report_exception(e, kind="tool_exception", context={
