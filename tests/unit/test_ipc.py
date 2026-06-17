@@ -417,3 +417,31 @@ async def test_run_turn_ipc_truncation_forwarded(monkeypatch):
     )
 
     assert truncated == [True]
+
+
+def test_ipc_signatures_stay_in_sync_with_run_turn():
+    """run_turn_ipc is a drop-in for run_turn; agent_worker.run forwards to it.
+
+    Guards against signature drift — the class of bug where a run_turn parameter
+    is added but never threaded through the IPC boundary (e.g. a callback that
+    silently never fires in parallel mode).
+    """
+    import inspect
+    from agent.core.turn import run_turn
+    from agent.ipc.controller import run_turn_ipc
+    from agent.ipc.agent_worker import run as worker_run
+
+    def public(fn):
+        return {p for p in inspect.signature(fn).parameters if not p.startswith("_")}
+
+    rt = public(run_turn)
+    ipc = public(run_turn_ipc)
+    assert ipc == rt, (
+        f"run_turn_ipc out of sync with run_turn; "
+        f"missing={sorted(rt - ipc)} extra={sorted(ipc - rt)}"
+    )
+
+    # worker.run takes the same data params plus `send`; it builds the on_* callbacks
+    # itself, so only its non-callback params must exist on run_turn.
+    worker_data = {p for p in public(worker_run) if not p.startswith("on_")} - {"send"}
+    assert worker_data <= rt, f"agent_worker.run has params unknown to run_turn: {sorted(worker_data - rt)}"
