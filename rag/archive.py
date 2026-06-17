@@ -22,17 +22,14 @@ class ArchiveStore:
         self._local = threading.local()
         self._setup()
 
-    def _get_conn(self) -> sqlite3.Connection:
+    def _conn(self) -> sqlite3.Connection:
         if not hasattr(self._local, "conn"):
-            conn = sqlite3.connect(self._db_path, timeout=30, check_same_thread=False)
-            conn.row_factory = sqlite3.Row
-            from agent.core.sqlite_util import apply_concurrency_pragmas
-            apply_concurrency_pragmas(conn)
-            self._local.conn = conn
+            from agent.core.sqlite_util import open_threadlocal_conn
+            self._local.conn = open_threadlocal_conn(self._db_path)
         return self._local.conn
 
     def _setup(self) -> None:
-        conn = self._get_conn()
+        conn = self._conn()
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS chunks (
                 id TEXT PRIMARY KEY,
@@ -69,7 +66,7 @@ class ArchiveStore:
         archived_at and reason."""
         if not rows:
             return 0
-        conn = self._get_conn()
+        conn = self._conn()
         now = time.time()
         count = 0
         for r in rows:
@@ -110,7 +107,7 @@ class ArchiveStore:
         indexed path)."""
         if not paths:
             return []
-        conn = self._get_conn()
+        conn = self._conn()
         matched_ids: list[int] = []
         rows: list = []
         for p in paths:
@@ -144,7 +141,7 @@ class ArchiveStore:
         if ttl_days <= 0:
             return 0
         cutoff = time.time() - ttl_days * 86400
-        conn = self._get_conn()
+        conn = self._conn()
         rows = conn.execute(
             "SELECT rowid FROM chunks WHERE archived_at < ?", (cutoff,)
         ).fetchall()
@@ -160,7 +157,7 @@ class ArchiveStore:
 
     def search(self, query: str, top_k: int = 20) -> list[dict]:
         try:
-            rows = self._get_conn().execute("""
+            rows = self._conn().execute("""
                 SELECT c.id, c.path, c.language, c.node_type, c.name,
                        c.start_line, c.end_line, c.content,
                        c.archived_at, c.reason,
@@ -176,7 +173,7 @@ class ArchiveStore:
         return [dict(r) for r in rows]
 
     def stats(self) -> dict:
-        conn = self._get_conn()
+        conn = self._conn()
         row = conn.execute("SELECT COUNT(*) as cnt FROM chunks").fetchone()
         paths = conn.execute("SELECT COUNT(DISTINCT path) as cnt FROM chunks").fetchone()
         oldest = conn.execute("SELECT MIN(archived_at) as m FROM chunks").fetchone()

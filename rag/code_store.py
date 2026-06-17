@@ -97,18 +97,8 @@ class CodeStore:
     @property
     def _conn(self) -> sqlite3.Connection:
         if not hasattr(self._local, "conn"):
-            conn = sqlite3.connect(self._db_path, timeout=30, check_same_thread=False)
-            conn.row_factory = sqlite3.Row
-            from agent.core.sqlite_util import apply_concurrency_pragmas
-            apply_concurrency_pragmas(conn)
-            conn.execute("PRAGMA foreign_keys=ON")
-            conn.enable_load_extension(True)
-            try:
-                import sqlite_vec
-                sqlite_vec.load(conn)
-            except Exception:
-                pass
-            conn.enable_load_extension(False)
+            from agent.core.sqlite_util import open_threadlocal_conn
+            conn = open_threadlocal_conn(self._db_path, load_vec=True, foreign_keys=True)
             self._local.conn = conn
             self._run_ddl(conn)
         return self._local.conn

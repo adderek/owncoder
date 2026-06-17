@@ -23,24 +23,14 @@ class VectorStore:
         # Dimension of the vec0 KNN table; set on first embedding insert, read back from _meta.
         self._vec_dims: int | None = self._read_vec_dims()
 
-    def _get_conn(self) -> sqlite3.Connection:
+    def _conn(self) -> sqlite3.Connection:
         if not hasattr(self._local, "conn"):
-            conn = sqlite3.connect(self._db_path, timeout=30, check_same_thread=False)
-            conn.row_factory = sqlite3.Row
-            from agent.core.sqlite_util import apply_concurrency_pragmas
-            apply_concurrency_pragmas(conn)
-            conn.enable_load_extension(True)
-            try:
-                import sqlite_vec
-                sqlite_vec.load(conn)
-            except Exception as e:
-                raise RuntimeError(f"Failed to load sqlite-vec: {e}") from e
-            conn.enable_load_extension(False)
-            self._local.conn = conn
+            from agent.core.sqlite_util import open_threadlocal_conn
+            self._local.conn = open_threadlocal_conn(self._db_path, load_vec=True)
         return self._local.conn
 
     def _setup(self) -> None:
-        conn = self._get_conn()
+        conn = self._conn()
         conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS chunks (
@@ -77,7 +67,7 @@ class VectorStore:
         conn.commit()
 
     def _read_vec_dims(self) -> int | None:
-        conn = self._get_conn()
+        conn = self._conn()
         row = conn.execute(
             "SELECT value FROM _meta WHERE key = 'embedding_dims'"
         ).fetchone()
@@ -113,7 +103,7 @@ class VectorStore:
         """Create the vec0 KNN table if it doesn't exist for the given dimensions."""
         if self._vec_dims == dims:
             return
-        conn = self._get_conn()
+        conn = self._conn()
         # Drop any stale table with the wrong dims before creating the new one.
         if self._vec_dims is not None:
             logger.warning(
@@ -136,7 +126,7 @@ class VectorStore:
         self._vec_dims = dims
 
     def upsert(self, chunk: dict) -> None:
-        conn = self._get_conn()
+        conn = self._conn()
         # Remove stale FTS entry (INSERT OR REPLACE on chunks changes the rowid).
         existing = conn.execute(
             "SELECT rowid FROM chunks WHERE id = ?", (chunk["id"],)
@@ -174,7 +164,7 @@ class VectorStore:
     def upsert_many(self, chunks: list[dict], fresh: bool = False) -> None:
         """Insert chunks. Set fresh=True when delete_by_path was already called for
         these chunks' path — skips the per-chunk rowid lookup and stale FTS/vec cleanup."""
-        conn = self._get_conn()
+        conn = self._conn()
         for chunk in chunks:
             if not fresh:
                 existing = conn.execute(
@@ -213,7 +203,7 @@ class VectorStore:
         conn.commit()
 
     def delete_by_path(self, path: str) -> None:
-        conn = self._get_conn()
+        conn = self._conn()
         conn.execute("DELETE FROM file_mtimes WHERE path = ?", (path,))
         rows = conn.execute("SELECT id, rowid FROM chunks WHERE path = ?", (path,)).fetchall()
         if not rows:
@@ -230,7 +220,7 @@ class VectorStore:
         conn.commit()
 
     def list_paths(self) -> list[str]:
-        rows = self._get_conn().execute(
+        rows = self._conn().execute(
             "SELECT DISTINCT path FROM chunks ORDER BY path"
         ).fetchall()
         return [r["path"] for r in rows]
@@ -240,7 +230,7 @@ class VectorStore:
         from vec_chunks (as bytes) when present. Used by the archive pipeline."""
         if not paths:
             return []
-        conn = self._get_conn()
+        conn = self._conn()
         placeholders = ",".join("?" * len(paths))
         rows = conn.execute(
             f"SELECT * FROM chunks WHERE path IN ({placeholders})", paths
@@ -264,7 +254,7 @@ class VectorStore:
     def insert_raw(self, row: dict) -> None:
         """Insert a row (as returned by rows_for_paths) back into the main store,
         preserving its embedding blob. Used for archive restore."""
-        conn = self._get_conn()
+        conn = self._conn()
         existing = conn.execute(
             "SELECT rowid FROM chunks WHERE id = ?", (row["id"],)
         ).fetchone()
@@ -296,18 +286,18 @@ class VectorStore:
         conn.commit()
 
     def get_mtime(self, path: str) -> float | None:
-        row = self._get_conn().execute(
+        row = self._conn().execute(
             "SELECT mtime FROM chunks WHERE path = ? LIMIT 1", (path,)
         ).fetchone()
         if row:
             return row["mtime"]
-        row = self._get_conn().execute(
+        row = self._conn().execute(
             "SELECT mtime FROM file_mtimes WHERE path = ? LIMIT 1", (path,)
         ).fetchone()
         return row["mtime"] if row else None
 
     def set_file_mtime(self, path: str, mtime: float) -> None:
-        conn = self._get_conn()
+        conn = self._conn()
         conn.execute(
             "INSERT OR REPLACE INTO file_mtimes(path, mtime) VALUES (?, ?)",
             (path, mtime),
@@ -319,7 +309,7 @@ class VectorStore:
         if self._vec_dims is None or self._vec_dims != len(embedding):
             return []
         query_blob = sqlite_vec.serialize_float32(embedding)
-        rows = self._get_conn().execute("""
+        rows = self._conn().execute("""
             SELECT vc.chunk_id, vc.distance,
                    c.id, c.path, c.language, c.node_type, c.name,
                    c.start_line, c.end_line, c.content
@@ -333,7 +323,7 @@ class VectorStore:
 
     def fts_search(self, query: str, top_k: int = 20) -> list[dict]:
         try:
-            rows = self._get_conn().execute("""
+            rows = self._conn().execute("""
                 SELECT c.id, c.path, c.language, c.node_type, c.name,
                        c.start_line, c.end_line, c.content,
                        bm25(chunks_fts) AS score
@@ -382,14 +372,14 @@ class VectorStore:
         return [{"combined_score": s, **d} for s, d in combined[:top_k]]
 
     def stats(self) -> dict:
-        conn = self._get_conn()
+        conn = self._conn()
         row = conn.execute("SELECT COUNT(*) as cnt FROM chunks").fetchone()
         paths = conn.execute("SELECT COUNT(DISTINCT path) as cnt FROM chunks").fetchone()
         return {"chunks": row["cnt"], "files": paths["cnt"]}
 
     def get_indexed_mtimes(self) -> dict[str, float]:
         """Return {path: mtime} for all indexed files (including chunk-less visited files)."""
-        conn = self._get_conn()
+        conn = self._conn()
         result: dict[str, float] = {}
         for r in conn.execute("SELECT path, mtime FROM file_mtimes").fetchall():
             result[r["path"]] = r["mtime"]

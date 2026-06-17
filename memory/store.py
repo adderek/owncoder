@@ -45,18 +45,8 @@ class MemoryStore:
 
     def _conn(self) -> sqlite3.Connection:
         if not hasattr(self._local, "conn"):
-            conn = sqlite3.connect(self._db_path, timeout=30, check_same_thread=False)
-            conn.row_factory = sqlite3.Row
-            from agent.core.sqlite_util import apply_concurrency_pragmas
-            apply_concurrency_pragmas(conn)
-            conn.enable_load_extension(True)
-            try:
-                import sqlite_vec
-                sqlite_vec.load(conn)
-            except Exception:
-                pass  # vec search degraded to FTS only
-            conn.enable_load_extension(False)
-            self._local.conn = conn
+            from agent.core.sqlite_util import open_threadlocal_conn
+            self._local.conn = open_threadlocal_conn(self._db_path, load_vec=True)
         return self._local.conn
 
     def _setup(self) -> None:

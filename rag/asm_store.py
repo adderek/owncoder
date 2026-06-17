@@ -33,14 +33,10 @@ class AsmStore:
         set, so we give each thread its own connection instead of sharing one.
         """
         if not hasattr(self._local, "conn"):
-            conn = sqlite3.connect(self._db_path, timeout=30, check_same_thread=False)
-            conn.row_factory = sqlite3.Row
-            from agent.core.sqlite_util import apply_concurrency_pragmas
-            apply_concurrency_pragmas(conn)
-            conn.execute("PRAGMA foreign_keys=ON")
+            from agent.core.sqlite_util import open_threadlocal_conn
+            conn = open_threadlocal_conn(self._db_path, foreign_keys=True)
             self._local.conn = conn
-            # Re-run idempotent DDL so the new connection knows about all tables,
-            # and load the sqlite-vec extension so vec0 virtual table is accessible.
+            # Re-run idempotent DDL so the new connection knows about all tables.
             self._setup_conn(conn)
         return self._local.conn
 
