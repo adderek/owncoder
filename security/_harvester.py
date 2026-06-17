@@ -34,6 +34,10 @@ def fetch_one(target: dict, out_dir: str) -> tuple[bool, str]:
     url = target.get("url", "")
     name = target.get("name") or url
     method = (target.get("method") or "GET").upper()
+    # Network-only harvester: reject non-HTTP schemes (file://, gopher://, ftp://)
+    # so a crafted spec can't turn the fetcher into a local-file/SSRF reader.
+    if not url.lower().startswith(("http://", "https://")):
+        return False, f"{name}: refused non-http(s) URL"
     body = target.get("body")
     data = json.dumps(body).encode() if isinstance(body, (dict, list)) else (
         body.encode() if isinstance(body, str) else None)
@@ -67,7 +71,8 @@ def main(argv: list[str]) -> int:
     out_dir, spec_path = argv[0], argv[1]
     os.makedirs(out_dir, exist_ok=True)
     try:
-        spec = json.loads(open(spec_path).read())
+        with open(spec_path) as fh:
+            spec = json.loads(fh.read())
     except Exception as e:  # noqa: BLE001
         print(f"bad spec: {e}", file=sys.stderr)
         return 0
