@@ -152,13 +152,12 @@ async def run_turn(
 
     tools = get_schemas()
     # Reset web search rate limit counters each turn.
-    if getattr(config, "web_search", None) and config.web_search.enabled:
+    if config.web_search.enabled:
         from agent.tools.web_search.main import reset_turn_state
         reset_turn_state()
     if excluded_tools:
         tools = [t for t in tools if t.get("function", {}).get("name") not in excluded_tools]
-    tc_cfg = getattr(config, "tool_compaction", None)
-    compaction_on = bool(tc_cfg and getattr(tc_cfg, "enabled", False))
+    compaction_on = config.tool_compaction.enabled
     if compaction_on:
         from agent.tool_compactor import inject_purpose_into_schemas
         tools = inject_purpose_into_schemas(tools)
@@ -174,29 +173,29 @@ async def run_turn(
     _READ_PATH_WARN_THRESHOLD = 3   # inject warning into result
     _READ_PATH_STOP_THRESHOLD = 6   # hard-stop the turn
     _EDIT_FILE_FAIL_THRESHOLD = 2
-    _max_iter_raw = getattr(config.llm, "max_iterations", None)
+    _max_iter_raw = config.llm.max_iterations
     max_iter: int | None = None if (_max_iter_raw is None or _max_iter_raw == 0) else max(1, int(_max_iter_raw))
-    goal: str | None = getattr(config.llm, "goal", None)
-    goal_max_iter: int = max(1, int(getattr(config.llm, "goal_max_iterations", 200)))
+    goal: str | None = config.llm.goal
+    goal_max_iter: int = max(1, int(config.llm.goal_max_iterations))
     total_iter_count: int = 0
-    loop_cfg = getattr(config, "loop_guard", None)
+    loop_cfg = config.loop_guard
     loop_detector: LoopDetector | None = None
-    if loop_cfg is not None and getattr(loop_cfg, "enabled", True):
+    if loop_cfg.enabled:
         loop_detector = LoopDetector(
-            window=int(getattr(loop_cfg, "window", 10)),
-            threshold=int(getattr(loop_cfg, "repeat_threshold", 3)),
-            per_tool_threshold=getattr(loop_cfg, "per_tool_threshold", None),
+            window=int(loop_cfg.window),
+            threshold=int(loop_cfg.repeat_threshold),
+            per_tool_threshold=loop_cfg.per_tool_threshold,
         )
-    conf_cfg = getattr(config, "confidence_guard", None)
+    conf_cfg = config.confidence_guard
     confidence_monitor: ConfidenceMonitor | None = None
-    if conf_cfg is not None and getattr(conf_cfg, "enabled", True):
+    if conf_cfg.enabled:
         confidence_monitor = ConfidenceMonitor(
-            window=int(getattr(conf_cfg, "window", 8)),
-            error_rate_threshold=float(getattr(conf_cfg, "error_rate_threshold", 0.6)),
-            null_rate_threshold=float(getattr(conf_cfg, "null_rate_threshold", 0.6)),
-            dup_rate_threshold=float(getattr(conf_cfg, "dup_rate_threshold", 0.5)),
-            score_threshold=float(getattr(conf_cfg, "score_threshold", 0.35)),
-            inject_cooldown=int(getattr(conf_cfg, "inject_cooldown", 3)),
+            window=int(conf_cfg.window),
+            error_rate_threshold=float(conf_cfg.error_rate_threshold),
+            null_rate_threshold=float(conf_cfg.null_rate_threshold),
+            dup_rate_threshold=float(conf_cfg.dup_rate_threshold),
+            score_threshold=float(conf_cfg.score_threshold),
+            inject_cooldown=int(conf_cfg.inject_cooldown),
         )
     if on_progress is not None:
         try:
@@ -666,7 +665,7 @@ async def run_turn(
 
         content = msg.content or ""
         already_nudged = nudge_count > 0
-        fallback_enabled = bool(getattr(config.llm, "narration_fallback", True))
+        fallback_enabled = bool(config.llm.narration_fallback)
 
         # Check if agent justified skipping tools in response to a justify prompt
         if _justify_pending_content is not None:
