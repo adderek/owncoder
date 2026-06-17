@@ -5,9 +5,10 @@ Secondary (defense-in-depth): configurable injection pattern detection.
 """
 from __future__ import annotations
 
-import hashlib
 import re
 from typing import TYPE_CHECKING
+
+from agent._hashing import sha256_text as _sha256
 
 if TYPE_CHECKING:
     from agent.config import Config
@@ -18,10 +19,6 @@ _config = None
 def setup(config) -> None:
     global _config
     _config = config
-
-
-def _sha256(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
 
 
 _WRAP_TEMPLATE = """\

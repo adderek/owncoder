@@ -5,14 +5,11 @@ text normalization → size cap → integrity hash.
 """
 from __future__ import annotations
 
-import hashlib
 import html
 import re
 import unicodedata
 
-
-def _sha256(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
+from agent._hashing import sha256_bytes as _sha256
 
 
 def _is_binary(data: bytes) -> bool:

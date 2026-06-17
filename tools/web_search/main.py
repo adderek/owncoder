@@ -10,10 +10,10 @@ Wires the 5-layer defense:
 from __future__ import annotations
 
 import base64
-import hashlib
 import logging
 from typing import TYPE_CHECKING
 
+from agent._hashing import sha256_text as _sha256
 from agent.tools import register
 from agent.security import query_gate
 from agent.security import injection_shield
@@ -41,10 +41,6 @@ def setup(config) -> None:
 def reset_turn_state() -> None:
     """Reset per-turn rate limit counters. Call at start of each agent turn."""
     query_gate.reset_rate_limits()
-
-
-def _sha256(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
