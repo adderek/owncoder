@@ -14,6 +14,7 @@ from time import time
 from typing import TYPE_CHECKING
 
 from agent.tools import register
+from agent.tools._common import working_dir
 
 if TYPE_CHECKING:
     from agent.config import Config
@@ -27,9 +28,7 @@ def setup(config) -> None:
 
 
 def _working_dir() -> str:
-    if _config:
-        return _config.tools.working_dir
-    return "."
+    return working_dir(_config)
 
 
 def _run_git(*args: str, cwd: str | None = None) -> tuple[str, int]:

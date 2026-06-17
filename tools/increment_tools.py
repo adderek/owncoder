@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from agent.tools import register
+from agent.tools._common import working_dir
 
 if TYPE_CHECKING:
     from agent.config import Config
@@ -17,7 +18,7 @@ def setup(config: "Config") -> None:
 
 
 def _working_dir() -> str:
-    return _config.tools.working_dir if _config else "."
+    return working_dir(_config)
 
 
 def _max_retries(step_max: int) -> int:
