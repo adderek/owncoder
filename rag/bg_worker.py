@@ -113,6 +113,18 @@ class BgWorker:
 
         return False
 
+    def _maybe_embed(self, unit: dict, desc: str, label: str) -> None:
+        """Embed *desc* into unit['embedding'] when an embedder is configured.
+
+        Embedding is best-effort: a failure is logged, never fatal to indexing.
+        """
+        if not (self._embedder and desc):
+            return
+        try:
+            unit["embedding"] = self._embedder.embed_one(desc)
+        except Exception as e:
+            logger.warning("%s embed failed for %s: %s", label, unit["id"], e)
+
     def _read_content(self, unit: dict) -> str:
         """Read source lines for a unit from disk. Returns empty string on failure."""
         raw_path = unit.get("path", "")
@@ -149,11 +161,7 @@ class BgWorker:
                 unit["status"] = "described"
                 unit["analysis_date"] = time.time()
                 unit["analysis_model"] = donor.get("analysis_model")
-                if self._embedder and unit["description"]:
-                    try:
-                        unit["embedding"] = self._embedder.embed_one(unit["description"])
-                    except Exception as e:
-                        logger.warning("Dedup embed failed for %s: %s", unit["id"], e)
+                self._maybe_embed(unit, unit["description"], "Dedup")
                 self._store.upsert_unit(unit)
                 self.dedup_count += 1
                 self._on_progress("deduped", {"id": unit["id"], "path": path})
@@ -180,11 +188,7 @@ class BgWorker:
         unit["analysis_date"] = time.time()
         unit["analysis_model"] = self._describer._model
 
-        if self._embedder and new_desc:
-            try:
-                unit["embedding"] = self._embedder.embed_one(new_desc)
-            except Exception as e:
-                logger.warning("Summary embed failed for %s: %s", unit["id"], e)
+        self._maybe_embed(unit, new_desc, "Summary")
 
         self._store.upsert_unit(unit)
         self._on_progress("described", {"id": unit["id"], "path": path, "name": unit.get("name")})
@@ -227,11 +231,7 @@ class BgWorker:
             unit["node_checksum"] = node_cs
             unit["analysis_date"] = time.time()
             unit["analysis_model"] = donor.get("analysis_model")
-            if self._embedder and new_desc:
-                try:
-                    unit["embedding"] = self._embedder.embed_one(new_desc)
-                except Exception as e:
-                    logger.warning("Rollup embed failed for %s: %s", unit["id"], e)
+            self._maybe_embed(unit, new_desc, "Rollup")
             self._store.upsert_unit(unit)
             self._on_progress("rolled_up", {"id": unit["id"], "path": unit["path"], "level": unit.get("level")})
             if unit.get("parent_id"):
@@ -250,11 +250,7 @@ class BgWorker:
         unit["analysis_date"] = time.time()
         unit["analysis_model"] = self._describer._model
 
-        if self._embedder and new_desc:
-            try:
-                unit["embedding"] = self._embedder.embed_one(new_desc)
-            except Exception as e:
-                logger.warning("Rollup embed failed for %s: %s", unit["id"], e)
+        self._maybe_embed(unit, new_desc, "Rollup")
 
         self._store.upsert_unit(unit)
         self._on_progress("rolled_up", {"id": unit["id"], "path": unit["path"], "level": unit.get("level")})
