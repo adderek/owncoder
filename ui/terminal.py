@@ -132,6 +132,36 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             Binding("f9", "activate_tab('tab-paths')", "Paths", show=False),
         ]
 
+        def _handle_exception(self, error: Exception) -> None:
+            """Persist crash to a file and exit with a one-line pointer instead
+            of dumping the full traceback (+ locals) to the terminal."""
+            # Preserve Textual's bookkeeping so pilot/test frameworks still re-raise.
+            self._return_code = 1
+            if self._exception is None:
+                self._exception = error
+                self._exception_event.set()
+            path = None
+            try:
+                from agent.core.crash_report import write_crash_report
+                cfg = getattr(getattr(self, "_server", None), "_agent", None)
+                cfg = getattr(cfg, "config", None)
+                path = write_crash_report(error, cfg) if cfg is not None else None
+            except Exception:
+                path = None
+            from rich.text import Text
+            if path is not None:
+                msg = Text.from_markup(
+                    f"[bold red]💥 owncoder crashed[/] [dim]({type(error).__name__})[/]\n"
+                    f"full report: [bold]{path}[/]\n"
+                    f"[dim]share that file to report the bug.[/]"
+                )
+            else:
+                # Fallback: couldn't write the file — keep Textual's full dump.
+                self._fatal_error()
+                return
+            self._exit_renderables.append(msg)
+            self._close_messages_no_wait()
+
         def __init__(self, agent: "Agent", session=None, server=None, **kwargs):
             super().__init__(**kwargs)
             self._server = server
