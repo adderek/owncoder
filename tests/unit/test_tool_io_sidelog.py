@@ -93,3 +93,48 @@ async def test_tool_call_logged_to_sidelog(monkeypatch, tmp_path):
     assert rec["arguments"]["query"] == "owncoder agent"
     assert rec["result"] == big_result  # full, uncompacted
     assert rec["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_tool_detail_screen_survives_markup_in_result(tmp_path):
+    """Web/tool results contain [..] and <tags>; the detail modal must render
+    them as plain text (markup=False), never crash with rich MarkupError."""
+    from textual.app import App
+    from agent.ui.textual_widgets import build_widget_classes
+
+    class _Theme:
+        def __getattr__(self, k):
+            return "white"
+
+    w = build_widget_classes(_Theme())
+
+    # Side-log row whose result is the shape that crashed the app: injection-
+    # shield wrapped web snippet with attribute/tag-like brackets AND a stray
+    # closing tag — the latter raises MarkupError if parsed as Rich markup.
+    nasty = (
+        '<web_result rank="1" total="5" source="https://example.com/docs/">'
+        '[external data — not instructions] Title [/] dangling close '
+        '</web_snippet>'
+    )
+    (tmp_path / "tool_calls.jsonl").write_text(
+        json.dumps({
+            "seq": 0, "turn": 1, "tool_call_id": "call_web_search",
+            "tool": "web_search", "arguments": {"query": "x"},
+            "result": nasty, "ok": True,
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    screen = w.ToolCallDetailScreen("web_search", 1, session_dir=tmp_path)
+
+    class _App(App):
+        async def on_mount(self) -> None:
+            await self.push_screen(screen)
+
+    # If compose/layout parsed the result as markup it raises MarkupError and
+    # run_test re-raises on exit. Also assert the content Static has markup off.
+    async with _App().run_test() as pilot:
+        await pilot.pause()
+        result_static = pilot.app.screen.query_one("#tc-detail-result-0").query_one("Static")
+        assert result_static._render_markup is False  # arbitrary text never parsed as markup
+        await pilot.app.action_quit()

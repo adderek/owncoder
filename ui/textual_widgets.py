@@ -979,7 +979,10 @@ def build_widget_classes(t) -> SimpleNamespace:
                         args_str = _json.dumps(args, indent=2, ensure_ascii=False) if args else "(none)"
                         yield Static("[bold]Arguments:[/bold]", markup=True)
                         with ScrollableContainer(id=f"tc-detail-args-{i}"):
-                            yield Static(_esc(args_str))
+                            # markup=False: tool I/O is arbitrary text (may contain
+                            # [..] / <tags>); never parse it as Rich markup or it
+                            # raises MarkupError and crashes the app.
+                            yield Static(args_str, markup=False)
                         result_raw = rec.get("result", "")
                         try:
                             result_parsed = _json.loads(result_raw)
@@ -988,7 +991,7 @@ def build_widget_classes(t) -> SimpleNamespace:
                             result_str = result_raw or "(empty)"
                         yield Static("[bold]Result:[/bold]", markup=True)
                         with ScrollableContainer(id=f"tc-detail-result-{i}"):
-                            yield Static(_esc(result_str[:4000]))
+                            yield Static(result_str[:4000], markup=False)
                 yield Button("Back  [ESC]", id="tc-detail-close")
 
         def on_button_pressed(self, event) -> None:
