@@ -30,6 +30,14 @@ source .venv/bin/activate
 uv pip install -e .
 ```
 
+Also
+
+```
+agent commit .
+```
+
+which checks current directory (assuming it is a git repo) and created commit message for it while chunking diff standard way
+
 # About
 
 Local-first heavy coding agent meant for assembler language.
