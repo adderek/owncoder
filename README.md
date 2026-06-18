@@ -1,8 +1,6 @@
 # What is it?
 
-Local-first coding agent (but works with openai like deepseek) with solid security
-
-Meant for heavy analysis of languages that need it (like assembler) (xxx)
+Local-first coding agent with solid security. Runs against your own llama.cpp/vLLM/ollama, or any OpenAI-compatible API (deepseek, openai). Use it when you want a coding agent that keeps code on your machine and is built for heavy analysis of low-structure languages like assembler.
 
 Similar to
 * claude code (best for complex tasks)
@@ -13,7 +11,7 @@ Similar to
 * windsurf (IDE that's on develop, but cheaper than cursor and sometimes has better features)
 
 
-(xxx) Normally you don't index so agent can work rightaway, but languages like assembler lack structure and require initial code analysis
+Normally you don't index so the agent works right away, but languages like assembler lack structure and need initial code analysis.
 
 
 # Usage
@@ -34,7 +32,26 @@ uv pip install -e .
 
 # About
 
-Local-first heavy coding agent meant for assembler language
+Local-first heavy coding agent meant for assembler language.
+
+Key features:
+* **Local-first** — point it at llama.cpp / vLLM / ollama, or any OpenAI-compatible endpoint; nothing leaves your box unless you say so
+* **Security suite** — seccomp sandbox, path grants, airgap mode, prompt-injection scanning, output redaction, audit log, SBOM
+* **Code understanding** — tree-sitter parsing + sqlite-vec semantic search/embeddings (CPU is enough)
+* **Rich toolset** — file edit, git, shell, code/web search, checkpoints, skills
+* **Interfaces** — Textual TUI, plus simple/readline text-only modes
+* **Extensible** — MCP support
+
+Layers of code indexing / retrieval (each optional, used as needed):
+* **RAG** — tree-sitter splits code into chunks, the embeddings model vectorizes them into sqlite-vec; hybrid (vector + keyword) search at query time
+* **Archive** — pruned chunks kept with a TTL, so old/deleted code stays searchable
+* **Summarization** — the LLM writes terse descriptions per chunk, then rolls them up into a multi-level summary pyramid
+* **Assembler analysis** — same LLM describe-and-rollup pyramid (up to 6 levels), tuned for low-structure code tree-sitter can't model
+* **Graph** — static dependency/call graph export (graphify), no model needed
+* **KB** — optional external knowledge-base corpus
+* **Memory / recall** — facts, Q&A log, and session history, distilled and compacted by the LLM
+
+Prompts and skills/tools are **compiled per model**: the prompt-compiler compresses static prompt files for the active (model, api) pair and caches them, and tool results are compacted by the LLM before re-entering context — smaller context, same meaning.
 
 ```
 agent init  # index files
