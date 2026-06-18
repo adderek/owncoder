@@ -898,24 +898,22 @@ def build_widget_classes(t) -> SimpleNamespace:
         #tc-detail-dialog {
             width: 90%;
             max-width: 120;
-            height: auto;
-            max-height: 85%;
+            height: 85%;
             border: solid $accent;
             background: $surface;
             padding: 1 2;
         }
-        #tc-detail-args {
-            max-height: 30;
+        #tc-detail-body {
+            height: 1fr;
             overflow-y: auto;
-            margin-bottom: 1;
         }
-        #tc-detail-result {
-            max-height: 30;
-            overflow-y: auto;
+        .tc-detail-block {
+            height: auto;
             margin-bottom: 1;
         }
         #tc-detail-close {
             width: 100%;
+            dock: bottom;
         }
         """
 
@@ -969,29 +967,30 @@ def build_widget_classes(t) -> SimpleNamespace:
                     f"[bold]{_ti(self._tool_name)} {_esc(self._tool_name)}[/bold]  [dim](turn {self._turn_id})[/dim]",
                     markup=True,
                 )
-                if not records:
-                    yield Static(f"[dim]No side-log records found for this tool call.[/dim]", markup=True)
-                else:
-                    for i, rec in enumerate(records):
-                        if len(records) > 1:
-                            yield Static(f"[dim]— call {i+1}/{len(records)} —[/dim]", markup=True)
-                        args = rec.get("arguments", {})
-                        args_str = _json.dumps(args, indent=2, ensure_ascii=False) if args else "(none)"
-                        yield Static("[bold]Arguments:[/bold]", markup=True)
-                        with ScrollableContainer(id=f"tc-detail-args-{i}"):
-                            # markup=False: tool I/O is arbitrary text (may contain
-                            # [..] / <tags>); never parse it as Rich markup or it
-                            # raises MarkupError and crashes the app.
-                            yield Static(args_str, markup=False)
-                        result_raw = rec.get("result", "")
-                        try:
-                            result_parsed = _json.loads(result_raw)
-                            result_str = _json.dumps(result_parsed, indent=2, ensure_ascii=False)
-                        except Exception:
-                            result_str = result_raw or "(empty)"
-                        yield Static("[bold]Result:[/bold]", markup=True)
-                        with ScrollableContainer(id=f"tc-detail-result-{i}"):
-                            yield Static(result_str[:4000], markup=False)
+                # Single outer scroller holds every call; the Back button is docked
+                # to the dialog bottom so it stays reachable no matter how many
+                # calls there are. (markup=False on tool I/O: it is arbitrary text
+                # that may contain [..] / <tags> — parsing it as Rich markup raises
+                # MarkupError and crashes the app.)
+                with ScrollableContainer(id="tc-detail-body"):
+                    if not records:
+                        yield Static("[dim]No side-log records found for this tool call.[/dim]", markup=True)
+                    else:
+                        for i, rec in enumerate(records):
+                            if len(records) > 1:
+                                yield Static(f"[dim]— call {i+1}/{len(records)} —[/dim]", markup=True)
+                            args = rec.get("arguments", {})
+                            args_str = _json.dumps(args, indent=2, ensure_ascii=False) if args else "(none)"
+                            yield Static("[bold]Arguments:[/bold]", markup=True)
+                            yield Static(args_str, markup=False, classes="tc-detail-block")
+                            result_raw = rec.get("result", "")
+                            try:
+                                result_parsed = _json.loads(result_raw)
+                                result_str = _json.dumps(result_parsed, indent=2, ensure_ascii=False)
+                            except Exception:
+                                result_str = result_raw or "(empty)"
+                            yield Static("[bold]Result:[/bold]", markup=True)
+                            yield Static(result_str[:4000], markup=False, classes="tc-detail-block")
                 yield Button("Back  [ESC]", id="tc-detail-close")
 
         def on_button_pressed(self, event) -> None:
