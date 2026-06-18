@@ -1105,16 +1105,20 @@ def build_widget_classes(t) -> SimpleNamespace:
                 pass
 
         def _refresh(self) -> None:
-            from agent.core.model_status import get_states, get_counts, get_availability
-            states = get_states()
+            from agent.core.model_status import get_counts, get_availability
+            counts = get_counts()
             avail = get_availability()
             parts = []
             for label, role in _MODEL_STATUS_ROLES:
+                n = counts.get(role, 0)
                 # Offline (configured model missing on its endpoint) → red, takes
                 # priority over idle/running so the user can spot it at a glance.
                 if avail.get(label) is False:
                     parts.append(f"[rgb(198,40,40)]{label}:✗[/]")
-                elif states.get(role, "idle") == "running":
+                elif n > 1:
+                    # >1 concurrent call (parallel fan-out) → show the count.
+                    parts.append(f"[rgb(56,142,60)]{label}:{n}[/]")
+                elif n > 0:
                     parts.append(f"[rgb(56,142,60)]{label}:●[/]")
                 else:
                     parts.append(f"[dim]{label}:○[/dim]")
