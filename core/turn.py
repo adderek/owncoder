@@ -554,23 +554,29 @@ async def run_turn(
                                dedup_count, len(unique_tool_calls), len(tool_calls))
 
             # Execute only unique calls (once); duplicates share the same result
-            unique_results = await asyncio.gather(*[execute_tool(tc, config) for tc in unique_tool_calls])
+            raw_unique_results = await asyncio.gather(*[execute_tool(tc, config) for tc in unique_tool_calls])
 
+            unique_results = raw_unique_results
             if compaction_on:
                 unique_results = list(await asyncio.gather(*[
                     _compact_tool_result(
                         tool_calls[unique_indices[i]], parsed_args[unique_indices[i]],
                         purposes[unique_indices[i]], raw, config, client, side_log, turn_index,
                     )
-                    for i, raw in enumerate(unique_results)
+                    for i, raw in enumerate(raw_unique_results)
                 ]))
 
             # Map unique results back to all positions
             results_map: dict[int, str] = {}
-            for ui, result in zip(unique_indices, unique_results):
+            raw_results_map: dict[int, str] = {}
+            for ui, result, raw in zip(unique_indices, unique_results, raw_unique_results):
                 for idx in dedup_groups[_tc_sig(tool_calls[ui])]:
                     results_map[idx] = result
+                    raw_results_map[idx] = raw
             results = [results_map[i] for i in range(len(tool_calls))]
+            # Full, uncompacted results — persisted to the side-log so the UI can
+            # fetch the real tool I/O on demand even when context was compacted.
+            raw_results = [raw_results_map[i] for i in range(len(tool_calls))]
             patched_results: list[str] = []
             for tc, result in zip(tool_calls, results):
                 if tc.function.name == "read_file":
@@ -586,7 +592,7 @@ async def run_turn(
                         tc, result, _read_path_counts, _edit_file_fails, _EDIT_FILE_FAIL_THRESHOLD,
                     )
                 patched_results.append(result)
-            for tc, result in zip(tool_calls, patched_results):
+            for i, (tc, result) in enumerate(zip(tool_calls, patched_results)):
                 messages.append(_tool_result_message(tc.id, result))
                 ok = True
                 try:
@@ -595,6 +601,21 @@ async def run_turn(
                         ok = False
                 except Exception:
                     pass
+                # Persist full tool I/O to the side-log at execution time so the
+                # UI can show what each tool (web_search, …) was called with and
+                # what it returned — fetched on demand, never in live context.
+                if side_log is not None:
+                    try:
+                        side_log.append("tool_calls.jsonl", {
+                            "turn": turn_index,
+                            "tool_call_id": tc.id,
+                            "tool": tc.function.name,
+                            "arguments": parsed_args[i],
+                            "result": raw_results[i],
+                            "ok": ok,
+                        })
+                    except Exception as e:
+                        logger.warning("side_log append failed (tool_call): %s", e)
                 try:
                     prompt_compiler.record_call(ok, config)
                 except Exception:

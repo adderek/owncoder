@@ -919,6 +919,7 @@ def build_widget_classes(t) -> SimpleNamespace:
                 if not p.exists():
                     return []
                 records = []
+                seen_ids: set = set()
                 with p.open("r", encoding="utf-8") as f:
                     for line in f:
                         try:
@@ -926,6 +927,13 @@ def build_widget_classes(t) -> SimpleNamespace:
                         except Exception:
                             continue
                         if rec.get("tool") == self._tool_name and rec.get("turn") == self._turn_id:
+                            # Same call may be logged twice (live exec + history
+                            # compaction). Keep the first row per tool_call_id.
+                            cid = rec.get("tool_call_id")
+                            if cid is not None and cid in seen_ids:
+                                continue
+                            if cid is not None:
+                                seen_ids.add(cid)
                             records.append(rec)
                 return records
             except Exception:
