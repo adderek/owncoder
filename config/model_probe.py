@@ -340,6 +340,94 @@ def _probe_ctx_force(
     return updated
 
 
+# ── availability probe ────────────────────────────────────────────────────────
+
+def list_endpoint_models(base_url: str, api_key: str = "", timeout: int = 3) -> set[str] | None:
+    """Return the set of model ids the endpoint advertises via /v1/models.
+
+    Returns None when the endpoint is unreachable (so callers can distinguish
+    "offline endpoint" from "model genuinely missing").
+    """
+    if not base_url:
+        return None
+    url = base_url.rstrip("/") + "/models"
+    try:
+        req = urllib.request.Request(url, method="GET")
+        if api_key:
+            req.add_header("Authorization", f"Bearer {api_key}")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read())
+    except Exception:
+        return None
+    return {m["id"] for m in data.get("data", []) if isinstance(m, dict) and "id" in m}
+
+
+def model_in_server(model: str, server_ids: set[str]) -> bool:
+    """Fuzzy-match a configured model name against live server ids.
+
+    Mirrors the matching used by the ctx probes (exact, ext-stripped, substring).
+    """
+    if not model:
+        return False
+    m = model.lower()
+    for sid in server_ids:
+        s = sid.lower()
+        if s == m or _strip_ext(s) == m or s.startswith(m) or m in s:
+            return True
+    return False
+
+
+def check_model_availability(config: "Config", timeout: int = 3) -> dict[str, bool]:
+    """Probe each role's endpoint and report whether its configured model is live.
+
+    Roles: ``llm``, ``emb``, ``sum``. A role is unavailable when its endpoint is
+    reachable but does not advertise the configured model, or when the endpoint
+    is unreachable. The summarizer follows the llm result when it has no own
+    entry (intentional fallback, not "offline").
+
+    Best-effort: one HTTP GET per unique base_url. Never raises.
+    """
+    out: dict[str, bool] = {}
+
+    # Cache one /models call per endpoint.
+    cache: dict[str, set | None] = {}
+
+    def _models_for(base_url: str, api_key: str) -> set | None:
+        if base_url not in cache:
+            cache[base_url] = list_endpoint_models(base_url, api_key, timeout)
+        return cache[base_url]
+
+    llm = getattr(config, "llm", None)
+    emb = getattr(config, "embeddings", None)
+
+    # --- main LLM ---
+    if llm and llm.base_url:
+        ids = _models_for(llm.base_url, getattr(llm, "api_key", ""))
+        out["llm"] = bool(ids is not None and model_in_server(llm.model or "", ids))
+
+    # --- embeddings ---
+    if emb and emb.base_url:
+        ids = _models_for(emb.base_url, getattr(emb, "api_key", ""))
+        out["emb"] = bool(ids is not None and model_in_server(emb.model or "", ids))
+
+    # --- summarizer ---
+    roles = getattr(config, "model_roles", {}) or {}
+    entries = getattr(config, "model_entries", {}) or {}
+    sum_name = roles.get("summarizer") or roles.get("sum")
+    sum_entry = entries.get(sum_name) if sum_name else None
+    if sum_entry is None:
+        sum_entry = entries.get("summarizer")
+    if sum_entry is None:
+        # No dedicated summarizer model → falls back to llm; mirror its state.
+        if "llm" in out:
+            out["sum"] = out["llm"]
+    elif sum_entry.base_url:
+        ids = _models_for(sum_entry.base_url, getattr(sum_entry, "api_key", ""))
+        out["sum"] = bool(ids is not None and model_in_server(sum_entry.model or "", ids))
+
+    return out
+
+
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _fill_or_warn(

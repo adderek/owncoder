@@ -455,14 +455,22 @@ class SlashHandlerMixin:
                     self._refresh_token_bar()
 
         elif cmd == "/models":
+            import asyncio
             from agent.ui.slash import _render_models_table
             from rich.console import Console
             from io import StringIO
             cfg = self._server._agent.config
-            tbl = _render_models_table(cfg)
-            buf = StringIO()
-            Console(file=buf, highlight=False, width=300).print(tbl)
-            self._write_sys(buf.getvalue().rstrip())
+
+            def _render() -> str:
+                # Probe runs off the UI thread — a dead endpoint must not freeze it.
+                tbl = _render_models_table(cfg)
+                buf = StringIO()
+                Console(file=buf, highlight=False, width=300).print(tbl)
+                return buf.getvalue().rstrip()
+
+            self._write_sys(f"[{t.text_dim}]probing endpoints…[/{t.text_dim}]")
+            out = await asyncio.to_thread(_render)
+            self._write_sys(out)
 
         elif cmd == "/plan":
             ok, msg = self._server.set_plan(arg)

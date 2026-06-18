@@ -219,6 +219,8 @@ class LocalUIServer:
             sum_entry = entries.get(sum_name)
         if sum_entry is None:
             sum_entry = entries.get("summarizer")
+        from agent.core.model_status import get_availability
+        avail = get_availability()
         return {
             "llm": {
                 "model": llm.model or "",
@@ -230,12 +232,14 @@ class LocalUIServer:
                 "max_iterations": getattr(llm, "max_iterations", 10),
                 "goal": getattr(llm, "goal", None),
                 "goal_max_iterations": getattr(llm, "goal_max_iterations", 200),
+                "available": avail.get("llm"),
             },
             "emb": {
                 "model": emb.model or "",
                 "base_url": emb.base_url or "",
                 "dimensions": emb.dimensions,
                 "max_tokens": emb.max_tokens,
+                "available": avail.get("emb"),
             },
             "sum": {
                 "model": sum_entry.model if sum_entry else llm.model or "",
@@ -244,8 +248,21 @@ class LocalUIServer:
                 "max_output_tokens": sum_entry.max_output_tokens if sum_entry else llm.max_output_tokens,
                 "temperature": sum_entry.temperature if sum_entry else llm.temperature,
                 "source": sum_name if sum_entry else "(fallback to llm)",
+                "available": avail.get("sum"),
             },
         }
+
+    def probe_model_availability(self, session_id: str = "") -> dict:
+        """Probe each role's endpoint for model availability; cache the result."""
+        from agent.config.model_probe import check_model_availability
+        from agent.core.model_status import set_availability
+        try:
+            avail = check_model_availability(self._agent.config)
+        except Exception:
+            avail = {}
+        if avail:
+            set_availability(avail)
+        return avail
 
     def refresh_model_info(self, session_id: str = "") -> dict:
         from agent.config.model_probe import refresh_ctx_windows
@@ -255,6 +272,8 @@ class LocalUIServer:
         active = cfg.model_roles.get("default", "")
         if active and active in updated:
             cfg.llm.ctx_window = updated[active]
+        # Refresh availability alongside ctx sizes (same /models data).
+        self.probe_model_availability(session_id)
         return {"updated": updated, "llm_ctx": cfg.llm.ctx_window}
 
     def get_ui_config(self, session_id: str = "") -> dict:

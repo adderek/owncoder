@@ -59,7 +59,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/pause-plan", [], "mark active plan paused; resume later", False),
     ("/notify", [], "notification channels  [on | off | status]", True),
     ("/model", [], "switch active model  [<entry> | role=<entry> | role=? | refresh]", True),
-    ("/models", [], "show all configured model entries with capabilities", False),
+    ("/models", [], "show all configured model entries + live availability (✓/✗)", False),
     ("/recoveries", [], "list pending crash-recovery records", False),
     ("/resummarize", [], "re-summarize Q/A entries with stale or missing summaries  [--force]", True),
     ("/idea", [], "ideas: <title> | add [--type T] [--tags t] [--priority N] <title> [| body] | show <id> | update <id> k=v | done <id> | reject <id>", True),
@@ -305,8 +305,13 @@ def _apply_model(agent, arg: str) -> tuple[bool, str]:
     return True, f"role '{role}' → [bold]{entry_name}[/bold]  (model={entry.model})"
 
 
-def _render_models_table(config: "Config"):
-    """Return a Rich Table showing all model_entries with capabilities."""
+def _render_models_table(config: "Config", probe: bool = True):
+    """Return a Rich Table showing all model_entries with capabilities.
+
+    When *probe* is True, each entry's endpoint is queried once (cached per
+    base_url) to report whether the configured model is actually live: a green
+    ✓ (served), red ✗ (endpoint up but model missing, or endpoint unreachable).
+    """
     from rich.table import Table
 
     entries = config.model_entries
@@ -316,9 +321,26 @@ def _render_models_table(config: "Config"):
 
     active_entry = config.model_roles.get("default", "default")
 
+    # Best-effort availability probe — one /models call per unique endpoint.
+    _models_cache: dict[str, "set | None"] = {}
+
+    def _live_cell(e) -> str:
+        if not probe or not e.base_url:
+            return ""
+        from agent.config.model_probe import list_endpoint_models, model_in_server
+        if e.base_url not in _models_cache:
+            _models_cache[e.base_url] = list_endpoint_models(
+                e.base_url, getattr(e, "api_key", ""), timeout=2
+            )
+        ids = _models_cache[e.base_url]
+        if ids is None:
+            return "[red]✗[/red]"  # endpoint unreachable
+        return "[green]✓[/green]" if model_in_server(e.model or "", ids) else "[red]✗[/red]"
+
     tbl = Table(show_header=True, header_style="bold", box=None, pad_edge=False, collapse_padding=True)
     tbl.add_column("name", style="cyan", no_wrap=True)
     tbl.add_column("model id", no_wrap=True)
+    tbl.add_column("live", justify="center", no_wrap=True)
     tbl.add_column("endpoint", style="dim", no_wrap=True)
     tbl.add_column("ctx", justify="right", no_wrap=True)
     tbl.add_column("out", justify="right", no_wrap=True)
@@ -355,7 +377,7 @@ def _render_models_table(config: "Config"):
         model_str = (f"[bold]{e.model}[/bold]" if is_active else e.model) or "[dim]—[/dim]"
 
         tbl.add_row(
-            name_str, model_str, e.base_url,
+            name_str, model_str, _live_cell(e), e.base_url,
             ctx_str, out_str, temp_str, params_str, tps_str,
             local_str, think_str,
             cost_in_str, cost_out_str, badge_str,

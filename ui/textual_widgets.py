@@ -603,10 +603,16 @@ def build_widget_classes(t) -> SimpleNamespace:
         #model-config-dialog {
             width: 60;
             height: auto;
-            max-height: 30;
+            max-height: 90%;
             border: solid $primary;
             background: $surface;
             padding: 1 2;
+        }
+        #model-config-body {
+            height: auto;
+            max-height: 22;
+            overflow-y: auto;
+            margin-bottom: 1;
         }
         #model-config-close {
             margin-top: 1;
@@ -628,17 +634,27 @@ def build_widget_classes(t) -> SimpleNamespace:
             role_labels = [("llm", "LLM  (main)"), ("emb", "Embed"), ("sum", "Summarizer")]
             for role, heading in role_labels:
                 cfg = self._configs.get(role, {})
-                lines.append(f"[bold]{heading}[/bold]")
+                avail = cfg.get("available")
+                if avail is True:
+                    badge = f"  [rgb(56,142,60)]● online[/]"
+                elif avail is False:
+                    badge = f"  [rgb(198,40,40)]● OFFLINE — model not on endpoint[/]"
+                else:
+                    badge = ""  # not probed / unknown
+                lines.append(f"[bold]{heading}[/bold]{badge}")
                 for k, v in cfg.items():
+                    if k == "available":
+                        continue
                     lines.append(f"  [{t.text_dim}]{k}[/{t.text_dim}]  {_escape(str(v))}")
                 lines.append("")
             return "\n".join(lines).rstrip()
 
         def compose(self):
-            from textual.containers import Vertical
+            from textual.containers import Vertical, ScrollableContainer
             from textual.widgets import Button, Static
             with Vertical(id="model-config-dialog"):
-                yield Static(self._build_body(), id="model-config-body", markup=True)
+                with ScrollableContainer(id="model-config-body"):
+                    yield Static(self._build_body(), id="model-config-body-text", markup=True)
                 if self._server is not None:
                     yield Button("Refresh ctx sizes", id="model-config-refresh")
                 yield Button("Close  [ESC]", id="model-config-close")
@@ -651,7 +667,7 @@ def build_widget_classes(t) -> SimpleNamespace:
                 try:
                     await asyncio.to_thread(self._server.refresh_model_info)
                     self._configs = self._server.get_model_configs()
-                    self.query_one("#model-config-body").update(self._build_body())
+                    self.query_one("#model-config-body-text").update(self._build_body())
                     event.button.label = "Refresh ctx sizes"
                 except Exception:
                     event.button.label = "Refresh failed"
@@ -1066,14 +1082,37 @@ def build_widget_classes(t) -> SimpleNamespace:
 
         def on_mount(self) -> None:
             self.set_interval(0.5, self._refresh)
+            # Re-probe availability periodically (endpoints may come/go).
+            self.set_interval(30.0, self._probe_availability)
             self.tooltip = "Click to view model config / worker status"
+            self._probe_availability()
+
+        def _probe_availability(self) -> None:
+            server = getattr(self.app, "_server", None)
+            if server is None or not hasattr(server, "probe_model_availability"):
+                return
+            # Off the UI thread — a /models GET can block on a dead endpoint.
+            try:
+                self.run_worker(
+                    lambda: server.probe_model_availability(),
+                    thread=True,
+                    exclusive=True,
+                    group="model-availability",
+                )
+            except Exception:
+                pass
 
         def _refresh(self) -> None:
-            from agent.core.model_status import get_states, get_counts
+            from agent.core.model_status import get_states, get_counts, get_availability
             states = get_states()
+            avail = get_availability()
             parts = []
             for label, role in _MODEL_STATUS_ROLES:
-                if states.get(role, "idle") == "running":
+                # Offline (configured model missing on its endpoint) → red, takes
+                # priority over idle/running so the user can spot it at a glance.
+                if avail.get(label) is False:
+                    parts.append(f"[rgb(198,40,40)]{label}:✗[/]")
+                elif states.get(role, "idle") == "running":
                     parts.append(f"[rgb(56,142,60)]{label}:●[/]")
                 else:
                     parts.append(f"[dim]{label}:○[/dim]")

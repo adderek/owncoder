@@ -15,6 +15,10 @@ _lock = threading.Lock()
 _counts: dict[str, int] = {}
 _listeners: list = []
 
+# role → bool availability snapshot (configured model live on its endpoint).
+# Populated by best-effort probes; a missing role means "unknown / not probed".
+_availability: dict[str, bool] = {}
+
 # GPU concurrency semaphore — limits parallel calls to GPU models.
 # Initialized by init_gpu_semaphore() during agent startup.
 _gpu_sem: asyncio.Semaphore | None = None
@@ -37,6 +41,18 @@ def get_counts() -> dict[str, int]:
     """Return role → active request count snapshot."""
     with _lock:
         return dict(_counts)
+
+
+def set_availability(role_map: dict[str, bool]) -> None:
+    """Merge a role → available snapshot from a probe. Unlisted roles untouched."""
+    with _lock:
+        _availability.update(role_map)
+
+
+def get_availability() -> dict[str, bool]:
+    """Return role → bool availability snapshot (empty = not yet probed)."""
+    with _lock:
+        return dict(_availability)
 
 
 def _inc(role: str) -> None:
