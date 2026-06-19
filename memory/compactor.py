@@ -490,7 +490,6 @@ async def compact(
         transcript_text = _protector.protect_text(transcript_text, _entities)
 
     prev_round = facts_store.latest_round() if facts_store is not None else None
-    round_id = prev_round.round_id if prev_round is not None else None
     from_turn = (prev_round.to_turn + 1) if prev_round else 0
     to_turn = turn_index if turn_index is not None else (from_turn + len(to_compact))
 
@@ -555,10 +554,14 @@ async def compact(
             embedder=getattr(facts_store, "_embedder", None),
         )
 
-    # Build the compacted system-summary message
+    # Build the compacted system-summary message. Label it with the round this
+    # summary was *derived from* (the one just saved), not the previous round —
+    # otherwise the number and the recall_facts(round_id=...) hint point one
+    # round behind the facts shown here.
+    display_round_id = saved_round.round_id if saved_round is not None else None
     header = "[SESSION SUMMARY"
-    if round_id is not None:
-        header += f" · round {round_id}"
+    if display_round_id is not None:
+        header += f" · round {display_round_id}"
     header += "]"
     hint = (
         " (Earlier detail is stored as Tier-2 facts. Call `recall_facts(query=..., "

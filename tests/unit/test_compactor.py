@@ -175,6 +175,8 @@ class TestTwoStageCompact:
         compacted = [m for m in result if m.get("role") == "assistant"][0]
         assert "Edited foo.py" in compacted["content"]
         assert "recall_facts" in compacted["content"]
+        # Header labels the round this summary was derived from (the saved one).
+        assert "round 1" in compacted["content"]
         # Draft content should stay Tier-2 only — never in the active message.
         assert stage1_draft not in compacted["content"]
 
@@ -203,9 +205,13 @@ class TestTwoStageCompact:
         client = _client_returning(stage1, stage2)
 
         messages = _mk_messages()
-        await compact(
+        result = await compact(
             messages, cfg, client, keep_last=2, facts_store=store, turn_index=15
         )
+
+        # Header reflects the newly-saved round (2), not the previous one.
+        compacted = [m for m in result if m.get("role") == "assistant"][0]
+        assert "round 2" in compacted["content"]
 
         # Inspect what the stage-1 call received — the prior draft must be in there.
         stage1_call = client.chat.completions.create.await_args_list[0]
