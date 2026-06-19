@@ -146,13 +146,18 @@ def _build_system_prompt(
         preamble_path.write_text("direct answers, no preamble", encoding="utf-8")
     preamble = preamble_path.read_text(encoding="utf-8").strip()
 
+    import os
     import subprocess
     try:
+        # Bound + non-interactive: this runs on every system-prompt build, so a
+        # hung git (lock contention, credential prompt) must not stall startup.
         branch = subprocess.check_output(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
             cwd=config.tools.working_dir,
             stderr=subprocess.DEVNULL,
             text=True,
+            timeout=10,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
         ).strip()
     except Exception:
         branch = "unknown"

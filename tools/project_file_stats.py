@@ -31,14 +31,23 @@ def _working_dir() -> str:
     return working_dir(_config)
 
 
-def _run_git(*args: str, cwd: str | None = None) -> tuple[str, int]:
+def _run_git(*args: str, cwd: str | None = None, timeout: float = 30.0) -> tuple[str, int]:
     cwd = cwd or _working_dir()
-    result = subprocess.run(
-        ["git"] + list(args),
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-    )
+    # Bound the call and disable interactive credential prompts so an
+    # LLM-invoked stats run can never hang the agent on a stuck git process.
+    import os
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    try:
+        result = subprocess.run(
+            ["git"] + list(args),
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        return "", 124
     return result.stdout, result.returncode
 
 
