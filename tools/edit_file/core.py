@@ -66,18 +66,28 @@ def edit_file(
     by_file: dict[str, list[_ValidatedChunk]] = {}
     for v in validated:
         by_file.setdefault(v.path, []).append(v)
+    overlap_indices: set[int] = set()
     for path, vs in by_file.items():
         vs_sorted = sorted(vs, key=lambda c: c.start)
-        for a, b in zip(vs_sorted, vs_sorted[1:]):
-            if b.start < a.end:
+        # Compare each chunk against the last *kept* chunk's end, not merely its
+        # immediate predecessor: a wide chunk A can overlap a later chunk C while
+        # a small chunk B between them (B.end < C.start) does not — comparing
+        # only adjacent pairs would drop B and silently apply A and C with
+        # overlapping ranges (corruption in skip mode).
+        last_kept: _ValidatedChunk | None = None
+        for c in vs_sorted:
+            if last_kept is not None and c.start < last_kept.end:
                 errors.append({
-                    "chunk_index": b.chunk_index,
+                    "chunk_index": c.chunk_index,
                     "kind": "chunks_overlap",
-                    "detail": f"chunk {b.chunk_index} overlaps chunk {a.chunk_index} in {path}",
-                    "overlaps_with": a.chunk_index,
+                    "detail": f"chunk {c.chunk_index} overlaps chunk {last_kept.chunk_index} in {path}",
+                    "overlaps_with": last_kept.chunk_index,
                 })
-                if b in validated:
-                    validated.remove(b)
+                overlap_indices.add(c.chunk_index)
+            else:
+                last_kept = c
+    if overlap_indices:
+        validated = [v for v in validated if v.chunk_index not in overlap_indices]
 
     if errors and fail_mode == "abort":
         _log_edit("edit_file", "<multi>", "atomic_rollback", chunk_count=len(chunks), paths=attempted_paths, error_kinds=[e["kind"] for e in errors])

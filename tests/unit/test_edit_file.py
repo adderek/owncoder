@@ -387,6 +387,35 @@ class TestOnChunkFailSkip:
         # Failed chunk reported
         assert "skipped" in r or r.get("outcome") == "skip_partial"
 
+    def test_wide_chunk_overlapping_nonadjacent_detected(self, work):
+        # A wide chunk A spans lines 1-5. B (line 3) overlaps A but ends before
+        # C (line 5) starts; C also overlaps A. The old adjacent-pair check only
+        # compared C against B (no overlap) and missed C-vs-A, applying A and C
+        # with overlapping ranges. Both B and C must be flagged as overlaps.
+        import agent.tools.rules as rules_mod
+        from agent.tools.rules import RulesConfig, Rules, EditConfig
+
+        (work / "f.py").write_text("AAAAA\nmid1\nBBBBB\nmid2\nCCCCC\ntail\n")
+        ec = EditConfig(on_chunk_fail="skip")
+        rc = RulesConfig()
+        rc.edit = ec
+        old_rules = rules_mod.get_rules()
+        rules_mod.set_rules(Rules(config=rc))
+        try:
+            r = edit_file([
+                {"path": "f.py", "anchor": "AAAAA\nmid1\nBBBBB\nmid2\nCCCCC", "replacement": "ZZZ"},
+                {"path": "f.py", "anchor": "BBBBB", "replacement": "Q"},
+                {"path": "f.py", "anchor": "CCCCC", "replacement": "W"},
+            ])
+        finally:
+            rules_mod.set_rules(old_rules)
+
+        skipped = r.get("skipped", [])
+        overlap_idx = {s["chunk_index"] for s in skipped if s.get("kind") == "chunks_overlap"}
+        assert overlap_idx == {1, 2}, r
+        # Only the wide chunk applied; file is not corrupted by double application.
+        assert (work / "f.py").read_text() == "ZZZ\ntail\n"
+
     def test_skip_mode_exposed_in_schema_when_configured(self, work):
         import agent.tools.rules as rules_mod
         from agent.tools.rules import RulesConfig, Rules, EditConfig
