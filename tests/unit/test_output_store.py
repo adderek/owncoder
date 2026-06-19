@@ -82,11 +82,23 @@ def test_eviction_fifo():
 
 def test_retrieve_output_tool_registered():
     # Import triggers @register decorator
-    import agent.tools.retrieve_output  # noqa: F401
+    import agent.tools.retrieve_output as ro  # noqa: F401
     from agent.tools import get_tool
     fn = get_tool("retrieve_output")
     assert fn is not None
     assert callable(fn)
+    # The decorator must wrap the real tool, not a helper that happens to be
+    # callable too (regression: @register sat above _looks_like_placeholder).
+    assert fn is ro.retrieve_output
+    assert fn.__name__ == "retrieve_output"
+
+    # And it must work end-to-end through the registry, returning the dict envelope.
+    from agent.core.output_store import init_store
+    init_store()
+    _get_global_store().store("reg_smoke", "via registry")
+    out = fn(call_id="reg_smoke", mode="full")
+    assert isinstance(out, dict)
+    assert out.get("content") == "via registry"
 
 
 def test_retrieve_output_returns_stored():

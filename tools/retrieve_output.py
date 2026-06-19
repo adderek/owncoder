@@ -21,6 +21,14 @@ def _get_store():
     return get_store()
 
 
+def _looks_like_placeholder(call_id: str) -> bool:
+    """Detect hallucinated/planning-text call IDs."""
+    if len(call_id) > 80:
+        return True
+    low = call_id.lower()
+    return any(marker in low for marker in ("not provided", "...", "use read_file", "(", "will use", "placeholder"))
+
+
 @register(
     "retrieve_output",
     {
@@ -69,14 +77,6 @@ def _get_store():
         },
     },
 )
-def _looks_like_placeholder(call_id: str) -> bool:
-    """Detect hallucinated/planning-text call IDs."""
-    if len(call_id) > 80:
-        return True
-    low = call_id.lower()
-    return any(marker in low for marker in ("not provided", "...", "use read_file", "(", "will use", "placeholder"))
-
-
 def retrieve_output(
     call_id: str,
     mode: str = "full",

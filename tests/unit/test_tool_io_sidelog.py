@@ -135,6 +135,12 @@ async def test_tool_detail_screen_survives_markup_in_result(tmp_path):
     # run_test re-raises on exit. Also assert the content Static has markup off.
     async with _App().run_test() as pilot:
         await pilot.pause()
-        result_static = pilot.app.screen.query_one("#tc-detail-result-0").query_one("Static")
-        assert result_static._render_markup is False  # arbitrary text never parsed as markup
+        # Tool I/O is rendered in .tc-detail-block Statics (args + result).
+        from textual.widgets import Static
+        blocks = list(pilot.app.screen.query(".tc-detail-block").results(Static))
+        assert blocks, "no tool I/O blocks rendered"
+        # Every I/O block must have markup parsing disabled so [..]/<tags> in
+        # arbitrary tool output never raise MarkupError and crash the app.
+        for b in blocks:
+            assert b._render_markup is False
         await pilot.app.action_quit()
