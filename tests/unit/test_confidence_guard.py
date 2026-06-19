@@ -130,6 +130,16 @@ def test_intervention_message_includes_rates():
     assert "error rate" in msg
 
 
+def test_zero_threshold_does_not_crash():
+    # A config threshold of 0 must not cause ZeroDivisionError in signal();
+    # thresholds are clamped to a tiny positive floor in __init__.
+    m = _monitor(error_rate_threshold=0.0, null_rate_threshold=0.0, dup_rate_threshold=0.0)
+    m.observe_result('{"error": "x"}', is_error=True)
+    m.tick_iter()
+    sig = m.should_intervene()  # must not raise
+    assert sig.score == 0.0  # any non-convergence pins score to the floor
+
+
 def test_result_hash_deduplicates_identical_content():
     h1 = _result_hash("hello")
     h2 = _result_hash("hello")

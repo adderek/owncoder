@@ -277,12 +277,22 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
         tool_calls = []
         for idx in sorted(tc_acc):
             raw = tc_acc[idx]
+            raw_args = raw["function"]["arguments"] or "{}"
             try:
-                args = json.loads(raw["function"]["arguments"] or "{}")
+                args = json.loads(raw_args)
             except json.JSONDecodeError:
-                args = {}
-            tool_calls.append(_FakeToolCall(raw["function"]["name"], args))
-            tool_calls[-1].id = raw["id"] or tool_calls[-1].id
+                # Don't silently drop malformed args to {}. Try the flat-arg
+                # recovery parser first; if that fails too, preserve the raw
+                # string verbatim so execute_tool reports it as invalid JSON
+                # and failure_report captures raw_arguments (matches the
+                # non-streaming path, which keeps the raw string).
+                from .tool_calls import _try_parse_flat_args
+                args = _try_parse_flat_args(raw_args)
+            fc = _FakeToolCall(raw["function"]["name"], args or {})
+            if args is None:
+                fc.function.arguments = raw_args
+            fc.id = raw["id"] or fc.id
+            tool_calls.append(fc)
     elif raw_content:
         # No native function calls — try text-based tool calls from raw content
         text_calls = _parse_text_tool_calls(raw_content)

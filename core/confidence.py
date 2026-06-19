@@ -53,9 +53,11 @@ class ConfidenceMonitor:
         inject_cooldown: int = 3,
     ) -> None:
         self.window = max(2, window)
-        self.error_rate_threshold = error_rate_threshold
-        self.null_rate_threshold = null_rate_threshold
-        self.dup_rate_threshold = dup_rate_threshold
+        # Clamp thresholds away from 0 — signal() divides by each, so a config
+        # value of 0 would raise ZeroDivisionError and crash the turn.
+        self.error_rate_threshold = max(1e-6, error_rate_threshold)
+        self.null_rate_threshold = max(1e-6, null_rate_threshold)
+        self.dup_rate_threshold = max(1e-6, dup_rate_threshold)
         self.score_threshold = score_threshold
         self.inject_cooldown = inject_cooldown
 

@@ -162,6 +162,48 @@ class TestStreamResponseClean:
         from agent.core.streaming import _repetition_guard
         assert _repetition_guard(text) == expected_repeat
 
+    def _tc_delta(self, index: int, name: str = "", arguments: str = "", tc_id: str = ""):
+        """Build a mock streamed tool-call delta fragment."""
+        tc = MagicMock()
+        tc.index = index
+        tc.id = tc_id
+        fn = MagicMock()
+        fn.name = name
+        fn.arguments = arguments
+        tc.function = fn
+        return tc
+
+    @pytest.mark.asyncio
+    async def test_malformed_tool_args_preserved_not_dropped(self):
+        """Unparseable streamed tool-call args keep the raw string instead of {}."""
+        bad = '{this is not valid json at all}'  # fails json.loads and flat-arg parse
+        client = self._make_client(
+            self._mock_chunk(tool_calls=[self._tc_delta(0, name="edit_file", tc_id="call_1")]),
+            self._mock_chunk(tool_calls=[self._tc_delta(0, arguments=bad)]),
+        )
+        _, _content, calls, _ = await _stream_response(
+            client, self._make_config(), [], [], on_token=lambda t: None,
+        )
+        assert calls is not None and len(calls) == 1
+        # Raw malformed string preserved verbatim — not silently emptied to "{}".
+        assert calls[0].function.arguments == bad
+        assert calls[0].function.arguments != "{}"
+
+    @pytest.mark.asyncio
+    async def test_valid_tool_args_parsed(self):
+        """Well-formed streamed tool-call args round-trip to canonical JSON."""
+        client = self._make_client(
+            self._mock_chunk(tool_calls=[self._tc_delta(0, name="read_file", tc_id="call_2")]),
+            self._mock_chunk(tool_calls=[self._tc_delta(0, arguments='{"path": "a.py"}')]),
+        )
+        import json as _json
+        _, _content, calls, _ = await _stream_response(
+            client, self._make_config(), [], [], on_token=lambda t: None,
+        )
+        assert calls is not None and len(calls) == 1
+        assert calls[0].function.name == "read_file"
+        assert _json.loads(calls[0].function.arguments) == {"path": "a.py"}
+
     @pytest.mark.asyncio
     async def test_stream_breaks_on_repeated_content(self):
         """Stream breaks when same word repeats many times."""
