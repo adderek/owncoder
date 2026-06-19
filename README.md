@@ -157,7 +157,7 @@ git -C ~/src/owncoder-stable/agent merge FETCH_HEAD
 
 `python3 scripts/terminal_probe.py --out agent.toml.probe`
 
-My owmcoder agent is meant for special modification of:
+My owncoder agent is meant for special modification of:
 * tilix terminal
 * VTE (used by tilix)
 * llama.cpp
