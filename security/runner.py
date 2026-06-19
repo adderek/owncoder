@@ -377,6 +377,12 @@ def run(
             preexec_fn=lambda: _rlimit_preexec(backend),
             close_fds=True,
             pass_fds=pass_fds,
+            # Put the child in its own session/process group so the timeout path
+            # below can SIGKILL the *whole* tree via os.killpg(proc.pid, ...).
+            # Without this the child stays in the parent's group, killpg(pid)
+            # finds no such group (ProcessLookupError) and the proc.kill()
+            # fallback leaves grandchildren (e.g. a shell's subprocesses) alive.
+            start_new_session=True,
         )
         if seccomp_fd is not None:
             os.close(seccomp_fd)

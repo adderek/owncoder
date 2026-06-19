@@ -96,6 +96,36 @@ class TestEnvScrub:
         assert out["HOME"] == "/root"  # in allow list
 
 
+class TestRunnerProcessGroup:
+    def test_child_started_in_new_session(self, project, monkeypatch):
+        # The timeout path kills the whole tree with os.killpg(proc.pid, ...),
+        # which only works if the child is its own session/process-group leader.
+        # Guard that run() passes start_new_session=True to Popen.
+        monkeypatch.setattr(sec_runner, "_BACKEND", "none")
+        monkeypatch.setattr(sec_runner, "select_backend", lambda: "none")
+
+        seen = {}
+        real_popen = subprocess.Popen
+
+        class _FakeProc:
+            pid = 999999
+
+            def communicate(self, input=None, timeout=None):
+                return b"", b""
+
+            @property
+            def returncode(self):
+                return 0
+
+        def _capture(cmd, **kwargs):
+            seen.update(kwargs)
+            return _FakeProc()
+
+        monkeypatch.setattr(subprocess, "Popen", _capture)
+        sec_runner.run(["echo", "hi"], timeout=5)
+        assert seen.get("start_new_session") is True
+
+
 @pytest.mark.skipif(
     shutil.which("bwrap") is None and shutil.which("firejail") is None,
     reason="no sandbox backend installed — skipping runner test",
