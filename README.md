@@ -42,6 +42,8 @@ which checks current directory (assuming it is a git repo) and created commit me
 
 Local-first heavy coding agent meant for assembler language.
 
+![Self description](https://adderek.github.io/owncoder/img/001-UI_and_features.png)
+
 Key features:
 * **Local-first** — point it at llama.cpp / vLLM / ollama, or any OpenAI-compatible endpoint; nothing leaves your box unless you say so
 * **Security suite** — seccomp sandbox, path grants, airgap mode, prompt-injection scanning, output redaction, audit log, SBOM
@@ -113,6 +115,20 @@ mode = "readline"
 ```
 
 or `AGENT_UI_MODE=readline agent chat`
+
+
+# Screenshots
+
+![Ask it to compare](https://adderek.github.io/owncoder/img/002-TrueComparisonQuestion.png)
+![Discussion summary](https://adderek.github.io/owncoder/img/003-TrueComparisonSummary.png)
+![Questions summary](https://adderek.github.io/owncoder/img/004-QuestionSummary.png)
+![UI](https://adderek.github.io/owncoder/img/005-UI.png)
+![Details of tool call](https://adderek.github.io/owncoder/img/006-ToolCallDetails.png)
+![More details of tool call](https://adderek.github.io/owncoder/img/007-ToolCallDetails.png)
+![Strenghts](https://adderek.github.io/owncoder/img/100-Strengths.png)
+![Strengths - more](https://adderek.github.io/owncoder/img/101-Strengths.png)
+![Weaknesses](https://adderek.github.io/owncoder/img/110-Weaknesses.png)
+![Honest verdict](https://adderek.github.io/owncoder/img/200-HonestVerdict.png)
 
 
 # Fancy commands if you wish to play with it more
