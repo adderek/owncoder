@@ -22,14 +22,24 @@ def _working_dir() -> str:
     return working_dir(_config)
 
 
-def _run_git(*args: str, cwd: str | None = None) -> tuple[str, str, int]:
+def _run_git(*args: str, cwd: str | None = None, timeout: float = 30.0) -> tuple[str, str, int]:
     cwd = cwd or _working_dir()
-    result = subprocess.run(
-        ["git"] + list(args),
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-    )
+    # GIT_TERMINAL_PROMPT=0 stops git from blocking on an interactive credential
+    # prompt; the timeout bounds index.lock contention and pathological repos so
+    # an LLM-invoked git call can never hang the agent turn indefinitely.
+    import os
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    try:
+        result = subprocess.run(
+            ["git"] + list(args),
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        return "", f"git timed out after {timeout:.0f}s: git {' '.join(args)}", 124
     return result.stdout, result.stderr, result.returncode
 
 
