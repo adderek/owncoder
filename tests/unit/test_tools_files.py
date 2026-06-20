@@ -160,6 +160,26 @@ class TestUndoFile:
         assert "pass" in content
         assert "return 1" not in content
 
+    def test_failed_undo_keeps_snapshot(self, work, monkeypatch):
+        # If the revert write fails, the snapshot must survive so the undo can be
+        # retried (the old code popped before writing and lost it on failure).
+        from agent.tools.files import paths as _paths
+        write_file("keep.txt", "v1\n")
+        write_file("keep.txt", "v2\n")
+
+        def _boom(self, *a, **k):
+            raise OSError("disk full")
+
+        monkeypatch.setattr("pathlib.Path.write_text", _boom)
+        r = undo_file("keep.txt")
+        assert "error" in r
+        # Snapshot retained for a retry.
+        assert "keep.txt" in _paths._undo_stack
+        monkeypatch.undo()
+        r2 = undo_file("keep.txt")
+        assert r2 == {"ok": "keep.txt"}
+        assert (work / "keep.txt").read_text() == "v1\n"
+
 
 class TestWriteFileGuards:
     def test_dry_run_no_write(self, work):

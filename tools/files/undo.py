@@ -22,7 +22,11 @@ def undo_file(path: str) -> dict:
         return {"error": f"No undo snapshot for: {path}"}
     try:
         fpath = _resolve(path)
-        fpath.write_text(_undo_stack.pop(path), encoding="utf-8")
+        # Write first, drop the snapshot only on success — otherwise a failed
+        # write would lose the snapshot and leave the file un-reverted with no
+        # way to retry the undo.
+        fpath.write_text(_undo_stack[path], encoding="utf-8")
+        _undo_stack.pop(path, None)
         return {"ok": path}
     except Exception as e:
         return {"error": str(e)}
