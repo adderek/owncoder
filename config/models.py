@@ -495,6 +495,25 @@ class TurnSignalsConfig:
 
 
 @dataclass
+class UIServerConfig:
+    """Remote UI streaming over a relay.
+
+    When enabled, a session publishes its full event stream (tokens, tool
+    calls, phases, signals) to the relay and accepts control frames back, so a
+    remote client (e.g. the Android app) becomes a full chat client rather than
+    just a notification listener. The local TUI keeps rendering in parallel.
+
+    Uses its own relay url/token so the UI stream is not multiplexed onto the
+    notify channel. e2e_key_file (optional) reuses the notify AES-GCM box.
+    """
+    remote: bool = False
+    relay_url: str = ""
+    relay_token_file: str = ""
+    e2e_key_file: str = ""
+    name: str = "agent-ui"
+
+
+@dataclass
 class NotifyChannelConfig:
     """One notification endpoint.
 
@@ -636,6 +655,7 @@ class Config:
     output_store: OutputStoreConfig = field(default_factory=OutputStoreConfig)
     concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
     turn_signals: TurnSignalsConfig = field(default_factory=TurnSignalsConfig)
+    ui_server: UIServerConfig = field(default_factory=UIServerConfig)
     kb: KbConfig = field(default_factory=KbConfig)
     aei: AEIConfig = field(default_factory=AEIConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
