@@ -23,6 +23,14 @@ from .messages import (
 from .transport import AgentTransport
 from .local import LocalTransport
 from .controller import run_turn_ipc
+from .wire import (
+    encode_event,
+    encode_close,
+    decode_event,
+    decode_frame,
+    CLOSE,
+    CLOSE_FRAME,
+)
 
 __all__ = [
     "TokenEvent",
@@ -43,4 +51,10 @@ __all__ = [
     "AgentTransport",
     "LocalTransport",
     "run_turn_ipc",
+    "encode_event",
+    "encode_close",
+    "decode_event",
+    "decode_frame",
+    "CLOSE",
+    "CLOSE_FRAME",
 ]
