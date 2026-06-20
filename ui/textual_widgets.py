@@ -1575,6 +1575,7 @@ def build_widget_classes(t) -> SimpleNamespace:
         ExpandTurn=ExpandTurn,
         TurnDetailScreen=TurnDetailScreen,
         ToolCallDetailScreen=ToolCallDetailScreen,
+        FileDiffScreen=FileDiffScreen,
         _QALineTrackingMixin=_QALineTrackingMixin,
         QView=QView,
         AView=AView,
