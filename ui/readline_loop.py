@@ -69,7 +69,9 @@ def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
 
 def _token_bar(used: int, ctx: int, bar_len: int = 20) -> str:
     pct = used / ctx if ctx else 0
-    filled = int(pct * bar_len)
+    # Clamp to the bar width so an over-budget context (used > ctx) doesn't
+    # render more than bar_len blocks and a negative-length empty segment.
+    filled = max(0, min(bar_len, int(pct * bar_len)))
     color = "red" if pct > 0.85 else ("yellow" if pct > 0.65 else "green")
     bar = f"[{color}]{'█' * filled}{'░' * (bar_len - filled)}[/]"
     return f"[dim]tokens {used}/{ctx}[/dim] {bar}"
