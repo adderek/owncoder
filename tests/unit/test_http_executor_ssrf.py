@@ -169,6 +169,38 @@ class TestRedirectSSRF:
         finally:
             server.shutdown()
 
+    def test_host_header_excludes_userinfo(self, fetcher_script):
+        """Host header must be hostname[:port] only — never raw netloc, which
+        would carry userinfo (user:pass@) and leak credentials."""
+        captured = {}
+
+        class _HostHandler(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                captured["host"] = self.headers.get("Host")
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"ok")
+
+        server = HTTPServer(("127.0.0.1", 0), _HostHandler)
+        port = server.server_address[1]
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        try:
+            resp = _run_fetcher(fetcher_script, {
+                "url": f"http://user:secret@127.0.0.1:{port}/target",
+                "pinned_ip": "127.0.0.1",
+                "max_redirects": 0,
+            })
+            assert not resp.get("error"), resp
+            assert captured["host"] == f"127.0.0.1:{port}"
+            assert "secret" not in captured["host"]
+            assert "@" not in captured["host"]
+        finally:
+            server.shutdown()
+
     def test_redirect_chain_blocked_at_second_hop(self, fetcher_script):
         """Multi-hop: first redirect is to same server (same loopback IP, different port)
         — verifies the per-hop re-validation fires on the second hop too."""

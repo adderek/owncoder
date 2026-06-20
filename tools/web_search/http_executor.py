@@ -158,7 +158,14 @@ def main():
             return
 
         path = (parsed.path or "/") + (("?" + parsed.query) if parsed.query else "")
-        req_headers = {**extra_headers, "User-Agent": user_agent, "Host": parsed.netloc}
+        # Host must be hostname[:port] only — never the raw netloc, which can
+        # carry userinfo (user:pass@) that is malformed in a Host header and
+        # would leak credentials. Include the port only when non-default.
+        _default_port = 443 if scheme == "https" else 80
+        _host_header = parsed.hostname or ""
+        if parsed.port and parsed.port != _default_port:
+            _host_header = "%s:%d" % (_host_header, parsed.port)
+        req_headers = {**extra_headers, "User-Agent": user_agent, "Host": _host_header}
 
         try:
             conn.request(method, path, headers=req_headers)
