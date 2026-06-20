@@ -354,10 +354,12 @@ def cmd_index_update(args, config):
     console = Console()
 
     try:
+        import os as _os
         result = subprocess.run(
             ["git", "diff", "--name-only", "HEAD"],
             cwd=config.tools.working_dir,
             capture_output=True, text=True,
+            timeout=15, env={**_os.environ, "GIT_TERMINAL_PROMPT": "0"},
         )
         changed = [f.strip() for f in result.stdout.splitlines() if f.strip()]
     except Exception:

@@ -48,16 +48,26 @@ def find_git_repos(working_dir: str, max_depth: int = 4) -> list[str]:
     return sorted(found)
 
 
-def _git(*args: str, cwd: str) -> tuple[str, str, int]:
-    r = subprocess.run(["git"] + list(args), cwd=cwd, capture_output=True, text=True)
+def _git(*args: str, cwd: str, timeout: float = 30.0) -> tuple[str, str, int]:
+    # Bound the call and disable interactive credential prompts so a snapshot
+    # step can never hang the plan on a stuck git process.
+    import os
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    try:
+        r = subprocess.run(
+            ["git"] + list(args), cwd=cwd, capture_output=True, text=True,
+            timeout=timeout, env=env,
+        )
+    except subprocess.TimeoutExpired:
+        return "", f"git timed out after {timeout:.0f}s: git {' '.join(args)}", 124
     return r.stdout, r.stderr, r.returncode
 
 
 def _git_available() -> bool:
     try:
-        subprocess.run(["git", "--version"], capture_output=True, check=True)
+        subprocess.run(["git", "--version"], capture_output=True, check=True, timeout=10)
         return True
-    except (FileNotFoundError, subprocess.CalledProcessError):
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return False
 
 

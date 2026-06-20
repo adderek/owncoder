@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import subprocess
 from pathlib import Path
+
+
+def _git_env() -> dict:
+    """Environment that prevents git from blocking on an interactive prompt."""
+    return {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
 
 
 def _fmt_tps(v: float) -> str:
@@ -104,14 +110,17 @@ def _save_problem_report(
         branch = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
             cwd=str(repo_path), capture_output=True, text=True,
+            timeout=10, env=_git_env(),
         ).stdout.strip()
         sha = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
             cwd=str(repo_path), capture_output=True, text=True,
+            timeout=10, env=_git_env(),
         ).stdout.strip()
         has_changes = subprocess.run(
             ["git", "diff", "--quiet"],
             cwd=str(repo_path),
+            timeout=10, env=_git_env(),
         ).returncode != 0
         git_info = {
             "branch": branch,
@@ -238,13 +247,20 @@ def cmd_commit(args, config):
         ["git", "rev-parse", "--git-dir"],
         cwd=str(path),
         capture_output=True, text=True,
+        timeout=10, env=_git_env(),
     )
     if result.returncode != 0:
         console.print(f"[red]Not a git repository: {path}[/red]")
         return
 
     def _git(*git_args: str) -> str:
-        r = subprocess.run(["git"] + list(git_args), cwd=str(path), capture_output=True, text=True)
+        try:
+            r = subprocess.run(
+                ["git"] + list(git_args), cwd=str(path), capture_output=True,
+                text=True, timeout=30, env=_git_env(),
+            )
+        except subprocess.TimeoutExpired:
+            return ""
         return r.stdout.strip()
 
     staged_diff = _git("diff", "--cached")
@@ -588,6 +604,7 @@ def cmd_commit(args, config):
         ["git", "commit", "-m", message],
         cwd=str(path),
         capture_output=True, text=True,
+        timeout=30, env=_git_env(),
     )
     if result.returncode == 0:
         console.print(f"[green]Committed.[/green]\n{result.stdout.strip()}")

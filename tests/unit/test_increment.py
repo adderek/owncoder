@@ -67,6 +67,34 @@ pytestmark = pytest.mark.skipif(
 # find_git_repos
 # ---------------------------------------------------------------------------
 
+class TestGitHelper:
+    def test_git_times_out_returns_124(self, monkeypatch, tmp_path):
+        from agent.planning import increment as inc
+
+        def _boom(*a, **k):
+            raise subprocess.TimeoutExpired(cmd="git", timeout=k.get("timeout", 30))
+
+        monkeypatch.setattr(subprocess, "run", _boom)
+        out, err, rc = inc._git("status", cwd=str(tmp_path), timeout=5)
+        assert rc == 124 and out == "" and "timed out" in err
+
+    def test_git_passes_noninteractive_env_and_timeout(self, monkeypatch, tmp_path):
+        from agent.planning import increment as inc
+        seen = {}
+
+        class _R:
+            stdout, stderr, returncode = "ok", "", 0
+
+        def _cap(cmd, **kw):
+            seen.update(kw)
+            return _R()
+
+        monkeypatch.setattr(subprocess, "run", _cap)
+        inc._git("status", cwd=str(tmp_path))
+        assert seen["timeout"] == 30.0
+        assert seen["env"]["GIT_TERMINAL_PROMPT"] == "0"
+
+
 class TestFindGitRepos:
     def test_no_git(self, tmp_path):
         assert find_git_repos(str(tmp_path)) == []
