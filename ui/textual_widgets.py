@@ -814,7 +814,19 @@ def build_widget_classes(t) -> SimpleNamespace:
             tool_names = list(dict.fromkeys(
                 (n if isinstance(n, str) else n.get("name", "?")) for n in tools
             ))
-            files = list(dict.fromkeys(files))
+            # modified_files entries are dicts ({"path","added","removed"}) or
+            # plain strings — dicts are unhashable, so dedup by a hashable key
+            # (the path) and keep the first entry. dict.fromkeys(files) here
+            # raised TypeError and silently aborted opening the turn detail.
+            _seen_files: set = set()
+            _deduped_files = []
+            for _f in files:
+                _key = _f.get("path", "") if isinstance(_f, dict) else str(_f)
+                if _key in _seen_files:
+                    continue
+                _seen_files.add(_key)
+                _deduped_files.append(_f)
+            files = _deduped_files
 
             with Vertical(id="turn-detail-dialog"):
                 yield Static(

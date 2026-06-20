@@ -144,3 +144,44 @@ async def test_tool_detail_screen_survives_markup_in_result(tmp_path):
         for b in blocks:
             assert b._render_markup is False
         await pilot.app.action_quit()
+
+
+@pytest.mark.asyncio
+async def test_turn_detail_screen_with_dict_modified_files(tmp_path):
+    """modified_files entries are dicts ({path,added,removed}); the turn detail
+    screen must dedup/render them without raising TypeError (dict.fromkeys on a
+    list of dicts crashed compose, so clicking 'expand turn' silently failed)."""
+    from textual.app import App
+    from agent.ui.textual_widgets import build_widget_classes
+
+    class _Theme:
+        def __getattr__(self, k):
+            return "white"
+
+    w = build_widget_classes(_Theme())
+
+    q_data = {"turn_id": 1, "content": "edit two files"}
+    a_data = {
+        "turn_id": 1,
+        "content": "done",
+        "tool_calls": ["edit_file", {"name": "write_file"}],
+        "modified_files": [
+            {"path": "a.py", "added": 3, "removed": 1},
+            {"path": "a.py", "added": 9, "removed": 9},  # dup path
+            {"path": "b.py", "added": 0, "removed": 0},
+            "c.py",  # legacy string form
+        ],
+    }
+    screen = w.TurnDetailScreen(0, q_data, a_data, session_dir=tmp_path)
+
+    class _App(App):
+        async def on_mount(self) -> None:
+            await self.push_screen(screen)
+
+    async with _App().run_test() as pilot:
+        await pilot.pause()
+        from textual.widgets import Button
+        file_btns = [b for b in pilot.app.screen.query(Button) if str(b.id or "").startswith("file-btn-")]
+        # Three unique paths (a.py deduped), no crash.
+        assert len(file_btns) == 3
+        await pilot.app.action_quit()
