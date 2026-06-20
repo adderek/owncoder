@@ -24,9 +24,9 @@ from agent.ui.slash import (
 
 
 def _build_textual_app(agent: "Agent", session=None, server=None):
-    from agent.ui_server import LocalUIServer
+    from agent.ui_server import build_ui_server
     if server is None:
-        server = LocalUIServer(agent)
+        server = build_ui_server(agent)
     t = server.get_ui_config()["theme"]
 
     import os
@@ -791,8 +791,8 @@ from agent.ui.colors import _hex_to_ansi
 
 
 def run_ui(agent: "Agent", session=None):
-    from agent.ui_server import LocalUIServer
-    server = LocalUIServer(agent)
+    from agent.ui_server import build_ui_server
+    server = build_ui_server(agent)
     if server.get_ui_config()["mode"] == "textual":
         try:
             app = _build_textual_app(agent, session=session, server=server)

@@ -84,9 +84,9 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
     from rich.markup import escape as _escape
     import readline  # enables arrow keys / history on Linux
 
-    from agent.ui_server import LocalUIServer
+    from agent.ui_server import build_ui_server
     if server is None:
-        server = LocalUIServer(agent)
+        server = build_ui_server(agent)
 
     _ui_cfg = server.get_ui_config()
     _llm_cfg = server.get_llm_info()
