@@ -430,7 +430,17 @@ class Agent:
 
     async def compact_messages(self) -> None:
         from agent.memory.compactor import compact
-        self.messages = await compact(self.messages, self.config, self._client)
+        # Pass the same stores as idle/auto compaction so a manual /compact also
+        # persists the Tier-2 facts round (and carries original_request forward);
+        # otherwise recall_facts loses everything elided by the manual compaction.
+        self.messages = await compact(
+            self.messages,
+            self.config,
+            self._client,
+            facts_store=self._facts_store,
+            project_memory_store=self._project_memory_store,
+            session_id=self._session_id,
+        )
 
     def token_estimate(self) -> int:
         return _count_tokens_approx(self.messages)

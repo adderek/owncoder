@@ -312,3 +312,34 @@ class TestTruncateLargeMessages:
         msgs = [self._msg("user", original)]
         _truncate_large_messages(msgs, token_budget=10)
         assert msgs[0]["content"] == original
+
+
+class TestCompactMessagesForwarding:
+    """compact_messages must persist Tier-2 facts, like idle/auto compaction."""
+
+    @pytest.mark.asyncio
+    async def test_forwards_stores_to_compact(self, monkeypatch):
+        import types
+        import agent.memory.compactor as comp
+        from agent.core.agent import Agent
+
+        captured = {}
+
+        async def fake_compact(messages, config, client, **kw):
+            captured.update(kw)
+            return ["compacted"]
+
+        monkeypatch.setattr(comp, "compact", fake_compact)
+
+        stub = types.SimpleNamespace(
+            messages=["m"], config=None, _client=None,
+            _facts_store="FS", _project_memory_store="PMS", _session_id="sid",
+        )
+        await Agent.compact_messages(stub)
+
+        assert stub.messages == ["compacted"]
+        assert captured == {
+            "facts_store": "FS",
+            "project_memory_store": "PMS",
+            "session_id": "sid",
+        }
