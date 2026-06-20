@@ -119,6 +119,22 @@ class TestRulesCheckMethods:
         ok, _ = rules.check_write("src/main.py")
         assert ok
 
+    def test_check_write_new_file_does_not_count(self):
+        # check_write is a predicate — it must not consume max_new_files quota,
+        # since it runs before dry-run/size/confirm gates that may abort the
+        # write. Only note_file_created() advances the counter.
+        cfg = RulesConfig(max_new_files=1)
+        rules = Rules(config=cfg)
+        # Many checks, no actual creation → quota not consumed.
+        for _ in range(5):
+            ok, _ = rules.check_write("new.py", is_new=True)
+            assert ok
+        # One real creation consumes the single slot.
+        rules.note_file_created()
+        ok, msg = rules.check_write("another.py", is_new=True)
+        assert not ok
+        assert "Maximum new files" in msg
+
     def test_check_command_blocked(self):
         cfg = RulesConfig(blocked_patterns=["rm -rf"])
         rules = Rules(config=cfg)

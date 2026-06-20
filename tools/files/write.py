@@ -85,5 +85,10 @@ def write_file(path: str, content: str) -> dict:
             _log_edit("write_file", path, "syntax_error")
             return {"error": f"File written but has syntax error: {e}. Use undo_file to revert.", "path": path}
 
+    # Count the new file only now that it was actually written (not on the
+    # earlier check_write gate, which also fires for dry-run/aborted writes).
+    if is_new:
+        rules.note_file_created()
+
     _log_edit("write_file", path, "ok")
     return {"ok": path, "diff": diff_summary}

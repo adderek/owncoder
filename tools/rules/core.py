@@ -135,16 +135,24 @@ class Rules:
                     f"{self.config.allowed_languages}"
                 )
 
-        # Max new files per session
+        # Max new files per session — check only; do NOT count here. check_write
+        # is a predicate that runs before the write actually happens (and before
+        # the dry-run / size / confirm gates that may still abort), so counting
+        # here would consume quota for writes that never occur. The caller calls
+        # note_file_created() after a real write succeeds.
         if is_new and self.config.max_new_files > 0:
             if self._files_created >= self.config.max_new_files:
                 return False, (
                     f"Maximum new files per session "
                     f"({self.config.max_new_files}) reached"
                 )
-            self._files_created += 1
 
         return True, None
+
+    def note_file_created(self) -> None:
+        """Record that a new file was actually written (advances the per-session
+        max_new_files counter). Call only after the write has succeeded."""
+        self._files_created += 1
 
     def check_write_size(self, content: str) -> tuple[bool, str | None]:
         """Check content size against max_write_size limit."""
