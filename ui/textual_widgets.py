@@ -445,6 +445,19 @@ def build_widget_classes(t) -> SimpleNamespace:
         def _store_entries(self, entries: list) -> None:
             self._qa_entries = list(entries)
 
+        def _append_entry(self, entry: tuple) -> int:
+            """Append one QA entry and return its ordinal, self-initializing the
+            store. add_turn must not fetch _qa_entries via getattr-with-default
+            and append to it: when load_history hasn't run yet (a fresh live
+            session) that mutates a throwaway list, the entry is lost, and
+            click-to-expand silently degrades to jump-only."""
+            if not hasattr(self, "_qa_entries"):
+                self._qa_entries = []
+            ordinal = getattr(self, "_entry_count", len(self._qa_entries))
+            self._qa_entries.append(entry)
+            self._entry_count = ordinal + 1
+            return ordinal
+
         def on_click(self, event) -> None:
             ordinals = getattr(self, "_line_ordinals", [])
             if not ordinals:
@@ -471,10 +484,7 @@ def build_widget_classes(t) -> SimpleNamespace:
             self._entry_count = len(entries)
 
         def add_turn(self, turn_id: int, q_data: dict, a_data: dict) -> None:
-            ordinal = getattr(self, "_entry_count", 0)
-            self._entry_count = ordinal + 1
-            entries = getattr(self, "_qa_entries", [])
-            entries.append((turn_id, q_data, a_data))
+            ordinal = self._append_entry((turn_id, q_data, a_data))
             self._write_entry(ordinal, turn_id, q_data)
 
         def _write_entry(self, ordinal: int, turn_id: int, q: dict) -> None:
@@ -498,10 +508,7 @@ def build_widget_classes(t) -> SimpleNamespace:
             self._entry_count = len(entries)
 
         def add_turn(self, turn_id: int, q_data: dict, a_data: dict) -> None:
-            ordinal = getattr(self, "_entry_count", 0)
-            self._entry_count = ordinal + 1
-            entries = getattr(self, "_qa_entries", [])
-            entries.append((turn_id, q_data, a_data))
+            ordinal = self._append_entry((turn_id, q_data, a_data))
             self._write_entry(ordinal, turn_id, a_data)
 
         def _write_entry(self, ordinal: int, turn_id: int, a: dict) -> None:
@@ -525,10 +532,7 @@ def build_widget_classes(t) -> SimpleNamespace:
             self._entry_count = len(entries)
 
         def add_turn(self, turn_id: int, q_data: dict, a_data: dict) -> None:
-            ordinal = getattr(self, "_entry_count", 0)
-            self._entry_count = ordinal + 1
-            entries = getattr(self, "_qa_entries", [])
-            entries.append((turn_id, q_data, a_data))
+            ordinal = self._append_entry((turn_id, q_data, a_data))
             self._write_entry(ordinal, turn_id, q_data, a_data)
 
         def _write_entry(self, ordinal: int, turn_id: int, q: dict, a: dict) -> None:
