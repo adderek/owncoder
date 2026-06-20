@@ -622,9 +622,16 @@ def _make_handler(rag_db: str, asm_db: str, working_dir: str):
                 self._api_file(qs.get("path", [""])[0])
             elif path == "/api/content":
                 fp = qs.get("path", [""])[0]
-                start = int(qs.get("start", [1])[0])
-                end = int(qs.get("end", [9999999])[0])
-                self._api_content(fp, start, end)
+
+                def _qint(name: str, default: int) -> int:
+                    try:
+                        return int(qs.get(name, [default])[0])
+                    except (ValueError, TypeError):
+                        return default
+
+                # Malformed query params (?start=abc) must yield a clean default,
+                # not an unhandled ValueError → 500 on the request.
+                self._api_content(fp, _qint("start", 1), _qint("end", 9999999))
             else:
                 self.send_response(404)
                 self.end_headers()
