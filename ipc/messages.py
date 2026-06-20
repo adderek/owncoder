@@ -236,13 +236,55 @@ class ErrorEvent:
         ))
 
 
+@dataclass
+class SignalEvent:
+    """A turn signal surfaced to a remote consumer (ask_user/done/blocked/…).
+
+    Carries the parsed signal plus the clean response text it accompanied, so a
+    remote client can render the prompt without re-parsing >>> markers.
+    """
+    WIRE_TYPE = "signal"
+    kind: str
+    payload: str
+    clean_response: str = ""
+
+    def to_wire(self) -> dict:
+        return {"v": EVENT_PROTOCOL_VERSION, "type": self.WIRE_TYPE,
+                "kind": self.kind, "payload": self.payload,
+                "clean_response": self.clean_response}
+
+    @classmethod
+    def from_wire(cls, obj: dict) -> "SignalEvent":
+        return cls(kind=obj["kind"], payload=obj.get("payload", ""),
+                   clean_response=obj.get("clean_response", ""))
+
+
+@dataclass
+class TurnEndEvent:
+    """Lightweight end-of-turn marker for remote consumers.
+
+    Unlike TurnDoneEvent (which also ships the full messages list, an internal
+    detail), this carries only the final response text a client needs to show.
+    """
+    WIRE_TYPE = "turn_end"
+    response: str
+
+    def to_wire(self) -> dict:
+        return {"v": EVENT_PROTOCOL_VERSION, "type": self.WIRE_TYPE,
+                "response": self.response}
+
+    @classmethod
+    def from_wire(cls, obj: dict) -> "TurnEndEvent":
+        return cls(response=obj.get("response", ""))
+
+
 # Wire type -> event class. Drives event_from_wire dispatch.
 _WIRE_REGISTRY: dict[str, type] = {
     cls.WIRE_TYPE: cls
     for cls in (
         TokenEvent, ReasoningEvent, ToolCallEvent, ToolResultEvent, PhaseEvent,
         UsageEvent, ContextSizeEvent, ProgressEvent, TruncationEvent,
-        LoopDetectedEvent, TurnDoneEvent, ErrorEvent,
+        LoopDetectedEvent, TurnDoneEvent, ErrorEvent, SignalEvent, TurnEndEvent,
     )
 }
 
