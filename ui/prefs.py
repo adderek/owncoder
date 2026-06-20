@@ -11,7 +11,13 @@ def load_prefs() -> Dict[str, Any]:
     path = get_prefs_path()
     if path.exists():
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"))
+            # Must be a JSON object: a valid but non-object prefs file (null,
+            # [], "str", a number) would otherwise be returned as-is, and
+            # callers doing prefs.get(...) — e.g. the chat startup path — would
+            # raise AttributeError. Honor the Dict return contract.
+            if isinstance(data, dict):
+                return data
         except Exception:
             pass
     return {}

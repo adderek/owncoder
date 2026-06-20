@@ -49,3 +49,17 @@ def test_load_prefs_corrupt(tmp_path, monkeypatch):
     monkeypatch.setattr("agent.ui.prefs.get_prefs_path", lambda: prefs_file)
 
     assert load_prefs() == {}
+
+
+@pytest.mark.parametrize("payload", ["null", "[]", '"a string"', "42", "true"])
+def test_load_prefs_valid_but_non_object_returns_empty_dict(payload, tmp_path, monkeypatch):
+    # Valid JSON that isn't an object must not leak through: callers do
+    # prefs.get(...) (e.g. chat startup) and would crash on a list/None/str.
+    prefs_file = tmp_path / "nonobj.json"
+    prefs_file.write_text(payload)
+    monkeypatch.setattr("agent.ui.prefs.get_prefs_path", lambda: prefs_file)
+
+    result = load_prefs()
+    assert result == {}
+    # Contract: always a dict, so .get is always safe.
+    assert result.get("anything") is None
