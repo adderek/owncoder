@@ -746,7 +746,16 @@ def _make_handler(rag_db: str, asm_db: str, working_dir: str):
             self.send_json({"chunks": chunks, "asm_units": asm_units})
 
         def _api_content(self, file_path: str, start: int, end: int):
-            full = Path(_abs(file_path))
+            # Confine to the project root: this browses the indexed project, so
+            # an absolute path (_abs returns "/etc/passwd" unchanged) or a
+            # ../-escape must not read files outside working_dir.
+            try:
+                root = Path(working_dir).resolve()
+                full = Path(_abs(file_path)).resolve()
+                full.relative_to(root)
+            except (ValueError, OSError):
+                self.send_json({"content": "(path outside project root)"}, 403)
+                return
             if not full.exists():
                 self.send_json({"content": f"(file not found: {file_path})"})
                 return
