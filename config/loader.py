@@ -405,8 +405,13 @@ def load_config(extra_path: Path | list[Path] | None = None) -> Config:
     _apply_model_entry_to_llm(config)
     # Env overrides have highest priority (run after bridge)
     _apply_env_overrides(config)
-    # Re-sync fields that env overrides on config.agent but bridge already copied to config.llm
+    # Re-sync fields that env overrides on config.agent but the bridge already
+    # copied to config.llm. Must cover every config.agent field that both the
+    # bridge (_apply_model_entry_to_llm) and env_map touch, or that env var is
+    # silently dropped — run_turn reads these off config.llm, not config.agent.
     config.llm.max_iterations = config.agent.max_iterations
+    config.llm.goal = config.agent.goal
+    config.llm.goal_max_iterations = config.agent.goal_max_iterations
     config.llm.think_level = config.agent.think_level
     config.llm.auto_detect_ctx = config.agent.auto_detect_ctx
     config.llm.narration_fallback = config.agent.narration_fallback

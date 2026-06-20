@@ -47,6 +47,17 @@ class TestEnvOverrides:
         _apply_env_overrides(c)
         assert c.llm.model == original_model
 
+    def test_goal_env_reaches_llm_section(self, tmp_path, monkeypatch):
+        # AGENT_GOAL/AGENT_GOAL_MAX_ITERATIONS land on config.agent, but run_turn
+        # reads config.llm.goal — load_config must re-sync them after env override.
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path / "no_home")
+        monkeypatch.setenv("AGENT_GOAL", "ship-it")
+        monkeypatch.setenv("AGENT_GOAL_MAX_ITERATIONS", "42")
+        (tmp_path / "agent.toml").write_text("", encoding="utf-8")
+        c = load_config(tmp_path / "agent.toml")
+        assert c.llm.goal == "ship-it"
+        assert c.llm.goal_max_iterations == 42
+
 
 class TestMergeObj:
     def test_simple_merge(self):
