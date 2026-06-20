@@ -12,6 +12,11 @@ import itertools
 import uuid
 from dataclasses import dataclass, field
 
+# Notify-wire protocol version. Sent in the relay hello so server and client can
+# detect a breaking mismatch. Bump the major when notice/question/answer shapes
+# change incompatibly; additive (new optional fields) stays the same version.
+NOTIFY_PROTOCOL_VERSION = 1
+
 # Per-process nonce: ids must be globally unique so that when several agents
 # share one relay, an answer broadcast to all agents only matches the pending
 # question of the agent that actually asked it. A bare per-process counter

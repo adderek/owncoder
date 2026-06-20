@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Callable, Protocol, runtime_checkable
 
 from agent.config.models import NotifyChannelConfig
-from agent.notify.messages import Notice, Question
+from agent.notify.messages import NOTIFY_PROTOCOL_VERSION, Notice, Question
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +141,7 @@ class RelayChannel:
                 # parse cost rather than accept the 1 MiB websockets default.
                 async with websockets.connect(self.url, max_size=RELAY_MAX_FRAME_BYTES) as ws:
                     await ws.send(json.dumps({
-                        "type": "hello", "role": "agent",
+                        "type": "hello", "role": "agent", "v": NOTIFY_PROTOCOL_VERSION,
                         "token": self._token, "name": self.name,
                     }))
                     backoff = 1

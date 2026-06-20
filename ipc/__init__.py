@@ -16,6 +16,9 @@ from .messages import (
     TruncationEvent,
     TurnDoneEvent,
     ErrorEvent,
+    RemoteError,
+    EVENT_PROTOCOL_VERSION,
+    event_from_wire,
 )
 from .transport import AgentTransport
 from .local import LocalTransport
@@ -34,6 +37,9 @@ __all__ = [
     "TruncationEvent",
     "TurnDoneEvent",
     "ErrorEvent",
+    "RemoteError",
+    "EVENT_PROTOCOL_VERSION",
+    "event_from_wire",
     "AgentTransport",
     "LocalTransport",
     "run_turn_ipc",

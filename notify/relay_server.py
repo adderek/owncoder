@@ -50,11 +50,14 @@ import time
 from collections import deque
 from pathlib import Path
 
+from .messages import NOTIFY_PROTOCOL_VERSION
+
 logger = logging.getLogger(__name__)
 
 HELLO_TIMEOUT_S = 10
 CLOSE_UNAUTHORIZED = 4401
 CLOSE_TOO_MANY = 4429      # connection cap or rate limit exceeded
+CLOSE_BAD_VERSION = 4426   # incompatible protocol version in hello
 DEFAULT_MAX_AGENTS = 8
 DEFAULT_MAX_CLIENTS = 16
 DEFAULT_MSG_RATE = 20.0    # sustained messages/sec per connection
@@ -167,6 +170,15 @@ class RelayHub:
             or not isinstance(token, str)
         ):
             await ws.close(CLOSE_UNAUTHORIZED, "unauthorized")
+            return None
+        # Version negotiation: a hello MAY carry "v". Missing = legacy client,
+        # accepted for backward compat. Present but a different major = reject.
+        peer_v = hello.get("v")
+        if peer_v is not None and peer_v != NOTIFY_PROTOCOL_VERSION:
+            logger.warning("relay: protocol version %r != %d from %s",
+                           peer_v, NOTIFY_PROTOCOL_VERSION, _peer(ws))
+            await ws.close(CLOSE_BAD_VERSION,
+                           f"protocol version mismatch (server {NOTIFY_PROTOCOL_VERSION})")
             return None
         # Always evaluate both compares (constant-time, no short-circuit leak).
         agent_ok = hmac.compare_digest(token, self._agent_token)
