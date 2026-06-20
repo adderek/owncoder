@@ -83,6 +83,21 @@ def build_widget_classes(t) -> SimpleNamespace:
                 text = text[: limit - 1] + "…"
         return text
 
+    def _dedup_files(files: list) -> list:
+        """Dedup modified_files (dict {path,added,removed} or str) by path,
+        keeping the first entry. dict.fromkeys() crashes on dict entries
+        (unhashable), so both the turn-detail render and its click handler must
+        use this — and produce the SAME order so button indices stay aligned."""
+        seen: set = set()
+        out = []
+        for f in files or []:
+            key = f.get("path", "") if isinstance(f, dict) else str(f)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(f)
+        return out
+
     # ── bars ─────────────────────────────────────────────────────────────────
 
     class TokenBar(Static):
@@ -814,19 +829,7 @@ def build_widget_classes(t) -> SimpleNamespace:
             tool_names = list(dict.fromkeys(
                 (n if isinstance(n, str) else n.get("name", "?")) for n in tools
             ))
-            # modified_files entries are dicts ({"path","added","removed"}) or
-            # plain strings — dicts are unhashable, so dedup by a hashable key
-            # (the path) and keep the first entry. dict.fromkeys(files) here
-            # raised TypeError and silently aborted opening the turn detail.
-            _seen_files: set = set()
-            _deduped_files = []
-            for _f in files:
-                _key = _f.get("path", "") if isinstance(_f, dict) else str(_f)
-                if _key in _seen_files:
-                    continue
-                _seen_files.add(_key)
-                _deduped_files.append(_f)
-            files = _deduped_files
+            files = _dedup_files(files)
 
             with Vertical(id="turn-detail-dialog"):
                 yield Static(
@@ -887,8 +890,7 @@ def build_widget_classes(t) -> SimpleNamespace:
                     self.app.push_screen(ToolCallDetailScreen(tool_name, tid, self._session_dir))
             if btn_id.startswith("file-btn-"):
                 idx = int(btn_id[len("file-btn-"):])
-                files = self._a_data.get("modified_files") or []
-                files = list(dict.fromkeys(files))
+                files = _dedup_files(self._a_data.get("modified_files") or [])
                 if idx < len(files):
                     fentry = files[idx]
                     if isinstance(fentry, dict):
@@ -1072,7 +1074,6 @@ def build_widget_classes(t) -> SimpleNamespace:
             from textual.containers import Vertical, ScrollableContainer
             from textual.widgets import Button, Static
             from rich.markup import escape as _esc
-            from rich.diff import Diff
 
             diff_text = self._get_diff()
             stat = ""

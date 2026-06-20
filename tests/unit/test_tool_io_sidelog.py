@@ -184,4 +184,10 @@ async def test_turn_detail_screen_with_dict_modified_files(tmp_path):
         file_btns = [b for b in pilot.app.screen.query(Button) if str(b.id or "").startswith("file-btn-")]
         # Three unique paths (a.py deduped), no crash.
         assert len(file_btns) == 3
+        # Clicking a file button must not crash either — the handler re-dedups
+        # modified_files to map the button index → file (dict.fromkeys crashed
+        # there too). It pushes a FileDiffScreen.
+        await pilot.click(file_btns[0])
+        await pilot.pause()
+        assert pilot.app.screen.__class__.__name__ == "FileDiffScreen"
         await pilot.app.action_quit()
