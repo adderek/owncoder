@@ -292,6 +292,12 @@ async def run_turn(
         reset_turn_state()
     if excluded_tools:
         tools = [t for t in tools if t.get("function", {}).get("name") not in excluded_tools]
+    # Typed turn-signal tools (ask_user/mark_done/blocked/…) are only offered
+    # when turn signals are enabled; otherwise drop them from the schema.
+    _ts_cfg = getattr(config, "turn_signals", None)
+    if _ts_cfg is not None and not getattr(_ts_cfg, "enabled", True):
+        from agent.tools.turn_signals import SIGNAL_TOOL_NAMES
+        tools = [t for t in tools if t.get("function", {}).get("name") not in SIGNAL_TOOL_NAMES]
     compaction_on = config.tool_compaction.enabled
     if compaction_on:
         from agent.tool_compactor import inject_purpose_into_schemas
@@ -627,6 +633,19 @@ async def run_turn(
                         on_tool_result(tc.function.name, ok)
                     except Exception:
                         logger.exception("on_tool_result callback failed")
+
+            # Typed turn signals (axis B): a signal-tool call ends the turn. We
+            # surface a canonical ">>>KIND: payload" line in the returned response
+            # so the meta-loop's parse_signal() drives the next step, while the
+            # conversation history stays clean (the >>> text never enters it).
+            # The regex form remains a fallback for models still emitting markers.
+            if _ts_cfg is None or getattr(_ts_cfg, "enabled", True):
+                from agent.tools.turn_signals import extract_signal_line
+                _sig_line = extract_signal_line(tool_calls, patched_results)
+                if _sig_line:
+                    _base = (clean_content or "").strip()
+                    _resp = f"{_base}\n{_sig_line}" if _base else _sig_line
+                    return "".join(content_parts + [_resp]), messages
 
             token_est = _count_tokens_approx(messages)
             _notify_ctx(token_est)
