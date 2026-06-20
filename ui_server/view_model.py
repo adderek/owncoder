@@ -79,6 +79,23 @@ class ViewModel:
 
     # ── event fold ───────────────────────────────────────────────────────────
 
+    def apply_frame(self, raw: str | dict) -> bool:
+        """Decode a wire frame and fold it in. Returns True if it was a display
+        event, False if it was the close terminator or a non-event frame.
+
+        Lets a remote client drive the model straight from the relay: unknown,
+        control, and close frames are ignored so the stream never crashes it.
+        """
+        from agent.ipc.wire import decode_frame, CLOSE
+        try:
+            event = decode_frame(raw)
+        except Exception:
+            return False
+        if event is CLOSE:
+            return False
+        self.apply(event)
+        return True
+
     def apply(self, event) -> None:
         if isinstance(event, TokenEvent):
             self._assistant_buf += event.token
