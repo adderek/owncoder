@@ -255,8 +255,10 @@ def load_session(id_or_name: str) -> tuple[Session | None, list[dict]]:
     sdir = _get_session_dir()
 
     # Search all session files (recursively) for a matching id or short_name.
+    # Match only session.json — other JSON under .agent (facts round-*.json,
+    # system.json sidecars) are not sessions and would otherwise be misread.
     for p in sorted(
-        sdir.rglob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True
+        sdir.rglob("session.json"), key=lambda x: x.stat().st_mtime, reverse=True
     ):
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
@@ -279,9 +281,10 @@ def list_sessions() -> list[dict]:
     """Return summary dicts for all sessions, newest first."""
     sdir = _get_session_dir()
     sessions = []
-    # Use rglob to find all .json files in subdirectories
+    # Only session.json files are sessions; other JSON under .agent (facts
+    # round-*.json, system.json sidecars) must not show up as phantom sessions.
     for p in sorted(
-        sdir.rglob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True
+        sdir.rglob("session.json"), key=lambda x: x.stat().st_mtime, reverse=True
     ):
         try:
             data = json.loads(p.read_text(encoding="utf-8"))

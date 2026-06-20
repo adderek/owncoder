@@ -89,3 +89,23 @@ class TestListSessions:
         names = {s["short_name"] for s in sessions}
         assert "s1" in names
         assert "s2" in names
+
+    def test_ignores_non_session_json_under_agent_dir(self, tmp_path):
+        # Facts-store round files and preamble sidecars are JSON living under
+        # .agent but are NOT sessions — they must not appear as phantom entries.
+        from agent.memory.session import get_session_full_dir
+        from agent.memory.facts_store import FactsStore
+
+        s = new_session(short_name="real", name="Real")
+        save_session(s, [{"role": "user", "content": "hi"}])
+
+        fs = FactsStore(s.id, base_dir=get_session_full_dir(s.id))
+        fs.new_round(from_turn=0, to_turn=1, knowledge_draft="draft", summary="sum")
+
+        sessions = list_sessions()
+        ids = {x["id"] for x in sessions}
+        assert s.id in ids
+        assert not any(i.startswith("round-") for i in ids), ids
+        assert len(sessions) == 1
+        # And the phantom id is not loadable as a session.
+        assert load_session("round-0001")[0] is None
