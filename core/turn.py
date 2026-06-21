@@ -285,6 +285,32 @@ async def run_turn(
         except Exception:
             logger.exception("on_context_size callback failed")
 
+    # Tee every LLM usage report into a per-call side-log so daily-use sessions
+    # carry a persistent timing trail (ttft / gen / tok-s) — not just the live
+    # in-memory spinner stats. Wrapping here covers both the streaming and the
+    # non-streaming call sites below.
+    _orig_on_usage = on_usage
+    if side_log is not None:
+        def _on_usage_logged(u: dict) -> None:
+            try:
+                gen = u.get("gen_seconds") or 0.0
+                out_tok = u.get("output_tokens", 0) or 0
+                ttft = u.get("ttft")
+                side_log.append("llm_calls.jsonl", {
+                    "turn": turn_index,
+                    "input_tokens": u.get("input_tokens", 0) or 0,
+                    "output_tokens": out_tok,
+                    "ttft": round(ttft, 3) if ttft else None,
+                    "gen_seconds": round(gen, 3) if gen else None,
+                    "stream_seconds": round(u.get("stream_seconds") or 0.0, 3),
+                    "out_tps": round(out_tok / gen, 1) if gen > 0 else None,
+                })
+            except Exception as e:
+                logger.warning("side_log append failed (llm_call): %s", e)
+            if _orig_on_usage is not None:
+                _orig_on_usage(u)
+        on_usage = _on_usage_logged
+
     tools = get_schemas()
     # Reset web search rate limit counters each turn.
     if config.web_search.enabled:
@@ -559,8 +585,17 @@ async def run_turn(
                 logger.warning("dedup: %d duplicate tool call(s) in batch (unique: %d, total: %d)",
                                dedup_count, len(unique_tool_calls), len(tool_calls))
 
-            # Execute only unique calls (once); duplicates share the same result
-            raw_unique_results = await asyncio.gather(*[execute_tool(tc, config) for tc in unique_tool_calls])
+            # Execute only unique calls (once); duplicates share the same result.
+            # Wall-time each call so the side-log captures per-tool latency —
+            # the missing piece for spotting slow-tool bottlenecks in daily use.
+            async def _timed_execute(tc):
+                _t0 = time.monotonic()
+                _r = await execute_tool(tc, config)
+                return _r, (time.monotonic() - _t0) * 1000.0
+
+            _timed = await asyncio.gather(*[_timed_execute(tc) for tc in unique_tool_calls])
+            raw_unique_results = [r for r, _ in _timed]
+            unique_durations = [d for _, d in _timed]
 
             unique_results = raw_unique_results
             if compaction_on:
@@ -575,10 +610,12 @@ async def run_turn(
             # Map unique results back to all positions
             results_map: dict[int, str] = {}
             raw_results_map: dict[int, str] = {}
-            for ui, result, raw in zip(unique_indices, unique_results, raw_unique_results):
+            duration_map: dict[int, float] = {}
+            for ui, result, raw, dur in zip(unique_indices, unique_results, raw_unique_results, unique_durations):
                 for idx in dedup_groups[_tc_sig(tool_calls[ui])]:
                     results_map[idx] = result
                     raw_results_map[idx] = raw
+                    duration_map[idx] = dur
             results = [results_map[i] for i in range(len(tool_calls))]
             # Full, uncompacted results — persisted to the side-log so the UI can
             # fetch the real tool I/O on demand even when context was compacted.
@@ -619,6 +656,7 @@ async def run_turn(
                             "arguments": parsed_args[i],
                             "result": raw_results[i],
                             "ok": ok,
+                            "duration_ms": round(duration_map.get(i, 0.0), 1),
                         })
                     except Exception as e:
                         logger.warning("side_log append failed (tool_call): %s", e)

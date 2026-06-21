@@ -187,6 +187,12 @@ class SlashHandlerMixin:
                 except Exception:
                     pass
 
+        elif cmd in ("/perf", "/timing"):
+            from agent.metrics.turn_metrics import run_perf_command
+            _sl = getattr(self._server._agent, "_side_log", None)
+            _dir = getattr(_sl, "session_dir", None) if _sl is not None else None
+            self._write_sys(_escape(run_perf_command(_dir)))
+
         elif cmd == "/reset":
             self._server.reset_messages()
             self._write_sys(f"[{t.text_dim}]Conversation history cleared.[/{t.text_dim}]")

@@ -23,6 +23,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/compact", [], "summarize old messages to free context", False),
     ("/context", ["/ctx", "/legend"], "context breakdown grid + color/marker key", False),
     ("/output", ["/out"], "show model output breakdown (think/tool/reply/other)", True),
+    ("/perf", ["/timing"], "show session performance: LLM vs tool time + slowest tools", False),
     ("/continue", ["/c"], "resume after iteration cap or truncation", False),
     ("/goal", [], "set/show/clear completion goal  [<text> | $ <cmd> | clear]", True),
     ("/exec", [], "run a shell command", True),

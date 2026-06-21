@@ -52,6 +52,13 @@ class Agent:
             api_key=config.llm.api_key,
         )
         self._qa_logger = None
+        # Registry entry name for the active LLM endpoint — key under which the
+        # turn loop persists throughput in model_stats.json.
+        try:
+            from agent.metrics.model_stats import resolve_entry_name
+            self._model_entry_name = resolve_entry_name(config)
+        except Exception:
+            self._model_entry_name = config.llm.model or "default"
         self._facts_store = None
         self._side_log = None
         self._turn_id: int = 0
@@ -536,6 +543,14 @@ class Agent:
         if gen > 0:
             s["out_tps"] = u.get("output_tokens", 0) / gen
             s["last_gen_seconds"] = gen
+            # Persist throughput so the daily-chat path feeds model_stats.json
+            # (previously only the commit-message generator did). EWMA filter +
+            # _MIN_TOKENS guard live inside update_stats.
+            try:
+                from agent.metrics.model_stats import update_stats
+                update_stats(self._model_entry_name, u.get("output_tokens", 0), gen)
+            except Exception:
+                logger.debug("update_stats failed", exc_info=True)
 
     async def chat(
         self,

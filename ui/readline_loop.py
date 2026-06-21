@@ -37,6 +37,7 @@ def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
   [{c}]/compact[/{c}]            summarise old messages to free context space
   [{c}]/continue[/{c}] (or [{c}]continue[/{c}], Ctrl+R)  resume after iteration cap / truncation
   [{c}]/tokens[/{c}]             show token usage breakdown
+  [{c}]/perf[/{c}]               session performance: LLM vs tool time + slowest tools
   [{c}]/clear[/{c}]              clear the screen
   [{c}]/reset[/{c}]              drop conversation history (keep system prompt)
   [{c}]/save [name][/{c}]        save session under a name (default: current)
@@ -245,6 +246,12 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
             elif cmd == "/mcp":
                 from agent.mcp import run_mcp_command
                 console.print(run_mcp_command(agent.config, arg))
+
+            elif cmd in ("/perf", "/timing"):
+                from agent.metrics.turn_metrics import run_perf_command
+                _sl = getattr(agent, "_side_log", None)
+                _dir = getattr(_sl, "session_dir", None) if _sl is not None else None
+                console.print(run_perf_command(_dir))
 
             elif cmd in ("/security", "/sec", "/audit"):
                 from agent.security.secaudit import run_security_command, _security_start_banner

@@ -93,6 +93,9 @@ async def test_tool_call_logged_to_sidelog(monkeypatch, tmp_path):
     assert rec["arguments"]["query"] == "owncoder agent"
     assert rec["result"] == big_result  # full, uncompacted
     assert rec["ok"] is True
+    # Per-tool latency is recorded for bottleneck analysis.
+    assert "duration_ms" in rec
+    assert isinstance(rec["duration_ms"], (int, float)) and rec["duration_ms"] >= 0.0
 
 
 @pytest.mark.asyncio

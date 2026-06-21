@@ -49,3 +49,22 @@ def update_stats(entry_name: str, tokens: int, elapsed_sec: float) -> None:
 def get_tps(entry_name: str) -> float:
     """Return EWMA tok/s for *entry_name*, or 0.0 if no data."""
     return load_stats().get(entry_name, {}).get("tps_ewma", 0.0)
+
+
+def resolve_entry_name(config) -> str:
+    """Best-effort registry entry name for the agent's active LLM endpoint.
+
+    Matches config.llm (base_url, model) against the configured model_entries so
+    the daily-chat path persists tps under the SAME key the registry/commit path
+    uses (e.g. "gpu-gemma4"). Falls back to the raw model name when no entry
+    matches — so stats are still recorded for unregistered endpoints.
+    """
+    try:
+        llm = config.llm
+        entries = getattr(config, "model_entries", {}) or {}
+        for name, entry in entries.items():
+            if getattr(entry, "base_url", None) == llm.base_url and getattr(entry, "model", None) == llm.model:
+                return name
+        return llm.model or "default"
+    except Exception:
+        return "default"
