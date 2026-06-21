@@ -193,6 +193,11 @@ class SlashHandlerMixin:
             _dir = getattr(_sl, "session_dir", None) if _sl is not None else None
             self._write_sys(_escape(run_perf_command(_dir)))
 
+        elif cmd in ("/who", "/agents"):
+            from agent import coord as _coord
+            _wd = self._server._agent.config.tools.working_dir
+            self._write_sys(_escape(_coord.summary(_wd)))
+
         elif cmd == "/reset":
             self._server.reset_messages()
             self._write_sys(f"[{t.text_dim}]Conversation history cleared.[/{t.text_dim}]")

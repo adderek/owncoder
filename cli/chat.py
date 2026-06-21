@@ -349,6 +349,23 @@ def cmd_chat(args, config):
     except Exception:
         pass
 
+    # Multi-agent presence: announce this agent on the worktree and warn loudly
+    # if another agent (owncoder/Claude/Gemini/Hermes) is already editing here.
+    try:
+        from agent import coord as _coord
+        _wd = config.tools.working_dir
+        _coord.prune(_wd)
+        _coord.heartbeat(_wd, agent="owncoder", tool="owncoder", note=config.llm.model)
+        _others = _coord.list_active(_wd)
+        if _others:
+            console.print(f"[yellow]⚠ {_coord.summary(_wd)}[/yellow]")
+            console.print(
+                "[yellow]  Shared worktree — coordinate before editing/building "
+                "(see AGENTS.md → Multi-agent coordination).[/yellow]"
+            )
+    except Exception:
+        logger.debug("coord presence announce failed", exc_info=True)
+
     try:
         active_session = run_ui(agent, session=session)
         if active_session is not None:
@@ -383,6 +400,11 @@ def cmd_chat(args, config):
     finally:
         try:
             _sentinel.unlink(missing_ok=True)
+        except Exception:
+            pass
+        try:
+            from agent import coord as _coord
+            _coord.clear(config.tools.working_dir, agent="owncoder")
         except Exception:
             pass
         save_session(session, agent.messages)

@@ -578,6 +578,19 @@ class Agent:
         self._turn_id += 1
         turn_id = self._turn_id
 
+        # Refresh this agent's worktree presence beacon each turn so other agents
+        # see a live heartbeat (TTL-based liveness in agent/coord/presence.py).
+        try:
+            from agent import coord as _coord
+            _coord.heartbeat(
+                self.config.tools.working_dir,
+                agent="owncoder",
+                tool="owncoder",
+                note=self.config.llm.model,
+            )
+        except Exception:
+            logger.debug("coord heartbeat failed", exc_info=True)
+
         # drain stale injections from a previous turn
         while not self._inject_queue.empty():
             try:
