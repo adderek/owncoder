@@ -20,6 +20,22 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _build_client_timeout(config: "Config"):
+    """httpx.Timeout for the LLM client, or None to use the SDK default.
+
+    A short connect timeout fails fast on a dead endpoint; the long read timeout
+    is the hard ceiling for a single request (the per-chunk stall watchdog in
+    streaming catches mid-stream stalls well before this fires)."""
+    secs = int(getattr(config.llm, "request_timeout", 0) or 0)
+    if secs <= 0:
+        return None
+    try:
+        import httpx
+    except Exception:
+        return None
+    return httpx.Timeout(connect=10.0, read=float(secs), write=30.0, pool=10.0)
+
+
 class Agent:
     def __init__(self, config: "Config", store=None, embedder=None, asm_store=None, data_provider=None) -> None:
         from openai import AsyncOpenAI
@@ -50,6 +66,12 @@ class Agent:
         self._client = AsyncOpenAI(
             base_url=config.llm.base_url,
             api_key=config.llm.api_key,
+            # Bound a single request so a wedged backend (e.g. a GPU/HSA stall on
+            # the llama.cpp side) can't hang the agent forever. The per-chunk
+            # stall watchdog in _stream_response catches mid-stream stalls sooner;
+            # this is the outer hard ceiling. max_retries=0 — we own retry below.
+            timeout=_build_client_timeout(config),
+            max_retries=0,
         )
         self._qa_logger = None
         # Registry entry name for the active LLM endpoint — key under which the

@@ -26,6 +26,9 @@ class LLMConfig:
     narration_fallback: bool = True
     cache_ttl: int = 300         # prompt cache TTL in seconds; 0 = disable cache tracking
     gpu: bool = False             # True when resolved default entry is in [concurrency].gpu_pool
+    request_timeout: int = 600    # hard ceiling (s) for a single LLM request; 0 = SDK default
+    stream_stall_seconds: int = 90  # abort a stream if no chunk arrives for this long (0 = off)
+    stream_stall_retries: int = 1   # retries after a stall/timeout before giving up
 
 
 @dataclass

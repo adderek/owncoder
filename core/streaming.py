@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -14,6 +15,14 @@ if TYPE_CHECKING:
     from agent.config import Config
 
 logger = logging.getLogger(__name__)
+
+
+class StreamStalledError(Exception):
+    """Raised when an LLM stream produces no chunk within the stall window.
+
+    Signals a wedged backend (e.g. a GPU/HSA lost-wakeup on the llama.cpp side)
+    so the turn loop can abort the request — closing the connection frees the
+    server slot — and retry instead of hanging forever."""
 
 
 @dataclass
@@ -193,7 +202,7 @@ def _gpu_slot(config):
     return _noop()
 
 
-async def _stream_response(client, config: "Config", api_messages, tools, on_token, on_usage=None, on_reasoning=None):
+async def _stream_response(client, config: "Config", api_messages, tools, on_token, on_usage=None, on_reasoning=None, stop_event=None):
     from agent._tokens import count_tokens_approx
     from agent.memory.compactor import _count_tokens_approx
     from agent.core.model_status import _inc as _ms_inc, _dec as _ms_dec
@@ -222,7 +231,35 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
             **_build_call_kwargs(config),
         )
 
-        async for chunk in stream:
+        stall_s = int(getattr(config.llm, "stream_stall_seconds", 0) or 0)
+        stream_it = stream.__aiter__()
+        while True:
+            # Cooperative interrupt: a hung `async for` never yields back to the
+            # turn loop, so check the stop flag on every chunk boundary.
+            if stop_event is not None and stop_event.is_set():
+                logger.info("stream: stop_event set — closing stream")
+                finish_reason = "stop"
+                try:
+                    await stream.close()
+                except Exception:
+                    pass
+                break
+            try:
+                if stall_s > 0:
+                    chunk = await asyncio.wait_for(stream_it.__anext__(), timeout=stall_s)
+                else:
+                    chunk = await stream_it.__anext__()
+            except StopAsyncIteration:
+                break
+            except asyncio.TimeoutError:
+                try:
+                    await stream.close()
+                except Exception:
+                    pass
+                raise StreamStalledError(
+                    f"LLM stream stalled: no chunk for {stall_s}s "
+                    f"(backend likely wedged)"
+                )
             u = getattr(chunk, "usage", None)
             if u is not None:
                 server_usage = {

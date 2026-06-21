@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from agent.config import Config
-from agent.core.streaming import _clean_output, _stream_response
+from agent.core.streaming import _clean_output, _stream_response, StreamStalledError
 
 
 class TestCleanOutput:
@@ -244,3 +245,77 @@ class TestStreamResponseClean:
         await _stream_response(client, self._make_config(), [], [], on_token=tokens.append)
         # on_token sees raw chunks; final content is cleaned
         assert tokens == ["hello ", "<|channel|>noise"]
+
+
+class _HangingStream:
+    """Async stream that yields one chunk then blocks forever — simulates a
+    wedged backend (GPU/HSA lost-wakeup) mid-generation."""
+
+    def __init__(self, first_chunk):
+        self._first = first_chunk
+        self._served = False
+        self.closed = False
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._served:
+            self._served = True
+            return self._first
+        await asyncio.Event().wait()  # never set → hang
+
+    async def close(self):
+        self.closed = True
+
+
+class TestStreamStallWatchdog:
+    """The per-chunk stall watchdog aborts a wedged stream instead of hanging."""
+
+    def _config(self, stall_s):
+        c = Config()
+        c.llm.think_level = "off"
+        c.llm.stream_stall_seconds = stall_s
+        return c
+
+    @pytest.mark.asyncio
+    async def test_stall_raises_after_timeout(self):
+        chunk = MagicMock()
+        chunk.usage = None
+        chunk.choices = []
+        stream = _HangingStream(chunk)
+        client = MagicMock()
+        client.chat.completions.create = AsyncMock(return_value=stream)
+
+        cfg = self._config(stall_s=1)  # 1s window — fires fast, bounded test time
+        with pytest.raises(StreamStalledError):
+            await _stream_response(client, cfg, [], [], on_token=lambda t: None)
+        assert stream.closed is True  # stream closed → server slot freed
+
+    @pytest.mark.asyncio
+    async def test_no_watchdog_when_disabled(self):
+        # stall_seconds=0 disables the watchdog; a normal finite stream still works
+        c = self._config(stall_s=0)
+        chunk = self._finished_chunk()
+        client = MagicMock()
+
+        async def _iter():
+            yield chunk
+        client.chat.completions.create = AsyncMock(return_value=_iter())
+        finish, content, calls, _ = await _stream_response(
+            client, c, [], [], on_token=lambda t: None,
+        )
+        assert finish == "stop"
+
+    def _finished_chunk(self):
+        chunk = MagicMock()
+        chunk.usage = None
+        choice = MagicMock()
+        choice.finish_reason = "stop"
+        delta = MagicMock()
+        delta.content = "ok"
+        delta.reasoning_content = ""
+        delta.tool_calls = []
+        choice.delta = delta
+        chunk.choices = [choice]
+        return chunk

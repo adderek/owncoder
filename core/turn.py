@@ -12,7 +12,7 @@ from openai import BadRequestError
 
 from .prompts import _build_call_kwargs, _inject_think_hint, _inject_autonomy_hint, _inject_aei_hint, _log_llm_request
 from .tool_calls import _tool_result_message, _FakeToolCall, execute_tool, _parse_raw_tool_calls
-from .streaming import _stream_response, _strip_tool_blocks, _is_narrating_tool_use, _gpu_slot, build_streamed_choice
+from .streaming import _stream_response, _strip_tool_blocks, _is_narrating_tool_use, _gpu_slot, build_streamed_choice, StreamStalledError
 from .cache_tracker import check_cache, mark_request
 from .history_ops import (
     _merge_consecutive_assistants, _collapse_tool_rounds, _truncate_large_messages,
@@ -370,6 +370,7 @@ async def run_turn(
         except Exception:
             pass
 
+    stall_retry_count = 0
     while True:
         if inject_queue is not None:
             drained: list[dict] = []
@@ -411,7 +412,7 @@ async def run_turn(
                 _phase("generating", f"iter {iter_count + 1}/{'∞' if max_iter is None else max_iter}")
                 finish_reason, full_content, raw_tool_calls, turn_reasoning = await _stream_response(
                     client, config, api_messages, tools, on_token,
-                    on_usage=on_usage, on_reasoning=on_reasoning,
+                    on_usage=on_usage, on_reasoning=on_reasoning, stop_event=stop_event,
                 )
                 if config.llm.cache_ttl > 0:
                     mark_request(config.llm.base_url, config.llm.model)
@@ -455,6 +456,19 @@ async def run_turn(
                     })
                 if config.llm.cache_ttl > 0:
                     mark_request(config.llm.base_url, config.llm.model)
+        except StreamStalledError as e:
+            # Backend wedged mid-stream (e.g. a GPU/HSA lost-wakeup on the
+            # llama.cpp side). The stream was already closed, freeing the server
+            # slot; retry the same request a bounded number of times before
+            # surfacing the failure.
+            max_stall_retries = max(0, int(getattr(config.llm, "stream_stall_retries", 1)))
+            if stall_retry_count < max_stall_retries:
+                stall_retry_count += 1
+                logger.warning("%s — retry %d/%d", e, stall_retry_count, max_stall_retries)
+                _phase("stall_retry", f"{stall_retry_count}/{max_stall_retries}")
+                continue
+            logger.error("%s — giving up after %d retries", e, max_stall_retries)
+            raise
         except BadRequestError as e:
             err_body = e.body or {}
             if isinstance(err_body, dict) and err_body.get("error", {}).get("type") == "exceed_context_size_error":
