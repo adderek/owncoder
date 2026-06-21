@@ -102,6 +102,17 @@ tags = ["coding"]
 # ── Agent runtime behavior ────────────────────────────────────────────────────
 
 [agent]
+mode                      = "fast"   # "fast" | "ultrasecure"
+                                     #   fast: web_search/web_fetch callable directly.
+                                     #   ultrasecure: internet stripped from the main
+                                     #   agent; it reaches the net only via the
+                                     #   ask_internet broker, which spawns a disposable
+                                     #   subagent (assumed compromised) holding the web
+                                     #   tools and returns sanitized, LLM-re-emitted
+                                     #   {answer,sources,quotes}. Requires
+                                     #   web_search.enabled = true. CLI: --ultrasecure.
+                                     #   Optional: map a separate model for the broker
+                                     #   subagent via [models] internet = "<entry>".
 max_iterations            = 10       # max tool-call rounds per user turn
 compaction_threshold      = 0.75     # compact context when usage exceeds this fraction
 compaction_message_threshold = 15    # also compact after this many messages

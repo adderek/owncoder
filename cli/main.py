@@ -47,6 +47,11 @@ def main() -> None:
     sys.setrecursionlimit(5000)
     parser = argparse.ArgumentParser(prog="agent", description="Local code agent")
     parser.add_argument("--config", type=str, help="Path to agent.toml")
+    parser.add_argument("--ultrasecure", action="store_true",
+                        help="Run in ultrasecure mode: the agent reaches the "
+                             "internet only via a quarantined subagent broker "
+                             "(ask_internet); web_search/web_fetch are stripped "
+                             "from the main agent. Overrides agent.mode.")
 
     sub = parser.add_subparsers(dest="command")
 
@@ -164,6 +169,9 @@ def main() -> None:
 
     if project_root:
         config.tools.working_dir = str(project_root)
+
+    if getattr(args, "ultrasecure", False):
+        config.agent.mode = "ultrasecure"
 
     configure_sessions(config.tools.working_dir, config.tools.agent_dir)
     from agent.planning import configure_plans

@@ -107,6 +107,17 @@ def load_all_tools(config=None, store=None, embedder=None, asm_store=None, data_
     if config is not None and getattr(config.web_search, "enabled", False) and not _airgap:
         web_search.setup(config)
 
+    # Ultrasecure mode: configure the quarantined internet broker. Requires web
+    # access available to the disposable subagent (web_search enabled, not
+    # air-gapped). The broker is auto-registered by discovery; setup wires its
+    # config. The main turn excludes web_search/web_fetch (see core/agent.py).
+    if (config is not None
+            and getattr(config.agent, "mode", "fast") == "ultrasecure"
+            and getattr(config.web_search, "enabled", False)
+            and not _airgap):
+        from agent.tools import ask_internet  # noqa: F401
+        ask_internet.setup(config, data_provider)
+
     if config is not None and getattr(getattr(config, "kb", None), "enabled", False):
         from agent.tools import kb  # noqa: F401
         kb.setup(config)
