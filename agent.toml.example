@@ -202,6 +202,8 @@ compaction_message_threshold = 15    # also compact after this many messages
 narration_fallback        = true     # emit narration text if model skips tool-call
 auto_detect_ctx           = true     # query server for actual context size on startup
 think_level               = "normal" # "none" | "min" | "normal" | "max"
+stream_stall_seconds      = 90       # abort a stream if no chunk arrives for this long (0 = off)
+stream_stall_retries      = 1        # retries after a stall before giving up
 
 # ── RAG ───────────────────────────────────────────────────────────────────────
 
