@@ -44,7 +44,7 @@ def _fake_llm(monkeypatch):
         fake_openai.AsyncOpenAI = _make_fake_client(reply)
         monkeypatch.setitem(sys.modules, "openai", fake_openai)
         entry = types.SimpleNamespace(base_url="http://x/v1", api_key="local", model="m")
-        reg = types.SimpleNamespace(default=entry, summarizer=entry)
+        reg = types.SimpleNamespace(default=entry, summarizer=entry, background=entry, role=lambda *_a, **_k: entry)
         monkeypatch.setattr("agent.config.make_registry", lambda cfg: reg)
     return _install
 
@@ -105,7 +105,7 @@ def test_generate_never_raises(monkeypatch):
     fake_openai.AsyncOpenAI = _Boom
     monkeypatch.setitem(sys.modules, "openai", fake_openai)
     entry = types.SimpleNamespace(base_url="http://x/v1", api_key="local", model="m")
-    monkeypatch.setattr("agent.config.make_registry", lambda cfg: types.SimpleNamespace(summarizer=entry))
+    monkeypatch.setattr("agent.config.make_registry", lambda cfg: types.SimpleNamespace(summarizer=entry, role=lambda *_a, **_k: entry))
     s = sess.Session(id="x")
     msgs = [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]
     assert asyncio.run(namer.generate_session_meta(s, msgs, object())) is None

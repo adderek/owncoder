@@ -59,6 +59,7 @@ def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
                        options: --resume  --force  --levels N
   [{c}]/think [level][/{c}]       thinking effort: off|low|normal|high|max ('-' resets)
   [{c}]/autonomy [level][/{c}]    autonomy: 0.0–1.0 (or %) or supervised|explain|balanced|brisk|autopilot ('-' resets)
+  [{c}]/mode [name][/{c}]         model-mode: local-only|free-cloud|free-hybrid|paid-cloud|manual|any
   [{c}]/temperature [v][/{c}]     sampling temperature 0.0–2.0 (alias [{c}]/temp[/{c}]; '-' resets)
   [{c}]/max_tokens [args][/{c}]   set tokens: <n> | out <n> | in <n> | default
   [{c}]/context[/{c}] ([{c}]/ctx[/{c}], [{c}]/legend[/{c}])  context breakdown grid + color/marker key
@@ -485,6 +486,10 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
             elif cmd in ("/autonomy", "/auto", "/verbose"):
                 ok, msg = server.set_autonomy(arg)
                 console.print(f"[{'green' if ok else 'yellow'}]{msg}[/]")
+
+            elif cmd == "/mode":
+                from agent.core.model_mode import run_mode_command
+                console.print(run_mode_command(agent.config, arg))
 
             elif cmd in ("/temperature", "/temp"):
                 ok, msg = server.set_temperature(arg)

@@ -377,6 +377,18 @@ class AgentConfig:
     #                   fetched bytes is laundered through it and never reaches the
     #                   privileged agent verbatim.
     mode: str = "fast"  # "fast" | "ultrasecure"
+    # Which cost tiers may be used for AUTOMATIC model selection (idle/background
+    # work + spawn_agents decision-maker). Does NOT override an explicitly pinned
+    # [models] default — that is always honored.
+    #   "local-only"  — only local models (no network egress)
+    #   "free-cloud"  — only free cloud providers (Cerebras/Groq/Mistral/OpenRouter)
+    #   "free-hybrid" — local + free cloud (default: offload idle work to free cloud,
+    #                   keep local model free for the main thread)
+    #   "paid-cloud"  — only paid cloud models (force max quality, no downgrade)
+    #   "manual"      — all tiers, but NO auto free-cloud offload: only explicit
+    #                   [models]/`/model role=` pins (the user's matrix) are used
+    #   "any"         — local + free + paid (idle work auto-offloads to free cloud)
+    model_mode: str = "any"
     max_iterations: int | None = None  # None/0 = unlimited
     goal: str | None = None
     goal_max_iterations: int = 200
@@ -418,6 +430,10 @@ class ModelEntry:
     intelligence_index: float = 0.0  # general reasoning / intelligence score
     coding_index: float = 0.0        # coding benchmark score
     agentic_index: float = 0.0       # agentic / tool-use benchmark score
+    # Cost tier for model-mode filtering. "" = auto: local→"local",
+    # priced→"paid", otherwise reachable cloud→"free". Override to force a tier
+    # (e.g. a free-but-rate-limited provider you want grouped as "free").
+    tier: str = ""              # "" | "local" | "free" | "paid"
 
 
 @dataclass

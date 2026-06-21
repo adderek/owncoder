@@ -457,7 +457,7 @@ async def review(config, target: str, *, incremental: bool = False, on_progress=
                 pass
 
     try:
-        entry = make_registry(config).default
+        entry = make_registry(config).role("review")
     except Exception as e:  # noqa: BLE001
         return f"(review unavailable: {e})"
     if airgap.is_enabled(config) and not airgap.is_local_url(entry.base_url):

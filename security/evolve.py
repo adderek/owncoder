@@ -84,7 +84,7 @@ async def _distill(config, material: str) -> list[dict]:
     from agent.security import airgap
 
     try:
-        entry = make_registry(config).default
+        entry = make_registry(config).role("evolve")
     except Exception as e:  # noqa: BLE001
         return [{"_error": f"distill unavailable: {e}"}]
     # Distill must be offline-safe: if air-gap is on, the LOCAL endpoint is fine.

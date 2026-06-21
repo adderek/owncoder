@@ -65,7 +65,7 @@ def _patch_llm(monkeypatch, payload=None):
     monkeypatch.setitem(sys.modules, "openai", fake)
     entry = types.SimpleNamespace(base_url="http://localhost:8081/v1", api_key="local", model="m")
     monkeypatch.setattr("agent.config.make_registry",
-                        lambda c: types.SimpleNamespace(default=entry))
+                        lambda c: types.SimpleNamespace(default=entry, role=lambda *_a, **_k: entry))
 
 
 def test_review_reports_llm_findings(tmp_path, monkeypatch):
@@ -102,7 +102,7 @@ def test_airgap_refuses_remote(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "openai", fake)
     entry = types.SimpleNamespace(base_url="https://api.example.com", api_key="k", model="m")
     monkeypatch.setattr("agent.config.make_registry",
-                        lambda c: types.SimpleNamespace(default=entry))
+                        lambda c: types.SimpleNamespace(default=entry, role=lambda *_a, **_k: entry))
     out = review.run_review_command(cfg, str(tmp_path))
     assert "air-gap" in out
 
@@ -303,7 +303,7 @@ def test_self_critique_drops_false_positive(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "openai", fake)
     entry = types.SimpleNamespace(base_url="http://localhost:8081/v1", api_key="local", model="m")
     monkeypatch.setattr("agent.config.make_registry",
-                        lambda c: types.SimpleNamespace(default=entry))
+                        lambda c: types.SimpleNamespace(default=entry, role=lambda *_a, **_k: entry))
     (tmp_path / "a.py").write_text("def run(x):\n    return eval(x)\n")
     out = review.run_review_command(_cfg(tmp_path), str(tmp_path))
     assert "dropped by self-critique" in out
@@ -359,7 +359,7 @@ def test_ensemble_confidence_by_agreement(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "openai", fake)
     entry = types.SimpleNamespace(base_url="http://localhost:8081/v1", api_key="local", model="m")
     monkeypatch.setattr("agent.config.make_registry",
-                        lambda c: types.SimpleNamespace(default=entry))
+                        lambda c: types.SimpleNamespace(default=entry, role=lambda *_a, **_k: entry))
     (tmp_path / "a.c").write_text("\n".join(f"l{i}" for i in range(5)))
     out = review.run_review_command(_cfg(tmp_path), "ensemble .")
     # A agreed across both samples -> high; B/C one-off -> low.
@@ -394,7 +394,7 @@ def test_deep_mode_hot_explore_cold_judge(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "openai", fake)
     entry = types.SimpleNamespace(base_url="http://localhost:8081/v1", api_key="local", model="m")
     monkeypatch.setattr("agent.config.make_registry",
-                        lambda c: types.SimpleNamespace(default=entry))
+                        lambda c: types.SimpleNamespace(default=entry, role=lambda *_a, **_k: entry))
     (tmp_path / "a.c").write_text("\n".join(f"l{i}" for i in range(5)))
     out = review.run_review_command(_cfg(tmp_path), "deep .")
     assert "deep: hot-explore" in out
@@ -424,7 +424,7 @@ def test_deep_inline_sample_count(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "openai", fake)
     entry = types.SimpleNamespace(base_url="http://localhost:8081/v1", api_key="local", model="m")
     monkeypatch.setattr("agent.config.make_registry",
-                        lambda c: types.SimpleNamespace(default=entry))
+                        lambda c: types.SimpleNamespace(default=entry, role=lambda *_a, **_k: entry))
     (tmp_path / "a.c").write_text("int x;\n")           # one window
     out = review.run_review_command(_cfg(tmp_path), "deep 7 .")
     assert "hot-explore ×7" in out

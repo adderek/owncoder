@@ -388,6 +388,12 @@ class SlashHandlerMixin:
             for line in msg.splitlines():
                 self._write_sys(f"[{color}]{line}[/{color}]")
 
+        elif cmd == "/mode":
+            from agent.core.model_mode import run_mode_command
+            msg = run_mode_command(self._server._agent.config, arg)
+            for line in msg.splitlines():
+                self._write_sys(_escape(line))
+
         elif cmd in ("/temperature", "/temp"):
             ok, msg = self._server.set_temperature(arg)
             color = t.success if ok else t.warning

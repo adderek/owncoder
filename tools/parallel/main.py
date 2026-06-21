@@ -288,12 +288,16 @@ async def spawn_agents(tasks: list[dict]) -> str:
             model_name: str | None = explicit_model
         elif use_decision:
             from agent.tools.parallel.decision import pick_model
+            from agent.config import make_registry
             hint = item.get("hint") or {}
+            # Restrict the decision-maker to models permitted by the active
+            # model-mode (local-only / free-cloud / free-hybrid / paid-cloud / any).
+            allowed = make_registry(_config).allowed_names()
             model_name = pick_model(
                 _config.model_entries,
                 hint,
                 decision_cfg,
-                candidates=list(_config.model_entries.keys()),
+                candidates=allowed or list(_config.model_entries.keys()),
             )
         else:
             model_name = workers_pool[i % len(workers_pool)] if workers_pool else None

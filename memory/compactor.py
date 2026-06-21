@@ -342,7 +342,7 @@ async def _check_goal_drift(
     )
     try:
         from agent.config import make_registry
-        entry = make_registry(config).summarizer
+        entry = make_registry(config).role("compaction")
         from openai import AsyncOpenAI as _OAI
         sum_client = _OAI(base_url=entry.base_url, api_key=entry.api_key)
         try:

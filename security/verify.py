@@ -84,7 +84,7 @@ async def _generate(config, finding: "secaudit.Finding", target: str) -> str:
     from agent.config import make_registry
     from agent.security import airgap
 
-    entry = make_registry(config).default
+    entry = make_registry(config).role("verify")
     if airgap.is_enabled(config) and not airgap.is_local_url(entry.base_url):
         return "# air-gap: refused — LLM endpoint is non-local"
 

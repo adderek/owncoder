@@ -54,7 +54,7 @@ def _fake_llm(monkeypatch):
     monkeypatch.setitem(sys.modules, "openai", fake_openai)
     # Fake make_registry().default
     entry = types.SimpleNamespace(base_url="http://localhost:8080/v1", api_key="local", model="m")
-    reg = types.SimpleNamespace(default=entry, summarizer=entry)
+    reg = types.SimpleNamespace(default=entry, summarizer=entry, role=lambda *_a, **_k: entry)
     monkeypatch.setattr("agent.config.make_registry", lambda cfg: reg)
     return entry
 
@@ -81,6 +81,6 @@ def test_triage_never_raises_on_client_error(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "openai", fake_openai)
     entry = types.SimpleNamespace(base_url="x", api_key="x", model="m")
     monkeypatch.setattr("agent.config.make_registry",
-                        lambda cfg: types.SimpleNamespace(default=entry))
+                        lambda cfg: types.SimpleNamespace(default=entry, role=lambda *_a, **_k: entry))
     out = triage.run_triage(object(), res)
     assert "triage unavailable" in out

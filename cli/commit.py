@@ -337,8 +337,15 @@ def cmd_commit(args, config):
             summ_entry = entry
             summ_entry_name = name
 
-    primary_client = AsyncOpenAI(base_url=config.llm.base_url, api_key=config.llm.api_key)
-    primary_model = config.llm.model
+    # Primary (final commit-message) model: an explicit `commit` role pin wins,
+    # else the active default endpoint (config.llm).
+    commit_entry = registry.for_role("commit")
+    if commit_entry is not None and commit_entry.base_url:
+        primary_client = AsyncOpenAI(base_url=commit_entry.base_url, api_key=commit_entry.api_key)
+        primary_model = commit_entry.model or config.llm.model
+    else:
+        primary_client = AsyncOpenAI(base_url=config.llm.base_url, api_key=config.llm.api_key)
+        primary_model = config.llm.model
 
     if chunked:
         summ_label = f" · summarizer: {summ_entry.model}" if summ_entry else f" · summarizer: {primary_model}"

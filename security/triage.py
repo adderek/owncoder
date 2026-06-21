@@ -61,7 +61,7 @@ async def triage(config: "Config", res: "ScanResult") -> str:
     )
 
     try:
-        entry = make_registry(config).default
+        entry = make_registry(config).role("triage")
         client = AsyncOpenAI(base_url=entry.base_url, api_key=entry.api_key)
     except Exception as e:  # noqa: BLE001
         return f"(triage unavailable: {e})"

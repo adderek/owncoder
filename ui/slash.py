@@ -45,6 +45,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ),
     ("/think", ["/effort"], "set thinking level  off|low|normal|high|max", True),
     ("/autonomy", ["/auto", "/verbose"], "set autonomy level  0.0–1.0 (or %) or supervised|explain|balanced|brisk|autopilot", True),
+    ("/mode", [], "show/switch model-mode  local-only|free-cloud|free-hybrid|paid-cloud|manual|any", True),
     ("/max_tokens", [], "set max tokens   [out <n> | in <n> | <n> | default]", True),
     ("/maxiter", ["/max_iter"], "set max tool-call iterations per turn  [<n> | 0/none = unlimited]", True),
     ("/wrap", [], "toggle line wrapping", False),
@@ -223,10 +224,23 @@ def _apply_max_tokens(agent, arg: str) -> tuple[bool, str]:
 _ROLE_ALIASES: dict[str, str] = {
     "llm": "default",
     "default": "default",
+    "chat": "default",
     "sum": "summarizer",
     "summarizer": "summarizer",
     "emb": "embeddings",
     "embeddings": "embeddings",
+    # Per-purpose roles (the matrix). Resolve to default when unpinned.
+    "bg": "background",
+    "background": "background",
+    "idle": "background",
+    "namer": "namer",
+    "compaction": "compaction",
+    "compact": "compaction",
+    "review": "review",
+    "triage": "triage",
+    "verify": "verify",
+    "evolve": "evolve",
+    "commit": "commit",
 }
 
 
@@ -238,14 +252,19 @@ def _apply_model(agent, arg: str) -> tuple[bool, str]:
     entries = cfg.model_entries
 
     def _status() -> str:
+        from agent.config import make_registry
         cur_model = cfg.llm.model
         cur_url = cfg.llm.base_url
+        reg = make_registry(cfg)
         lines = [
             f"active LLM: [bold]{cur_model}[/bold]  ({cur_url})",
-            f"  roles: default={cfg.model_roles.get('default', '—')}  "
-            f"summarizer={cfg.model_roles.get('summarizer', '—')}",
-            "available entries:",
+            f"model-mode: {cfg.agent.model_mode}",
+            "purpose → model matrix  (pin: /model <role>=<entry>):",
         ]
+        for role, (entry_name, tier) in reg.matrix().items():
+            pinned = "*" if role in cfg.model_roles else " "
+            lines.append(f" {pinned} {role:11s} {entry_name:16s} [{tier}]")
+        lines.append("available entries:")
         for name, e in sorted(entries.items()):
             tags = f"  [{', '.join(e.tags)}]" if e.tags else ""
             lines.append(f"  [bold]{name}[/bold]  {e.model}  ({e.base_url}){tags}")

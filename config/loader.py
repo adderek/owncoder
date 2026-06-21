@@ -91,6 +91,7 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_WEB_SEARCH_ENABLED": ("web_search", "enabled"),
         "AGENT_WEB_SEARCH_BACKEND": ("web_search", "backend"),
         "AGENT_AUTONOMY": ("agent", "autonomy"),
+        "AGENT_MODEL_MODE": ("agent", "model_mode"),
         "AGENT_CONFIDENCE_GUARD_ENABLED": ("confidence_guard", "enabled"),
         "AGENT_CONFIDENCE_GUARD_WINDOW": ("confidence_guard", "window"),
         "AGENT_CONFIDENCE_GUARD_ERROR_THRESHOLD": ("confidence_guard", "error_rate_threshold"),
@@ -130,7 +131,7 @@ def _apply_env_overrides(config: Config) -> None:
         config.agent.max_iterations = None if v in ("", "0", "none", "null", "unlimited") else int(v)
 
     # Role overrides: AGENT_MODEL_ROLE_<ROLE> = model-entry-name
-    for role in ("default", "summarizer", "embeddings"):
+    for role in ("default", "summarizer", "embeddings", "background"):
         env_key = f"AGENT_MODEL_ROLE_{role.upper()}"
         val = os.environ.get(env_key)
         if val:

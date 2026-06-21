@@ -23,6 +23,20 @@
 default    = "local-coder"     # primary coding model (chat, run, commit final msg)
 summarizer = "deepseek-r1"     # used for commit chunked summaries, Q/A summaries
 embeddings = "nomic-local"     # used for RAG
+# ── Per-purpose model matrix (optional) ──────────────────────────────────────
+# Pin any purpose to a named entry. Unset roles fall back to `default` (or to the
+# free-cloud background picker for background/namer/compaction). Switch live with
+#   /model <role>=<entry>      e.g.  /model review=cerebras
+# and view the full matrix with `/model` (no arg). Known roles:
+# background = "cerebras"      # idle work: session naming, summaries, compaction
+#                             # (unset → auto free-cloud when model_mode allows)
+# namer      = "groq"         # session auto-naming only
+# compaction = "groq"         # context compaction only
+# review     = "cerebras"     # /security review deep-read audit
+# triage     = "groq"         # /security triage ranking
+# verify     = "local-coder"  # /security verify PoC generation
+# evolve     = "cerebras"     # security KB self-evolution
+# commit     = "mistral-codestral"  # `agent commit` final message model
 
 [models.local-coder]
 base_url          = "http://localhost:8080/v1"
@@ -63,6 +77,7 @@ ctx_window         = 65536
 max_output_tokens  = 8192
 temperature        = 0.6
 tags               = ["reasoning", "summarizer"]
+tier               = "paid"
 intelligence_index = 85.0   # from OpenRouter rankings; 0 = not rated
 coding_index       = 80.0
 agentic_index      = 61.0
@@ -75,6 +90,7 @@ ctx_window        = 65536
 max_output_tokens = 8192
 temperature       = 0.7
 tags = ["coding", "reasoning"]
+tier = "paid"
 
 # ── SmartAIPI ─────────────────────────────────────────────────────────────────
 # Fill in base_url and api_key from your SmartAIPI account.
@@ -98,6 +114,62 @@ ctx_window        = 128000
 max_output_tokens = 4096
 temperature       = 0.7
 tags = ["coding"]
+tier = "paid"               # priced provider — set cost_*_per_1k or tier="paid"
+                            # so model_mode classifies it correctly.
+
+# ── Free cloud providers (OpenAI-compatible) ──────────────────────────────────
+# Daily/monthly free tiers. Get keys from each provider's dashboard. With
+# model_mode = "free-hybrid" (default for offloading), idle/background work and
+# spawn_agents auto-route to these, sparing the local model for the main thread.
+# All free-tier (no per-token cost) → tier auto-classifies as "free".
+
+# Cerebras — 1M tokens/day, 30 RPM, 14.4K RPD. Best overall free tier.
+# https://cloud.cerebras.ai
+[models.cerebras]
+base_url           = "https://api.cerebras.ai/v1"
+api_key            = "csk-..."          # replace with your Cerebras key
+model              = "llama-3.3-70b"    # or "qwen-3-235b-a22b"
+ctx_window         = 65536
+max_output_tokens  = 8192
+temperature        = 0.7
+tags               = ["coding", "reasoning", "background", "summarizer"]
+intelligence_index = 74.0
+coding_index       = 70.0
+
+# Groq — 6K tokens/min, 30 RPM, 14.4K RPD. Fastest free tier.
+# https://console.groq.com
+[models.groq]
+base_url          = "https://api.groq.com/openai/v1"
+api_key           = "gsk_..."           # replace with your Groq key
+model             = "llama-3.3-70b-versatile"   # or "gemma2-9b-it"
+ctx_window        = 32768
+max_output_tokens = 8192
+temperature       = 0.7
+tokens_per_sec    = 750.0               # very fast; good for background sweeps
+tags              = ["fast", "background", "summarizer"]
+
+# Mistral AI — ~1B tokens/month (~33M/day), 2 RPM. Best free for code (Codestral).
+# https://console.mistral.ai
+[models.mistral-codestral]
+base_url          = "https://api.mistral.ai/v1"
+api_key           = "..."               # replace with your Mistral key
+model             = "codestral-latest"
+ctx_window        = 32768
+max_output_tokens = 8192
+temperature       = 0.4
+tags              = ["coding"]
+coding_index      = 72.0
+
+# OpenRouter free — 50 RPD. Too restrictive alone; useful as a fallback.
+# https://openrouter.ai/keys  (models with a ":free" suffix are free-tier)
+[models.openrouter-free]
+base_url          = "https://openrouter.ai/api/v1"
+api_key           = "sk-or-..."         # replace with your OpenRouter key
+model             = "deepseek/deepseek-r1:free"
+ctx_window        = 65536
+max_output_tokens = 8192
+temperature       = 0.7
+tags              = ["reasoning", "background"]
 
 # ── Agent runtime behavior ────────────────────────────────────────────────────
 
@@ -113,6 +185,17 @@ mode                      = "fast"   # "fast" | "ultrasecure"
                                      #   web_search.enabled = true. CLI: --ultrasecure.
                                      #   Optional: map a separate model for the broker
                                      #   subagent via [models] internet = "<entry>".
+model_mode                = "any"    # which cost tiers auto-selection may use:
+                                     #   local-only  — only local models (no egress)
+                                     #   free-cloud  — only free cloud providers
+                                     #   free-hybrid — local + free cloud (offload idle
+                                     #                 work to free cloud, keep local
+                                     #                 model for the main thread)
+                                     #   paid-cloud  — only paid cloud (force quality)
+                                     #   any         — local + free + paid
+                                     # Only affects AUTOMATIC picks (idle/background +
+                                     # spawn_agents); a pinned [models] default always
+                                     # wins. Switch live with /mode. Env: AGENT_MODEL_MODE.
 max_iterations            = 10       # max tool-call rounds per user turn
 compaction_threshold      = 0.75     # compact context when usage exceeds this fraction
 compaction_message_threshold = 15    # also compact after this many messages

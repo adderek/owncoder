@@ -70,7 +70,7 @@ def _patch_llm(monkeypatch):
     monkeypatch.setitem(sys.modules, "openai", fake)
     entry = types.SimpleNamespace(base_url="http://localhost:8081/v1", api_key="local", model="m")
     monkeypatch.setattr("agent.config.make_registry",
-                        lambda c: types.SimpleNamespace(default=entry))
+                        lambda c: types.SimpleNamespace(default=entry, role=lambda *_a, **_k: entry))
 
 
 def test_evolve_from_quarantine_cold_gate(tmp_path, monkeypatch):

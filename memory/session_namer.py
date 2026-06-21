@@ -74,7 +74,7 @@ async def _call_llm(config: "Config", user_content: str) -> str:
         def _ms_inc(_role: str) -> None: ...
         def _ms_dec(_role: str) -> None: ...
 
-    entry = make_registry(config).summarizer
+    entry = make_registry(config).role("namer")
     client = AsyncOpenAI(base_url=entry.base_url, api_key=entry.api_key)
     _ms_inc("name")
     try:

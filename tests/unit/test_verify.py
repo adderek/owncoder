@@ -88,7 +88,7 @@ def test_airgap_refuses_nonlocal_endpoint(tmp_path, monkeypatch):
 
     entry = types.SimpleNamespace(base_url="https://api.example.com", api_key="k", model="m")
     monkeypatch.setattr("agent.config.make_registry",
-                        lambda c: types.SimpleNamespace(default=entry))
+                        lambda c: types.SimpleNamespace(default=entry, role=lambda *_a, **_k: entry))
     # openai import must exist even if unused before the air-gap check.
     monkeypatch.setitem(sys.modules, "openai",
                         types.SimpleNamespace(AsyncOpenAI=lambda **k: None))

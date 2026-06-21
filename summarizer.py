@@ -35,7 +35,7 @@ def _pick_summarizer_entry(config: "Config", content: str) -> tuple:
     from agent.config import make_registry
     from agent.core.model_status import get_counts
 
-    cpu_entry = make_registry(config).summarizer
+    cpu_entry = make_registry(config).background
     gpu_pool = config.concurrency.gpu_pool
 
     # If no GPU pool configured, always use CPU

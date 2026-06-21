@@ -111,7 +111,7 @@ async def _call_llm(config: "Config", system: str, user_content: str) -> str:
     from agent.core.model_status import _inc as _ms_inc, _dec as _ms_dec
     from agent.core.streaming import _clean_output
 
-    entry = make_registry(config).summarizer
+    entry = make_registry(config).background
     client = AsyncOpenAI(base_url=entry.base_url, api_key=entry.api_key)
     _ms_inc("sum")
     parts: list[str] = []
