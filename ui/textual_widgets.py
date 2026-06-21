@@ -1115,11 +1115,17 @@ def build_widget_classes(t) -> SimpleNamespace:
                             yield Static("[bold]Arguments:[/bold]", markup=True)
                             yield Static(args_str, markup=False, classes="tc-detail-block")
                             result_raw = rec.get("result", "")
-                            try:
-                                result_parsed = _json.loads(result_raw)
-                                result_str = _json.dumps(result_parsed, indent=2, ensure_ascii=False)
-                            except Exception:
-                                result_str = result_raw or "(empty)"
+                            if isinstance(result_raw, (dict, list)):
+                                # Already-parsed structured result: pretty-print directly.
+                                result_str = _json.dumps(result_raw, indent=2, ensure_ascii=False)
+                            else:
+                                try:
+                                    result_parsed = _json.loads(result_raw)
+                                    result_str = _json.dumps(result_parsed, indent=2, ensure_ascii=False)
+                                except Exception:
+                                    result_str = result_raw if isinstance(result_raw, str) else str(result_raw)
+                            if not result_str:
+                                result_str = "(empty)"
                             yield Static("[bold]Result:[/bold]", markup=True)
                             yield Static(result_str[:4000], markup=False, classes="tc-detail-block")
                 yield Button("Back  [ESC]", id="tc-detail-close")

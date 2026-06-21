@@ -67,10 +67,14 @@ _BARE_TOOL_CALL_RE = re.compile(
     re.MULTILINE,
 )
 
-# Strip thinking-mode special tokens leaked into content by some models (Gemma 4, DeepSeek, etc.)
-_LEAK_RE = re.compile(r"<[^>]*\|[^>]*>")
+# Role labels that leak as residue right after a control token (e.g. "<|im_start|>thought").
+# Only stripped when adjacent to a control token — a bare occurrence in prose is real text.
+_ROLE_ALT = r"thought|user|assistant|system|tool"
+# Strip thinking-mode special tokens leaked into content by some models (Gemma 4, DeepSeek, etc.),
+# plus an optional role label trailing the token (the actual leak signal).
+_LEAK_RE = re.compile(r"<[^>]*\|[^>]*>(?:\s*(?i:" + _ROLE_ALT + r")\b)?")
 # ChatML-style tokens like <|im_start|>, <|im_end|>, <|imend>, <|imendend>
-_CHATML_TOKEN_RE = re.compile(r"<\|[^>]*>")
+_CHATML_TOKEN_RE = re.compile(r"<\|[^>]*>(?:\s*(?i:" + _ROLE_ALT + r")\b)?")
 _THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
 
@@ -149,13 +153,16 @@ def _clean_output(text: str) -> str:
     text = _THINK_TAG_RE.sub("", text)
     text = _LEAK_RE.sub("", text)
     text = _CHATML_TOKEN_RE.sub("", text)
-    # Strip role words concatenated with actual content (e.g. "thoughtAdd login")
+    # Strip role words glued to capitalized content (e.g. "thoughtAdd login").
+    # No \s* and a case-sensitive [A-Z] lookahead: only the no-space concatenation
+    # is stripped. A global re.IGNORECASE made [A-Z] match lowercase too, so
+    # "systemu" -> "system"+"u" matched and got mangled to " u" mid-word.
     text = re.sub(
-        r"\b(?:thought|user|assistant|system|tool)\s*(?=[A-Z])",
-        " ", text, flags=re.IGNORECASE,
+        r"\b(?i:" + _ROLE_ALT + r")(?=[A-Z])",
+        " ", text,
     )
     # Strip orphaned role word at end (remaining after token stripping)
-    text = re.sub(r"\s*\b(?:thought|user|assistant|system|tool)\s*$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*\b(?i:" + _ROLE_ALT + r")\s*$", "", text)
     return text.strip()
 
 

@@ -49,6 +49,16 @@ class TestCleanOutput:
         dirty = "thoughtLet me fix this"
         assert _clean_output(dirty) == "Let me fix this"
 
+    def test_role_word_prefix_of_real_word_not_mangled(self):
+        """Words that merely start with a role word + lowercase are left intact.
+
+        Regression: global re.IGNORECASE made the [A-Z] lookahead match lowercase
+        too, so 'systemu' -> 'system'+'u' was mangled to ' u' mid-word.
+        """
+        assert _clean_output("Architektura systemu jest") == "Architektura systemu jest"
+        assert _clean_output("toolkit username userland") == "toolkit username userland"
+        assert _clean_output("system design now") == "system design now"
+
     def test_call_fragment_mid_text_not_stripped(self):
         """call:pattern mid-text is NOT stripped — only trailing fragments."""
         text = "You can call:search() with a query."
