@@ -301,10 +301,11 @@ class EventHandlerMixin:
                 file_lines.append(f"  {_escape(p)} {stat}")
             self._write_sys(f"[{t.text_dim}]Files changed ({len(self._modified_files)}):[/{t.text_dim}]\n" + "\n".join(file_lines), switch_tab=False)
 
-    def _turn_extract_response(self, event) -> "tuple[str | None, bool]":
+    def _turn_extract_response(self, event) -> "tuple[str | None, bool, bool]":
         from textual.worker import WorkerState
         t = self._t
         empty_response = False
+        is_error = False
         if event.state == WorkerState.SUCCESS:
             response = event.worker.result
             if not response:
@@ -318,7 +319,8 @@ class EventHandlerMixin:
                 if err else ""
             )
             logger.error("chat worker error: %s\n%s", err, tb)
-            response = f"[{t.error}]Error: {err}[/{t.error}]"
+            response = f"[{t.error}]Error: {_escape(str(err))}[/{t.error}]"
+            is_error = True
         else:
             logger.info("chat worker cancelled")
             response = None
@@ -327,7 +329,7 @@ class EventHandlerMixin:
                     self._server.save_session(self._session)
                 except Exception:
                     logger.exception("save_session on cancel failed")
-        return response, empty_response
+        return response, empty_response, is_error
 
     def _turn_update_context_panel(self) -> None:
         t = self._t
@@ -367,7 +369,7 @@ class EventHandlerMixin:
             self._stream_buffer = []
             self._stream_last_render = 0.0
 
-    def _turn_write_chat(self, response: "str | None", empty_response: bool) -> None:
+    def _turn_write_chat(self, response: "str | None", empty_response: bool, is_error: bool = False) -> None:
           from rich.markdown import Markdown as _Markdown
           from agent.ui.render import _delatex
           t = self._t
@@ -391,6 +393,13 @@ class EventHandlerMixin:
                       f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] "
                       f"[{t.text_dim}]{_escape(response)}[/{t.text_dim}]"
                   )
+              elif is_error:
+                  # response carries Rich markup ([color]…[/color]); write it
+                  # directly so the console renders the color. The Markdown path
+                  # below would print the markup tags as literal text.
+                  self._write_chat(
+                      f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] {response}"
+                  )
               else:
                   self._write_chat(f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}]")
                   self._write_chat(_Markdown(_delatex(response)))
@@ -402,10 +411,10 @@ class EventHandlerMixin:
         if event.state not in (WorkerState.SUCCESS, WorkerState.ERROR, WorkerState.CANCELLED):
             return
         self._turn_cleanup(event)
-        response, empty_response = self._turn_extract_response(event)
+        response, empty_response, is_error = self._turn_extract_response(event)
         self._turn_update_context_panel()
         self._turn_flush_streaming()
-        self._turn_write_chat(response, empty_response)
+        self._turn_write_chat(response, empty_response, is_error)
         if event.state == WorkerState.SUCCESS:
             if self._round_summary_enabled:
                 self._write_round_summary(getattr(self, "_current_user_text", ""), response or "")
