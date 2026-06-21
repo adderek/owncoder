@@ -254,35 +254,30 @@ class SlashHandlerMixin:
                 if loaded_session is None:
                     self._write_sys(f"[{t.warning}]Session '{arg.strip()}' not found.[/{t.warning}]")
                 else:
-                    self._server.set_messages(loaded_msgs)
-                    self._session = loaded_session
-                    label = loaded_session.short_name or loaded_session.id
-                    self._refresh_token_bar()
-                    self._reload_qa_views()
-                    self._restore_chat_history(
-                        loaded_msgs,
-                        resume_marker=True,
-                        qa_entries=getattr(self, "_last_qa_entries", None),
-                    )
-                    self._switch_to_chat()
-                    self._write_sys(
-                        f"[{t.text_dim}]Loaded session '{label}' "
-                        f"({len(loaded_msgs)} messages).[/{t.text_dim}]"
-                    )
-                    _loop_guard_resume_note = _find_loop_guard_stop(loaded_msgs)
-                    if _loop_guard_resume_note:
-                        self._write_sys(
-                            f"[{t.warning}]Note: session ended with loop-guard stop — "
-                            f"type a message to redirect (e.g. 're-read the file and retry').[/{t.warning}]"
-                        )
-                        self._write_sys(f"[{t.text_dim}]{_loop_guard_resume_note[:200]}[/{t.text_dim}]")
+                    self._apply_loaded_session(loaded_session, loaded_msgs)
+
+        elif cmd in ("/resume", "/session"):
+            self._open_session_picker(arg.strip())
 
         elif cmd == "/sessions":
             from agent.memory.session import list_sessions
             import datetime
-            sessions = [s for s in list_sessions() if s.get("message_count", 0) > 0]
+            cfg = self._server._agent.config
+            default_cap = getattr(cfg.agent, "sessions_list_default", 20)
+            a = arg.strip().lower()
+            if a in ("all", "*"):
+                cap = None
+            elif a.isdigit():
+                cap = int(a)
+            else:
+                cap = default_cap
+            sessions = [s for s in list_sessions(oldest_first=True) if s.get("message_count", 0) > 0]
             if not sessions:
                 self._write_sys(f"[{t.text_dim}]No sessions found.[/{t.text_dim}]")
+            if cap is not None and len(sessions) > cap:
+                hidden = len(sessions) - cap
+                sessions = sessions[-cap:]
+                self._write_sys(f"[{t.text_dim}]… {hidden} older session(s) hidden — /sessions all to show.[/{t.text_dim}]")
             for s in sessions:
                 ts_val = s.get("updated_at") or s.get("created_at")
                 try:
@@ -298,8 +293,10 @@ class SlashHandlerMixin:
                 name_extra = (
                     f"  [{t.text_dim}]{s['name']}[/{t.text_dim}]" if s.get("name") else ""
                 )
+                cls = s.get("classification") or ""
+                cls_extra = f"  [magenta]{cls}[/magenta]" if cls else ""
                 self._write_sys(
-                    f"  [{t.cmd_color}]{label}[/{t.cmd_color}]{name_extra}"
+                    f"  [{t.cmd_color}]{label}[/{t.cmd_color}]{name_extra}{cls_extra}"
                     f"  {s['message_count']} msgs  [{t.text_dim}]{ts}[/{t.text_dim}]"
                 )
 
@@ -572,6 +569,97 @@ class SlashHandlerMixin:
 
         else:
             self._write_sys(f"[{t.warning}]Unknown command '{cmd}'. Type /help.[/{t.warning}]")
+
+    def _apply_loaded_session(self, loaded_session, loaded_msgs) -> None:
+        """Swap the active session to a loaded one and refresh all views."""
+        t = self._t
+        self._server.set_messages(loaded_msgs)
+        self._session = loaded_session
+        try:
+            self._server._agent.session = loaded_session
+        except Exception:
+            pass
+        label = loaded_session.name or loaded_session.short_name or loaded_session.id
+        self._refresh_token_bar()
+        self._reload_qa_views()
+        self._restore_chat_history(
+            loaded_msgs,
+            resume_marker=True,
+            qa_entries=getattr(self, "_last_qa_entries", None),
+        )
+        self._switch_to_chat()
+        self._write_sys(
+            f"[{t.text_dim}]Loaded session '{label}' "
+            f"({len(loaded_msgs)} messages).[/{t.text_dim}]"
+        )
+        note = _find_loop_guard_stop(loaded_msgs)
+        if note:
+            self._write_sys(
+                f"[{t.warning}]Note: session ended with loop-guard stop — "
+                f"type a message to redirect (e.g. 're-read the file and retry').[/{t.warning}]"
+            )
+            self._write_sys(f"[{t.text_dim}]{note[:200]}[/{t.text_dim}]")
+
+    def _open_session_picker(self, initial_query: str = "") -> None:
+        """Push the live session search/picker modal and load the chosen one."""
+        t = self._t
+        from agent.memory.session import search_sessions
+
+        agent = self._server._agent
+        embedder = getattr(agent, "embedder", None)
+        semantic_available = embedder is not None
+
+        def _semantic_search(query: str) -> list:
+            """Rank past session summaries by embedding similarity."""
+            try:
+                from pathlib import Path
+                from agent.memory.store import MemoryStore
+                cfg = agent.config
+                agent_dir = Path(cfg.tools.working_dir) / cfg.tools.agent_dir
+                db_path = agent_dir / "memory.db"
+                if not db_path.exists():
+                    return search_sessions(query, limit=20)
+                store = MemoryStore(db_path)
+                emb = None
+                try:
+                    emb = embedder.embed_one(query[:2000]) if embedder else None
+                except Exception:
+                    emb = None
+                hits = store.hybrid_search(query, embedding=emb, scope="session_summary", top_k=20)
+                from agent.memory.session import list_sessions
+                by_id = {s["id"]: s for s in list_sessions()}
+                out: list = []
+                seen: set = set()
+                for h in hits:
+                    sid = h.get("source", "")
+                    if sid and sid in by_id and sid not in seen:
+                        seen.add(sid)
+                        out.append(by_id[sid])
+                return out or search_sessions(query, limit=20)
+            except Exception:
+                return search_sessions(query, limit=20)
+
+        def _search(query: str, semantic: bool) -> list:
+            if semantic and semantic_available and query.strip():
+                return _semantic_search(query)
+            return [s for s in search_sessions(query, limit=20) if s.get("message_count", 0) > 0]
+
+        def _on_pick(session_id) -> None:
+            if not session_id:
+                return
+            loaded_session, loaded_msgs = self._server.load_session(session_id)
+            if loaded_session is None:
+                self._write_sys(f"[{t.warning}]Session '{session_id}' not found.[/{t.warning}]")
+            else:
+                self._apply_loaded_session(loaded_session, loaded_msgs)
+
+        try:
+            screen = self._wt.SessionPickerScreen(
+                _search, initial_query=initial_query, semantic_available=semantic_available
+            )
+            self.push_screen(screen, _on_pick)
+        except Exception as exc:
+            self._write_sys(f"[{t.error}]Session picker failed: {exc}[/{t.error}]")
 
     async def _run_analyze_asm(self, arg: str) -> None:
         t = self._t

@@ -603,7 +603,7 @@ def build_widget_classes(t) -> SimpleNamespace:
             else:
                 self.write(f"[{t.text_dim}]No responses to summarize yet.[/{t.text_dim}]")
 
-    _MODEL_STATUS_ROLES = [("llm", "main"), ("emb", "emb"), ("sum", "sum"), ("sec", "sec")]
+    _MODEL_STATUS_ROLES = [("llm", "main"), ("emb", "emb"), ("sum", "sum"), ("sec", "sec"), ("name", "name")]
 
     class ModelConfigScreen:
         pass  # defined below after ModalScreen import
@@ -698,6 +698,119 @@ def build_widget_classes(t) -> SimpleNamespace:
         def on_key(self, event) -> None:
             if event.key in ("escape", "q"):
                 self.dismiss()
+
+    class SessionPickerScreen(ModalScreen):
+        """Live session search/picker. Filters as the user types.
+
+        ``search_fn(query, semantic) -> list[dict]`` supplies matches (each dict
+        has at least id/name/short_name/classification/message_count). Dismisses
+        with the chosen session id, or None on cancel.
+        """
+
+        CSS = """
+        SessionPickerScreen {
+            align: center middle;
+        }
+        #session-picker-dialog {
+            width: 84;
+            height: auto;
+            max-height: 90%;
+            border: solid $primary;
+            background: $surface;
+            padding: 1 2;
+        }
+        #session-picker-input {
+            margin-bottom: 1;
+        }
+        #session-picker-list {
+            height: auto;
+            max-height: 20;
+            overflow-y: auto;
+        }
+        #session-picker-hint {
+            margin-top: 1;
+        }
+        """
+
+        def __init__(self, search_fn, initial_query: str = "", semantic_available: bool = False) -> None:
+            super().__init__()
+            self._search_fn = search_fn
+            self._initial_query = initial_query
+            self._semantic = False
+            self._semantic_available = semantic_available
+            self._matches: list = []
+
+        def compose(self):
+            from textual.containers import Vertical, ScrollableContainer
+            from textual.widgets import Input, ListView, Static
+            with Vertical(id="session-picker-dialog"):
+                yield Input(
+                    value=self._initial_query,
+                    placeholder="search sessions (name / tags / description)…",
+                    id="session-picker-input",
+                )
+                with ScrollableContainer(id="session-picker-list-wrap"):
+                    yield ListView(id="session-picker-list")
+                hint = "Enter load · Esc cancel"
+                if self._semantic_available:
+                    hint += " · Ctrl+T substring/semantic"
+                yield Static(hint, id="session-picker-hint", markup=True)
+
+        def on_mount(self) -> None:
+            self._refresh(self._initial_query)
+            try:
+                self.query_one("#session-picker-input").focus()
+            except Exception:
+                pass
+
+        def _refresh(self, query: str) -> None:
+            from textual.widgets import ListView, ListItem, Label
+            try:
+                self._matches = self._search_fn(query, self._semantic) or []
+            except Exception:
+                self._matches = []
+            lv = self.query_one("#session-picker-list", ListView)
+            lv.clear()
+            for s in self._matches:
+                label = s.get("name") or s.get("short_name") or s.get("id", "")
+                cls = s.get("classification") or ""
+                cls_part = f" [magenta]{cls}[/magenta]" if cls else ""
+                meta = f"  [{t.text_dim}]{s.get('id','')}  {s.get('message_count',0)} msgs[/{t.text_dim}]"
+                lv.append(ListItem(Label(f"{_escape(label)}{cls_part}{meta}", markup=True)))
+            if self._matches:
+                lv.index = 0
+
+        def on_input_changed(self, event) -> None:
+            self._refresh(event.value)
+
+        def on_input_submitted(self, event) -> None:
+            self._pick_current()
+
+        def on_list_view_selected(self, event) -> None:
+            self._pick_current()
+
+        def _pick_current(self) -> None:
+            from textual.widgets import ListView
+            lv = self.query_one("#session-picker-list", ListView)
+            idx = lv.index if lv.index is not None else 0
+            if 0 <= idx < len(self._matches):
+                self.dismiss(self._matches[idx].get("id"))
+            else:
+                self.dismiss(None)
+
+        def on_key(self, event) -> None:
+            if event.key == "escape":
+                self.dismiss(None)
+            elif event.key == "ctrl+t" and self._semantic_available:
+                self._semantic = not self._semantic
+                mode = "semantic" if self._semantic else "substring"
+                try:
+                    self.query_one("#session-picker-hint").update(
+                        f"Enter load · Esc cancel · Ctrl+T → now {mode}"
+                    )
+                except Exception:
+                    pass
+                self._refresh(self.query_one("#session-picker-input").value)
 
     class WorkersScreen(ModalScreen):
         """Modal showing parallel worker status. Auto-refreshes while workers run."""
@@ -1574,6 +1687,7 @@ def build_widget_classes(t) -> SimpleNamespace:
         JumpToTurn=JumpToTurn,
         ExpandTurn=ExpandTurn,
         TurnDetailScreen=TurnDetailScreen,
+        SessionPickerScreen=SessionPickerScreen,
         ToolCallDetailScreen=ToolCallDetailScreen,
         FileDiffScreen=FileDiffScreen,
         _QALineTrackingMixin=_QALineTrackingMixin,

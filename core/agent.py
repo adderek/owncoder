@@ -417,6 +417,15 @@ class Agent:
         await asyncio.sleep(delay)
         if self._last_turn_time != stamp:
             return  # new turn started — this fire is stale
+        # Deferred idle work (session naming/classification, backfill, …) runs
+        # first, on the full transcript, before compaction may summarize it away.
+        try:
+            from agent.core.idle_tasks import run_pending
+            await run_pending(self)
+        except Exception:
+            logger.debug("idle deferred tasks failed", exc_info=True)
+        if self._last_turn_time != stamp:
+            return  # user started typing while we worked
         token_est = self.token_estimate()
         min_tokens = int(self.config.llm.ctx_window * 0.3)
         if token_est < min_tokens:
@@ -633,6 +642,13 @@ class Agent:
         _excluded: set[str] = set()
         if self.config.web_search.require_worker:
             _excluded.update({"web_search", "web_fetch"})
+        # Mode gate: in ultrasecure the privileged agent loses direct net access
+        # and reaches the internet only through the quarantined ask_internet
+        # broker; in fast mode ask_internet is hidden (broker is unconfigured).
+        if getattr(self.config.agent, "mode", "fast") == "ultrasecure":
+            _excluded.update({"web_search", "web_fetch"})
+        else:
+            _excluded.add("ask_internet")
         try:
             response, self.messages = await _run_turn_fn(
                 self.messages,

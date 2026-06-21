@@ -366,6 +366,17 @@ class ParallelConfig:
 @dataclass
 class AgentConfig:
     """Agent runtime behavior (independent of model/endpoint choice)."""
+    # Operating mode:
+    #   "fast"        — default. web_search/web_fetch callable directly by the agent.
+    #   "ultrasecure" — dual-LLM quarantine. Internet (web_search/web_fetch) is
+    #                   stripped from the main agent; it can only reach the net via
+    #                   the ask_internet broker, which spawns a disposable subagent
+    #                   that holds the internet tools and returns sanitized,
+    #                   LLM-re-emitted {answer,sources,quotes}. Treats the
+    #                   internet-facing subagent as compromised; injection in
+    #                   fetched bytes is laundered through it and never reaches the
+    #                   privileged agent verbatim.
+    mode: str = "fast"  # "fast" | "ultrasecure"
     max_iterations: int | None = None  # None/0 = unlimited
     goal: str | None = None
     goal_max_iterations: int = 200
@@ -377,6 +388,9 @@ class AgentConfig:
     autonomy: float = 0.5  # 0.0=supervised … 1.0=autopilot; >1.0 treated as percentage
     distill_skills: bool = True  # session-end: distill reusable skills into .agent/skills/
     skills_index_max: int = 40   # cap skills listed in the per-prompt index (token bound)
+    auto_name_sessions: bool = True  # idle: auto-generate session name/description/tags/classification
+    idle_backfill: bool = True       # idle: also name older unnamed sessions
+    sessions_list_default: int = 20  # /sessions default display cap (oldest→newest)
 
 
 @dataclass

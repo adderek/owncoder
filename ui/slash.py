@@ -32,8 +32,9 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/load", [], "load a saved session", True),
     ("/q", [], "switch to Q (user questions) tab", False),
     ("/reset", [], "drop conversation history", False),
+    ("/resume", ["/session"], "search past sessions and pick one to load", True),
     ("/save", [], "save session under a name", True),
-    ("/sessions", [], "list saved sessions", False),
+    ("/sessions", [], "list saved sessions (oldest→newest; [N|all])", True),
     ("/sparse", [], "switch to sparse (condensed dialogue) tab", False),
     (
         "/temperature",

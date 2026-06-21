@@ -36,6 +36,7 @@ class Session:
     description: str = ""  # Long-form description
     summary: str = ""  # Concise summary of the session
     tags: list[str] = field(default_factory=list)  # Short ASCII tags
+    classification: str = ""  # Single category label (feature/bugfix/...)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -152,6 +153,7 @@ def _session_from_data(data: dict, file_path: Path | None = None) -> Session:
         description=data.get("description", ""),
         summary=data.get("summary", ""),
         tags=list(data.get("tags") or []),
+        classification=data.get("classification", ""),
         created_at=data.get("created_at", data.get("saved_at", time.time())),
         updated_at=data.get("updated_at", data.get("saved_at", time.time())),
         user_outcome=data.get("user_outcome"),
@@ -169,6 +171,7 @@ def _session_to_data(session: Session, messages: list[dict]) -> dict:
         "description": session.description,
         "summary": session.summary,
         "tags": session.tags,
+        "classification": session.classification,
         "created_at": session.created_at,
         "updated_at": session.updated_at,
         "messages": messages,
@@ -189,6 +192,7 @@ def new_session(
     description: str = "",
     summary: str = "",
     tags: list[str] | None = None,
+    classification: str = "",
 ) -> Session:
     """Create a new Session with a UTC ISO-8601 timestamp ID."""
     now = datetime.now(timezone.utc)
@@ -205,6 +209,7 @@ def new_session(
         description=description,
         summary=summary,
         tags=list(tags) if tags else [],
+        classification=classification,
         created_at=ts,
         updated_at=ts,
     )
@@ -277,14 +282,20 @@ def load_session(id_or_name: str) -> tuple[Session | None, list[dict]]:
     return None, []
 
 
-def list_sessions() -> list[dict]:
-    """Return summary dicts for all sessions, newest first."""
+def list_sessions(oldest_first: bool = False, limit: int | None = None) -> list[dict]:
+    """Return summary dicts for all sessions.
+
+    Newest-first by default (back-compat). Pass oldest_first=True for
+    chronological order, and limit to cap the number returned (after ordering).
+    """
     sdir = _get_session_dir()
     sessions = []
     # Only session.json files are sessions; other JSON under .agent (facts
     # round-*.json, system.json sidecars) must not show up as phantom sessions.
     for p in sorted(
-        sdir.rglob("session.json"), key=lambda x: x.stat().st_mtime, reverse=True
+        sdir.rglob("session.json"),
+        key=lambda x: x.stat().st_mtime,
+        reverse=not oldest_first,
     ):
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
@@ -296,6 +307,7 @@ def list_sessions() -> list[dict]:
                     "description": data.get("description", ""),
                     "summary": data.get("summary", ""),
                     "tags": data.get("tags", []),
+                    "classification": data.get("classification", ""),
                     "created_at": data.get("created_at", data.get("saved_at")),
                     "updated_at": data.get("updated_at", data.get("saved_at")),
                     "message_count": len(data.get("messages", [])),
@@ -303,4 +315,46 @@ def list_sessions() -> list[dict]:
             )
         except Exception:
             pass
+    if limit is not None and limit >= 0:
+        sessions = sessions[:limit]
     return sessions
+
+
+def search_sessions(query: str, limit: int = 20) -> list[dict]:
+    """Substring search over session metadata, ranked by relevance.
+
+    Matches name/short_name/description/tags/summary/classification.  Empty
+    query returns the most-recent sessions (newest first).  For semantic search
+    use the recall_sessions tool / MemoryStore instead.
+    """
+    all_sessions = list_sessions()  # newest-first
+    q = (query or "").strip().lower()
+    if not q:
+        return all_sessions[:limit]
+
+    terms = q.split()
+    scored: list[tuple[int, dict]] = []
+    for s in all_sessions:
+        hay_fields = [
+            (s.get("name", "") or "").lower(),
+            (s.get("short_name", "") or "").lower(),
+            (s.get("description", "") or "").lower(),
+            (s.get("summary", "") or "").lower(),
+            (s.get("classification", "") or "").lower(),
+            " ".join(s.get("tags", []) or []).lower(),
+        ]
+        haystack = " \n ".join(hay_fields)
+        if not all(t in haystack for t in terms):
+            continue
+        score = 0
+        for t in terms:
+            # name / short_name hits rank highest, then tags, then body.
+            if t in hay_fields[0] or t in hay_fields[1]:
+                score += 10
+            if t in hay_fields[5] or t in hay_fields[4]:
+                score += 5
+            score += haystack.count(t)
+        scored.append((score, s))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [s for _score, s in scored[:limit]]

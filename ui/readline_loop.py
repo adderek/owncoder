@@ -42,7 +42,8 @@ def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
   [{c}]/reset[/{c}]              drop conversation history (keep system prompt)
   [{c}]/save [name][/{c}]        save session under a name (default: current)
   [{c}]/load <name>[/{c}]        load a saved session into the current conversation
-  [{c}]/sessions[/{c}]           list saved sessions
+  [{c}]/resume [query][/{c}]     search past sessions and pick one to load
+  [{c}]/sessions [N|all][/{c}]   list saved sessions (oldest→newest, default 20)
   [{c}]/tools[/{c}]              list available tools
   [{c}]/skills [show|history|rm <name>][/{c}]  manage saved skills
   [{c}]/checkpoint [new|rollback <id>][/{c}]  restore point across all files
@@ -185,6 +186,10 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                     else:
                         server.set_messages(loaded_msgs)
                         session = loaded_session
+                        try:
+                            agent.session = session
+                        except Exception:
+                            pass
                         label = session.short_name or session.id
                         console.print(
                             f"[dim]Loaded session '{label}' ({len(loaded_msgs)} messages).[/dim]"
@@ -207,7 +212,21 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                 from agent.memory.session import list_sessions
                 import datetime
 
-                for s in [s for s in list_sessions() if s.get("message_count", 0) > 0]:
+                default_cap = getattr(agent.config.agent, "sessions_list_default", 20)
+                a = arg.strip().lower()
+                if a in ("all", "*"):
+                    cap = None
+                elif a.isdigit():
+                    cap = int(a)
+                else:
+                    cap = default_cap
+                # Oldest → newest, capped (keep the most recent when limiting).
+                rows = [s for s in list_sessions(oldest_first=True) if s.get("message_count", 0) > 0]
+                if cap is not None and len(rows) > cap:
+                    hidden = len(rows) - cap
+                    rows = rows[-cap:]
+                    console.print(f"[dim]… {hidden} older session(s) hidden — /sessions all to show.[/dim]")
+                for s in rows:
                     ts_val = s.get("updated_at") or s.get("created_at")
                     try:
                         if isinstance(ts_val, (int, float)):
@@ -222,9 +241,49 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                     name_part = (
                         f"  [dim]{s.get('name', '')}[/dim]" if s.get("name") else ""
                     )
+                    cls = s.get("classification") or ""
+                    cls_part = f"  [magenta]{cls}[/magenta]" if cls else ""
                     console.print(
-                        f"  [cyan]{label}[/cyan]{name_part}  {s['message_count']} msgs  [dim]{ts}[/dim]"
+                        f"  [cyan]{label}[/cyan]{name_part}{cls_part}  {s['message_count']} msgs  [dim]{ts}[/dim]"
                     )
+
+            elif cmd in ("/resume", "/session"):
+                from agent.memory.session import search_sessions
+                import datetime
+
+                results = search_sessions(arg.strip(), limit=20)
+                results = [s for s in results if s.get("message_count", 0) > 0]
+                if not results:
+                    console.print("[yellow]No matching sessions.[/yellow]")
+                else:
+                    console.print(f"[dim]Matches for '{arg.strip()}':[/dim]" if arg.strip() else "[dim]Recent sessions:[/dim]")
+                    for i, s in enumerate(results, 1):
+                        label = s.get("name") or s.get("short_name") or s["id"]
+                        cls = s.get("classification") or ""
+                        cls_part = f" [magenta]{cls}[/magenta]" if cls else ""
+                        console.print(f"  [cyan]{i:2}[/cyan]. {label}{cls_part}  [dim]{s['id']}  {s['message_count']} msgs[/dim]")
+                    try:
+                        pick = input("Load # (or id, blank to cancel): ").strip()
+                    except (EOFError, KeyboardInterrupt):
+                        pick = ""
+                    if pick:
+                        target = None
+                        if pick.isdigit() and 1 <= int(pick) <= len(results):
+                            target = results[int(pick) - 1]["id"]
+                        else:
+                            target = pick
+                        loaded_session, loaded_msgs = server.load_session(target)
+                        if loaded_session is None:
+                            console.print(f"[yellow]Session '{target}' not found.[/yellow]")
+                        else:
+                            server.set_messages(loaded_msgs)
+                            session = loaded_session
+                            try:
+                                agent.session = session
+                            except Exception:
+                                pass
+                            label = session.name or session.short_name or session.id
+                            console.print(f"[dim]Loaded session '{label}' ({len(loaded_msgs)} messages).[/dim]")
 
             elif cmd == "/tools":
                 from agent.tools import get_schemas
