@@ -262,6 +262,21 @@ class TestMergeConsecutiveAssistants:
         result = _merge_consecutive_assistants(msgs)
         assert result[0].get("reasoning_content") == "longer reasoning here"
 
+    def test_preserves_internal_metadata_on_merge(self):
+        # Persisted history carries _tool_refs (side-log links) and reasoning
+        # under _reasoning_content; merging consecutive assistants must keep both.
+        msgs = [
+            {"role": "assistant", "content": "a", "_tool_refs": [1, 2],
+             "_reasoning_content": "first"},
+            {"role": "assistant", "content": "b", "_tool_refs": [3],
+             "_reasoning_content": "second"},
+        ]
+        result = _merge_consecutive_assistants(msgs)
+        assert len(result) == 1
+        assert result[0]["_tool_refs"] == [1, 2, 3]
+        rc = result[0].get("_reasoning_content", "")
+        assert "first" in rc and "second" in rc
+
     def test_non_consecutive_not_merged(self):
         msgs = [
             {"role": "assistant", "content": "a"},

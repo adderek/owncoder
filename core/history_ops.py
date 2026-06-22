@@ -44,26 +44,40 @@ def _merge_consecutive_assistants(messages: list[dict]) -> list[dict]:
             b_content = b.get("content") or ""
             merged_content = a_content + ("\n\n" if a_content and b_content else "") + b_content
 
-            if a_tc or b_tc:
-                merged: dict = {"role": "assistant", "content": merged_content}
-                if a_tc and b_tc:
-                    merged["tool_calls"] = a_tc + b_tc
-                elif a_tc:
-                    merged["tool_calls"] = a_tc
+            # Start from `a` so internal metadata survives the merge. This runs on
+            # BOTH API messages (reasoning under `reasoning_content`, no _-keys) and
+            # persisted history (reasoning under `_reasoning_content`, plus side-log
+            # refs in `_tool_refs`); building a fresh dict here dropped both, losing
+            # tool-result links and prior reasoning across turns.
+            merged: dict = {**a, "role": "assistant", "content": merged_content}
+            merged.pop("tool_calls", None)
+            if a_tc and b_tc:
+                merged["tool_calls"] = a_tc + b_tc
+            elif a_tc:
+                merged["tool_calls"] = a_tc
+            elif b_tc:
+                merged["tool_calls"] = b_tc
+
+            # Combine side-log references from both messages.
+            refs = (a.get("_tool_refs") or []) + (b.get("_tool_refs") or [])
+            if refs:
+                merged["_tool_refs"] = refs
+
+            # Reasoning may live under either key; with tool_calls keep the longer,
+            # otherwise concatenate (matches the prior per-case behaviour).
+            for key in ("reasoning_content", "_reasoning_content"):
+                ra = a.get(key) or ""
+                rb = b.get(key) or ""
+                if a_tc or b_tc:
+                    rc = ra if len(ra) >= len(rb) else rb
                 else:
-                    merged["tool_calls"] = b_tc
-                rc_a = a.get("reasoning_content") or ""
-                rc_b = b.get("reasoning_content") or ""
-                rc = rc_a if len(rc_a) >= len(rc_b) else rc_b
+                    rc = ra + rb
                 if rc:
-                    merged["reasoning_content"] = rc
-                out[-1] = merged
-            else:
-                merged: dict = {"role": "assistant", "content": merged_content}
-                rc = (a.get("reasoning_content") or "") + (b.get("reasoning_content") or "")
-                if rc:
-                    merged["reasoning_content"] = rc
-                out[-1] = merged
+                    merged[key] = rc
+                else:
+                    merged.pop(key, None)
+
+            out[-1] = merged
         else:
             out.append(m)
     return out
