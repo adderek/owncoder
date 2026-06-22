@@ -14,9 +14,9 @@ MODE_TIERS: dict[str, set[str]] = {
     "local-only": {"local"},
     "free-cloud": {"free"},
     "free-hybrid": {"local", "free"},
-    "paid-cloud": {"paid"},
-    "manual": {"local", "free", "paid"},
-    "any": {"local", "free", "paid"},
+    "paid-cloud": {"paid", "bundled"},
+    "manual": {"local", "free", "bundled", "paid"},
+    "any": {"local", "free", "bundled", "paid"},
 }
 
 # Per-purpose roles consulted by the agent, with fallback chains. A role with no
@@ -42,18 +42,21 @@ _LOCAL_HOST_HINTS = ("localhost", "127.0.0.1", "::1", "0.0.0.0", ".local")
 
 
 def entry_tier(entry: "ModelEntry") -> str:
-    """Classify a model entry into a cost tier: local | free | paid.
+    """Classify a model entry into a cost tier: local | free | bundled | paid.
 
-    Explicit ``entry.tier`` wins. Otherwise: local flag or a localhost base_url
-    → "local"; any non-zero per-token cost → "paid"; everything else (a
-    reachable cloud endpoint with no declared price) → "free".
+    Explicit ``entry.tier`` wins (set ``tier="bundled"`` for a cloud model
+    covered by a flat subscription — billed but not metered per-token).
+    Otherwise auto-derive: local flag or a localhost base_url → "local"; any
+    non-zero per-token cost → "paid"; everything else (a reachable cloud
+    endpoint with no declared price) → "free". "bundled" is never auto-derived.
     """
-    if entry.tier:
-        return entry.tier
-    bu = (entry.base_url or "").lower()
-    if entry.local or not bu or any(h in bu for h in _LOCAL_HOST_HINTS):
+    tier = getattr(entry, "tier", None)
+    if tier:
+        return tier
+    bu = (getattr(entry, "base_url", "") or "").lower()
+    if getattr(entry, "local", False) or not bu or any(h in bu for h in _LOCAL_HOST_HINTS):
         return "local"
-    if entry.cost_in_per_1k > 0.0 or entry.cost_out_per_1k > 0.0:
+    if getattr(entry, "cost_in_per_1k", 0.0) > 0.0 or getattr(entry, "cost_out_per_1k", 0.0) > 0.0:
         return "paid"
     return "free"
 

@@ -113,6 +113,11 @@ async def _call_llm(config: "Config", system: str, user_content: str) -> str:
 
     entry = make_registry(config).background
     client = AsyncOpenAI(base_url=entry.base_url, api_key=entry.api_key)
+    try:
+        from agent.metrics import model_calls
+        model_calls.record_entry(entry)
+    except Exception:
+        pass
     _ms_inc("sum")
     parts: list[str] = []
     try:

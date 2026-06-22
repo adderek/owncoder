@@ -231,6 +231,11 @@ async def _analyze_transcript(
         {"role": "user", "content": user_text},
     ]
     try:
+        try:
+            from agent.metrics import model_calls
+            model_calls.record_main(config)
+        except Exception:
+            pass
         response = await client.chat.completions.create(
             model=config.llm.model,
             messages=messages,
@@ -275,6 +280,11 @@ async def _synthesize_summary(
     ]
 
     async def _call(max_tokens: int) -> tuple[str, str | None]:
+        try:
+            from agent.metrics import model_calls
+            model_calls.record_main(config)
+        except Exception:
+            pass
         response = await client.chat.completions.create(
             model=config.llm.model,
             messages=messages,
@@ -346,6 +356,11 @@ async def _check_goal_drift(
         from openai import AsyncOpenAI as _OAI
         sum_client = _OAI(base_url=entry.base_url, api_key=entry.api_key)
         try:
+            try:
+                from agent.metrics import model_calls
+                model_calls.record_entry(entry)
+            except Exception:
+                pass
             response = await sum_client.chat.completions.create(
                 model=entry.model,
                 messages=[

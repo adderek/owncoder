@@ -38,6 +38,7 @@ def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
   [{c}]/continue[/{c}] (or [{c}]continue[/{c}], Ctrl+R)  resume after iteration cap / truncation
   [{c}]/tokens[/{c}]             show token usage breakdown
   [{c}]/perf[/{c}]               session performance: LLM vs tool time + slowest tools
+  [{c}]/modelcalls[/{c}] [{c}]/mc[/{c}]      model calls this session by cost tier (local/free/bundled/paid)
   [{c}]/who[/{c}]                 list other agents active on this worktree
   [{c}]/clear[/{c}]              clear the screen
   [{c}]/reset[/{c}]              drop conversation history (keep system prompt)
@@ -313,6 +314,10 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                 _sl = getattr(agent, "_side_log", None)
                 _dir = getattr(_sl, "session_dir", None) if _sl is not None else None
                 console.print(run_perf_command(_dir))
+
+            elif cmd in ("/modelcalls", "/mc"):
+                from agent.metrics.model_calls import run_modelcalls_command
+                console.print(run_modelcalls_command(arg))
 
             elif cmd in ("/who", "/agents"):
                 from agent import coord as _coord
@@ -743,6 +748,15 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
             if s.get("tool_tokens"):
                 parts.append(f"tool {s['tool_tokens']}")
             console.print(f"[{t.text_dim}]{'  '.join(parts)}[/{t.text_dim}]")
+
+        # Per-round model-call breakdown by cost tier (local/free/bundled/paid).
+        try:
+            from agent.metrics import model_calls
+            _mc = model_calls.format_line(model_calls.round_counts())
+            if _mc:
+                console.print(f"[{t.text_dim}]{_mc}[/{t.text_dim}]")
+        except Exception:
+            pass
 
         if _ui_cfg["show_token_count"]:
             console.print(

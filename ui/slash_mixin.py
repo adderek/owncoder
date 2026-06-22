@@ -193,6 +193,10 @@ class SlashHandlerMixin:
             _dir = getattr(_sl, "session_dir", None) if _sl is not None else None
             self._write_sys(_escape(run_perf_command(_dir)))
 
+        elif cmd in ("/modelcalls", "/mc"):
+            from agent.metrics.model_calls import run_modelcalls_command
+            self._write_sys(_escape(run_modelcalls_command(arg)))
+
         elif cmd in ("/who", "/agents"):
             from agent import coord as _coord
             _wd = self._server._agent.config.tools.working_dir

@@ -76,6 +76,11 @@ async def _call_llm(config: "Config", user_content: str) -> str:
 
     entry = make_registry(config).role("namer")
     client = AsyncOpenAI(base_url=entry.base_url, api_key=entry.api_key)
+    try:
+        from agent.metrics import model_calls
+        model_calls.record_entry(entry)
+    except Exception:
+        pass
     _ms_inc("name")
     try:
         resp = await client.chat.completions.create(

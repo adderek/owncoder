@@ -175,7 +175,8 @@ def _context_block(chunk: list[str], base_line: int, rel: str, symbols: dict | N
 
 async def _review_window(client, model, rel: str, base_line: int, chunk: list[str],
                          symbols: dict | None = None, samples: int = 1,
-                         base_temp: float = 0.1, system: str = _SYSTEM) -> list[dict]:
+                         base_temp: float = 0.1, system: str = _SYSTEM,
+                         tier: str = "local") -> list[dict]:
     numbered = "\n".join(f"{base_line + i}: {ln}" for i, ln in enumerate(chunk))
     ctx = _context_block(chunk, base_line, rel, symbols)
     user = (ctx + f"File: {rel} (lines {base_line}-{base_line + len(chunk) - 1})\n"
@@ -184,6 +185,11 @@ async def _review_window(client, model, rel: str, base_line: int, chunk: list[st
     # kept (max recall); _agree counts how many samples saw each one.
     agg: dict = {}
     for s in range(max(1, samples)):
+        try:
+            from agent.metrics import model_calls
+            model_calls.record(tier)
+        except Exception:
+            pass
         resp = await client.chat.completions.create(
             model=model,
             messages=[{"role": "system", "content": system},
@@ -395,8 +401,14 @@ def _dedupe_sort(findings: list[dict]) -> list[dict]:
     return uniq
 
 
-async def _self_critique(client, model, findings: list[dict], target: str, base) -> dict:
+async def _self_critique(client, model, findings: list[dict], target: str, base,
+                         tier: str = "local") -> dict:
     """One LLM pass judging each finding keep/drop. Returns {index: verdict-dict}."""
+    try:
+        from agent.metrics import model_calls
+        model_calls.record(tier)
+    except Exception:
+        pass
     items = []
     for i, it in enumerate(findings[:60]):
         src = ""
@@ -525,6 +537,8 @@ async def review(config, target: str, *, incremental: bool = False, on_progress=
     symbols = _collect_symbols(config, files, base) if _SYMBOL_CONTEXT else {}
 
     client = AsyncOpenAI(base_url=entry.base_url, api_key=entry.api_key)
+    from agent.config.registry import entry_tier as _etier
+    _tier = _etier(entry)
     findings: list[dict] = []
     sem = asyncio.Semaphore(_CONCURRENCY)
     done = {"n": 0}
@@ -538,7 +552,7 @@ async def review(config, target: str, *, incremental: bool = False, on_progress=
                 async with _track("sec", _ep):
                     return await _review_window(
                         client, entry.model, rel, bl, chunk, symbols,
-                        samples=samples, base_temp=base_temp, system=sys_prompt)
+                        samples=samples, base_temp=base_temp, system=sys_prompt, tier=_tier)
             except Exception:  # noqa: BLE001 - one bad window must not abort the run
                 return []
 
@@ -561,7 +575,7 @@ async def review(config, target: str, *, incremental: bool = False, on_progress=
             _emit(f"self-critique pass over {len(uniq)} finding(s)…")
             try:
                 async with _track("sec", _ep):
-                    verdicts = await _self_critique(client, entry.model, uniq, target, base)
+                    verdicts = await _self_critique(client, entry.model, uniq, target, base, tier=_tier)
                 kept = []
                 for i, it in enumerate(uniq):
                     v = verdicts.get(i, {})

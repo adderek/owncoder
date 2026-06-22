@@ -81,6 +81,15 @@ class Agent:
             self._model_entry_name = resolve_entry_name(config)
         except Exception:
             self._model_entry_name = config.llm.model or "default"
+        # Cost tier of the main endpoint, classified once (config is immutable
+        # for the session). Used to attribute every main-turn LLM call.
+        try:
+            from agent.config.registry import entry_tier
+            _entry = (getattr(config, "model_entries", {}) or {}).get(self._model_entry_name)
+            self._model_tier = entry_tier(_entry) if _entry is not None else "local"
+        except Exception:
+            self._model_tier = "local"
+        self.last_round_model_calls: dict = {}
         self._facts_store = None
         self._side_log = None
         self._turn_id: int = 0
@@ -567,6 +576,11 @@ class Agent:
         s["last_reasoning_tokens"] = u.get("reasoning_tokens", 0)
         s["last_tool_tokens"] = u.get("tool_tokens", 0)
         s["calls"] += 1
+        try:
+            from agent.metrics import model_calls
+            model_calls.record(self._model_tier)
+        except Exception:
+            logger.debug("model_calls.record failed", exc_info=True)
         gen = u.get("gen_seconds") or 0.0
         ttft = u.get("ttft")
         if ttft and ttft > 0 and u.get("input_tokens"):
@@ -599,6 +613,13 @@ class Agent:
     ) -> str:
         self._turn_id += 1
         turn_id = self._turn_id
+
+        # Start a fresh per-round model-call tally (local/free/bundled/paid).
+        try:
+            from agent.metrics import model_calls
+            model_calls.reset_round()
+        except Exception:
+            pass
 
         # Refresh this agent's worktree presence beacon each turn so other agents
         # see a live heartbeat (TTL-based liveness in agent/coord/presence.py).
@@ -714,6 +735,14 @@ class Agent:
             raise
 
         self._last_turn_time = time.monotonic()
+
+        # Snapshot the round's model-call breakdown before background tasks
+        # (qa-summary, idle compaction, naming) schedule their own LLM calls.
+        try:
+            from agent.metrics import model_calls
+            self.last_round_model_calls = model_calls.round_counts()
+        except Exception:
+            self.last_round_model_calls = {}
 
         if self._qa_logger is not None:
             task = asyncio.create_task(

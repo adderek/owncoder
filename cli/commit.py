@@ -370,6 +370,11 @@ def cmd_commit(args, config):
     async def _do_stream(client, model: str, messages: list[dict], max_tokens: int, entry_name: str) -> tuple[str, str, int, float]:
         """Low-level stream call. Returns (raw_content, raw_reasoning, completion_tokens, elapsed)."""
         from agent.metrics.model_stats import update_stats
+        try:
+            from agent.metrics import model_calls
+            model_calls.record_entry_name(config, entry_name)
+        except Exception:
+            pass
         t0 = _time.monotonic()
         stream = await client.chat.completions.create(
             model=model,

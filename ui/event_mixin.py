@@ -418,6 +418,13 @@ class EventHandlerMixin:
         if event.state == WorkerState.SUCCESS:
             if self._round_summary_enabled:
                 self._write_round_summary(getattr(self, "_current_user_text", ""), response or "")
+            try:
+                from agent.metrics import model_calls
+                _mc = model_calls.format_line(model_calls.round_counts())
+                if _mc:
+                    self._write_chat(f"[{self._t.text_dim}]{_mc}[/{self._t.text_dim}]")
+            except Exception:
+                pass
             self._append_qa_turn(getattr(self, "_current_user_text", ""), response or "")
         self._refresh_token_bar()
         self.call_later(self._refresh_git)

@@ -131,6 +131,11 @@ async def _call_llm_one_line(
     from agent.core.model_status import _inc as _ms_inc, _dec as _ms_dec, gpu_slot as _gpu_slot, provider_label
     entry, used_gpu = _pick_summarizer_entry(config, content)
     client = AsyncOpenAI(base_url=entry.base_url, api_key=entry.api_key)
+    try:
+        from agent.metrics import model_calls
+        model_calls.record_entry(entry)
+    except Exception:
+        pass
     _ep = provider_label(entry.base_url)
     _role = "sum" if not used_gpu else "main"
     _ms_inc(_role, _ep)

@@ -117,6 +117,21 @@ tags = ["coding"]
 tier = "paid"               # priced provider — set cost_*_per_1k or tier="paid"
                             # so model_mode classifies it correctly.
 
+# ── Subscription-bundled (OpenAI-compatible) ──────────────────────────────────
+# A cloud model covered by a flat subscription (e.g. Claude Max, Copilot): billed
+# but NOT metered per token. Mark it tier = "bundled" so it shows as its own
+# bucket in the per-round model-call breakdown and `/modelcalls` (and isn't
+# mis-counted as free or paid). "bundled" is never auto-derived — set it here.
+[models.bundled-sub]
+base_url          = "https://api.example-sub.com/v1"
+api_key           = "..."
+model             = "sub-model"
+ctx_window        = 200000
+max_output_tokens = 4096
+temperature       = 0.7
+tags = ["coding"]
+tier = "bundled"
+
 # ── Free cloud providers (OpenAI-compatible) ──────────────────────────────────
 # Daily/monthly free tiers. Get keys from each provider's dashboard. With
 # model_mode = "free-hybrid" (default for offloading), idle/background work and
