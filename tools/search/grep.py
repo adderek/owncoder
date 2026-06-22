@@ -1,6 +1,7 @@
 """grep_code tool — raw text search, works without an index."""
 from __future__ import annotations
 
+import fnmatch
 import os
 import subprocess
 from pathlib import Path
@@ -9,6 +10,34 @@ from agent.tools import register
 from agent.tools.rules import get_rules
 
 _config = None
+
+
+def _read_deny_globs() -> list[str]:
+    """Secret-file globs that must never be surfaced (mirrors security.fs).
+
+    read_file refuses these via safe_open; grep_code must too, or `file_glob='*'`
+    would leak .env / key material that read_file blocks.
+    """
+    try:
+        from agent.security import policy as _pol
+        if _pol.is_configured():
+            g = _pol.get().cfg.read_deny_globs
+            if g is not None:
+                return g
+    except Exception:
+        pass
+    try:
+        from agent.security.fs import _DEFAULT_READ_DENY_GLOBS
+        return list(_DEFAULT_READ_DENY_GLOBS)
+    except Exception:
+        return []
+
+
+def _is_read_protected(rel: str, deny_globs: list[str]) -> bool:
+    if not deny_globs:
+        return False
+    name = Path(rel).name
+    return any(fnmatch.fnmatch(rel, g) or fnmatch.fnmatch(name, g) for g in deny_globs)
 
 _SOURCE_GLOBS = (
     "*.py", "*.c", "*.cpp", "*.cc", "*.cxx", "*.h", "*.hpp",
@@ -122,6 +151,7 @@ def grep_code(
         return {"error": "grep not found on PATH", "pattern": pattern}
 
     rules = get_rules()
+    deny_globs = _read_deny_globs()
     results = []
     truncated = False
 
@@ -144,6 +174,10 @@ def grep_code(
             rel = file_path
 
         if not rules.ignore.empty and rules.ignore.matches(rel):
+            continue
+
+        # Never surface secret files read_file would refuse to open.
+        if _is_read_protected(rel, deny_globs):
             continue
 
         results.append({"path": rel, "line": lineno, "content": content[:_MAX_LINE_LEN]})

@@ -56,3 +56,32 @@ class TestGrepConfinement:
         )
         assert "error" not in result
         assert result["count"] >= 1
+
+
+class TestGrepReadDeny:
+    """grep must not surface secret files read_file refuses to open."""
+
+    def test_env_file_not_surfaced(self, grep_config, project_dir):
+        (project_dir / ".env").write_text("CUSTOM_HOST=secret.internal.example.com\n")
+        result = grep_mod.grep_code(pattern="example.com", file_glob="*")
+        assert "error" not in result
+        assert all(not r["path"].endswith(".env") for r in result["results"]), result
+
+    def test_pem_key_not_surfaced(self, grep_config, project_dir):
+        (project_dir / "id.pem").write_text("-----BEGIN PRIVATE KEY-----\nMIIabc\n")
+        result = grep_mod.grep_code(pattern="PRIVATE", file_glob="*")
+        assert "error" not in result
+        assert all(not r["path"].endswith(".pem") for r in result["results"]), result
+
+    def test_normal_source_still_found(self, grep_config, project_dir):
+        (project_dir / ".env").write_text("HOST=example.com\n")
+        result = grep_mod.grep_code(pattern="SECRET_IN_PROJECT", file_glob="*")
+        assert "error" not in result
+        assert any("main.py" in r["path"] for r in result["results"])
+
+    def test_is_read_protected_helper(self):
+        deny = [".env", ".env.*", "*.pem", "**/.ssh/*"]
+        assert grep_mod._is_read_protected(".env", deny)
+        assert grep_mod._is_read_protected("sub/.env", deny)
+        assert grep_mod._is_read_protected("id.pem", deny)
+        assert not grep_mod._is_read_protected("src/main.py", deny)
