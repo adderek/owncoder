@@ -97,6 +97,32 @@ class TestRunCommandEnabled:
         assert any("transcript_test" in entry.get("cmd", "") for entry in t)
 
 
+class TestTranslateToArgv:
+    """Shell operators must be detected so run_command rejects them and steers
+    to run_argv — input redirects must mirror output redirects."""
+
+    @pytest.mark.parametrize("cmd", [
+        "grep foo < input.txt",   # space-separated input redirect (regression)
+        "cat <a",
+        "echo hi > out.txt",
+        "sort < a > b",
+        "ls | wc",
+        "echo `whoami`",
+        "echo $(date)",
+    ])
+    def test_shell_operators_not_translated(self, cmd):
+        from agent.tools.shell.main import _try_translate_to_argv
+        assert _try_translate_to_argv(cmd) is None
+
+    @pytest.mark.parametrize("cmd,expected", [
+        ("python3 script.py arg", ["python3", "script.py", "arg"]),
+        ("grep -n foo bar.py", ["grep", "-n", "foo", "bar.py"]),
+    ])
+    def test_simple_commands_translated(self, cmd, expected):
+        from agent.tools.shell.main import _try_translate_to_argv
+        assert _try_translate_to_argv(cmd) == expected
+
+
 class TestTruncateStream:
     def test_short_passes_through(self):
         text, trunc = _truncate_stream("hello")

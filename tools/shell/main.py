@@ -103,7 +103,11 @@ def _check_dangerous(cmd: str) -> str | None:
     return None
 
 
-_SHELL_OP_RE = __import__("re").compile(r"[|;&]|>>?|<<?\S|`|\$\(")
+# Detect shell operators so run_command can reject them and steer the model to
+# run_argv(['sh','-c', …]). `<` must mirror `>` (the `\S` lookahead used to miss
+# a space-separated input redirect like `grep foo < in.txt`, silently passing
+# `<` through as a literal argv token instead of rejecting it).
+_SHELL_OP_RE = __import__("re").compile(r"[|;&]|>>?|<<?|`|\$\(")
 
 
 def _try_translate_to_argv(cmd: str) -> list[str] | None:
