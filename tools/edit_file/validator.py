@@ -61,9 +61,16 @@ def _adjust_replacement_indent(
     """
     if match_offset == 0:
         return replacement, False
-    # Only adjust if the offset is all whitespace (leading indentation)
-    if not original[:match_offset].strip():
-        indent = original[:match_offset]
+    # The anchor's leading indentation is the whitespace between the start of its
+    # line and the match — NOT the whole file prefix (original[:match_offset]),
+    # which both made this never fire for real matches and, for an anchor near
+    # the top of the file, injected the file's leading newlines into every
+    # continuation line.
+    line_start = original.rfind("\n", 0, match_offset) + 1
+    prefix = original[line_start:match_offset]
+    # Only adjust if the anchor began partway into a line's leading whitespace.
+    if prefix and not prefix.strip():
+        indent = prefix
         # Find every newline in replacement and increase indentation after it
         parts = replacement.split("\n")
         if len(parts) <= 1:

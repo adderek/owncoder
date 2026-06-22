@@ -545,3 +545,35 @@ class TestAuditLog:
             or r["tool"] == "edit_file"
             for r in records
         )
+
+
+class TestAdjustReplacementIndent:
+    """Continuation-line indent fix-up uses the anchor's line-local indentation,
+    not the whole-file prefix (which used to inject the file's leading newlines)."""
+
+    def test_top_of_file_blank_lines_no_newline_injection(self):
+        from agent.tools.edit_file.validator import _adjust_replacement_indent
+        orig = "\n\n    class Foo:\n        pass\n"
+        s = orig.index("class Foo:")
+        out, adjusted = _adjust_replacement_indent(
+            "class Foo:\n    def bar(): pass", s, orig, "class Foo:")
+        assert adjusted is True
+        assert out == "class Foo:\n        def bar(): pass"
+        assert "\n\n" not in out
+
+    def test_mid_file_indented_anchor_adjusts(self):
+        from agent.tools.edit_file.validator import _adjust_replacement_indent
+        orig = "x = 1\ny = 2\n    class Foo:\n        pass\n"
+        s = orig.index("class Foo:")
+        out, adjusted = _adjust_replacement_indent(
+            "class Foo:\n    def bar(): pass", s, orig, "class Foo:")
+        assert adjusted is True
+        assert out == "class Foo:\n        def bar(): pass"
+
+    def test_column_zero_anchor_not_adjusted(self):
+        from agent.tools.edit_file.validator import _adjust_replacement_indent
+        orig = "class Foo:\n    pass\n"
+        out, adjusted = _adjust_replacement_indent(
+            "class Foo:\n    def bar(): pass", 0, orig, "class Foo:")
+        assert adjusted is False
+        assert out == "class Foo:\n    def bar(): pass"
