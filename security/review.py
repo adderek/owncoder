@@ -446,7 +446,7 @@ async def review(config, target: str, *, incremental: bool = False, on_progress=
         from agent.core.model_status import track_async as _track
     except Exception:  # noqa: BLE001
         @asynccontextmanager
-        async def _track(role):  # type: ignore
+        async def _track(role, endpoint=None):  # type: ignore
             yield
 
     def _emit(msg: str) -> None:
@@ -462,6 +462,11 @@ async def review(config, target: str, *, incremental: bool = False, on_progress=
         return f"(review unavailable: {e})"
     if airgap.is_enabled(config) and not airgap.is_local_url(entry.base_url):
         return "# air-gap: refused — LLM endpoint is non-local"
+    try:
+        from agent.core.model_status import provider_label as _plabel
+        _ep = _plabel(entry.base_url)
+    except Exception:  # noqa: BLE001
+        _ep = None
 
     files = _select_files(target)
     if not files:
@@ -530,7 +535,7 @@ async def review(config, target: str, *, incremental: bool = False, on_progress=
             done["n"] += 1
             _emit(f"[{done['n']}/{planned}] {rel}:{bl}  ({len(findings)} issue(s) so far)")
             try:
-                async with _track("sec"):
+                async with _track("sec", _ep):
                     return await _review_window(
                         client, entry.model, rel, bl, chunk, symbols,
                         samples=samples, base_temp=base_temp, system=sys_prompt)
@@ -555,7 +560,7 @@ async def review(config, target: str, *, incremental: bool = False, on_progress=
         if uniq and _SELF_CRITIQUE and judge:
             _emit(f"self-critique pass over {len(uniq)} finding(s)…")
             try:
-                async with _track("sec"):
+                async with _track("sec", _ep):
                     verdicts = await _self_critique(client, entry.model, uniq, target, base)
                 kept = []
                 for i, it in enumerate(uniq):

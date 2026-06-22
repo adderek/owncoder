@@ -13,11 +13,13 @@ class _Entry:
     model: str
     api_base: str
     original_sha: str
-    status: str = "pending"          # pending|compiled|suspect|disabled
-    disabled_reason: str = ""        # "compile_failed" | "no_savings" | "high_error_rate"
+    status: str = "pending"          # pending|compiled|suspect|disabled|pinned
+    disabled_reason: str = ""        # "compile_failed" | "no_savings" | "regression" | "high_error_rate"
     attempts: int = 0
-    calls: int = 0
-    errors: int = 0
+    calls: int = 0                   # compiled-arm calls (A/B treatment)
+    errors: int = 0                  # compiled-arm tool-errors
+    orig_calls: int = 0              # original-arm calls (A/B holdout control)
+    orig_errors: int = 0             # original-arm tool-errors
     original_chars: int = 0
     compiled_chars: int = 0
     original_tokens: int = 0
@@ -32,6 +34,15 @@ class _Entry:
         return self.errors / self.calls if self.calls else 0.0
 
     @property
+    def orig_error_rate(self) -> float:
+        return self.orig_errors / self.orig_calls if self.orig_calls else 0.0
+
+    @property
+    def regression(self) -> float:
+        """compiled error-rate minus original-arm error-rate. Positive = compiled worse."""
+        return self.error_rate - self.orig_error_rate
+
+    @property
     def savings_ratio(self) -> float:
         if not self.original_tokens:
             return 0.0
@@ -44,13 +55,15 @@ _index: dict[str, _Entry] | None = None      # cache_key -> _Entry
 _index_path: Path | None = None
 _in_flight: set[str] = set()                  # cache_keys currently compiling
 _active: dict[str, str] = {}                  # name -> cache_key in use this session
+_active_arm: dict[str, str] = {}              # name -> "compiled"|"original" picked once/session
 
 
 def reset_state_for_tests() -> None:
     """Drop in-memory caches; tests use this to switch agent_dir between cases."""
-    global _index, _index_path, _in_flight, _active
+    global _index, _index_path, _in_flight, _active, _active_arm
     with _lock:
         _index = None
         _index_path = None
         _in_flight = set()
         _active = {}
+        _active_arm = {}

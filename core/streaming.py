@@ -202,10 +202,56 @@ def _gpu_slot(config):
     return _noop()
 
 
-async def _stream_response(client, config: "Config", api_messages, tools, on_token, on_usage=None, on_reasoning=None, stop_event=None):
+class _StreamStopped(Exception):
+    """Internal: stop_event was set while waiting on a quiet stream."""
+
+
+async def _safe_close(stream) -> None:
+    try:
+        await stream.close()
+    except Exception:
+        pass
+
+
+async def _next_chunk(stream_it, *, budget_s: int, heartbeat_s: int, waiting_for: str,
+                      stop_event=None, on_heartbeat=None):
+    """Await the next stream chunk while keeping the wait observable and interruptible.
+
+    Unlike a flat ``wait_for``, this distinguishes a slow-but-alive backend from a
+    wedged one: it polls in ``heartbeat_s`` slices, emits a heartbeat on each slice
+    (so a long prefill never looks frozen), honours ``stop_event`` mid-wait, and only
+    declares a stall (``TimeoutError``) once the whole ``budget_s`` elapses with no chunk.
+    ``budget_s``/``heartbeat_s`` of 0 disable the limit / the heartbeat respectively.
+    """
+    pending = asyncio.ensure_future(stream_it.__anext__())
+    waited = 0.0
+    while True:
+        if budget_s <= 0 and heartbeat_s <= 0:
+            return await pending
+        slice_s = heartbeat_s if heartbeat_s > 0 else budget_s
+        if budget_s > 0:
+            slice_s = min(slice_s, max(0.01, budget_s - waited))
+        try:
+            return await asyncio.wait_for(asyncio.shield(pending), timeout=slice_s)
+        except asyncio.TimeoutError:
+            waited += slice_s
+            if stop_event is not None and stop_event.is_set():
+                pending.cancel()
+                raise _StreamStopped
+            if budget_s > 0 and waited >= budget_s:
+                pending.cancel()
+                raise
+            if on_heartbeat is not None:
+                try:
+                    on_heartbeat(waiting_for, int(waited))
+                except Exception:
+                    logger.exception("on_heartbeat callback failed")
+
+
+async def _stream_response(client, config: "Config", api_messages, tools, on_token, on_usage=None, on_reasoning=None, stop_event=None, on_stall_progress=None):
     from agent._tokens import count_tokens_approx
     from agent.memory.compactor import _count_tokens_approx
-    from agent.core.model_status import _inc as _ms_inc, _dec as _ms_dec
+    from agent.core.model_status import _inc as _ms_inc, _dec as _ms_dec, provider_label
 
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
@@ -220,7 +266,8 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
     t_first_token: float | None = None
     server_usage: dict | None = None
 
-    _ms_inc("main")
+    _endpoint = provider_label(str(getattr(client, "base_url", "") or getattr(config.llm, "base_url", "")))
+    _ms_inc("main", _endpoint)
     try:
         async with _gpu_slot(config):
             stream = await client.chat.completions.create(
@@ -231,7 +278,14 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
             **_build_call_kwargs(config),
         )
 
+        # Two distinct fuses: prefill (no first token yet) emits no chunks while the
+        # backend chews a big prompt — that is slow, not wedged, so it gets a generous
+        # TTFT budget. Once tokens flow, a gap means the backend actually stalled, so
+        # the tighter inter-chunk budget applies. Conflating them false-trips on long
+        # prefills, and the retry then doubles backend load.
+        ttft_s = int(getattr(config.llm, "stream_ttft_seconds", 0) or 0)
         stall_s = int(getattr(config.llm, "stream_stall_seconds", 0) or 0)
+        heartbeat_s = int(getattr(config.llm, "stream_heartbeat_seconds", 0) or 0)
         stream_it = stream.__aiter__()
         while True:
             # Cooperative interrupt: a hung `async for` never yields back to the
@@ -239,26 +293,36 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
             if stop_event is not None and stop_event.is_set():
                 logger.info("stream: stop_event set — closing stream")
                 finish_reason = "stop"
-                try:
-                    await stream.close()
-                except Exception:
-                    pass
+                await _safe_close(stream)
                 break
+            before_first = t_first_token is None
+            budget_s = ttft_s if before_first else stall_s
+            waiting_for = "first token (prefill)" if before_first else "next token"
             try:
-                if stall_s > 0:
-                    chunk = await asyncio.wait_for(stream_it.__anext__(), timeout=stall_s)
-                else:
-                    chunk = await stream_it.__anext__()
+                chunk = await _next_chunk(
+                    stream_it,
+                    budget_s=budget_s,
+                    heartbeat_s=heartbeat_s,
+                    waiting_for=waiting_for,
+                    stop_event=stop_event,
+                    on_heartbeat=on_stall_progress,
+                )
             except StopAsyncIteration:
                 break
+            except _StreamStopped:
+                logger.info("stream: stop_event set mid-wait — closing stream")
+                finish_reason = "stop"
+                await _safe_close(stream)
+                break
             except asyncio.TimeoutError:
-                try:
-                    await stream.close()
-                except Exception:
-                    pass
+                await _safe_close(stream)
+                why = (
+                    "no first token — prefill exceeded budget or backend wedged"
+                    if before_first else
+                    "stopped emitting mid-stream — backend likely wedged"
+                )
                 raise StreamStalledError(
-                    f"LLM stream stalled: no chunk for {stall_s}s "
-                    f"(backend likely wedged)"
+                    f"LLM stream stalled: no chunk for {budget_s}s ({why})"
                 )
             u = getattr(chunk, "usage", None)
             if u is not None:
@@ -313,7 +377,7 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
                     if tc_delta.function.arguments:
                         tc_acc[idx]["function"]["arguments"] += tc_delta.function.arguments
     finally:
-        _ms_dec("main")
+        _ms_dec("main", _endpoint)
 
     raw_content = "".join(content_parts)
     full_content = _clean_output(raw_content)

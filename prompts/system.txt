@@ -26,6 +26,7 @@ Code search rules:
 {index_warning}
 File rules: ask before destructive shell commands (rm, force overwrite). Prefer small verifiable steps.
 
+Current date: {current_date}
 Current project: {project_name}
 Working directory: {working_dir}
 Git branch: {git_branch}

@@ -27,7 +27,11 @@ class LLMConfig:
     cache_ttl: int = 300         # prompt cache TTL in seconds; 0 = disable cache tracking
     gpu: bool = False             # True when resolved default entry is in [concurrency].gpu_pool
     request_timeout: int = 600    # hard ceiling (s) for a single LLM request; 0 = SDK default
-    stream_stall_seconds: int = 90  # abort a stream if no chunk arrives for this long (0 = off)
+    stream_stall_seconds: int = 90  # mid-stream gap (after first token) before declaring a wedge (0 = off)
+    stream_ttft_seconds: int = 600  # wait for FIRST token before declaring a wedge; prefill on a big
+    #                                 prompt emits no chunks, so this must exceed worst-case prefill (0 = off)
+    stream_heartbeat_seconds: int = 20  # while waiting on a quiet stream, emit a progress heartbeat this
+    #                                     often so a slow-but-alive backend never looks frozen (0 = off)
     stream_stall_retries: int = 1   # retries after a stall/timeout before giving up
 
 
@@ -156,9 +160,11 @@ class CompilePromptsConfig:
     auto_spawn: bool = True             # background-compile new prompts on first session load
     auto_recompile: bool = True
     max_recompile_attempts: int = 3
-    error_rate_threshold: float = 0.2
-    min_samples: int = 5
+    error_rate_threshold: float = 0.2   # absolute floor: compiled arm must exceed this before acting
+    min_samples: int = 20               # per-arm call count required before a verdict
     min_savings_ratio: float = 0.10
+    holdout_ratio: float = 0.15         # fraction of sessions served the *original* as A/B control
+    regression_margin: float = 0.10     # compiled must be ≥ this much worse than control to act
     cache_dir: str = ".agent/compiled_prompts"
 
 

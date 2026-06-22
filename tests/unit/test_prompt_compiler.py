@@ -118,31 +118,80 @@ def test_cache_key_differs_per_api_base(cfg):
     assert len(pc.status(cfg)) == 2
 
 
-def test_high_error_rate_marks_suspect(cfg):
-    """When error rate crosses the threshold the variant flips to suspect."""
-    text = "prompt body to compile and then degrade"
-    cfg.compile_prompts.min_samples = 4
-    cfg.compile_prompts.error_rate_threshold = 0.5
-    _warm_cache("system.txt", text, cfg)
-    compiled = pc.load("system.txt", text, cfg)
-    assert compiled != text                       # compiled is in use
+def _run_arm(name: str, text: str, cfg, arm: str, oks: list[bool]) -> None:
+    """Drive `oks` tool-call outcomes through one A/B arm of `name`.
 
-    # Simulate 4 calls, 2 errors (50%) — at threshold.
-    for ok in (True, False, True, False):
+    Forces the arm by pinning holdout to 0 (compiled) or 1 (original), then
+    clears the per-session arm cache so load() re-picks for this batch.
+    """
+    cfg.compile_prompts.holdout_ratio = 1.0 if arm == "original" else 0.0
+    pc._s._active_arm.clear()
+    pc._s._active.clear()
+    pc.load(name, text, cfg)            # assigns the arm for this "session"
+    for ok in oks:
         pc.record_call(ok, cfg)
 
-    rows = {r["name"]: r for r in pc.status(cfg)}
-    assert rows["system.txt"]["status"] == "suspect"
 
-    # Fall back to original then recompile manually.
+def test_ab_regression_recompiles_then_pins(cfg):
+    """Compiled arm worse than the control by the margin → recompile, then pin."""
+    text = "prompt body to compile and then degrade over time please"
+    cfg.compile_prompts.min_samples = 4
+    cfg.compile_prompts.error_rate_threshold = 0.3
+    cfg.compile_prompts.regression_margin = 0.2
+    cfg.compile_prompts.max_recompile_attempts = 2
+
+    def _drive_one_regression_round():
+        _warm_cache("system.txt", text, cfg)                       # attempts +1, compiled
+        _run_arm("system.txt", text, cfg, "compiled", [False, False, False, True])  # 75% err
+        _run_arm("system.txt", text, cfg, "original", [True, True, True, True])     # 0% err
+        return pc.evaluate(cfg)
+
+    # Round 1: attempts==1 (< max 2) → recompile (suspect).
+    actions = _drive_one_regression_round()
+    assert actions and actions[0]["action"] == "recompile"
+    assert {r["name"]: r for r in pc.status(cfg)}["system.txt"]["status"] == "suspect"
+
+    # load() drops suspect → pending but KEEPS attempts so the cap can trip.
     out = pc.load("system.txt", text, cfg)
-    assert out == text
-    # load() on a suspect entry resets it to pending with clean stats
-    # (attempts=0), so a manual recompile is possible again. After warming,
-    # the entry is back in the compiled state.
+    assert out == text                                              # falls back to original
+
+    # Round 2: recompiling bumps attempts to 2 == max → pin to original forever.
+    actions = _drive_one_regression_round()
+    assert actions[0]["action"] == "pin"
+    pinned = {r["name"]: r for r in pc.status(cfg)}["system.txt"]
+    assert pinned["status"] == "pinned"
+    assert pinned["disabled_reason"] == "regression"
+
+    # A pinned prompt always serves the original, never the compiled variant.
+    assert pc.load("system.txt", text, cfg) == text
+
+
+def test_ab_no_regression_keeps_compiled(cfg):
+    """When the compiled arm is no worse than control, the variant is kept."""
+    text = "prompt body that compresses cleanly without hurting behaviour"
+    cfg.compile_prompts.min_samples = 4
+    cfg.compile_prompts.error_rate_threshold = 0.3
+    cfg.compile_prompts.regression_margin = 0.2
     _warm_cache("system.txt", text, cfg)
-    rows = {r["name"]: r for r in pc.status(cfg)}
-    assert rows["system.txt"]["status"] == "compiled"
+    # Both arms degrade equally → regression ≈ 0 → ambient noise, not the prompt.
+    _run_arm("system.txt", text, cfg, "compiled", [False, False, True, True])
+    _run_arm("system.txt", text, cfg, "original", [False, False, True, True])
+
+    actions = pc.evaluate(cfg)
+    assert actions and actions[0]["action"] == "keep"
+    assert {r["name"]: r for r in pc.status(cfg)}["system.txt"]["status"] == "compiled"
+
+
+def test_ab_waits_for_both_arms(cfg):
+    """No verdict until BOTH arms clear min_samples — control alone isn't enough."""
+    text = "prompt that only ever runs on the compiled treatment arm here"
+    cfg.compile_prompts.min_samples = 4
+    _warm_cache("system.txt", text, cfg)
+    _run_arm("system.txt", text, cfg, "compiled", [False, False, False, False])
+    # No original-arm samples at all → evaluate must abstain.
+    actions = pc.evaluate(cfg)
+    assert actions == []
+    assert {r["name"]: r for r in pc.status(cfg)}["system.txt"]["status"] == "compiled"
 
 
 def test_compile_failure_eventually_disables(cfg):

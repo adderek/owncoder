@@ -13,6 +13,11 @@ from contextlib import asynccontextmanager, contextmanager
 
 _lock = threading.Lock()
 _counts: dict[str, int] = {}
+# Concurrent calls in flight per endpoint label (e.g. "local", "groq", "cerebras").
+# Lets the UI show how many local vs cloud requests overlap at one instant —
+# the role counters (_counts) collapse that detail since one role can hit
+# different endpoints over a session.
+_endpoints: dict[str, int] = {}
 _listeners: list = []
 
 # role → bool availability snapshot (configured model live on its endpoint).
@@ -43,6 +48,39 @@ def get_counts() -> dict[str, int]:
         return dict(_counts)
 
 
+def get_endpoint_counts() -> dict[str, int]:
+    """Return endpoint-label → active request count snapshot (only non-zero)."""
+    with _lock:
+        return {k: v for k, v in _endpoints.items() if v > 0}
+
+
+def provider_label(base_url: str | None) -> str:
+    """Short endpoint label for concurrency display.
+
+    "local" for loopback / non-network schemes; otherwise the distinctive part
+    of the hostname (api.groq.com → "groq", llama.cerebras.ai → "cerebras").
+    """
+    try:
+        from agent.security.airgap import is_local_url
+        if is_local_url(base_url):
+            return "local"
+    except Exception:
+        if not base_url:
+            return "local"
+    from urllib.parse import urlparse
+    try:
+        host = (urlparse(base_url).hostname or "").lower()
+    except Exception:
+        return "cloud"
+    if not host:
+        return "cloud"
+    parts = [p for p in host.split(".") if p not in ("api", "www", "openai", "v1")]
+    # Drop the TLD; keep the most specific remaining label.
+    if len(parts) >= 2:
+        return parts[-2]
+    return parts[0] if parts else "cloud"
+
+
 def set_availability(role_map: dict[str, bool]) -> None:
     """Merge a role → available snapshot from a probe. Unlisted roles untouched."""
     with _lock:
@@ -55,15 +93,19 @@ def get_availability() -> dict[str, bool]:
         return dict(_availability)
 
 
-def _inc(role: str) -> None:
+def _inc(role: str, endpoint: str | None = None) -> None:
     with _lock:
         _counts[role] = _counts.get(role, 0) + 1
+        if endpoint:
+            _endpoints[endpoint] = _endpoints.get(endpoint, 0) + 1
     _notify(role)
 
 
-def _dec(role: str) -> None:
+def _dec(role: str, endpoint: str | None = None) -> None:
     with _lock:
         _counts[role] = max(0, _counts.get(role, 0) - 1)
+        if endpoint:
+            _endpoints[endpoint] = max(0, _endpoints.get(endpoint, 0) - 1)
     _notify(role)
 
 
@@ -87,21 +129,21 @@ def remove_listener(cb) -> None:
 
 
 @asynccontextmanager
-async def track_async(role: str):
-    _inc(role)
+async def track_async(role: str, endpoint: str | None = None):
+    _inc(role, endpoint)
     try:
         yield
     finally:
-        _dec(role)
+        _dec(role, endpoint)
 
 
 @contextmanager
-def track_sync(role: str):
-    _inc(role)
+def track_sync(role: str, endpoint: str | None = None):
+    _inc(role, endpoint)
     try:
         yield
     finally:
-        _dec(role)
+        _dec(role, endpoint)
 
 
 # ── GPU concurrency semaphore ────────────────────────────────────────────────

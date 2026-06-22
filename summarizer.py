@@ -128,10 +128,12 @@ async def _call_llm_one_line(
     """Stream a one-line summary using the summarizer model (falls back to default LLM)."""
     from openai import AsyncOpenAI
     from agent.config import make_registry
-    from agent.core.model_status import _inc as _ms_inc, _dec as _ms_dec, gpu_slot as _gpu_slot
+    from agent.core.model_status import _inc as _ms_inc, _dec as _ms_dec, gpu_slot as _gpu_slot, provider_label
     entry, used_gpu = _pick_summarizer_entry(config, content)
     client = AsyncOpenAI(base_url=entry.base_url, api_key=entry.api_key)
-    _ms_inc("sum" if not used_gpu else "main")
+    _ep = provider_label(entry.base_url)
+    _role = "sum" if not used_gpu else "main"
+    _ms_inc(_role, _ep)
     try:
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
@@ -152,7 +154,7 @@ async def _call_llm_one_line(
                     if getattr(delta, "reasoning_content", None):
                         reasoning_parts.append(delta.reasoning_content)
     finally:
-        _ms_dec("sum" if not used_gpu else "main")
+        _ms_dec(_role, _ep)
         await client.close()
 
     from agent.core.streaming import _clean_output

@@ -124,6 +124,8 @@ def _store_compiled(key: str, original: str, compiled: str, config: "Config") ->
         entry.created_at = _now_iso()
         entry.calls = 0
         entry.errors = 0
+        entry.orig_calls = 0
+        entry.orig_errors = 0
         _save_index()
 
 

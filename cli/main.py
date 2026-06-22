@@ -124,6 +124,7 @@ def main() -> None:
     pr_p = sub.add_parser("prompts", help="Manage compiled-prompt cache")
     pr_sub = pr_p.add_subparsers(dest="prompts_action")
     pr_sub.add_parser("status", help="Show cache entries with stats")
+    pr_sub.add_parser("evaluate", help="Run the A/B verdict pass (recompile/pin regressed variants)")
     pr_rec = pr_sub.add_parser("recompile", help="Mark entries pending so the next run recompiles them")
     pr_rec.add_argument("name", nargs="?", help="Prompt name (e.g. system.txt). Omit for all.")
     pr_clr = pr_sub.add_parser("clear", help="Delete cached compiled variants")

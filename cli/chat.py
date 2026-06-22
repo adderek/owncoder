@@ -441,6 +441,14 @@ def cmd_chat(args, config):
             logger.debug("distill_session_skills teardown failed", exc_info=True)
             pass
         try:
+            # A/B verdict on compiled prompts: recompile/pin variants that
+            # measurably regress vs their original-text control arm.
+            from agent import prompt_compiler
+            prompt_compiler.evaluate(config)
+        except Exception:
+            logger.debug("prompt_compiler.evaluate teardown failed", exc_info=True)
+            pass
+        try:
             from agent.mcp import shutdown_mcp
             shutdown_mcp()
         except Exception:

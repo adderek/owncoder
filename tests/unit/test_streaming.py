@@ -276,6 +276,9 @@ class TestStreamStallWatchdog:
         c = Config()
         c.llm.think_level = "off"
         c.llm.stream_stall_seconds = stall_s
+        # The watchdog now has two fuses (pre-first-token TTFT vs mid-stream gap);
+        # the hanging-stream tests trip before any real token, so cap TTFT too.
+        c.llm.stream_ttft_seconds = stall_s
         return c
 
     @pytest.mark.asyncio
@@ -319,3 +322,40 @@ class TestStreamStallWatchdog:
         choice.delta = delta
         chunk.choices = [choice]
         return chunk
+
+    @pytest.mark.asyncio
+    async def test_ttft_fuse_independent_of_inter_chunk(self):
+        # Before the first token, the generous TTFT budget governs — NOT the tight
+        # inter-chunk stall. A long prefill must not false-trip the mid-stream fuse.
+        c = Config()
+        c.llm.think_level = "off"
+        c.llm.stream_stall_seconds = 100   # huge: would never fire in test time
+        c.llm.stream_ttft_seconds = 1      # the fuse that should actually trip
+        c.llm.stream_heartbeat_seconds = 0
+        chunk = MagicMock(); chunk.usage = None; chunk.choices = []
+        stream = _HangingStream(chunk)
+        client = MagicMock()
+        client.chat.completions.create = AsyncMock(return_value=stream)
+        with pytest.raises(StreamStalledError):
+            await _stream_response(client, c, [], [], on_token=lambda t: None)
+        assert stream.closed is True
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_fires_while_waiting(self):
+        c = Config()
+        c.llm.think_level = "off"
+        c.llm.stream_stall_seconds = 100
+        c.llm.stream_ttft_seconds = 3
+        c.llm.stream_heartbeat_seconds = 1  # ticks before the 3s budget trips
+        chunk = MagicMock(); chunk.usage = None; chunk.choices = []
+        stream = _HangingStream(chunk)
+        client = MagicMock()
+        client.chat.completions.create = AsyncMock(return_value=stream)
+        beats: list[tuple[str, int]] = []
+        with pytest.raises(StreamStalledError):
+            await _stream_response(
+                client, c, [], [], on_token=lambda t: None,
+                on_stall_progress=lambda waiting_for, secs: beats.append((waiting_for, secs)),
+            )
+        assert beats, "expected at least one heartbeat while the stream was quiet"
+        assert "first token" in beats[0][0]

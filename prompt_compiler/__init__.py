@@ -77,9 +77,10 @@ def load(name: str, original: str, config: "Config") -> str:
         _s._active[name] = key
 
         # Reset suspect entries so they can be recompiled with clean stats.
+        # Keep `attempts` — it counts compile cycles and drives the pin-after-N
+        # decision in evaluate(); zeroing it would loop forever on a bad prompt.
         if entry.status == "suspect":
             entry.status = "pending"
-            entry.attempts = 0
             _save_index()
 
         # Background-compile new entries if auto_spawn is enabled.
@@ -92,8 +93,23 @@ def load(name: str, original: str, config: "Config") -> str:
             _s._in_flight.add(key)
             _spawn_compile(key, name, original, config)
 
+        # Pinned: compression regressed past the threshold, serve original forever.
+        # Still attribute to the original arm so a later recompile has a baseline.
+        if entry.status == "pinned":
+            _s._active_arm[name] = "original"
+            return original
+
         compiled_path = _compiled_path(config, key)
         if entry.status == "compiled" and compiled_path.exists():
+            # Pick an A/B arm once per session and stick to it: the experimental
+            # unit is the session, so we never swap the prompt mid-conversation.
+            arm = _s._active_arm.get(name)
+            if arm is None:
+                import random
+                arm = "original" if random.random() < _holdout_ratio(config) else "compiled"
+                _s._active_arm[name] = arm
+            if arm == "original":
+                return original
             try:
                 compiled_text = compiled_path.read_text(encoding="utf-8")
                 if entry.original_tokens and entry.compiled_tokens:
@@ -103,47 +119,118 @@ def load(name: str, original: str, config: "Config") -> str:
             except Exception as e:
                 logger.warning("compile_prompts: failed to read %s: %s", compiled_path, e)
                 entry.status = "pending"
+                _s._active_arm.pop(name, None)
                 _save_index()
 
     return original
 
 
+def _holdout_ratio(config: "Config") -> float:
+    r = float(getattr(config.compile_prompts, "holdout_ratio", 0.15))
+    return min(max(r, 0.0), 0.9)
+
+
 def record_call(success: bool, config: "Config") -> None:
-    """Bump per-variant counters for every compiled prompt active this session."""
+    """Bump per-variant A/B counters for every prompt active this session.
+
+    Each prompt was assigned an arm (``compiled`` treatment or ``original``
+    holdout) once at load() time. We only accumulate here; the suspect/pin
+    verdict is made by :func:`evaluate` at session end, where both arms can be
+    compared. Comparing arms cancels the ambient tool-error rate of the
+    workload, which a single absolute threshold cannot.
+    """
     if not is_enabled(config) or not _s._active:
         return
     with _s._lock:
         _ensure_loaded(config)
         if _s._index is None:
             return
-        cfg = config.compile_prompts
         dirty = False
         for name, key in list(_s._active.items()):
             entry = _s._index.get(key)
-            if entry is None or entry.status != "compiled":
+            if entry is None or entry.status not in ("compiled", "pinned"):
                 continue
-            entry.calls += 1
+            arm = _s._active_arm.get(name, "compiled")
             entry.last_call = _now_iso()
-            if not success:
-                entry.errors += 1
-                entry.last_error_at = entry.last_call
+            if arm == "original":
+                entry.orig_calls += 1
+                if not success:
+                    entry.orig_errors += 1
+                    entry.last_error_at = entry.last_call
+            else:
+                entry.calls += 1
+                if not success:
+                    entry.errors += 1
+                    entry.last_error_at = entry.last_call
             dirty = True
-            if (
-                cfg.auto_recompile
-                and entry.calls >= cfg.min_samples
-                and entry.error_rate >= cfg.error_rate_threshold
-            ):
-                logger.warning(
-                    "compile_prompts: %s (%s) error_rate=%.0f%% over %d calls — "
-                    "marking suspect; will fall back to original and recompile.",
-                    name, key[:8], entry.error_rate * 100, entry.calls,
-                )
-                entry.status = "suspect"
-                entry.disabled_reason = "high_error_rate"
-                entry.calls = 0
-                entry.errors = 0
         if dirty:
             _save_index()
+
+
+def evaluate(config: "Config") -> list[dict]:
+    """A/B verdict pass — the self-improving loop. Run at session end.
+
+    For every compiled variant with enough samples on BOTH arms, compare the
+    compiled error-rate against the original-arm control. If compiled is worse
+    by ``regression_margin`` (and clears the absolute ``error_rate_threshold``
+    floor), recompile it; after ``max_recompile_attempts`` failed retries, pin
+    the prompt to its original text permanently. Returns the actions taken so
+    the CLI/logs can report them.
+    """
+    actions: list[dict] = []
+    if not is_enabled(config):
+        return actions
+    cfg = config.compile_prompts
+    with _s._lock:
+        _ensure_loaded(config)
+        if _s._index is None:
+            return actions
+        dirty = False
+        for key, entry in _s._index.items():
+            if entry.status != "compiled":
+                continue
+            if entry.calls < cfg.min_samples or entry.orig_calls < cfg.min_samples:
+                continue
+            regressed = (
+                entry.error_rate >= cfg.error_rate_threshold
+                and entry.regression >= cfg.regression_margin
+            )
+            comp_rate, orig_rate, reg = entry.error_rate, entry.orig_error_rate, entry.regression
+            if not regressed:
+                actions.append({
+                    "name": entry.name, "key": key, "action": "keep",
+                    "compiled_rate": comp_rate, "orig_rate": orig_rate,
+                })
+                continue
+            # `attempts` is the compile-cycle count (bumped by _store_compiled);
+            # each recompile that still regresses spends one, then we pin.
+            if not cfg.auto_recompile:
+                verdict = "flag"  # leave status=compiled, just report
+            elif entry.attempts >= cfg.max_recompile_attempts:
+                entry.status = "pinned"
+                entry.disabled_reason = "regression"
+                verdict = "pin"
+            else:
+                entry.status = "suspect"
+                entry.disabled_reason = "regression"
+                verdict = "recompile"
+            # Reset both arms so the next round measures the fresh variant cleanly.
+            entry.calls = entry.errors = entry.orig_calls = entry.orig_errors = 0
+            dirty = True
+            logger.info(
+                "compile_prompts: %s (%s) compiled err=%.0f%% vs control %.0f%% "
+                "(Δ+%.0f%%, attempt %d) — %s",
+                entry.name, key[:8], comp_rate * 100, orig_rate * 100,
+                reg * 100, entry.attempts, verdict,
+            )
+            actions.append({
+                "name": entry.name, "key": key, "action": verdict,
+                "compiled_rate": comp_rate, "orig_rate": orig_rate,
+                "attempt": entry.attempts,
+            })
+        if dirty:
+            _save_index()
+    return actions
 
 
 def status(config: "Config") -> list[dict]:
@@ -157,6 +244,8 @@ def status(config: "Config") -> list[dict]:
             d = asdict(entry)
             d["key"] = key
             d["error_rate"] = entry.error_rate
+            d["orig_error_rate"] = entry.orig_error_rate
+            d["regression"] = entry.regression
             d["savings_ratio"] = entry.savings_ratio
             d["savings_chars"] = entry.original_chars - entry.compiled_chars if entry.compiled_chars else 0
             d["savings_tokens"] = entry.original_tokens - entry.compiled_tokens if entry.compiled_tokens else 0
@@ -242,6 +331,8 @@ def recompile(config: "Config", name: str | None = None) -> int:
             entry.attempts = 0
             entry.calls = 0
             entry.errors = 0
+            entry.orig_calls = 0
+            entry.orig_errors = 0
             n += 1
         _save_index()
     return n

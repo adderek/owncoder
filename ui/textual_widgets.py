@@ -1241,7 +1241,7 @@ def build_widget_classes(t) -> SimpleNamespace:
                 pass
 
         def _refresh(self) -> None:
-            from agent.core.model_status import get_counts, get_availability
+            from agent.core.model_status import get_counts, get_availability, get_endpoint_counts
             counts = get_counts()
             avail = get_availability()
             parts = []
@@ -1261,6 +1261,16 @@ def build_widget_classes(t) -> SimpleNamespace:
             worker_count = get_counts().get("workers", 0)
             if worker_count > 0:
                 parts.append(f"[rgb(232,128,26)]agents:{worker_count}●[/]")
+            # Endpoint split — how many requests overlap on each backend right now.
+            # Only shown when >1 endpoint is active at once, or any cloud traffic
+            # is in flight, so a plain local-only turn stays uncluttered.
+            eps = get_endpoint_counts()
+            if eps and (len(eps) > 1 or any(k != "local" for k in eps)):
+                ep_parts = []
+                for label in sorted(eps, key=lambda k: (k != "local", k)):
+                    color = "rgb(120,144,156)" if label == "local" else "rgb(124,77,255)"
+                    ep_parts.append(f"[{color}]{label}:{eps[label]}[/]")
+                parts.append("[dim]│[/dim] " + " ".join(ep_parts))
             self.update("  ".join(parts))
 
         async def on_click(self) -> None:

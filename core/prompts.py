@@ -136,6 +136,8 @@ def _build_system_prompt(
     total_files: int = 0,
     index_percent: int = 100,
 ) -> str:
+    from datetime import datetime, timezone
+
     from agent import prompt_compiler
     template = SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
     template = prompt_compiler.load("system.txt", template, config)
@@ -208,7 +210,10 @@ def _build_system_prompt(
         except Exception:
             tool_catalog = ""
 
+    current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
     prompt = template.format(
+        current_date=current_date,
         project_name=project_name or Path(config.tools.working_dir).resolve().name,
         working_dir=config.tools.working_dir,
         git_branch=branch,

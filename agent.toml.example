@@ -202,7 +202,10 @@ compaction_message_threshold = 15    # also compact after this many messages
 narration_fallback        = true     # emit narration text if model skips tool-call
 auto_detect_ctx           = true     # query server for actual context size on startup
 think_level               = "normal" # "none" | "min" | "normal" | "max"
-stream_stall_seconds      = 90       # abort a stream if no chunk arrives for this long (0 = off)
+stream_stall_seconds      = 90       # mid-stream gap (after first token) before declaring a wedge (0 = off)
+stream_ttft_seconds       = 600      # wait for FIRST token before declaring a wedge; must exceed worst-case
+#                                      prefill on a big prompt, which emits no chunks (0 = off)
+stream_heartbeat_seconds  = 20       # emit a progress heartbeat this often while a stream is quiet (0 = off)
 stream_stall_retries      = 1        # retries after a stall before giving up
 
 # ── RAG ───────────────────────────────────────────────────────────────────────

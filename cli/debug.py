@@ -71,7 +71,7 @@ def cmd_prompts(args, config):
             return
         print(
             f"{'name':30}{'model':18}{'status':10}{'why':16}"
-            f"{'calls':>6}{'err%':>6}{'tok in':>8}{'tok out':>9}{'save%':>7}{'saved Σ':>10}"
+            f"{'calls':>6}{'err%':>6}{'ctl':>5}{'ctl%':>6}{'save%':>7}{'saved Σ':>10}"
         )
         total_saved = 0
         for r in rows:
@@ -84,12 +84,26 @@ def cmd_prompts(args, config):
                 f"{(r['disabled_reason'] or '-')[:15]:16}"
                 f"{r['calls']:>6}"
                 f"{int(r['error_rate']*100):>5}%"
-                f"{r['original_tokens']:>8}"
-                f"{r['compiled_tokens']:>9}"
+                f"{r.get('orig_calls', 0):>5}"
+                f"{int(r.get('orig_error_rate', 0)*100):>5}%"
                 f"{save_pct:>6.0f}%"
                 f"{r['tokens_saved_total']:>10}"
             )
         print(f"\nLifetime tokens saved across all variants: {total_saved}")
+        print("  err% = compiled (treatment) arm · ctl/ctl% = original (control) holdout arm")
+        return
+    if action == "evaluate":
+        actions = prompt_compiler.evaluate(config)
+        acted = [a for a in actions if a["action"] != "keep"]
+        if not actions:
+            print("No variants have enough A/B samples on both arms yet.")
+            return
+        for a in actions:
+            print(
+                f"  {a['action']:10} {a['name']:30} "
+                f"compiled={a['compiled_rate']*100:.0f}% control={a['orig_rate']*100:.0f}%"
+            )
+        print(f"\n{len(acted)} variant(s) recompiled/pinned, {len(actions)-len(acted)} kept.")
         return
     if action == "recompile":
         target = getattr(args, "name", None)
