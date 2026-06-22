@@ -51,7 +51,9 @@ _DEFAULT_READ_DENY_GLOBS: list[str] = [
     "id_ecdsa",
     "id_ecdsa.*",
     ".netrc",
+    ".aws/credentials",
     "**/.aws/credentials",
+    ".ssh/*",
     "**/.ssh/*",
 ]
 

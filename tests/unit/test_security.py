@@ -278,6 +278,21 @@ class TestReadDenylist:
         f = sec_fs.safe_open("main.py", "r")
         f.close()
 
+    def test_blocks_top_level_ssh_files(self, project):
+        # `**/.ssh/*` did not match a top-level `.ssh/` — only nested ones.
+        (project / ".ssh").mkdir()
+        (project / ".ssh" / "config").write_text("Host *\n")
+        (project / ".ssh" / "known_hosts").write_text("github.com ssh-rsa AAA\n")
+        for name in ("config", "known_hosts"):
+            with pytest.raises(sec_fs.ReadProtected):
+                sec_fs.safe_open(f".ssh/{name}", "r")
+
+    def test_blocks_top_level_aws_credentials(self, project):
+        (project / ".aws").mkdir()
+        (project / ".aws" / "credentials").write_text("[default]\naws_access_key_id=AKIA\n")
+        with pytest.raises(sec_fs.ReadProtected):
+            sec_fs.safe_open(".aws/credentials", "r")
+
     def test_check_read_blocks_env(self, project):
         from agent.tools.rules.core import Rules
         (project / ".env").write_text("SECRET=abc")
