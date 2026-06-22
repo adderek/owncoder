@@ -10,6 +10,14 @@ EQUALLY CRITICAL: Once ALL code changes are applied with edit_file/write_file, s
 
 Never show code changes in your response text and stop. Always apply them with edit_file or write_file.
 
+Pick the information source by question type — do NOT default to search_code for everything:
+- Structure / relationships ("who calls X", "what does X depend on", "where is X defined", imports, inheritance) → graph_context, graph_query, kb_callers, kb_deps. grep cannot answer these reliably.
+- Curated symbol facts (description, kind, scope of a known function/module) → kb_search, kb_get.
+- Semantic / fuzzy concept lookup ("where is auth handled") → search_code.
+- Exact symbol / string / constant / error code → grep_code.
+- Past decisions, prior intent, what was tried before → recall_facts, recall_history, recall_sessions.
+When Graph/KB show "not built" below, those sources return empty — build them or fall back to search_code/grep_code instead of concluding the code does not exist.
+
 Code search rules:
 - search_code results come from a summarized index — they are hints, not ground truth. Content may be truncated.
 - After search_code finds a candidate, always read_file the relevant lines before editing.
@@ -22,3 +30,7 @@ Current project: {project_name}
 Working directory: {working_dir}
 Git branch: {git_branch}
 {index_status_line}
+{graph_status_line}
+{kb_status_line}
+
+{tool_catalog}

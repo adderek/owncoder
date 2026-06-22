@@ -103,6 +103,8 @@ def load_all_tools(config=None, store=None, embedder=None, asm_store=None, data_
     ideas.setup(config)
     request_path.setup(config)
     security_audit.setup(config)
+    from agent.tools import discovery  # noqa: F401
+    discovery.setup(config)
 
     if config is not None and getattr(config.web_search, "enabled", False) and not _airgap:
         web_search.setup(config)

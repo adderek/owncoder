@@ -342,6 +342,17 @@ skip_on_truncated     = true
 skip_tools            = ["read_file"]
 prompt_path           = ""
 
+# ── Tool Discovery (progressive disclosure) ──────────────────────────────────
+# With ~70 tools, sending every schema each turn burns context and drowns a
+# weak local model in choices. When enabled, only a small CORE set ships every
+# turn; the rest are advertised as a compact grouped catalog in the system
+# prompt, and their full schemas load on demand when the model calls
+# find_tools("<keywords>"). Off by default (full schema list, unchanged).
+[tool_discovery]
+enabled     = false
+extra_core  = []      # tool names to always expose with full schema (added to core)
+max_results = 8       # max tools returned/activated per find_tools call
+
 # ── Web Search ───────────────────────────────────────────────────────────────
 # Five-layer safety architecture. All web content is treated as hostile.
 # Off by default — you must opt in.

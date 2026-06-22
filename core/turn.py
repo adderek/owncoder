@@ -328,6 +328,22 @@ async def run_turn(
     if compaction_on:
         from agent.tool_compactor import inject_purpose_into_schemas
         tools = inject_purpose_into_schemas(tools)
+    # Progressive tool disclosure: when enabled, send only core + on-demand
+    # activated schemas; the model pulls the rest via find_tools (it learns the
+    # full catalog from the system prompt). The active set resets each turn so
+    # context stays lean — the model re-discovers what THIS turn needs.
+    _discovery_on = bool(getattr(getattr(config, "tool_discovery", None), "enabled", False))
+    _all_tools = tools
+    if _discovery_on:
+        from agent.core import tool_discovery as _td
+        _td.reset_active()
+
+        def _discovery_tools():
+            return _td.select_schemas(_all_tools, _td.active_names(), config)
+        tools = _discovery_tools()
+    else:
+        # find_tools is meaningless without the catalog → never offer it.
+        tools = [t for t in tools if t.get("function", {}).get("name") != "find_tools"]
     nudge_count = 0
     MAX_NUDGES = 3
     _NO_TOOL_SENTINEL = "NO_TOOL_NEEDED:"
@@ -372,6 +388,9 @@ async def run_turn(
 
     stall_retry_count = 0
     while True:
+        # Re-expose any tools the model activated via find_tools last iteration.
+        if _discovery_on:
+            tools = _discovery_tools()
         if inject_queue is not None:
             drained: list[dict] = []
             while True:

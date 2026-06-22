@@ -244,6 +244,25 @@ class ToolCompactionConfig:
 
 
 @dataclass
+class ToolDiscoveryConfig:
+    """Progressive tool disclosure.
+
+    When enabled, only a small CORE set of tool schemas is sent to the model
+    every turn; the rest are advertised as a compact grouped catalog in the
+    system prompt and their full schemas are loaded on demand when the model
+    calls `find_tools(query)`. Keeps the schema token cost flat as the tool
+    count grows, while the model stays aware that the other tools exist and
+    when to reach for them.
+    """
+    enabled: bool = False
+    # Extra tool names to always expose with full schema (added to the built-in
+    # core set). Use for tools a given project leans on every turn.
+    extra_core: list = field(default_factory=list)
+    # Max matches returned/activated per find_tools call.
+    max_results: int = 8
+
+
+@dataclass
 class SecurityConfig:
     """Sandbox + filesystem confinement for tool calls."""
     sandbox_backend: str = "auto"
@@ -680,6 +699,7 @@ class Config:
     compile_prompts: CompilePromptsConfig = field(default_factory=CompilePromptsConfig)
     token_limits: TokenLimitsConfig = field(default_factory=TokenLimitsConfig)
     tool_compaction: ToolCompactionConfig = field(default_factory=ToolCompactionConfig)
+    tool_discovery: ToolDiscoveryConfig = field(default_factory=ToolDiscoveryConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
     planning: PlanningConfig = field(default_factory=PlanningConfig)
     recovery: RecoveryConfig = field(default_factory=RecoveryConfig)

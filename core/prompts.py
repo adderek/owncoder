@@ -177,6 +177,37 @@ def _build_system_prompt(
     else:
         index_warning = ""
 
+    # Structural-source readiness (call graph + KB) — cheap file stats only, so
+    # this never stalls startup. Signalled in the prompt so the model knows
+    # up-front whether graph_*/kb_* will return data or empty (= not built).
+    root = Path(config.tools.working_dir).resolve()
+    graph_ready = (root / "graphify-out" / "graph.json").exists()
+    graph_status_line = (
+        "Graph: ready" if graph_ready
+        else "Graph: not built — run graph_build before graph_* structural queries"
+    )
+    kb_cfg = getattr(config, "kb", None)
+    kb_ready = False
+    kb_corpus = getattr(kb_cfg, "corpus_path", "") or ""
+    if getattr(kb_cfg, "enabled", False) and kb_corpus:
+        try:
+            kb_ready = Path(kb_corpus).exists()
+        except Exception:
+            kb_ready = False
+    kb_status_line = "KB: ready" if kb_ready else "KB: not built"
+
+    # Progressive tool disclosure: when enabled, advertise the on-demand tools as
+    # a compact grouped catalog so the model knows what exists + when to reach
+    # for it, without paying the full-schema token cost every turn.
+    tool_catalog = ""
+    if getattr(getattr(config, "tool_discovery", None), "enabled", False):
+        try:
+            from agent.tools import get_schemas
+            from agent.core import tool_discovery as _td
+            tool_catalog = _td.render_catalog(get_schemas(), config)
+        except Exception:
+            tool_catalog = ""
+
     prompt = template.format(
         project_name=project_name or Path(config.tools.working_dir).resolve().name,
         working_dir=config.tools.working_dir,
@@ -184,6 +215,9 @@ def _build_system_prompt(
         indexed_count=indexed_count,
         index_status_line=index_status_line,
         index_warning=index_warning,
+        graph_status_line=graph_status_line,
+        kb_status_line=kb_status_line,
+        tool_catalog=tool_catalog,
     )
 
     if preamble:
