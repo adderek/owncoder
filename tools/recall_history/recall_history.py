@@ -70,15 +70,23 @@ def recall_history(
             result.append(entry)
         return result
 
+    # This sync tool normally runs in an executor thread (execute_tool), which
+    # has no event loop — asyncio.get_event_loop() raised "no current event
+    # loop" there. Detect a *running* loop instead; if one exists, run the read
+    # on a separate thread, otherwise just asyncio.run it here.
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
+        asyncio.get_running_loop()
+        in_running_loop = True
+    except RuntimeError:
+        in_running_loop = False
+
+    try:
+        if in_running_loop:
             import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(asyncio.run, _read())
-                history = future.result(timeout=10)
+                history = pool.submit(asyncio.run, _read()).result(timeout=10)
         else:
-            history = loop.run_until_complete(_read())
+            history = asyncio.run(_read())
     except Exception as e:
         return {"error": f"Failed to read history: {e}"}
 
