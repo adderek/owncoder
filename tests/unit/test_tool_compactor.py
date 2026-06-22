@@ -55,3 +55,29 @@ async def test_no_shrink_keeps_original():
     out, info = await compact_result("search_code", {}, "p", raw, cfg, client)
     assert out == raw
     assert info["reason"] == "no_shrink"
+
+
+@pytest.mark.asyncio
+async def test_bad_prompt_template_falls_back(tmp_path):
+    """A custom prompt with literal braces (e.g. a JSON example) makes
+    str.format raise. compact_result must fall back to the raw result rather
+    than crash the turn."""
+    cfg = _cfg()
+    bad_prompt = tmp_path / "compact_prompt.txt"
+    # Stray/literal braces a real prompt might contain: a JSON output example.
+    bad_prompt.write_text(
+        "Compact {result} for {purpose}. Example output: {\"k\": \"v\"}",
+        encoding="utf-8",
+    )
+    cfg.tool_compaction.prompt_path = str(bad_prompt)
+    client = make_client(make_response(content="should not be called"))
+
+    raw = '{"matches": ["a.py"]}' + " padding" * 10
+    out, info = await compact_result(
+        "search_code", {"q": "x"}, "find matches", raw, cfg, client,
+    )
+
+    assert out == raw
+    assert info["skipped"] is True
+    assert info["reason"].startswith("bad_prompt:")
+    client.chat.completions.create.assert_not_called()

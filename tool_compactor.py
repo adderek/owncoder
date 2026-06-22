@@ -123,11 +123,20 @@ async def compact_result(
     # the substituted *values*. So result_str is passed raw — escaping its braces
     # would double every { } in the output (e.g. JSON {"a":1} → {{"a":1}}) and
     # corrupt the text the compactor sees.
-    prompt = _load_prompt(config).format(
-        tool=tool_name,
-        purpose=purpose.strip(),
-        result=result_str,
-    )
+    try:
+        prompt = _load_prompt(config).format(
+            tool=tool_name,
+            purpose=purpose.strip(),
+            result=result_str,
+        )
+    except (KeyError, ValueError, IndexError) as e:
+        # A custom prompt_path with stray/literal braces (e.g. a JSON example)
+        # makes str.format raise. Don't crash the turn — fall back to the raw
+        # result, honouring the "on any failure falls back" contract.
+        logger.warning("tool_compaction: bad prompt template (%s); skipping for %s", e, tool_name)
+        info["skipped"] = True
+        info["reason"] = f"bad_prompt:{type(e).__name__}"
+        return result_str, info
 
     client = _get_client(config, main_client)
     sem = _get_semaphore(config)
