@@ -58,6 +58,25 @@ def is_untrusted_tool(name: str) -> bool:
     return n.startswith("mcp__") or n.startswith("web") or n in ("fetch", "http_get", "browse")
 
 
+_ZWSP = "​"
+# Banner fence tokens — if untrusted content contains these verbatim it could
+# forge an early close and escape the DATA envelope. Break each with a
+# zero-width space before wrapping.
+_FENCE_TOKENS = (
+    "--- BEGIN UNTRUSTED OUTPUT ---",
+    "--- END UNTRUSTED OUTPUT ---",
+    "</untrusted_tool_output>",
+    "<untrusted_tool_output",
+)
+
+
+def _neutralize_fence(text: str) -> str:
+    for tok in _FENCE_TOKENS:
+        if tok in text:
+            text = text.replace(tok, tok[0] + _ZWSP + tok[1:])
+    return text
+
+
 def scan(text: str) -> list[str]:
     """Return labels of injection shapes found in *text* (deduped, ordered)."""
     found: list[str] = []
@@ -82,5 +101,7 @@ def guard_tool_output(name: str, text: str, config: "Config | None") -> tuple[st
     detections = scan(text)
     if not detections:
         return text, []
-    wrapped = _BANNER.format(name=name, flags=", ".join(detections), content=text)
+    wrapped = _BANNER.format(
+        name=name, flags=", ".join(detections), content=_neutralize_fence(text)
+    )
     return wrapped, detections
