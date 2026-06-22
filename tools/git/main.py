@@ -5,12 +5,17 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agent.tools import register
-from agent.tools._common import working_dir
+from agent.tools._common import working_dir, is_read_protected
 
 if TYPE_CHECKING:
     from agent.config import Config
 
 _config = None
+
+# Tools that surface file *contents* must refuse secret files, matching
+# read_file / grep_code — otherwise the model could read a tracked .env via
+# git blame/diff.
+_READ_PROTECTED_ERR = "path is a protected secret file; refusing to expose its contents"
 
 
 def setup(config) -> None:
@@ -64,6 +69,8 @@ def _run_git(*args: str, cwd: str | None = None, timeout: float = 30.0) -> tuple
     },
 )
 def git_diff(staged: bool = False, path: str | None = None) -> dict:
+    if path and is_read_protected(path):
+        return {"error": _READ_PROTECTED_ERR, "path": path}
     args = ["diff"]
     if staged:
         args.append("--cached")
@@ -133,6 +140,8 @@ def git_log(path: str | None = None, n: int = 10, format: str = "oneline") -> di
 def git_blame(
     path: str, start_line: int | None = None, end_line: int | None = None
 ) -> dict:
+    if is_read_protected(path):
+        return {"error": _READ_PROTECTED_ERR, "path": path}
     args = ["blame", "--porcelain"]
     if start_line and end_line:
         args += [f"-L{start_line},{end_line}"]
