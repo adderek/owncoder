@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import re
@@ -373,7 +374,17 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
 
     try:
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(None, lambda: fn(**args))
+        # Async tools (e.g. spawn_agents, ask_internet) are registered as
+        # coroutine functions; await them on the loop. Sync tools run in a
+        # thread so blocking I/O never stalls the event loop. (Running an async
+        # fn via run_in_executor would just return an un-awaited coroutine that
+        # then fails to serialise.)
+        if inspect.iscoroutinefunction(fn):
+            result = await fn(**args)
+        else:
+            result = await loop.run_in_executor(None, lambda: fn(**args))
+            if inspect.isawaitable(result):
+                result = await result
 
         if isinstance(result, dict):
             rules.log_action(name, args, result)
