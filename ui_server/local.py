@@ -27,6 +27,10 @@ class LocalUIServer:
         # Speech-to-text intake (off by default). Built before the broker so the
         # broker can route inbound chunked `voice` frames into it; the intake in
         # turn answers pending questions via the broker or starts a new turn.
+        # UI-supplied handler that turns a dictated transcript into a real
+        # prompt (starts a turn when idle, injects mid-turn). Set by the active
+        # UI via set_external_prompt_handler; until then we fall back to inject.
+        self._external_prompt = None
         self._intake = None
         on_voice = None
         if getattr(getattr(agent.config, "speech", None), "enabled", False):
@@ -36,14 +40,33 @@ class LocalUIServer:
                     transcriber=get_transcriber(agent.config),
                     config=agent.config.speech,
                     on_answer=lambda a: self._notify.submit_answer(a),
-                    on_transcript=lambda text: self._agent.inject(text),
+                    on_transcript=self._on_voice_transcript,
                 )
                 on_voice = self._intake.feed
+                logger.info("speech: intake enabled (backend=%s model=%s)",
+                            agent.config.speech.backend, agent.config.speech.model)
             except Exception:
                 logger.exception("speech: intake disabled (init failed)")
                 self._intake = None
                 on_voice = None
         self._notify = NotifyBroker(agent.config, on_voice=on_voice)
+
+    def set_external_prompt_handler(self, cb) -> None:
+        """Register a UI callback (text -> None) that submits a dictated prompt
+        as if the user typed and sent it. Thread-safe expectations are the UI's."""
+        self._external_prompt = cb
+
+    def _on_voice_transcript(self, text: str) -> None:
+        """Route a finished voice transcript: prefer the UI prompt handler (so it
+        starts/steers a turn); fall back to the agent inject queue."""
+        cb = self._external_prompt
+        if cb is not None:
+            try:
+                cb(text)
+                return
+            except Exception:
+                logger.exception("speech: external prompt handler failed; falling back to inject")
+        self._agent.inject(text)
 
     # ── chat ────────────────────────────────────────────────────────────────
 

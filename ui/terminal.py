@@ -335,7 +335,34 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             elif pane_id == "tab-paths":
                 self._reload_paths_view()
 
+        class VoicePrompt(Message):
+            """A dictated transcript arriving from the speech intake (off-loop).
+            Posted thread-safely so it is handled in the app context."""
+            def __init__(self, text: str) -> None:
+                super().__init__()
+                self.text = text
+
+        async def on_voice_prompt(self, message: "CodeAgentApp.VoicePrompt") -> None:
+            text = message.text.strip()
+            if not text:
+                return
+            if self._agent_running:
+                self._server.inject(text)
+                self._write_chat(
+                    f"[bold {t.user_color}]🎤 You (voice, mid-turn):[/bold {t.user_color}] {_escape(text)}"
+                )
+                return
+            self.query_one("#input-bar", PromptInput).add_to_history(text)
+            self._write_chat(
+                f"[bold {t.user_color}]🎤 You (voice):[/bold {t.user_color}] {_escape(text)}"
+            )
+            self._begin_chat(text)
+
         def on_mount(self) -> None:
+            # Route dictated transcripts to the input path (start/steer a turn).
+            _set_ext = getattr(self._server, "set_external_prompt_handler", None)
+            if _set_ext is not None:
+                _set_ext(lambda txt: self.post_message(CodeAgentApp.VoicePrompt(txt)))
             if self._terminal_title != "off":
                 icon = getattr(self, "_title_icon", "🌟")
                 self._set_terminal_title(f"{icon} agent — waiting for input{self._session_title_suffix()}")
