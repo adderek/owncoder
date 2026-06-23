@@ -716,6 +716,10 @@ class SpeechConfig:
     # faster-whisper; initial_prompt = a leading context sentence. Both optional.
     hotwords: str = ""
     initial_prompt: str = ""
+    # Keep the raw audio of the last N utterances on disk (under agent_dir) so
+    # the retranscribe_voice tool can re-run recognition with a hint when a word
+    # was mis-heard. 0 disables caching. Audio stays on the host, never in LLM ctx.
+    cache_utterances: int = 10
     max_utterance_bytes: int = 5_000_000
     max_concurrent_utterances: int = 4
     utterance_ttl_s: int = 60

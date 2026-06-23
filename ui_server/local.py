@@ -41,6 +41,7 @@ class LocalUIServer:
                     config=agent.config.speech,
                     on_answer=lambda a: self._notify.submit_answer(a),
                     on_transcript=self._on_voice_transcript,
+                    agent_dir=getattr(agent.config.tools, "agent_dir", ".agent"),
                 )
                 on_voice = self._intake.feed
                 logger.info("speech: intake enabled (backend=%s model=%s)",

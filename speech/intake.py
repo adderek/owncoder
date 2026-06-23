@@ -51,11 +51,13 @@ class SpeechIntake:
         config: "SpeechConfig",
         on_answer: "Callable[[Answer], object]",
         on_transcript: "Callable[[str], object]",
+        agent_dir: str = ".agent",
     ) -> None:
         self._tx = transcriber
         self._cfg = config
         self._on_answer = on_answer
         self._on_transcript = on_transcript
+        self._agent_dir = agent_dir
         self._buffers: dict[str, _Utterance] = {}
         self._tasks: set[asyncio.Task] = set()
 
@@ -117,6 +119,14 @@ class SpeechIntake:
             logger.exception("speech: transcription failed for utterance %s", uid)
             return
         text = (text or "").strip()
+        # Cache the raw audio (+ transcript) so the retranscribe_voice tool can
+        # re-run recognition with a hint when a word was mis-heard.
+        try:
+            from agent.speech import cache
+            cache.save(self._agent_dir, uid, audio, ut.fmt, text, ut.lang,
+                       max_keep=getattr(self._cfg, "cache_utterances", 10))
+        except Exception:
+            logger.warning("speech: caching utterance %s failed", uid, exc_info=True)
         if not text:
             logger.info("speech: utterance %s produced no text", uid)
             return

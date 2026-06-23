@@ -32,7 +32,7 @@ def load_all_tools(config=None, store=None, embedder=None, asm_store=None, data_
 
     # ── Explicit imports (known tool modules) ──────────────────────────────
     # ADD NEW TOOL MODULES HERE if they are standalone packages:
-    from agent.tools import files, shell, git, search, analyze_asm, edit_file, recall, notes, recall_sessions, rate_session, recall_history, retrieve_output, project_file_stats, index_code, manage_skills, ideas, request_path, security_audit, turn_signals  # noqa: F401
+    from agent.tools import files, shell, git, search, analyze_asm, edit_file, recall, notes, recall_sessions, rate_session, recall_history, retrieve_output, project_file_stats, index_code, manage_skills, ideas, request_path, security_audit, turn_signals, retranscribe_voice  # noqa: F401
     from agent.tools.rules import load_rules
 
     _airgap = False
@@ -103,6 +103,7 @@ def load_all_tools(config=None, store=None, embedder=None, asm_store=None, data_
     ideas.setup(config)
     request_path.setup(config)
     security_audit.setup(config)
+    retranscribe_voice.setup(config)
     from agent.tools import discovery  # noqa: F401
     discovery.setup(config)
 
