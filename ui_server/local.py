@@ -72,9 +72,11 @@ class LocalUIServer:
         if cb is not None:
             try:
                 cb(text)
+                logger.info("speech: transcript routed to UI prompt handler: %r", text)
                 return
             except Exception:
                 logger.exception("speech: external prompt handler failed; falling back to inject")
+        logger.warning("speech: no UI prompt handler — transcript queued via inject (idle = waits for next input): %r", text)
         self._agent.inject(text)
 
     # ── chat ────────────────────────────────────────────────────────────────

@@ -343,6 +343,8 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                 self.text = text
 
         async def on_voice_prompt(self, message: "CodeAgentApp.VoicePrompt") -> None:
+            import logging as _lg
+            _lg.getLogger("agent.ui.terminal").info("voice prompt received in UI: %r (running=%s)", message.text, self._agent_running)
             text = message.text.strip()
             if not text:
                 return
@@ -363,6 +365,8 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             _set_ext = getattr(self._server, "set_external_prompt_handler", None)
             if _set_ext is not None:
                 _set_ext(lambda txt: self.post_message(CodeAgentApp.VoicePrompt(txt)))
+                import logging as _lg
+                _lg.getLogger("agent.ui.terminal").info("speech: external prompt handler registered")
             # Open notify channels now so inbound answers/voice arrive before the
             # agent ever sends its first notice (otherwise it's never connected).
             _start_notify = getattr(self._server, "start_notify", None)
