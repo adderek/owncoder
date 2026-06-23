@@ -711,6 +711,11 @@ class SpeechConfig:
     language: str = "pl"
     device: str = "auto"
     compute_type: str = "default"
+    # Bias recognition toward domain/jargon words the base model won't know
+    # (e.g. "owncoder", tool names). hotwords = space/comma list given to
+    # faster-whisper; initial_prompt = a leading context sentence. Both optional.
+    hotwords: str = ""
+    initial_prompt: str = ""
     max_utterance_bytes: int = 5_000_000
     max_concurrent_utterances: int = 4
     utterance_ttl_s: int = 60

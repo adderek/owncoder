@@ -123,7 +123,12 @@ class FasterWhisperSTT:
             return ""
         model = self._ensure_model()
         lang = language or self._cfg.language or None
-        segments, _info = model.transcribe(samples, language=lang)
+        segments, _info = model.transcribe(
+            samples,
+            language=lang,
+            hotwords=(self._cfg.hotwords or None),
+            initial_prompt=(self._cfg.initial_prompt or None),
+        )
         return " ".join(seg.text.strip() for seg in segments).strip()
 
 
