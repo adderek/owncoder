@@ -124,6 +124,14 @@ class RelayChannel:
                 except asyncio.QueueEmpty:
                     pass
 
+    def connect(self) -> None:
+        """Start the connection proactively (without waiting for a first send).
+
+        Needed for inbound delivery: answers and voice frames only arrive once
+        the websocket is up, but the agent may receive before it ever sends a
+        notice. Safe to call repeatedly; no-op once connected."""
+        self._ensure_task()
+
     def _ensure_task(self) -> None:
         if self._task is None or self._task.done():
             self._task = asyncio.get_running_loop().create_task(self._run())

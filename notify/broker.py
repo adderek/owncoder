@@ -143,6 +143,20 @@ class NotifyBroker:
         )))
         return True
 
+    def start(self) -> None:
+        """Proactively open channel connections so inbound answers/voice arrive
+        even before the agent sends its first notice. Call once a loop is running
+        (e.g. UI startup). No-op for outbound-only channels."""
+        if not self.enabled:
+            return
+        for ch in self._channels:
+            connect = getattr(ch, "connect", None)
+            if connect is not None:
+                try:
+                    connect()
+                except Exception:
+                    logger.warning("notify: channel %s failed to connect proactively", ch.name)
+
     def stop(self) -> None:
         """Cancel background work (relay connections, in-flight fanouts)."""
         for ch in self._channels:

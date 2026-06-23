@@ -102,6 +102,12 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
     if session is not None:
         server.set_session_id(session.id)
 
+    # Open notify channels now (loop is running) so inbound answers/voice arrive
+    # before the agent's first outbound notice.
+    _start_notify = getattr(server, "start_notify", None)
+    if _start_notify is not None:
+        _start_notify()
+
     prompt_esc = _hex_to_ansi(t.prompt)
     console.print(
         f"[bold {t.agent_color}]local-code-agent[/bold {t.agent_color}]  [dim]{_llm_cfg['model']}  {_llm_cfg['ctx_window']} ctx[/dim]"

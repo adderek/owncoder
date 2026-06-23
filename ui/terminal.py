@@ -363,6 +363,11 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             _set_ext = getattr(self._server, "set_external_prompt_handler", None)
             if _set_ext is not None:
                 _set_ext(lambda txt: self.post_message(CodeAgentApp.VoicePrompt(txt)))
+            # Open notify channels now so inbound answers/voice arrive before the
+            # agent ever sends its first notice (otherwise it's never connected).
+            _start_notify = getattr(self._server, "start_notify", None)
+            if _start_notify is not None:
+                _start_notify()
             if self._terminal_title != "off":
                 icon = getattr(self, "_title_icon", "🌟")
                 self._set_terminal_title(f"{icon} agent — waiting for input{self._session_title_suffix()}")

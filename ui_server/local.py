@@ -51,6 +51,15 @@ class LocalUIServer:
                 on_voice = None
         self._notify = NotifyBroker(agent.config, on_voice=on_voice)
 
+    def start_notify(self) -> None:
+        """Open notify channel connections proactively (so inbound answers/voice
+        arrive before the agent's first outbound notice). Call from the UI once
+        an event loop is running."""
+        try:
+            self._notify.start()
+        except Exception:
+            logger.exception("notify: proactive start failed")
+
     def set_external_prompt_handler(self, cb) -> None:
         """Register a UI callback (text -> None) that submits a dictated prompt
         as if the user typed and sent it. Thread-safe expectations are the UI's."""
