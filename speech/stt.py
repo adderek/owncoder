@@ -31,6 +31,35 @@ logger = logging.getLogger(__name__)
 
 _INSTALL_HINT = "pip install 'local-code-agent[speech]'"
 
+_TQDM_SILENCED = False
+
+
+def _silence_tqdm_mp_lock() -> None:
+    """Stop faster-whisper/huggingface_hub tqdm from building a multiprocessing
+    lock. tqdm.__new__ unconditionally constructs an mp RLock whose resource
+    tracker must spawn a helper process; under Python 3.14 (and inside the
+    agent's restricted worker fds) that spawn dies with 'bad value(s) in
+    fds_to_keep', crashing the turn. Two belts:
+      1. disable_progress_bars() — runtime flag, immune to import-order races
+         (env vars lose to a huggingface_hub already imported by another dep).
+      2. pin tqdm's class lock to a threading.RLock so get_lock() never creates
+         the multiprocessing one even if a bar is still constructed."""
+    global _TQDM_SILENCED
+    if _TQDM_SILENCED:
+        return
+    try:
+        from huggingface_hub.utils import disable_progress_bars
+        disable_progress_bars()
+    except Exception:
+        pass
+    try:
+        import threading
+        import tqdm
+        tqdm.tqdm.set_lock(threading.RLock())
+    except Exception:
+        pass
+    _TQDM_SILENCED = True
+
 
 @runtime_checkable
 class Transcriber(Protocol):
@@ -55,6 +84,7 @@ class FasterWhisperSTT:
     def _ensure_model(self):
         if self._model is not None:
             return self._model
+        _silence_tqdm_mp_lock()
         try:
             from faster_whisper import WhisperModel
         except ImportError as exc:
@@ -83,6 +113,7 @@ class FasterWhisperSTT:
     def transcribe(self, audio: bytes, fmt: str = "wav", language: str = "") -> str:
         if not audio:
             return ""
+        _silence_tqdm_mp_lock()
         try:
             samples, _sr = self._decode(audio, fmt)
         except ImportError:
