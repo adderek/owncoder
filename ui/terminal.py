@@ -335,17 +335,15 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             elif pane_id == "tab-paths":
                 self._reload_paths_view()
 
-        class VoicePrompt(Message):
-            """A dictated transcript arriving from the speech intake (off-loop).
-            Posted thread-safely so it is handled in the app context."""
-            def __init__(self, text: str) -> None:
-                super().__init__()
-                self.text = text
-
-        async def on_voice_prompt(self, message: "CodeAgentApp.VoicePrompt") -> None:
+        def _on_voice_prompt(self, text: str) -> None:
+            """Handle a dictated transcript as if typed + sent. Scheduled onto the
+            app loop via call_from_thread/call_later (never a Textual Message — a
+            message nested in the App gets namespaced to on_code_agent_app_* and
+            silently never dispatches to a plain on_voice_prompt)."""
             import logging as _lg
-            _lg.getLogger("agent.ui.terminal").info("voice prompt received in UI: %r (running=%s)", message.text, self._agent_running)
-            text = message.text.strip()
+            _lg.getLogger("agent.ui.terminal").info(
+                "voice prompt received in UI: %r (running=%s)", text, self._agent_running)
+            text = (text or "").strip()
             if not text:
                 return
             if self._agent_running:
@@ -360,11 +358,20 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             )
             self._begin_chat(text)
 
+        def _schedule_voice_prompt(self, text: str) -> None:
+            """Bridge from the speech intake (may be any thread) to the app loop."""
+            try:
+                self.call_from_thread(self._on_voice_prompt, text)
+            except Exception:
+                # Same-thread (already on the app loop) — call_from_thread refuses;
+                # schedule on the loop instead.
+                self.call_later(self._on_voice_prompt, text)
+
         def on_mount(self) -> None:
             # Route dictated transcripts to the input path (start/steer a turn).
             _set_ext = getattr(self._server, "set_external_prompt_handler", None)
             if _set_ext is not None:
-                _set_ext(lambda txt: self.post_message(CodeAgentApp.VoicePrompt(txt)))
+                _set_ext(self._schedule_voice_prompt)
                 import logging as _lg
                 _lg.getLogger("agent.ui.terminal").info("speech: external prompt handler registered")
             # Open notify channels now so inbound answers/voice arrive before the
