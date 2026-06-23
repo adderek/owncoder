@@ -13,7 +13,16 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 from typing import Protocol, runtime_checkable, TYPE_CHECKING
+
+# faster-whisper downloads models via huggingface_hub, whose tqdm progress bars
+# build a multiprocessing lock; under Python 3.14 that lock's resource-tracker
+# spawn crashes with "bad value(s) in fds_to_keep" when the model loads inside a
+# worker thread (our run_in_executor). Disabling the progress bars avoids tqdm's
+# mp lock entirely. Set before any huggingface_hub import. Harmless elsewhere.
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 if TYPE_CHECKING:
     from agent.config.models import Config, SpeechConfig
