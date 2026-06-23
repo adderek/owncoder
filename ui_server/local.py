@@ -24,7 +24,26 @@ class LocalUIServer:
         self._stop_event: asyncio.Event | None = None
         self._default_max_iterations: int | None = getattr(agent.config.llm, "max_iterations", 10)
         from agent.notify import NotifyBroker
-        self._notify = NotifyBroker(agent.config)
+        # Speech-to-text intake (off by default). Built before the broker so the
+        # broker can route inbound chunked `voice` frames into it; the intake in
+        # turn answers pending questions via the broker or starts a new turn.
+        self._intake = None
+        on_voice = None
+        if getattr(getattr(agent.config, "speech", None), "enabled", False):
+            try:
+                from agent.speech import SpeechIntake, get_transcriber
+                self._intake = SpeechIntake(
+                    transcriber=get_transcriber(agent.config),
+                    config=agent.config.speech,
+                    on_answer=lambda a: self._notify.submit_answer(a),
+                    on_transcript=lambda text: self._agent.inject(text),
+                )
+                on_voice = self._intake.feed
+            except Exception:
+                logger.exception("speech: intake disabled (init failed)")
+                self._intake = None
+                on_voice = None
+        self._notify = NotifyBroker(agent.config, on_voice=on_voice)
 
     # ── chat ────────────────────────────────────────────────────────────────
 

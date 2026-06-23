@@ -684,6 +684,39 @@ class AEIConfig:
 
 
 @dataclass
+class SpeechConfig:
+    """Speech-to-text input. Off by default.
+
+    A remote client (Android app first; cloud STT / Alexa / Google Home later)
+    captures mic audio and streams it to the agent host over the notify relay
+    as chunked ``voice`` frames; the host transcribes the reassembled blob and
+    routes the transcript either to a pending notify question (when the frame
+    carries ``answer_to``) or as a brand-new user turn.
+
+    backend: which transcriber to use.
+      "faster-whisper" — local faster-whisper on the received audio blob
+                         (the analysis-doc Tier-2 default). Needs the optional
+                         dep group: pip install 'local-code-agent[speech]'.
+      "realtime-stt"   — future host-mic live backend (RealtimeSTT + VAD); not
+                         wired yet, selecting it raises a clear error.
+    model: whisper model size (tiny/base/small/medium/large-v3). medium ≈1.5GB.
+    device/compute_type: faster-whisper placement ("auto"/"cpu"/"cuda";
+      "default"/"int8"/"float16"). Audio is decoded from wav/pcm bytes.
+    The *_utterance / ttl knobs bound memory against a hostile or buggy client:
+      a partial utterance over the byte cap, or older than the TTL, is dropped.
+    """
+    enabled: bool = False
+    backend: str = "faster-whisper"
+    model: str = "medium"
+    language: str = "pl"
+    device: str = "auto"
+    compute_type: str = "default"
+    max_utterance_bytes: int = 5_000_000
+    max_concurrent_utterances: int = 4
+    utterance_ttl_s: int = 60
+
+
+@dataclass
 class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
@@ -719,3 +752,4 @@ class Config:
     aei: AEIConfig = field(default_factory=AEIConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
     mcp: MCPConfig = field(default_factory=MCPConfig)
+    speech: SpeechConfig = field(default_factory=SpeechConfig)

@@ -26,10 +26,12 @@ logger = logging.getLogger(__name__)
 
 
 class NotifyBroker:
-    def __init__(self, config: "Config") -> None:
+    def __init__(self, config: "Config", on_voice=None) -> None:
         # Tolerate partial configs (test fakes, older callers): no [notify]
         # section behaves as disabled with zero channels.
         self._cfg = getattr(config, "notify", None) or NotifyConfig()
+        # Speech intake feed (inbound chunked voice frames). None = speech off.
+        self._on_voice = on_voice
         from agent.security import airgap
         _airgap = airgap.is_enabled(config)
         self._channels = []
@@ -40,7 +42,7 @@ class NotifyBroker:
                     "notify: relay channel %s blocked by air-gap (non-local)", getattr(cfg, "url", ""),
                 )
                 continue
-            ch = build_channel(cfg, on_answer=self._on_wire_answer)
+            ch = build_channel(cfg, on_answer=self._on_wire_answer, on_voice=on_voice)
             if ch is not None:
                 self._channels.append(ch)
         self._pending: dict[str, tuple[Question, asyncio.Future]] = {}

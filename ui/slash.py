@@ -56,6 +56,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/undo", [], "restore last file snapshot", False),
     ("/checkpoint", ["/cp"], "checkpoint: list | new [label] | rollback <id>", True),
     ("/mcp", [], "show MCP server status + their tools", False),
+    ("/speech", [], "speech-to-text input status  [status]", True),
     ("/security", ["/sec", "/audit"], "security: scan|diff|triage|selfaudit|report [path] | baseline [...] | airgap [...] | integrity [seal|check] | weights [pin|verify|list] | sbom [path] | taint [path] | evolve | knowledge | verify [<i>|run] | full [path] | review [path]", True),
     ("/plan", [], "plan: new <goal> | show | steps | step <id> <status> | dep <step> <dep> | assign <step> <agent> | compact | abort | pause | stash | resume", True),
     ("/plans", [], "list saved plans", False),

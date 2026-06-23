@@ -95,12 +95,14 @@ class RelayChannel:
     on the agent loop.
     """
 
-    def __init__(self, cfg: NotifyChannelConfig, token: str, on_answer=None, e2e=None) -> None:
+    def __init__(self, cfg: NotifyChannelConfig, token: str, on_answer=None, e2e=None,
+                 on_voice=None) -> None:
         self.url = cfg.url
         self.capability = cfg.capability
         self.name = cfg.name or f"relay({cfg.url})"
         self._token = token
         self._on_answer = on_answer
+        self._on_voice = on_voice  # speech intake feed; None when speech disabled
         self._e2e = e2e  # E2EBox | None; when set, payloads encrypted both ways
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=RELAY_QUEUE_MAX)
         self._task: asyncio.Task | None = None
@@ -171,7 +173,9 @@ class RelayChannel:
 
     async def _pump_in(self, ws) -> None:
         async for raw in ws:
-            if self._on_answer is None or isinstance(raw, bytes):
+            if isinstance(raw, bytes):
+                continue
+            if self._on_answer is None and self._on_voice is None:
                 continue
             try:
                 data = json.loads(raw)
@@ -190,8 +194,11 @@ class RelayChannel:
                     logger.warning("notify channel %s: undecryptable envelope dropped", self.name)
                     continue
                 data = inner
-            if data.get("type") == "answer":
+            msg_type = data.get("type")
+            if msg_type == "answer" and self._on_answer is not None:
                 self._on_answer(data)
+            elif msg_type == "voice" and self._on_voice is not None:
+                self._on_voice(data)
 
 
 def _read_relay_token(cfg: NotifyChannelConfig) -> "str | None":
@@ -207,6 +214,7 @@ def _read_relay_token(cfg: NotifyChannelConfig) -> "str | None":
 def build_channel(
     cfg: NotifyChannelConfig,
     on_answer: "Callable[[dict], None] | None" = None,
+    on_voice: "Callable[[dict], None] | None" = None,
 ) -> "Channel | None":
     """Build channel from config entry. Returns None (with log) on bad config —
     a misconfigured channel must not prevent agent startup."""
@@ -244,6 +252,6 @@ def build_channel(
                 # Fail closed: e2e was requested — never fall back to plaintext.
                 logger.warning("notify: e2e key unavailable — skipping relay channel %s", cfg.url)
                 return None
-        return RelayChannel(cfg, token, on_answer, e2e=e2e)
+        return RelayChannel(cfg, token, on_answer, e2e=e2e, on_voice=on_voice)
     logger.warning("notify: unknown channel type %r — skipping", cfg.type)
     return None

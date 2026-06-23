@@ -196,6 +196,7 @@ def _merge(config: Config, data: dict) -> None:
         ("aei", config.aei),
         ("notify", config.notify),
         ("mcp", config.mcp),
+        ("speech", config.speech),
     ):
         section_data = data.get(section_name, {})
         _merge_obj(obj, section_data)

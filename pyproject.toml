@@ -38,6 +38,11 @@ notify = [
     "websockets>=12",
     "cryptography>=42",
 ]
+speech = [
+    "faster-whisper>=1.0",
+    "soundfile>=0.12",
+    "numpy>=1.24",
+]
 
 [project.scripts]
 agent = "agent.main:main"

@@ -50,6 +50,7 @@ def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
   [{c}]/skills [show|history|rm <name>][/{c}]  manage saved skills
   [{c}]/checkpoint [new|rollback <id>][/{c}]  restore point across all files
   [{c}]/mcp[/{c}]                MCP server status + tools
+  [{c}]/speech[/{c}]             speech-to-text input status
   [{c}]/security[/{c}] [scan|diff|triage|selfaudit|report|baseline|airgap|integrity|weights|sbom|taint|evolve|knowledge|verify|full|review] [path]  local security audit
   [{c}]/exec <command>[/{c}]      run an OS command and show output
   [{c}]/apply [file][/{c}]       write last code block to file (bypass tool calling)
@@ -308,6 +309,10 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
             elif cmd == "/mcp":
                 from agent.mcp import run_mcp_command
                 console.print(run_mcp_command(agent.config, arg))
+
+            elif cmd == "/speech":
+                from agent.speech import run_speech_command
+                console.print(run_speech_command(agent.config, arg))
 
             elif cmd in ("/perf", "/timing"):
                 from agent.metrics.turn_metrics import run_perf_command

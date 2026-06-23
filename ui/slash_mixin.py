@@ -223,6 +223,10 @@ class SlashHandlerMixin:
             from agent.mcp import run_mcp_command
             self._write_sys(_escape(run_mcp_command(self._server._agent.config, arg)))
 
+        elif cmd == "/speech":
+            from agent.speech import run_speech_command
+            self._write_sys(_escape(run_speech_command(self._server._agent.config, arg)))
+
         elif cmd in ("/security", "/sec", "/audit"):
             import asyncio
             from agent.security.secaudit import run_security_command, _security_start_banner
