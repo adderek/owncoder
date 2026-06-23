@@ -26,7 +26,12 @@ CAPABILITIES = ("display", "choices", "chat")
 SEND_TIMEOUT_S = 10
 RELAY_QUEUE_MAX = 100
 RELAY_BACKOFF_MAX_S = 60
-RELAY_MAX_FRAME_BYTES = 64 * 1024  # cap inbound frames from a hostile relay
+# Cap inbound frames from a hostile/compromised relay. Must hold the largest
+# legitimate frame: a chunked `voice` audio frame is base64 → JSON → e2e-encrypt
+# → base64 again (~1.8x the raw chunk), so a ~40 KB audio chunk lands near 72 KB.
+# 256 KB matches the relay server's own max_msg_bytes and leaves headroom; still
+# bounded so a malicious relay can't exhaust memory.
+RELAY_MAX_FRAME_BYTES = 256 * 1024
 
 
 @runtime_checkable
