@@ -835,6 +835,16 @@ from agent.ui.colors import _hex_to_ansi
 
 def run_ui(agent: "Agent", session=None):
     from agent.ui_server import build_ui_server
+    # Probe the relay before the broker is built; prompt if it's down (terminal
+    # is still normal here, so a plain prompt works). May drop the channel, spawn
+    # a relay, or exit per the user's choice.
+    try:
+        from agent.notify.startup import ensure_relay_available
+        ensure_relay_available(agent.config)
+    except SystemExit:
+        raise
+    except Exception:
+        logger.exception("notify: relay availability check failed")
     server = build_ui_server(agent)
     if server.get_ui_config()["mode"] == "textual":
         try:
