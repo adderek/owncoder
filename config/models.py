@@ -616,6 +616,11 @@ class NotifyConfig:
     answer_timeout_s: int = 600
     on_timeout: str = "continue"
     remote_answers: bool = False
+    # When True, add a system-prompt section letting the model optionally wrap
+    # off-language spans in TTS markers ([[xx]]…[[/]]) so a speaking client
+    # voices mixed-language responses correctly. The model decides per output
+    # whether to mark anything; unmarked text is spoken in the default language.
+    tts_markers: bool = False
     channels: list = field(default_factory=list)  # list[NotifyChannelConfig]
 
 

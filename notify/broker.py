@@ -80,7 +80,9 @@ class NotifyBroker:
         """Push a turn signal to channels if enabled and subscribed. Non-blocking."""
         if not self.enabled or kind not in self._cfg.events:
             return
-        self._spawn(self._fanout(Notice(kind=kind, text=payload, session=session_id)))
+        # from_marked keeps display text clean and only carries a `tts` stream
+        # when the payload actually contains language markers — a no-op otherwise.
+        self._spawn(self._fanout(Notice.from_marked(kind, payload, session_id)))
 
     async def ask(self, question: Question) -> "Answer | None":
         """Fan out a question; wait for first valid answer.

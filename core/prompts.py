@@ -112,6 +112,13 @@ _TURN_SIGNALS_FALLBACK = (
     "## Turn signals\n"
     "End response with >>>NEXT/>>>ASK/>>>DONE/>>>BLOCKED/>>>REVIEW/>>>FEEDBACK/>>>CROWS as appropriate."
 )
+_TTS_MARKERS_FALLBACK = (
+    "## Spoken-output language markers (optional)\n"
+    "A client may speak your messages aloud. Normally write plain text. Only when a "
+    "message mixes languages you MAY mark spans: lead with [[!xx]] (default language) "
+    "and wrap off-language spans as [[yy]]…[[/]] (ISO 639-1 codes). Markers affect "
+    "speech only and are stripped from display; keep them out of code. When unsure, omit them."
+)
 
 
 def _log_llm_request(messages: list, tools, config: "Config") -> None:
@@ -254,6 +261,14 @@ def _build_system_prompt(
     if ts_cfg is None or getattr(ts_cfg, "enabled", True):
         text = _load_inline("turn_signals.txt") or _TURN_SIGNALS_FALLBACK
         text = prompt_compiler.load("inline/turn_signals.txt", text, config)
+        prompt = f"{prompt}\n\n{text}"
+
+    # Opt-in: teach the model the optional TTS language markers so a speaking
+    # client can voice mixed-language messages. The model still decides per
+    # output whether to mark anything (see notify.tts_markers).
+    if getattr(getattr(config, "notify", None), "tts_markers", False):
+        text = _load_inline("tts_markers.txt") or _TTS_MARKERS_FALLBACK
+        text = prompt_compiler.load("inline/tts_markers.txt", text, config)
         prompt = f"{prompt}\n\n{text}"
 
     return prompt

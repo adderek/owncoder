@@ -9,8 +9,19 @@ JSON envelope (one object per message) shared by all channel types:
 from __future__ import annotations
 
 import itertools
+import re
 import uuid
 from dataclasses import dataclass, field
+
+# Inline TTS language markers in a notice's spoken stream (see the Android
+# TtsMarkup parser — keep the two in sync). `[[!xx]]` sets the stream default
+# language; `[[xx]] … [[/]]` voices a span in language xx. ASCII, no nesting.
+_TTS_MARKER_RE = re.compile(r"\[\[(?:/|!?[A-Za-z]{2}(?:-[A-Za-z]{2})?)\]\]")
+
+
+def strip_tts_markers(marked: str) -> str:
+    """Remove every TTS marker, leaving clean display/notification text."""
+    return _TTS_MARKER_RE.sub("", marked)
 
 # Notify-wire protocol version. Sent in the relay hello so server and client can
 # detect a breaking mismatch. Bump the major when notice/question/answer shapes
@@ -31,20 +42,38 @@ def _next_id(prefix: str) -> str:
 
 @dataclass
 class Notice:
-    """Fire-and-forget display message (progress, done, error)."""
+    """Fire-and-forget display message (progress, done, error).
+
+    `tts` is an optional spoken variant of `text` carrying inline language
+    markers (see strip_tts_markers); when set it goes on the wire for TTS-
+    capable clients while `text` stays clean for display. Build one from a
+    marked string with [from_marked].
+    """
     kind: str            # signal kind or "info"
     text: str
     session: str = ""
+    tts: str = ""        # marked spoken stream; "" = speak `text` in default lang
     id: str = field(default_factory=lambda: _next_id("n"))
 
+    @classmethod
+    def from_marked(cls, kind: str, marked: str, session: str = "") -> "Notice":
+        """Notice whose text is the marker-stripped form of `marked`; the marked
+        stream is kept in `tts` only when it actually contains markers."""
+        clean = strip_tts_markers(marked)
+        return cls(kind=kind, text=clean, session=session,
+                   tts=marked if marked != clean else "")
+
     def to_wire(self) -> dict:
-        return {
+        wire = {
             "type": "notice",
             "id": self.id,
             "kind": self.kind,
             "text": self.text,
             "session": self.session,
         }
+        if self.tts:
+            wire["tts"] = self.tts
+        return wire
 
     def render_text(self) -> str:
         return f"[{self.kind}] {self.text}"

@@ -1,0 +1,31 @@
+## Spoken-output language markers (optional)
+
+A connected client may read your user-facing messages aloud (text-to-speech).
+Speech engines voice one language at a time, so a fragment in another language
+gets mispronounced. You MAY annotate language switches; this is entirely your
+call.
+
+Default behaviour — do nothing. Write normally. The client speaks the whole
+message in its default language. If your message is all in one language, add no
+markers.
+
+Only when a message MIXES languages (e.g. mostly English but with a Polish
+phrase, file name aside, or quoted user words in another tongue), you MAY wrap
+each off-default span so it is spoken correctly:
+
+  [[!xx]]   once, at the very start — declare the message's default language
+  [[yy]] … [[/]]   wrap a span spoken in language yy, then back to default
+
+`xx`/`yy` are ISO 639-1 codes (`en`, `pl`, `de`, …), optionally with a region
+(`pt-BR`). `[[/]]` closes the most recent span; do not nest.
+
+Example (default English, one Polish clause):
+  [[!en]]Done. The user said [[pl]]zrób to teraz[[/]] so I proceeded.
+
+Rules:
+- Markers affect speech only; they are stripped from on-screen text. Keep them
+  out of code blocks, file paths, and commands.
+- Mark a span only if it is genuinely a different language. A single borrowed
+  word that is normally said as-is needs no marker.
+- When unsure, omit markers — plain text in the default language is the safe
+  default.
