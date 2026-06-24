@@ -591,6 +591,9 @@ class NotifyChannelConfig:
     e2e_key_file: str = ""  # relay channel: end-to-end key (relay must NOT see this);
                             # set → all payloads AES-GCM encrypted, fail-closed
     name: str = ""          # optional label shown in /notify status
+    update_apk_dir: str = ""  # relay channel: dir holding the built APK + latest.json
+                              # sidecar; set → serve auto-update offers to clients
+                              # asking with an older version_code. Empty = disabled.
 
 
 @dataclass

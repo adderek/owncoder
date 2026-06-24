@@ -80,6 +80,54 @@ class Question:
 
 
 @dataclass
+class UpdateOffer:
+    """Advertises a newer client build before streaming its APK in chunks.
+
+    Sent agent→client in reply to an `update_query` whose version_code is older
+    than the APK the agent holds. The client verifies `size`/`sha256` after
+    reassembling `chunks` UpdateChunk frames sharing this `version_name`.
+    """
+    version_code: int
+    version_name: str
+    size: int
+    sha256: str
+    chunks: int
+
+    def to_wire(self) -> dict:
+        return {
+            "type": "update_offer",
+            "version_code": self.version_code,
+            "version_name": self.version_name,
+            "size": self.size,
+            "sha256": self.sha256,
+            "chunks": self.chunks,
+        }
+
+
+@dataclass
+class UpdateChunk:
+    """One base64 slice of an offered APK (agent→client).
+
+    `id` is the offer's version_name; `seq` orders the slices and `last` marks
+    the final one. Kept small enough that the e2e-encrypted frame stays under
+    the relay's max_msg_bytes (see updater.UpdateResponder).
+    """
+    id: str
+    seq: int
+    last: bool
+    data: str  # base64, no wrap
+
+    def to_wire(self) -> dict:
+        return {
+            "type": "update_chunk",
+            "id": self.id,
+            "seq": self.seq,
+            "last": self.last,
+            "data": self.data,
+        }
+
+
+@dataclass
 class Answer:
     """Response to a Question. Validated by broker against the pending question."""
     question_id: str

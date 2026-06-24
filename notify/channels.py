@@ -101,20 +101,27 @@ class RelayChannel:
     """
 
     def __init__(self, cfg: NotifyChannelConfig, token: str, on_answer=None, e2e=None,
-                 on_voice=None) -> None:
+                 on_voice=None, on_update=None) -> None:
         self.url = cfg.url
         self.capability = cfg.capability
         self.name = cfg.name or f"relay({cfg.url})"
         self._token = token
         self._on_answer = on_answer
         self._on_voice = on_voice  # speech intake feed; None when speech disabled
+        self._on_update = on_update  # update_query handler; None when no apk dir
         self._e2e = e2e  # E2EBox | None; when set, payloads encrypted both ways
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=RELAY_QUEUE_MAX)
         self._task: asyncio.Task | None = None
 
     async def send(self, msg: "Notice | Question") -> bool:
+        return await self.send_raw(msg.to_wire())
+
+    async def send_raw(self, wire_dict: dict) -> bool:
+        """Queue an already-built wire dict (e2e-encrypted if enabled).
+
+        Used by the update responder to push update_offer/update_chunk frames
+        that are not Notice/Question messages."""
         self._ensure_task()
-        wire_dict = msg.to_wire()
         if self._e2e is not None:
             wire_dict = self._e2e.encrypt(wire_dict)
         wire = json.dumps(wire_dict)
@@ -188,7 +195,7 @@ class RelayChannel:
         async for raw in ws:
             if isinstance(raw, bytes):
                 continue
-            if self._on_answer is None and self._on_voice is None:
+            if self._on_answer is None and self._on_voice is None and self._on_update is None:
                 continue
             try:
                 data = json.loads(raw)
@@ -212,6 +219,10 @@ class RelayChannel:
                 self._on_answer(data)
             elif msg_type == "voice" and self._on_voice is not None:
                 self._on_voice(data)
+            elif msg_type == "update_query" and self._on_update is not None:
+                # Stream the offer/chunks on a task so the inbound pump keeps
+                # reading (and the reconnect logic still sees pump liveness).
+                asyncio.get_running_loop().create_task(self._on_update(self, data))
 
 
 def _read_relay_token(cfg: NotifyChannelConfig) -> "str | None":
@@ -228,7 +239,7 @@ def build_channel(
     cfg: NotifyChannelConfig,
     on_answer: "Callable[[dict], None] | None" = None,
     on_voice: "Callable[[dict], None] | None" = None,
-) -> "Channel | None":
+) -> "Channel | None":  # noqa: C901 — dispatch over channel types
     """Build channel from config entry. Returns None (with log) on bad config —
     a misconfigured channel must not prevent agent startup."""
     if cfg.capability not in CAPABILITIES:
@@ -265,6 +276,11 @@ def build_channel(
                 # Fail closed: e2e was requested — never fall back to plaintext.
                 logger.warning("notify: e2e key unavailable — skipping relay channel %s", cfg.url)
                 return None
-        return RelayChannel(cfg, token, on_answer, e2e=e2e, on_voice=on_voice)
+        on_update = None
+        if cfg.update_apk_dir:
+            from agent.notify.updater import UpdateResponder
+            on_update = UpdateResponder(cfg.update_apk_dir).handle
+        return RelayChannel(cfg, token, on_answer, e2e=e2e, on_voice=on_voice,
+                            on_update=on_update)
     logger.warning("notify: unknown channel type %r — skipping", cfg.type)
     return None
