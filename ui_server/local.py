@@ -110,28 +110,39 @@ class LocalUIServer:
         auto_step = 0
 
         while True:
-            response = await self._agent.chat(
-                current_input,
-                on_token=on_token,
-                on_tool_call=on_tool_call,
-                on_tool_result=on_tool_result,
-                on_progress=on_progress,
-                on_loop_detected=on_loop_detected,
-                on_phase=on_phase,
-                on_reasoning=on_reasoning,
-                on_context_size=on_context_size,
-                on_user_message=on_user_message,
-                stop_event=self._stop_event,
-            )
+            # Tell remote clients we are working on the reply (resets each
+            # iteration so an auto-stepping loop keeps showing "busy").
+            self._notify.notify_state("busy", session_id=session_id)
+            try:
+                response = await self._agent.chat(
+                    current_input,
+                    on_token=on_token,
+                    on_tool_call=on_tool_call,
+                    on_tool_result=on_tool_result,
+                    on_progress=on_progress,
+                    on_loop_detected=on_loop_detected,
+                    on_phase=on_phase,
+                    on_reasoning=on_reasoning,
+                    on_context_size=on_context_size,
+                    on_user_message=on_user_message,
+                    stop_event=self._stop_event,
+                )
+            except Exception as exc:
+                # Surface a crash to remote clients instead of leaving them stuck
+                # on "busy"; then let the normal error handling propagate.
+                self._notify.notify_state("error", str(exc)[:200], session_id)
+                raise
 
             if not signals_enabled:
                 self._notify.notify_response(response, session_id)
+                self._notify.notify_state("idle", session_id=session_id)
                 return response
 
             clean_response, signal = parse_signal(response)
 
             if signal is None:
                 self._notify.notify_response(clean_response, session_id)
+                self._notify.notify_state("idle", session_id=session_id)
                 return clean_response
 
             # Strip signal text from the last assistant message in history.
@@ -183,6 +194,10 @@ class LocalUIServer:
 
             # done, ask_user, request_feedback, request_review, consult_crows, blocked
             # — all pause the auto-loop and return to the UI.
+            waiting = signal.kind in (
+                "ask_user", "blocked", "request_feedback", "request_review", "consult_crows",
+            )
+            self._notify.notify_state("waiting" if waiting else "idle", session_id=session_id)
             return clean_response
 
     # ── runtime controls ─────────────────────────────────────────────────────

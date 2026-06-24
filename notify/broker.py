@@ -84,6 +84,29 @@ class NotifyBroker:
         # when the payload actually contains language markers — a no-op otherwise.
         self._spawn(self._fanout(Notice.from_marked(kind, payload, session_id)))
 
+    def notify_state(self, state: str, detail: str = "", session_id: str = "") -> None:
+        """Tell remote clients the agent's turn state so they can show progress.
+
+        state: "busy" (working on a reply) | "waiting" (needs the user) |
+        "idle" (done) | "error". A transient control frame, not a notice — it
+        is not logged, listed, or spoken; clients render it as a status. Sent
+        only to channels that can carry raw frames (relay). Non-blocking."""
+        if not self.enabled:
+            return
+        self._spawn(self._fanout_raw(
+            {"type": "state", "state": state, "detail": detail, "session": session_id}
+        ))
+
+    async def _fanout_raw(self, wire: dict) -> None:
+        for ch in self._channels:
+            send_raw = getattr(ch, "send_raw", None)
+            if send_raw is None:
+                continue  # outbound-only/command channels can't carry raw frames
+            try:
+                await send_raw(dict(wire))
+            except Exception as exc:
+                logger.warning("notify channel %s raw send failed: %s", ch.name, exc)
+
     def notify_response(self, text: str, session_id: str = "") -> None:
         """Push the assistant's final answer to channels as a `response` notice.
 
