@@ -17,8 +17,12 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+# Match a signal line tolerantly: optional indent, optional space after >>>,
+# the keyword, an OPTIONAL colon, and an OPTIONAL payload. Bare markers like
+# `>>>DONE` (no colon/summary) are common and must still parse+strip — otherwise
+# the marker leaks into history, display, and TTS. `\b` stops `>>>DONEISH`.
 _SIGNAL_LINE_RE = re.compile(
-    r"^>>>(NEXT|ASK|FEEDBACK|REVIEW|DONE|CROWS|BLOCKED):\s*(.+)$",
+    r"^[ \t]*>>>[ \t]*(NEXT|ASK|FEEDBACK|REVIEW|DONE|CROWS|BLOCKED)\b[ \t]*:?[ \t]*(.*)$",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -37,6 +41,11 @@ _KIND_NORMALIZE: dict[str, str] = {
 class TurnSignal:
     kind: str   # next_step | ask_user | request_feedback | request_review | done | consult_crows | blocked
     payload: str
+
+
+def strip_signals(text: str) -> str:
+    """Remove every signal line from text (defensive use outside parse_signal)."""
+    return _SIGNAL_LINE_RE.sub("", text).strip()
 
 
 def parse_signal(response: str) -> tuple[str, TurnSignal | None]:

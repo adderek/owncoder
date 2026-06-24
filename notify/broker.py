@@ -115,6 +115,10 @@ class NotifyBroker:
         notify.relay_responses; empty answers are skipped. Non-blocking."""
         if not self.enabled or not getattr(self._cfg, "relay_responses", True):
             return
+        # Defensive: never let a turn-signal marker (e.g. a bare ">>>DONE") reach
+        # a client's list or TTS, even if it slipped past parse_signal upstream.
+        from agent.core.turn_signals import strip_signals
+        text = strip_signals(text)
         if not text or not text.strip():
             return
         self._spawn(self._fanout(Notice.from_marked("response", text, session_id)))
