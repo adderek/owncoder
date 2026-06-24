@@ -125,12 +125,14 @@ class LocalUIServer:
             )
 
             if not signals_enabled:
+                self._notify.notify_response(response, session_id)
                 return response
 
             clean_response, signal = parse_signal(response)
 
             if signal is None:
-                return response
+                self._notify.notify_response(clean_response, session_id)
+                return clean_response
 
             # Strip signal text from the last assistant message in history.
             msgs = self._agent.get_messages()
@@ -161,6 +163,12 @@ class LocalUIServer:
                     self._stop_event = asyncio.Event()
                     current_input = answer.text or answer.choice
                     continue
+            elif signal.kind == "done":
+                # End of a Q/A round: deliver the full answer (clean_response),
+                # not just the post-marker payload, so the remote client rounds
+                # off with the reply in its list / TTS.
+                self._notify.notify_response(
+                    clean_response or signal.payload or "done", session_id)
             else:
                 # Fire-and-forget notice (non-blocking).
                 self._notify.handle_signal(signal.kind, signal.payload, session_id)

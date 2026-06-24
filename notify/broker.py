@@ -84,6 +84,18 @@ class NotifyBroker:
         # when the payload actually contains language markers — a no-op otherwise.
         self._spawn(self._fanout(Notice.from_marked(kind, payload, session_id)))
 
+    def notify_response(self, text: str, session_id: str = "") -> None:
+        """Push the assistant's final answer to channels as a `response` notice.
+
+        Bypasses the `events` filter (it is the reply itself, not a turn signal)
+        so a remote client always receives the answer to round it off. Gated by
+        notify.relay_responses; empty answers are skipped. Non-blocking."""
+        if not self.enabled or not getattr(self._cfg, "relay_responses", True):
+            return
+        if not text or not text.strip():
+            return
+        self._spawn(self._fanout(Notice.from_marked("response", text, session_id)))
+
     async def ask(self, question: Question) -> "Answer | None":
         """Fan out a question; wait for first valid answer.
 

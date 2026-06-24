@@ -616,6 +616,12 @@ class NotifyConfig:
     answer_timeout_s: int = 600
     on_timeout: str = "continue"
     remote_answers: bool = False
+    # Push the assistant's final answer to channels at the end of each round
+    # (kind "response"), so a remote client (e.g. the phone that asked by voice)
+    # always gets the reply in its list / TTS — independent of `events`. The
+    # post-marker signal payload alone is not the answer. Off → only signal
+    # notices are sent.
+    relay_responses: bool = True
     # When True, add a system-prompt section letting the model optionally wrap
     # off-language spans in TTS markers ([[xx]]…[[/]]) so a speaking client
     # voices mixed-language responses correctly. The model decides per output
