@@ -26,9 +26,12 @@ async def relay():
     await server.wait_closed()
 
 
-async def _connect(url: str, role: str = "client", token: str = TOKEN):
+async def _connect(url: str, role: str = "client", token: str = TOKEN, name: str = ""):
     ws = await websockets.connect(url)
-    await ws.send(json.dumps({"type": "hello", "role": role, "token": token}))
+    hello = {"type": "hello", "role": role, "token": token}
+    if name:
+        hello["name"] = name
+    await ws.send(json.dumps(hello))
     return ws
 
 
@@ -78,6 +81,45 @@ async def test_client_answer_reaches_agent(relay):
     assert got == answer
 
     for ws in (agent_ws, client_ws):
+        await ws.close()
+
+
+async def test_addressed_agent_to_agent(relay):
+    """A frame with a top-level "to" reaches only the matching named peer
+    (here agent→agent), is not broadcast to others, and is not replayed."""
+    daily = await _connect(relay, role="agent", name="daily")
+    proj = await _connect(relay, role="agent", name="current-project")
+    other = await _connect(relay, role="agent", name="misc")
+    phone = await _connect(relay, name="phone")
+    await asyncio.sleep(0.05)
+
+    frame = {"type": "control", "action": "chat", "text": "fix the bug",
+             "to": "current-project"}
+    await daily.send(json.dumps(frame))
+
+    got = json.loads(await asyncio.wait_for(proj.recv(), 5))
+    assert got == frame
+    # not delivered elsewhere
+    for ws in (other, phone):
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(ws.recv(), 0.3)
+    # addressed frames are not replayed to a late client
+    late = await _connect(relay, name="late")
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(late.recv(), 0.3)
+
+    for ws in (daily, proj, other, phone, late):
+        await ws.close()
+
+
+async def test_addressed_no_match_dropped(relay):
+    daily = await _connect(relay, role="agent", name="daily")
+    proj = await _connect(relay, role="agent", name="current-project")
+    await asyncio.sleep(0.05)
+    await daily.send(json.dumps({"to": "ghost", "type": "control", "action": "chat"}))
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(proj.recv(), 0.3)
+    for ws in (daily, proj):
         await ws.close()
 
 

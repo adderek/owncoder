@@ -66,19 +66,31 @@ class LocalUIServer:
         as if the user typed and sent it. Thread-safe expectations are the UI's."""
         self._external_prompt = cb
 
-    def _on_voice_transcript(self, text: str) -> None:
-        """Route a finished voice transcript: prefer the UI prompt handler (so it
-        starts/steers a turn); fall back to the agent inject queue."""
+    def submit_external_prompt(self, text: str, *, source: str = "external") -> None:
+        """Submit `text` as if the user typed and sent it.
+
+        Prefers the registered UI prompt handler (so it starts/steers a turn);
+        falls back to the agent inject queue (picked up when idle). Shared by
+        voice dictation and remote/delegated chat (build_ui_server on_chat).
+        `source` only labels logging.
+        """
+        if not text:
+            return
         cb = self._external_prompt
         if cb is not None:
             try:
                 cb(text)
-                logger.info("speech: transcript routed to UI prompt handler: %r", text)
+                logger.info("%s: prompt routed to UI handler: %r", source, text)
                 return
             except Exception:
-                logger.exception("speech: external prompt handler failed; falling back to inject")
-        logger.warning("speech: no UI prompt handler — transcript queued via inject (idle = waits for next input): %r", text)
+                logger.exception("%s: external prompt handler failed; falling back to inject", source)
+        logger.warning("%s: no UI prompt handler — queued via inject (idle = waits for next input): %r",
+                       source, text)
         self._agent.inject(text)
+
+    def _on_voice_transcript(self, text: str) -> None:
+        """Route a finished voice transcript via the shared external-prompt path."""
+        self.submit_external_prompt(text, source="speech")
 
     # ── chat ────────────────────────────────────────────────────────────────
 

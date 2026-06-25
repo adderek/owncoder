@@ -12,10 +12,17 @@ Call [ensure_relay_available] once, before the NotifyBroker is built (i.e.
 before build_ui_server), while the terminal is still in normal mode so a plain
 prompt works. Non-interactive (no TTY) defaults to "keep checking" — the same
 best-effort reconnect behaviour as before.
+
+A spawned relay is a SHARED service, not owned by the agent that started it:
+it runs in its own session (start_new_session) and is NOT killed when that agent
+exits, so other agents/clients still attached keep working. A pidfile makes the
+running relay discoverable (so a later agent reuses it instead of double-binding,
+and the user can stop it explicitly). Use `python -m agent.notify.relay_server`
+directly, or a systemd unit, if you want a relay whose lifecycle is fully
+independent of any agent.
 """
 from __future__ import annotations
 
-import atexit
 import logging
 import socket
 import subprocess
@@ -60,8 +67,26 @@ def probe(host: str, port: int, timeout: float = PROBE_TIMEOUT_S) -> bool:
 
 
 def _start_relay(cfg, log) -> bool:
-    """Spawn a local relay server for `cfg`. Returns True if it came up."""
+    """Spawn a local relay server for `cfg`. Returns True if it came up.
+
+    The relay is detached (own session) and SURVIVES this agent's exit, so other
+    agents/clients keep their link. The relay writes its own pidfile once bound
+    (see relay_server.pidfile_path), so it can be reused or stopped later.
+    """
+    from . import relay_server
+
     host, port = _host_port(cfg.url)
+    # Reuse: a live relay on this port (per its pidfile) needs no new spawn. The
+    # caller only reaches here when the port was unreachable, so a live pid here
+    # means it is still binding — give it a moment rather than double-spawn.
+    existing = relay_server.read_pid(port)
+    if existing is not None:
+        log(f"  relay already running (pid {existing}) on port {port} — reusing")
+        for _ in range(10):
+            time.sleep(0.2)
+            if probe(host, port):
+                return True
+        return False
     token_file = getattr(cfg, "token_file", "")
     if not token_file:
         log(f"  cannot start relay for {cfg.url}: no token_file in config")
@@ -72,28 +97,23 @@ def _start_relay(cfg, log) -> bool:
         "--token-file", str(Path(token_file).expanduser()),
     ]
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # start_new_session detaches from this agent's process group / controlling
+        # terminal: a Ctrl-C or exit here does not signal the relay.
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
     except OSError as exc:
         log(f"  failed to launch relay: {exc}")
         return False
     _spawned.append(proc)
-    atexit.register(_terminate, proc)
-    log(f"  started relay (pid {proc.pid}) on port {port}")
+    log(f"  started shared relay (pid {proc.pid}) on port {port} — persists after this agent exits")
     # Give it a moment to bind, then confirm.
     for _ in range(10):
         time.sleep(0.2)
         if probe(host, port):
             return True
     return False
-
-
-def _terminate(proc: subprocess.Popen) -> None:
-    if proc.poll() is None:
-        proc.terminate()
-        try:
-            proc.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            proc.kill()
 
 
 def console_ask(log=print):

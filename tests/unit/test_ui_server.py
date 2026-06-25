@@ -412,3 +412,42 @@ def test_load_session_not_found():
         session, msgs = server.load_session("missing")
     assert session is None
     assert msgs == []
+
+
+# ---------------------------------------------------------------------------
+# external prompt routing (voice + remote/delegated chat share this path)
+# ---------------------------------------------------------------------------
+
+
+def test_submit_external_prompt_injects_without_handler():
+    agent = _make_agent()
+    server = LocalUIServer(agent)
+    server.submit_external_prompt("do the thing")
+    agent.inject.assert_called_once_with("do the thing")
+
+
+def test_submit_external_prompt_prefers_handler():
+    agent = _make_agent()
+    server = LocalUIServer(agent)
+    got = []
+    server.set_external_prompt_handler(got.append)
+    server.submit_external_prompt("via handler")
+    assert got == ["via handler"]
+    agent.inject.assert_not_called()
+
+
+def test_submit_external_prompt_falls_back_when_handler_raises():
+    agent = _make_agent()
+    server = LocalUIServer(agent)
+    def boom(_):
+        raise RuntimeError("handler down")
+    server.set_external_prompt_handler(boom)
+    server.submit_external_prompt("fallback")
+    agent.inject.assert_called_once_with("fallback")
+
+
+def test_submit_external_prompt_ignores_empty():
+    agent = _make_agent()
+    server = LocalUIServer(agent)
+    server.submit_external_prompt("")
+    agent.inject.assert_not_called()

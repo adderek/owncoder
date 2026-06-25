@@ -26,6 +26,16 @@ Routing:
   New clients receive the replay buffer (last N messages) on connect, so a
   reconnecting phone sees recent history.
 
+  Addressed delivery: a frame MAY carry a top-level "to" naming a peer's hello
+  "name". When present, the frame is delivered only to opposite-role peers with
+  that name (no match → dropped); when absent, it broadcasts as above. This lets
+  a "main entry" agent forward curated input to one target agent (e.g. the
+  current-project agent) instead of fanning out to every agent. "to" is a clear
+  routing header read by the relay; under e2e it must sit OUTSIDE the encrypted
+  envelope (alongside "type":"enc"), since the relay cannot read the ciphertext.
+  Addressed agent→client frames are not added to the replay buffer (they target
+  a specific live client, not every reconnecting one).
+
 Abuse limits (per connection / per role):
   - max concurrent connections per role (--max-agents / --max-clients)
   - token-bucket message rate limit (--msg-rate / --msg-burst)
@@ -42,10 +52,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import errno
 import hmac
 import json
 import logging
 import os
+import signal
 import time
 from collections import deque
 from pathlib import Path
@@ -114,6 +126,7 @@ class RelayHub:
             raise ValueError("relay needs an agent token and a client token (or a shared token)")
         self._agents: set = set()
         self._clients: set = set()
+        self._names: dict = {}  # ws -> hello "name" (for addressed routing)
         self._replay: deque = deque(maxlen=replay_size)
         self._max_agents = max_agents
         self._max_clients = max_clients
@@ -122,9 +135,10 @@ class RelayHub:
         self._max_msg_bytes = max_msg_bytes
 
     async def handler(self, ws) -> None:
-        role = await self._auth(ws)
-        if role is None:
+        auth = await self._auth(ws)
+        if auth is None:
             return
+        role, name = auth
         peers, cap = (
             (self._agents, self._max_agents) if role == "agent"
             else (self._clients, self._max_clients)
@@ -135,6 +149,8 @@ class RelayHub:
             await ws.close(CLOSE_TOO_MANY, "too many connections")
             return
         peers.add(ws)
+        if name:
+            self._names[ws] = name
         bucket = _TokenBucket(self._msg_rate, self._msg_burst)
         try:
             if role == "client":
@@ -150,13 +166,14 @@ class RelayHub:
                     logger.warning("relay: rate limit — closing %s %s", role, _peer(ws))
                     await ws.close(CLOSE_TOO_MANY, "rate limit")
                     break
-                await self._route(role, raw)
+                await self._route(role, ws, raw)
         except Exception as exc:
             logger.debug("relay: connection ended: %s", exc)
         finally:
             peers.discard(ws)
+            self._names.pop(ws, None)
 
-    async def _auth(self, ws) -> "str | None":
+    async def _auth(self, ws) -> "tuple[str, str] | None":
         try:
             raw = await asyncio.wait_for(ws.recv(), timeout=HELLO_TIMEOUT_S)
             hello = json.loads(raw)
@@ -194,19 +211,52 @@ class RelayHub:
             logger.warning("relay: bad token from %s", _peer(ws))
             await ws.close(CLOSE_UNAUTHORIZED, "unauthorized")
             return None
-        return role
+        raw_name = hello.get("name")
+        name = raw_name if isinstance(raw_name, str) else ""
+        return role, name
 
-    async def _route(self, sender_role: str, raw: str) -> None:
-        if sender_role == "agent":
-            self._replay.append(raw)
-            targets = self._clients
+    async def _route(self, sender_role: str, sender_ws, raw: str) -> None:
+        to = _routing_to(raw)
+        if to is None:
+            # Broadcast by role: agent → clients, client → agents.
+            targets = self._clients if sender_role == "agent" else self._agents
+            if sender_role == "agent":
+                self._replay.append(raw)  # only broadcast agent frames are replayed
         else:
-            targets = self._agents
+            # Addressed: deliver to any peer (either role) with the matching name,
+            # except the sender. Enables agent→agent delegation as well as
+            # client→named-agent and agent→named-client. Not replayed (targets one
+            # live peer, not every reconnecting client).
+            targets = [
+                p for p in (*self._agents, *self._clients)
+                if p is not sender_ws and self._names.get(p) == to
+            ]
         for peer in list(targets):
             try:
                 await peer.send(raw)
             except Exception:
-                targets.discard(peer)
+                # Drop a dead peer from whichever pool holds it (targets may be a
+                # transient list in the addressed case).
+                self._agents.discard(peer)
+                self._clients.discard(peer)
+                self._names.pop(peer, None)
+
+
+def _routing_to(raw: str) -> "str | None":
+    """Clear-text "to" routing header, or None for broadcast.
+
+    Read without trusting the rest of the frame: a malformed frame or a non-str
+    "to" falls back to broadcast (the relay forwards opaque JSON either way).
+    Under e2e this reads the envelope's top-level "to" — never the ciphertext.
+    """
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    to = data.get("to")
+    return to if isinstance(to, str) and to else None
 
 
 def _peer(ws) -> str:
@@ -215,6 +265,85 @@ def _peer(ws) -> str:
         return f"{addr[0]}:{addr[1]}" if addr else "?"
     except Exception:
         return "?"
+
+
+# ── pidfile (shared-relay discovery / stop) ─────────────────────────────────
+# The relay owns its own pidfile: written once it is bound, removed on clean
+# exit. A spawned relay outlives the agent that started it, so the pidfile is
+# how a later agent (or the user) finds and stops the running instance.
+
+def pidfile_path(port: int) -> Path:
+    base = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp")
+    return base / f"owncoder-relay-{port}.pid"
+
+
+def read_pid(port: int) -> "int | None":
+    """PID of a live relay on `port` per its pidfile, or None.
+
+    Returns None for a missing, unreadable, or stale pidfile (process gone) and
+    cleans up a stale file so it cannot mislead a later reuse/stop.
+    """
+    path = pidfile_path(port)
+    try:
+        pid = int(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+    if _pid_alive(pid):
+        return pid
+    try:
+        path.unlink()  # stale — clear it
+    except OSError:
+        pass
+    return None
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError as exc:
+        return exc.errno == errno.EPERM  # exists but not ours to signal
+    return True
+
+
+def stop_relay(port: int, *, timeout: float = 3.0) -> bool:
+    """SIGTERM the relay recorded for `port`. True if one was running and exited.
+
+    Best-effort escalation to SIGKILL if it does not exit within `timeout`.
+    """
+    pid = read_pid(port)
+    if pid is None:
+        return False
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return False
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _pid_alive(pid):
+            break
+        time.sleep(0.1)
+    else:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    try:
+        pidfile_path(port).unlink()
+    except OSError:
+        pass
+    return True
+
+
+def _write_pidfile(port: int) -> "Path | None":
+    path = pidfile_path(port)
+    try:
+        path.write_text(str(os.getpid()), encoding="utf-8")
+        return path
+    except OSError as exc:
+        logger.warning("relay: could not write pidfile %s: %s", path, exc)
+        return None
 
 
 def _read_token(path: "str | None", env_var: str) -> str:
@@ -227,7 +356,15 @@ async def _serve(host: str, port: int, hub: RelayHub, max_size: int) -> None:
     import websockets
     async with websockets.serve(hub.handler, host, port, max_size=max_size):
         logger.info("relay listening on %s:%s", host, port)
-        await asyncio.Future()
+        pidfile = _write_pidfile(port)
+        try:
+            await asyncio.Future()
+        finally:
+            if pidfile is not None:
+                try:
+                    pidfile.unlink()
+                except OSError:
+                    pass
 
 
 def main() -> None:
@@ -245,8 +382,17 @@ def main() -> None:
     parser.add_argument("--msg-burst", type=int, default=DEFAULT_MSG_BURST,
                         help="rate-limit bucket capacity")
     parser.add_argument("--max-msg-bytes", type=int, default=DEFAULT_MAX_MSG_BYTES)
+    parser.add_argument("--stop", action="store_true",
+                        help="stop a relay running on --port (via its pidfile) and exit")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+    if args.stop:
+        if stop_relay(args.port):
+            logger.info("relay on port %d stopped", args.port)
+        else:
+            logger.info("no relay running on port %d", args.port)
+        return
 
     shared = _read_token(args.token_file, "AGENT_RELAY_TOKEN")
     agent_token = _read_token(args.agent_token_file, "AGENT_RELAY_AGENT_TOKEN") or shared

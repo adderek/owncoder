@@ -48,19 +48,39 @@ class RelayLink:
 
     # ── outbound ────────────────────────────────────────────────────────────
 
-    def send_frame(self, frame: str) -> None:
+    def send_frame(self, frame: str, *, to: str | None = None) -> None:
         """Queue a serialized frame for delivery. Sync — safe from callbacks.
 
-        Drops the oldest frame when the queue is full rather than blocking the
-        turn (a slow/absent client must never stall the agent).
+        `to` addresses the frame to a single named peer (the relay routes by the
+        peer's hello "name"); None broadcasts. Drops the oldest frame when the
+        queue is full rather than blocking the turn (a slow/absent client must
+        never stall the agent).
+
+        Under e2e the "to" header rides OUTSIDE the ciphertext (the relay must
+        read it to route) but is also bound INSIDE the encrypted body, so a
+        recipient can reject a frame the relay redirected to it.
         """
         self._ensure_task()
         if self._e2e is not None:
             try:
-                frame = json.dumps(self._e2e.encrypt(json.loads(frame)))
+                inner = json.loads(frame)
+                if to is not None and isinstance(inner, dict):
+                    inner["to"] = to
+                envelope = self._e2e.encrypt(inner)
+                if to is not None:
+                    envelope["to"] = to
+                frame = json.dumps(envelope)
             except Exception:
                 logger.exception("relay_link: e2e encrypt failed — dropping frame")
                 return
+        elif to is not None:
+            try:
+                data = json.loads(frame)
+                if isinstance(data, dict):
+                    data["to"] = to
+                    frame = json.dumps(data)
+            except ValueError:
+                logger.warning("relay_link: cannot address non-JSON frame — broadcasting")
         while True:
             try:
                 self._queue.put_nowait(frame)
@@ -136,6 +156,11 @@ class RelayLink:
                 inner = self._e2e.decrypt(data)
                 if inner is None:
                     logger.warning("relay_link %s: undecryptable frame dropped", self._name)
+                    continue
+                bound_to = inner.get("to")
+                if bound_to is not None and bound_to != self._name:
+                    logger.warning("relay_link %s: frame addressed to %r (relay redirect?) — dropped",
+                                   self._name, bound_to)
                     continue
                 data = inner
             try:
