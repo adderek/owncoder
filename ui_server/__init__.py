@@ -71,8 +71,11 @@ def build_ui_server(agent: "Agent") -> Any:
     # Remote-initiated chat (a remote client or a delegating peer agent) is routed
     # through the same external-prompt path as voice: it starts a turn when idle
     # or queues via inject when busy — never a concurrent second turn.
-    def _on_remote_chat(text: str) -> None:
-        inner.submit_external_prompt(text, source="remote")
+    def _on_remote_chat(text: str, frm: str = "") -> None:
+        # Tag a peer-delegated request with its origin so the agent (and its
+        # policy) can see it came from another agent and avoid bouncing it back.
+        prompt = f"[delegated by {frm}] {text}" if frm else text
+        inner.submit_external_prompt(prompt, source="remote")
 
     dispatcher = ControlDispatcher(inner, on_chat=_on_remote_chat)
     link = RelayLink(cfg.relay_url, token, name=cfg.name,
@@ -80,7 +83,7 @@ def build_ui_server(agent: "Agent") -> Any:
     # Expose the link for agent→agent delegation (the `delegate` tool reaches it).
     try:
         from agent.coord import peer
-        peer.set_link(link)
+        peer.set_link(link, cfg.name)
     except Exception:  # pragma: no cover - delegation is best-effort
         logger.debug("ui_server: peer link registration failed", exc_info=True)
     logger.info("ui_server: remote streaming to %s", cfg.relay_url)

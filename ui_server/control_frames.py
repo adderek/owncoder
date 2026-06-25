@@ -49,6 +49,7 @@ class ControlMsg:
     choice: str = ""            # answer: chosen option
     key: str = ""               # set: knob name
     arg: str = ""               # set: knob value
+    frm: str = ""               # chat: originating peer's name (self-asserted)
 
 
 def build_control(action: str, **fields: Any) -> str:
@@ -81,6 +82,7 @@ def parse_control(raw: str | dict) -> ControlMsg:
         choice=obj.get("choice", ""),
         key=obj.get("key", ""),
         arg=obj.get("arg", ""),
+        frm=obj.get("from", ""),
     )
 
 
@@ -88,9 +90,10 @@ class ControlDispatcher:
     """Applies inbound control frames to a UIServer.
 
     `on_answer(id, choice, text)` routes an answer to whoever awaits the pending
-    question (e.g. the notify broker). `on_chat(text)` is invoked for a `chat`
-    action so the loop owner can start a turn; if omitted, `chat` is ignored.
-    Returns the parsed ControlMsg so callers can observe what happened.
+    question (e.g. the notify broker). `on_chat(text, frm)` is invoked for a
+    `chat` action so the loop owner can start a turn (`frm` is the originating
+    peer's self-asserted name, "" for a plain client); if omitted, `chat` is
+    ignored. Returns the parsed ControlMsg so callers can observe what happened.
     """
 
     def __init__(
@@ -120,7 +123,7 @@ class ControlDispatcher:
                 getattr(self._server, method_name)(msg.arg)
         elif msg.action == "chat":
             if self._on_chat is not None:
-                res = self._on_chat(msg.text)
+                res = self._on_chat(msg.text, msg.frm)
                 if hasattr(res, "__await__"):
                     await res
         else:

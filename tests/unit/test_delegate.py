@@ -23,6 +23,27 @@ def _reset_link():
     peer.set_link(None)
 
 
+def test_delegate_stamps_origin_from():
+    import json
+    fl = FakeLink()
+    peer.set_link(fl, "daily")  # this agent's own name
+    assert delegate("current-project", "do it")["ok"] is True
+    frame, to = fl.calls[0]
+    obj = json.loads(frame)
+    assert obj["from"] == "daily"
+    msg = parse_control(frame)
+    assert msg.frm == "daily" and msg.action == "chat" and msg.text == "do it"
+
+
+def test_delegate_omits_origin_without_self_name():
+    import json
+    fl = FakeLink()
+    peer.set_link(fl)  # no own name
+    assert delegate("proj", "x")["ok"] is True
+    obj = json.loads(fl.calls[0][0])
+    assert "from" not in obj
+
+
 def test_delegate_unavailable_without_link():
     res = delegate("current-project", "fix bug")
     assert res["ok"] is False

@@ -24,12 +24,18 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _link: Any | None = None
+_self_name: str = ""
 
 
-def set_link(link: Any | None) -> None:
-    """Register (or clear) the RelayLink used to reach peer agents."""
-    global _link
+def set_link(link: Any | None, name: str = "") -> None:
+    """Register (or clear) the RelayLink used to reach peer agents.
+
+    `name` is this agent's own relay name, stamped as the `from` origin on
+    delegated frames so the receiving agent knows who sent them.
+    """
+    global _link, _self_name
     _link = link
+    _self_name = name
 
 
 def has_link() -> bool:
@@ -50,9 +56,14 @@ def send_to_peer(name: str, text: str) -> dict:
             "error": "delegation unavailable: remote relay not configured "
                      "(set ui_server.remote + relay_url)",
         }
+    import json
+
     from agent.ui_server.control_frames import build_control
 
-    frame = build_control("chat", text=text)
+    obj = json.loads(build_control("chat", text=text))
+    if _self_name:
+        obj["from"] = _self_name  # origin tag for loop-guard / correlation
+    frame = json.dumps(obj, ensure_ascii=False)
     try:
         _link.send_frame(frame, to=name)
     except Exception as exc:  # pragma: no cover - defensive
