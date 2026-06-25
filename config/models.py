@@ -724,7 +724,7 @@ class SpeechConfig:
     model: str = "medium"
     language: str = "pl"
     device: str = "auto"
-    compute_type: str = "default"
+    compute_type: str = "int8"
     # Bias recognition toward domain/jargon words the base model won't know
     # (e.g. "owncoder", tool names). hotwords = space/comma list given to
     # faster-whisper; initial_prompt = a leading context sentence. Both optional.
