@@ -562,7 +562,11 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             if not user_text:
                 return
             if self._agent_running:
-                if user_text.startswith("/") or user_text.lower() == "continue":
+                if (
+                    user_text.startswith("/")
+                    or user_text.startswith(":")
+                    or user_text.lower() == "continue"
+                ):
                     self._write_sys(
                         f"[{t.warning}]Agent running — slash commands and 'continue' "
                         f"not accepted mid-turn. Text messages are injected.[/{t.warning}]",
@@ -573,6 +577,30 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                 self._write_chat(
                     f"[bold {t.user_color}]↑ You (mid-turn):[/bold {t.user_color}] {_escape(user_text)}"
                 )
+                return
+            if user_text.startswith(":"):
+                from agent.project_commands import (
+                    ProjectCommandLoader,
+                    list_commands_text,
+                )
+
+                cfg = self._server._agent.config
+                cparts = user_text[1:].split(None, 1)
+                cname = cparts[0] if cparts else ""
+                carg = cparts[1] if len(cparts) > 1 else ""
+                if not cname:
+                    self._write_sys(_escape(list_commands_text(cfg)))
+                    return
+                expanded = ProjectCommandLoader(cfg).expand(cname, carg)
+                if expanded is None:
+                    self._write_sys(
+                        f"[{t.warning}]Unknown project command ':{cname}'.[/{t.warning}]\n"
+                        + _escape(list_commands_text(cfg))
+                    )
+                    return
+                input_widget = self.query_one("#input-bar", PromptInput)
+                input_widget.add_to_history(user_text)
+                self._begin_chat(expanded)
                 return
             if user_text.startswith("/"):
                 parts = user_text.split(None, 1)

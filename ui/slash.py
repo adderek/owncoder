@@ -53,6 +53,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/round-summary", ["/summary"], "toggle gray Q/A summary after each turn", False),
     ("/tools", [], "list available tools", False),
     ("/skills", [], "skills: list | show <name> | history <name> | rm <name>", True),
+    ("/commands", ["/cmds"], "list project ':name' commands from .agent/commands/", False),
     ("/undo", [], "restore last file snapshot", False),
     ("/checkpoint", ["/cp"], "checkpoint: list | new [label] | rollback <id>", True),
     ("/mcp", [], "show MCP server status + their tools", False),

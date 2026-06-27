@@ -1473,6 +1473,17 @@ def build_widget_classes(t) -> SimpleNamespace:
                 text_parts = text.split()
                 cmd_part = text_parts[0] if text_parts else text
                 self._comp_matches = _match_commands(cmd_part)
+            elif text.startswith(":"):
+                text_parts = text.split()
+                cmd_part = text_parts[0] if text_parts else text
+                self._comp_matches = []
+                try:
+                    from agent.project_commands import ProjectCommandLoader
+
+                    cfg = self.app._server._agent.config
+                    self._comp_matches = ProjectCommandLoader(cfg).match(cmd_part)
+                except Exception:
+                    pass
             else:
                 self._comp_matches = []
             self._comp_idx = -1
@@ -1483,9 +1494,18 @@ def build_widget_classes(t) -> SimpleNamespace:
                 if self._comp_matches:
                     if event.key == "tab":
                         event.prevent_default()
-                        self._comp_idx = (self._comp_idx + 1) % len(self._comp_matches)
-                        self._fill_completion()
-                        self._post_completion()
+                        # A single match means "accept": fill it and dismiss the
+                        # dropdown so the input stops intercepting keys (otherwise
+                        # tab/arrows/enter keep being swallowed and the box looks
+                        # frozen). Multiple matches: cycle through them.
+                        if len(self._comp_matches) == 1:
+                            self._comp_idx = 0
+                            self._fill_completion()
+                            self._clear_completions()
+                        else:
+                            self._comp_idx = (self._comp_idx + 1) % len(self._comp_matches)
+                            self._fill_completion()
+                            self._post_completion()
                         return
                     if event.key == "down":
                         event.prevent_default()

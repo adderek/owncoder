@@ -48,6 +48,7 @@ def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
   [{c}]/sessions [N|all][/{c}]   list saved sessions (oldest→newest, default 20)
   [{c}]/tools[/{c}]              list available tools
   [{c}]/skills [show|history|rm <name>][/{c}]  manage saved skills
+  [{c}]/commands[/{c}] ([{c}]/cmds[/{c}])       list project ':name' prompt-template commands
   [{c}]/checkpoint [new|rollback <id>][/{c}]  restore point across all files
   [{c}]/mcp[/{c}]                MCP server status + tools
   [{c}]/speech[/{c}]             speech-to-text input status
@@ -136,8 +137,29 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
         if not user_input:
             continue
 
+        # ── Project commands (:name → prompt template) ──────────────────────
+        if user_input.startswith(":"):
+            from agent.project_commands import ProjectCommandLoader, list_commands_text
+
+            _loader = ProjectCommandLoader(agent.config)
+            _cparts = user_input[1:].split(None, 1)
+            _cname = _cparts[0] if _cparts else ""
+            _carg = _cparts[1] if len(_cparts) > 1 else ""
+            if not _cname:
+                console.print(list_commands_text(agent.config))
+                continue
+            _expanded = _loader.expand(_cname, _carg)
+            if _expanded is None:
+                console.print(f"[yellow]Unknown project command ':{_cname}'.[/yellow]")
+                console.print(list_commands_text(agent.config))
+                continue
+            # Reassign and fall through to the normal-message path. The slash
+            # branch below is `elif`, so an expanded template is never re-parsed
+            # as a slash command even if its body begins with '/'.
+            user_input = _expanded
+
         # ── Slash commands ──────────────────────────────────────────────────
-        if user_input.startswith("/"):
+        elif user_input.startswith("/"):
             parts = user_input.split(None, 1)
             cmd = parts[0].lower()
             arg = parts[1] if len(parts) > 1 else ""
@@ -307,6 +329,10 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
             elif cmd == "/skills":
                 from agent.skills import run_skills_command
                 console.print(run_skills_command(agent.config, arg))
+
+            elif cmd in ("/commands", "/cmds"):
+                from agent.project_commands import list_commands_text
+                console.print(list_commands_text(agent.config))
 
             elif cmd in ("/checkpoint", "/cp"):
                 from agent.core.checkpoint import run_checkpoint_command

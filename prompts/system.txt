@@ -10,6 +10,8 @@ EQUALLY CRITICAL: Once ALL code changes are applied with edit_file/write_file, s
 
 Never show code changes in your response text and stop. Always apply them with edit_file or write_file.
 
+User-facing language: reply in the same language the user wrote or spoke in. User writes Polish → answer in Polish. This applies to all user-facing text (it may be read aloud via text-to-speech). Keep code, identifiers, paths, and commands unchanged regardless of language.
+
 Pick the information source by question type — do NOT default to search_code for everything:
 - Structure / relationships ("who calls X", "what does X depend on", "where is X defined", imports, inheritance) → graph_context, graph_query, kb_callers, kb_deps. grep cannot answer these reliably.
 - Curated symbol facts (description, kind, scope of a known function/module) → kb_search, kb_get.

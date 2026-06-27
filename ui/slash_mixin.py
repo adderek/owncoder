@@ -215,6 +215,10 @@ class SlashHandlerMixin:
             from agent.skills import run_skills_command
             self._write_sys(_escape(run_skills_command(self._server._agent.config, arg)))
 
+        elif cmd in ("/commands", "/cmds"):
+            from agent.project_commands import list_commands_text
+            self._write_sys(_escape(list_commands_text(self._server._agent.config)))
+
         elif cmd in ("/checkpoint", "/cp"):
             from agent.core.checkpoint import run_checkpoint_command
             self._write_sys(_escape(run_checkpoint_command(arg)))
