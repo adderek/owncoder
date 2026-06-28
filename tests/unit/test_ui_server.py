@@ -83,7 +83,7 @@ async def test_local_ui_server_chat_all_callbacks():
     # on_usage is accepted by protocol but not forwarded (core/agent.py lacks it)
     # stop_event is generated internally each call
     forwarded = {k: v for k, v in cbs.items() if k != "on_usage"}
-    agent.chat.assert_called_once_with("test", **forwarded, stop_event=ANY)
+    agent.chat.assert_called_once_with("test", **forwarded, stop_event=ANY, source="terminal")
 
 
 # ---------------------------------------------------------------------------

@@ -387,6 +387,7 @@ async def run_turn(
             pass
 
     stall_retry_count = 0
+    _tier_escalated = False  # auto-tier: at most one mid-turn fast->strong switch
     while True:
         # Re-expose any tools the model activated via find_tools last iteration.
         if _discovery_on:
@@ -809,6 +810,19 @@ async def run_turn(
                     intervention = ConfidenceMonitor.intervention_message(conf_sig)
                     messages = messages + [{"role": "user", "content": intervention, "_confidence_guard": True}]
                     confidence_monitor.acknowledge()
+                    # auto-tier: a stuck fast model escalates to the strong model
+                    # for the rest of this turn (next turn reverts to fast).
+                    if not _tier_escalated:
+                        try:
+                            from agent.core.model_tier import escalate_mid_turn
+                            _new_client = escalate_mid_turn(config)
+                            if _new_client is not None:
+                                client = _new_client
+                                _tier_escalated = True
+                                _phase("tier_escalate", f"-> {config.llm.model}")
+                                logger.warning("auto-tier: escalated to strong model '%s' mid-turn (confidence)", config.llm.model)
+                        except Exception as _e:
+                            logger.warning("auto-tier mid-turn escalation failed: %s", _e)
             continue
 
         content = msg.content or ""

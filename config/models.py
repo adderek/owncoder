@@ -740,6 +740,30 @@ class SpeechConfig:
 
 
 @dataclass
+class AutoTierConfig:
+    """Per-turn model tiering: run the main thread on a FAST model by default and
+    escalate to a STRONG model for complex turns, then revert to fast next turn.
+
+    Entry resolution: if *fast_entry*/*strong_entry* are set they are used as-is;
+    otherwise fast = the first entry tagged ``fast`` and strong = the ``default``
+    role entry. Off by default — when disabled the agent behaves exactly as before.
+    """
+    enabled: bool = False
+    remote_only: bool = True        # only tier remote/Android turns; terminal keeps default
+    fast_entry: str = ""            # explicit fast entry name ("" = first 'fast'-tagged)
+    strong_entry: str = ""          # explicit strong entry name ("" = 'default' role)
+    min_prompt_chars: int = 600     # prompt at/above this length escalates
+    escalate_on_code: bool = True   # a fenced code block in the prompt escalates
+    escalate_on_confidence: bool = True  # mid-turn escalate when the confidence guard fires
+    keywords: list = field(default_factory=lambda: [
+        "refactor", "debug", "architecture", "design", "implement", "rewrite",
+        "optimize", "trace", "root cause", "multi-file", "across files", "migrate",
+        "concurren", "race condition", "deadlock", "performance", "security",
+        "vulnerab", "algorithm", "prove", "edit ", "patch", "fix the",
+    ])
+
+
+@dataclass
 class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
@@ -776,3 +800,4 @@ class Config:
     notify: NotifyConfig = field(default_factory=NotifyConfig)
     mcp: MCPConfig = field(default_factory=MCPConfig)
     speech: SpeechConfig = field(default_factory=SpeechConfig)
+    auto_tier: AutoTierConfig = field(default_factory=AutoTierConfig)

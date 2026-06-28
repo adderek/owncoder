@@ -984,12 +984,43 @@ def build_widget_classes(t) -> SimpleNamespace:
                                 id=f"file-btn-{fidx}",
                                 classes="tool-call-btn",
                             )
+                if self._has_reasoning():
+                    yield Static(f"[{t.text_dim}]Reasoning:[/{t.text_dim}]", markup=True)
+                    yield Button("🧠 thinking", id="reasoning-btn", classes="tool-call-btn")
                 yield Button("Close  [ESC]", id="turn-detail-close")
+
+        def _turn_id(self) -> int:
+            return self._q_data.get("turn_id") or self._a_data.get("turn_id") or (self._ordinal + 1)
+
+        def _has_reasoning(self) -> bool:
+            if self._session_dir is None:
+                return False
+            try:
+                import json
+                from pathlib import Path
+                p = Path(self._session_dir) / "reasoning.jsonl"
+                if not p.exists():
+                    return False
+                tid = self._turn_id()
+                with p.open("r", encoding="utf-8") as f:
+                    for line in f:
+                        try:
+                            rec = json.loads(line)
+                        except Exception:
+                            continue
+                        if rec.get("turn") == tid and rec.get("content"):
+                            return True
+                return False
+            except Exception:
+                return False
 
         def on_button_pressed(self, event) -> None:
             btn_id = event.button.id or ""
             if btn_id == "turn-detail-close":
                 self.dismiss()
+                return
+            if btn_id == "reasoning-btn":
+                self.app.push_screen(ReasoningDetailScreen(self._turn_id(), self._session_dir))
                 return
             if btn_id.startswith("tool-btn-"):
                 idx = int(btn_id[len("tool-btn-"):])
@@ -1129,6 +1160,93 @@ def build_widget_classes(t) -> SimpleNamespace:
                             yield Static("[bold]Result:[/bold]", markup=True)
                             yield Static(result_str[:4000], markup=False, classes="tc-detail-block")
                 yield Button("Back  [ESC]", id="tc-detail-close")
+
+        def on_button_pressed(self, event) -> None:
+            self.dismiss()
+
+        def on_key(self, event) -> None:
+            if event.key in ("escape", "q"):
+                self.dismiss()
+
+    class ReasoningDetailScreen(ModalScreen):
+        """Modal showing the full model reasoning (thinking) for a turn."""
+
+        CSS = """
+        ReasoningDetailScreen {
+            align: center middle;
+        }
+        #rsn-detail-dialog {
+            width: 90%;
+            max-width: 120;
+            height: 85%;
+            border: solid $accent;
+            background: $surface;
+            padding: 1 2;
+        }
+        #rsn-detail-body {
+            height: 1fr;
+            overflow-y: auto;
+        }
+        .rsn-detail-block {
+            height: auto;
+            margin-bottom: 1;
+        }
+        #rsn-detail-close {
+            width: 100%;
+            dock: bottom;
+        }
+        """
+
+        def __init__(self, turn_id: int, session_dir=None) -> None:
+            super().__init__()
+            self._turn_id = turn_id
+            self._session_dir = session_dir
+
+        def _load_reasoning(self) -> list[str]:
+            if self._session_dir is None:
+                return []
+            try:
+                import json
+                from pathlib import Path
+                p = Path(self._session_dir) / "reasoning.jsonl"
+                if not p.exists():
+                    return []
+                out: list[str] = []
+                with p.open("r", encoding="utf-8") as f:
+                    for line in f:
+                        try:
+                            rec = json.loads(line)
+                        except Exception:
+                            continue
+                        if rec.get("turn") == self._turn_id:
+                            c = rec.get("content")
+                            if c:
+                                out.append(c)
+                return out
+            except Exception:
+                return []
+
+        def compose(self):
+            from textual.containers import Vertical, ScrollableContainer
+            from textual.widgets import Button, Static
+
+            parts = self._load_reasoning()
+            with Vertical(id="rsn-detail-dialog"):
+                yield Static(
+                    f"[bold]🧠 thinking[/bold]  [dim](turn {self._turn_id})[/dim]",
+                    markup=True,
+                )
+                with ScrollableContainer(id="rsn-detail-body"):
+                    if not parts:
+                        yield Static("[dim]No reasoning recorded for this turn.[/dim]", markup=True)
+                    else:
+                        for i, text in enumerate(parts):
+                            if len(parts) > 1:
+                                yield Static(f"[dim]— block {i+1}/{len(parts)} —[/dim]", markup=True)
+                            # markup=False: reasoning is arbitrary text that may
+                            # contain [..] / <tags> which would raise MarkupError.
+                            yield Static(text, markup=False, classes="rsn-detail-block")
+                yield Button("Back  [ESC]", id="rsn-detail-close")
 
         def on_button_pressed(self, event) -> None:
             self.dismiss()

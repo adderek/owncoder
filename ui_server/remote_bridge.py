@@ -124,6 +124,7 @@ class RemoteBridge:
             on_context_size=pub_context_size,
             on_user_message=on_user_message,
             on_signal=pub_signal,
+            source="remote",
         )
         self._emit(TurnEndEvent(response))
         return response

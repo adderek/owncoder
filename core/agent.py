@@ -610,6 +610,7 @@ class Agent:
         on_reasoning=None,
         on_context_size=None,
         stop_event: asyncio.Event | None = None,
+        source: str = "terminal",
     ) -> str:
         self._turn_id += 1
         turn_id = self._turn_id
@@ -694,6 +695,17 @@ class Agent:
         self._refresh_skills_context()
         if on_user_message is not None:
             on_user_message()
+        # Per-turn model tiering: fast model by default, strong for complex turns
+        # (no-op unless config.auto_tier.enabled). Re-decided every turn so a
+        # strong turn reverts to fast on the next one.
+        try:
+            from agent.core.model_tier import select_for_turn, apply_entry
+            _tier = select_for_turn(self.config, user_input, source)
+            if _tier and apply_entry(self, self.config, _tier):
+                logger.info("auto-tier: turn on '%s' (model=%s url=%s)",
+                            _tier, self.config.llm.model, self.config.llm.base_url)
+        except Exception:
+            logger.exception("auto-tier selection failed (ignored)")
         _run_turn_fn = run_turn if not self.config.parallel.enabled else run_turn_ipc
         _excluded: set[str] = set()
         if self.config.web_search.require_worker:

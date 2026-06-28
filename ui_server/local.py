@@ -109,6 +109,7 @@ class LocalUIServer:
         on_context_size=None,
         on_user_message=None,
         on_signal=None,
+        source: str = "terminal",
     ) -> str:
         from agent.core.turn_signals import parse_signal
 
@@ -138,6 +139,7 @@ class LocalUIServer:
                     on_context_size=on_context_size,
                     on_user_message=on_user_message,
                     stop_event=self._stop_event,
+                    source=source,
                 )
             except Exception as exc:
                 # Surface a crash to remote clients instead of leaving them stuck
