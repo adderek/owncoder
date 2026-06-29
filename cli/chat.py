@@ -312,19 +312,26 @@ def cmd_chat(args, config):
         )
     agent.messages.append({"role": "system", "content": _cov_msg})
 
+    _mode = "private" if getattr(args, "private", False) else (
+        "incognito" if getattr(args, "incognito", False) else "standard"
+    )
     if args.session:
         session, messages = load_session(args.session)
         if session is None:
-            session = new_session(short_name=args.session)
+            session = new_session(short_name=args.session, mode=_mode)
             messages = []
+        elif _mode != "standard":
+            session.mode = _mode
         if messages:
             messages = [{k: v for k, v in m.items() if not k.startswith("_")} for m in messages]
             agent.messages = messages
             console.print(f"Loaded session: {session.id} ({len(messages)} messages)")
             _warn_loop_guard_resume(console, messages)
     else:
-        session = new_session()
+        session = new_session(mode=_mode)
         console.print(f"New session: {session.id}")
+    if session.mode != "standard":
+        console.print(f"[yellow]Session mode: {session.mode}[/yellow]")
 
     from agent.memory.session import get_session_full_dir
     _sentinel = get_session_full_dir(session.id) / "running"
@@ -338,6 +345,7 @@ def cmd_chat(args, config):
 
     # Expose session on agent so planning helpers can tag plans with session_id.
     agent.session = session
+    agent.set_session_mode(session.mode)
 
     # Tamper check: warn if sealed skills/config drifted, or pinned weights moved.
     try:
@@ -415,6 +423,7 @@ def cmd_chat(args, config):
                 config=config,
                 facts_store=getattr(agent, "_facts_store", None),
                 embedder=embedder,
+                session_mode=session.mode,
             )
         except Exception:
             pass

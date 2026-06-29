@@ -84,6 +84,10 @@ def main() -> None:
     chat_p.add_argument("--session", type=str, help="Session name to load/save")
     chat_p.add_argument("--ui", type=str, choices=["textual", "simple"],
                         help="UI mode (skips the prompt)")
+    chat_p.add_argument("--incognito", action="store_true",
+                        help="Don't persist this session or any notes it produces")
+    chat_p.add_argument("--private", action="store_true",
+                        help="Incognito + refuse to run against non-local LLM endpoints")
 
     # run
     run_p = sub.add_parser("run", help="Run a single prompt non-interactively")

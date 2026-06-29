@@ -46,6 +46,7 @@ def promote_session_to_notes(
     config: "Config",
     facts_store: "FactsStore | None" = None,
     embedder=None,
+    session_mode: str = "standard",
 ) -> int:
     """Extract durable facts from final compaction round; save as notes.
 
@@ -100,7 +101,7 @@ def promote_session_to_notes(
         else:
             return 0
 
-    if not notes_list:
+    if not notes_list or session_mode == "incognito":
         return 0
 
     try:

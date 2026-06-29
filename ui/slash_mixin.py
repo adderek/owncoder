@@ -263,6 +263,24 @@ class SlashHandlerMixin:
             label = self._session.short_name or self._session.id
             self._write_sys(f"[{t.text_dim}]Saved session '{label}'.[/{t.text_dim}]")
 
+        elif cmd in ("/incognito", "/private"):
+            new_mode = "private" if cmd == "/private" else "incognito"
+            cur = getattr(self._session, "mode", "standard") if self._session else "standard"
+            # Toggle off if already in the requested mode.
+            target = "standard" if cur == new_mode else new_mode
+            if self._session is not None:
+                self._session.mode = target
+            try:
+                self._server._agent.set_session_mode(target)
+            except Exception:
+                pass
+            if target == "standard":
+                self._write_sys(f"[{t.text_dim}]Session mode: standard (persistence on).[/{t.text_dim}]")
+            elif target == "incognito":
+                self._write_sys(f"[{t.warning}]Incognito: this session and its notes will NOT be saved.[/{t.warning}]")
+            else:
+                self._write_sys(f"[{t.warning}]Private: no persistence + non-local LLM endpoints will be refused.[/{t.warning}]")
+
         elif cmd == "/load":
             if not arg.strip():
                 self._write_sys(f"[{t.warning}]Usage: /load <session-id-or-short-name>[/{t.warning}]")
@@ -600,6 +618,7 @@ class SlashHandlerMixin:
         self._session = loaded_session
         try:
             self._server._agent.session = loaded_session
+            self._server._agent.set_session_mode(getattr(loaded_session, "mode", "standard"))
         except Exception:
             pass
         label = loaded_session.name or loaded_session.short_name or loaded_session.id

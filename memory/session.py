@@ -28,9 +28,12 @@ def _get_session_dir() -> Path:
 # ── Session dataclass ────────────────────────────────────────────────────────
 
 
+from enum import Enum, auto
+
 @dataclass
 class Session:
     id: str  # Basic ISO-8601 format, e.g. "20260414T222821.610Z"
+    mode: str = "standard"  # "standard" | "incognito" | "private"
     short_name: str = ""  # ASCII-only, filesystem-safe identifier
     name: str = ""  # UTF-8 display name (not too long)
     description: str = ""  # Long-form description
@@ -148,6 +151,7 @@ def get_session_full_dir(session_id: str) -> Path:
 def _session_from_data(data: dict, file_path: Path | None = None) -> Session:
     s = Session(
         id=data.get("id", ""),
+        mode=data.get("mode", "standard"),
         short_name=data.get("short_name", ""),
         name=data.get("name", ""),
         description=data.get("description", ""),
@@ -166,6 +170,7 @@ def _session_from_data(data: dict, file_path: Path | None = None) -> Session:
 def _session_to_data(session: Session, messages: list[dict]) -> dict:
     data: dict = {
         "id": session.id,
+        "mode": session.mode,
         "short_name": session.short_name,
         "name": session.name,
         "description": session.description,
@@ -193,8 +198,14 @@ def new_session(
     summary: str = "",
     tags: list[str] | None = None,
     classification: str = "",
+    mode: str = "standard",
 ) -> Session:
-    """Create a new Session with a UTC ISO-8601 timestamp ID."""
+    """Create a new Session with a UTC ISO-8601 timestamp ID.
+
+    *mode* is one of "standard" | "incognito" | "private". incognito sessions
+    are never persisted; private sessions additionally require all LLM
+    endpoints to be local (enforced per-turn by the agent).
+    """
     now = datetime.now(timezone.utc)
     ms = now.microsecond // 1000
     # Use a filesystem-safe version of ISO-8601 (no colons, no dashes)
@@ -204,6 +215,7 @@ def new_session(
     ts = now.timestamp()
     return Session(
         id=session_id,
+        mode=mode,
         short_name=_sanitize_short_name(short_name),
         name=name,
         description=description,
@@ -220,7 +232,13 @@ def save_session(session: Session, messages: list[dict]) -> None:
 
     System preamble (repetitive tool rules, project context) is stripped into a
     sidecar *system.json* sibling to avoid bloating session.json on every save.
+
+    Incognito sessions are never written to disk — this is the single chokepoint
+    all persistence paths (cli, UI, idle tasks) funnel through.
     """
+    if session.mode == "incognito":
+        return
+
     sdir = _get_session_dir()
 
     # Strip preamble; write sidecar; replace with placeholder in messages.

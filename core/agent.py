@@ -13,6 +13,7 @@ from .prompts import _build_system_prompt, load_base_rules, HARD_RULES_MARKER
 from agent import prompt_compiler as _prompt_compiler
 from .turn import _post_turn_capture_and_summarize, run_turn
 from agent.ipc.controller import run_turn_ipc
+from agent.security.airgap import is_local_url
 
 if TYPE_CHECKING:
     from agent.config import Config
@@ -95,6 +96,7 @@ class Agent:
         self._turn_id: int = 0
         self._notes_sys_idx: int | None = None  # kept for compat; notes removal now uses marker
         self._session_id: str | None = None
+        self._session_mode: str = "standard"  # "standard" | "incognito" | "private"
         self._similar_sessions_injected: bool = False
         self._project_memory_store = None  # project-level MemoryStore for session indexing
         self._last_turn_time: float = 0.0
@@ -677,6 +679,10 @@ class Agent:
             if original_on_tool_call is not None:
                 original_on_tool_call(name, args)
 
+        # Refuse a private-mode turn against a non-local endpoint before mutating
+        # message state, so a raise here leaves nothing to roll back.
+        self._validate_private_mode()
+
         pre_turn_len = len(self.messages)
         _is_continue = user_input.strip().lower() in ("continue", "/continue", "/c")
         if not _is_continue:
@@ -783,3 +789,44 @@ class Agent:
             self._idle_compact_task.add_done_callback(self._pending_bg_tasks.discard)
 
         return response
+
+    def set_session_mode(self, mode: str) -> None:
+        """Record the session privacy mode and propagate it to persistence sinks.
+
+        "standard" — normal. "incognito" — nothing persists (sessions, notes).
+        "private" — incognito plus a hard requirement that every configured LLM
+        endpoint is local, enforced per-turn by ``_validate_private_mode``.
+        """
+        self._session_mode = mode or "standard"
+        try:
+            from agent.tools.notes import notes as _notes
+            _notes.set_session_mode(self._session_mode)
+        except Exception:
+            logger.debug("notes.set_session_mode failed (ignored)", exc_info=True)
+
+    def _validate_private_mode(self) -> None:
+        """In private mode, refuse to run if any LLM endpoint is non-local.
+
+        Checks the active endpoint plus every declared model entry, so an
+        auto-tier swap can't silently route a private turn through the cloud.
+
+        Raises:
+            ValueError: if private mode is on and a non-local endpoint is found.
+        """
+        if getattr(self, "_session_mode", "standard") != "private":
+            return
+
+        candidates: list[tuple[str, str]] = [
+            ("active LLM endpoint", getattr(self.config.llm, "base_url", "") or ""),
+        ]
+        for name, entry in getattr(self.config, "model_entries", {}).items():
+            candidates.append((f"model '{name}'", getattr(entry, "base_url", "") or ""))
+
+        for label, url in candidates:
+            if url and not is_local_url(url):
+                raise ValueError(
+                    f"Private mode: {label} uses non-local endpoint {url!r}. "
+                    f"Switch to a local endpoint or leave private mode."
+                )
+
+

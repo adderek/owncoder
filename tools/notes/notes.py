@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 _config = None
 _embedder = None
 _notes_store = None  # MemoryStore, initialized lazily
+_session_mode = "standard"  # set by the agent; gates persistence in incognito
 
 
 def setup(config, embedder=None) -> None:
@@ -26,6 +27,16 @@ def setup(config, embedder=None) -> None:
     _config = config
     _embedder = embedder
     _notes_store = None  # reset so _get_store() re-creates on next call
+
+
+def set_session_mode(mode: str) -> None:
+    """Record the active session mode. In "incognito", save_note is a no-op.
+
+    save_note is a registered tool, so the dispatcher only passes schema
+    arguments — the mode can't be a tool parameter and must live here.
+    """
+    global _session_mode
+    _session_mode = mode or "standard"
 
 
 def _get_store():
@@ -75,6 +86,9 @@ def save_note(
     body: str,
     tags: list[str] | None = None,
 ) -> dict[str, Any]:
+    if _session_mode == "incognito":
+        return {"saved": False, "message": "Incognito mode: note not persisted."}
+
     store = _get_store()
     if store is None:
         return {"error": "Notes store not configured. Call setup(config) first."}

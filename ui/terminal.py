@@ -763,19 +763,25 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                 )
                 return False
 
-            result = await self._server.chat(
-                user_text,
-                session_id=self._session.id if self._session else "",
-                on_tool_call=on_tool,
-                on_tool_result=on_tool_result,
-                on_user_message=on_user_message,
-                on_token=on_token,
-                on_progress=on_progress,
-                on_phase=on_phase,
-                on_reasoning=on_reasoning,
-                on_context_size=on_context_size,
-                on_loop_detected=on_loop_detected,
-            )
+            try:
+                result = await self._server.chat(
+                    user_text,
+                    session_id=self._session.id if self._session else "",
+                    on_tool_call=on_tool,
+                    on_tool_result=on_tool_result,
+                    on_user_message=on_user_message,
+                    on_token=on_token,
+                    on_progress=on_progress,
+                    on_phase=on_phase,
+                    on_reasoning=on_reasoning,
+                    on_context_size=on_context_size,
+                    on_loop_detected=on_loop_detected,
+                )
+            except ValueError as exc:
+                # e.g. private-mode endpoint refusal — surface, don't crash.
+                t = self._t
+                self._write_chat(f"[{t.warning}]⚠ {exc}[/{t.warning}]")
+                return ""
             if self._session is not None:
                 self._server.save_session(self._session)
             return result
