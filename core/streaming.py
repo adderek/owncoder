@@ -267,7 +267,8 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
     server_usage: dict | None = None
 
     _endpoint = provider_label(str(getattr(client, "base_url", "") or getattr(config.llm, "base_url", "")))
-    _ms_inc("main", _endpoint)
+    _model = getattr(config.llm, "model", None)
+    _ms_inc("main", _endpoint, _model)
     try:
         async with _gpu_slot(config):
             stream = await client.chat.completions.create(
@@ -377,7 +378,7 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
                     if tc_delta.function.arguments:
                         tc_acc[idx]["function"]["arguments"] += tc_delta.function.arguments
     finally:
-        _ms_dec("main", _endpoint)
+        _ms_dec("main", _endpoint, _model)
 
     raw_content = "".join(content_parts)
     full_content = _clean_output(raw_content)

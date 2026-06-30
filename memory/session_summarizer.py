@@ -118,7 +118,7 @@ async def _call_llm(config: "Config", system: str, user_content: str) -> str:
         model_calls.record_entry(entry)
     except Exception:
         pass
-    _ms_inc("sum")
+    _ms_inc("sum", None, entry.model)
     parts: list[str] = []
     try:
         stream = await client.chat.completions.create(
@@ -136,7 +136,7 @@ async def _call_llm(config: "Config", system: str, user_content: str) -> str:
             if delta and delta.content:
                 parts.append(delta.content)
     finally:
-        _ms_dec("sum")
+        _ms_dec("sum", None, entry.model)
         await client.close()
 
     return _clean_output("".join(parts)).strip()

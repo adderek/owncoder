@@ -71,8 +71,8 @@ async def _call_llm(config: "Config", user_content: str) -> str:
     try:
         from agent.core.model_status import _inc as _ms_inc, _dec as _ms_dec
     except Exception:  # pragma: no cover - fallback when status unavailable
-        def _ms_inc(_role: str) -> None: ...
-        def _ms_dec(_role: str) -> None: ...
+        def _ms_inc(*_a, **_k) -> None: ...
+        def _ms_dec(*_a, **_k) -> None: ...
 
     entry = make_registry(config).role("namer")
     client = AsyncOpenAI(base_url=entry.base_url, api_key=entry.api_key)
@@ -81,7 +81,7 @@ async def _call_llm(config: "Config", user_content: str) -> str:
         model_calls.record_entry(entry)
     except Exception:
         pass
-    _ms_inc("name")
+    _ms_inc("name", None, entry.model)
     try:
         resp = await client.chat.completions.create(
             model=entry.model,
@@ -94,7 +94,7 @@ async def _call_llm(config: "Config", user_content: str) -> str:
         )
         return (resp.choices[0].message.content or "").strip()
     finally:
-        _ms_dec("name")
+        _ms_dec("name", None, entry.model)
         await client.close()
 
 

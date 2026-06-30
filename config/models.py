@@ -149,6 +149,7 @@ class UIConfig:
     terminal_title_icon: str = "🌟"  # prefix icon, e.g. "🌟" | "🤖"
     qa_summary_mode: str = "lazy"  # "lazy" (on tab open) | "background" (after each turn) | "off"
     spinner_animation: str = "box"  # preset name or custom chars; see ui/spinner.py SPINNER_PRESETS
+    show_active_models: str = "auto"  # status-bar model breakdown: "auto" (when >1 model or subagents live) | "always" | "off"
     theme: ThemeConfig = field(default_factory=ThemeConfig)
 
 

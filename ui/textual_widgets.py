@@ -59,6 +59,16 @@ def build_widget_classes(t) -> SimpleNamespace:
     from rich.markup import escape as _escape
     from rich.markdown import Markdown
 
+    def _short_model(name: str, maxlen: int = 22) -> str:
+        """Trim provider prefixes / long ids for the compact status bar.
+
+        "Qwen/Qwen2.5-Coder-32B" → "Qwen2.5-Coder-32B"; over-long tails clipped.
+        """
+        if not name:
+            return "?"
+        short = name.rsplit("/", 1)[-1]
+        return short[: maxlen - 1] + "…" if len(short) > maxlen else short
+
     from agent.ui.textual_events import build_event_classes
     from agent.ui.render import (
         _CTX_SEGMENT_COLORS, _CTX_SEGMENT_LABELS,
@@ -1341,6 +1351,15 @@ def build_widget_classes(t) -> SimpleNamespace:
             # Re-probe availability periodically (endpoints may come/go).
             self.set_interval(30.0, self._probe_availability)
             self.tooltip = "Click to view model config / worker status"
+            # "auto" (default) | "always" | "off" — how to show the live model breakdown.
+            self._show_active_models = "auto"
+            try:
+                server = getattr(self.app, "_server", None)
+                if server is not None:
+                    self._show_active_models = server.get_ui_config().get(
+                        "show_active_models", "auto")
+            except Exception:
+                pass
             self._probe_availability()
 
         def _probe_availability(self) -> None:
@@ -1389,6 +1408,23 @@ def build_widget_classes(t) -> SimpleNamespace:
                     color = "rgb(120,144,156)" if label == "local" else "rgb(124,77,255)"
                     ep_parts.append(f"[{color}]{label}:{eps[label]}[/]")
                 parts.append("[dim]│[/dim] " + " ".join(ep_parts))
+            # Live model breakdown — exactly which models, and how many of each,
+            # are in flight right now (covers main turn + parallel workers +
+            # ask_internet / delegate subagents, which all stream through here).
+            mode = getattr(self, "_show_active_models", "auto")
+            if mode != "off":
+                from agent.core.model_status import get_model_counts
+                models = get_model_counts()
+                # "auto" stays quiet on a plain single-model turn; show once there
+                # are multiple models or any subagent fan-out in flight.
+                if mode == "always" or len(models) > 1 or worker_count > 0:
+                    if models:
+                        mparts = [
+                            f"{_escape(_short_model(name))}×{n}" if n > 1 else _escape(_short_model(name))
+                            for name, n in sorted(models.items(), key=lambda kv: (-kv[1], kv[0]))
+                        ]
+                        parts.append(
+                            f"[dim]│[/dim] [rgb(124,77,255)]" + " ".join(mparts) + "[/]")
             self.update("  ".join(parts))
 
         async def on_click(self) -> None:

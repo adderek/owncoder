@@ -18,6 +18,11 @@ _counts: dict[str, int] = {}
 # the role counters (_counts) collapse that detail since one role can hit
 # different endpoints over a session.
 _endpoints: dict[str, int] = {}
+# Concurrent calls in flight per model name (e.g. "qwen2.5-coder", "llama-3.3-70b").
+# Distinct from endpoints/roles: lets the UI show exactly which models — and how
+# many of each — are live at one instant, the detail the user wants during
+# subagent / parallel web fan-out where several models run at once.
+_models: dict[str, int] = {}
 _listeners: list = []
 
 # role → bool availability snapshot (configured model live on its endpoint).
@@ -52,6 +57,12 @@ def get_endpoint_counts() -> dict[str, int]:
     """Return endpoint-label → active request count snapshot (only non-zero)."""
     with _lock:
         return {k: v for k, v in _endpoints.items() if v > 0}
+
+
+def get_model_counts() -> dict[str, int]:
+    """Return model-name → active request count snapshot (only non-zero)."""
+    with _lock:
+        return {k: v for k, v in _models.items() if v > 0}
 
 
 def provider_label(base_url: str | None) -> str:
@@ -93,19 +104,23 @@ def get_availability() -> dict[str, bool]:
         return dict(_availability)
 
 
-def _inc(role: str, endpoint: str | None = None) -> None:
+def _inc(role: str, endpoint: str | None = None, model: str | None = None) -> None:
     with _lock:
         _counts[role] = _counts.get(role, 0) + 1
         if endpoint:
             _endpoints[endpoint] = _endpoints.get(endpoint, 0) + 1
+        if model:
+            _models[model] = _models.get(model, 0) + 1
     _notify(role)
 
 
-def _dec(role: str, endpoint: str | None = None) -> None:
+def _dec(role: str, endpoint: str | None = None, model: str | None = None) -> None:
     with _lock:
         _counts[role] = max(0, _counts.get(role, 0) - 1)
         if endpoint:
             _endpoints[endpoint] = max(0, _endpoints.get(endpoint, 0) - 1)
+        if model:
+            _models[model] = max(0, _models.get(model, 0) - 1)
     _notify(role)
 
 
@@ -129,21 +144,21 @@ def remove_listener(cb) -> None:
 
 
 @asynccontextmanager
-async def track_async(role: str, endpoint: str | None = None):
-    _inc(role, endpoint)
+async def track_async(role: str, endpoint: str | None = None, model: str | None = None):
+    _inc(role, endpoint, model)
     try:
         yield
     finally:
-        _dec(role, endpoint)
+        _dec(role, endpoint, model)
 
 
 @contextmanager
-def track_sync(role: str, endpoint: str | None = None):
-    _inc(role, endpoint)
+def track_sync(role: str, endpoint: str | None = None, model: str | None = None):
+    _inc(role, endpoint, model)
     try:
         yield
     finally:
-        _dec(role, endpoint)
+        _dec(role, endpoint, model)
 
 
 # ── GPU concurrency semaphore ────────────────────────────────────────────────

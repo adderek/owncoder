@@ -254,6 +254,7 @@ q_summaries      = true           # one-line Q/A summaries (uses summarizer mode
 chat_wrap        = "last used"    # "wrap" | "nowrap" | "last used"
 round_summary    = true           # show gray Q/A summary line after each turn
 reasoning_fold   = "end_of_round" # "immediate" | "end_of_round" | "never"
+show_active_models = "auto"       # status-bar live model breakdown: "auto" (when >1 model or subagents run) | "always" | "off"
 
 [ui.theme]
 bg             = "#0C0C0C"

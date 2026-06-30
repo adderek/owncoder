@@ -382,6 +382,7 @@ class LocalUIServer:
             "terminal_title_session": getattr(cfg.ui, "terminal_title_session", "name"),
             "qa_summary_mode": getattr(cfg.ui, "qa_summary_mode", "lazy"),
             "spinner_animation": getattr(cfg.ui, "spinner_animation", "box"),
+            "show_active_models": getattr(cfg.ui, "show_active_models", "auto"),
         }
 
     def get_turn_id(self, session_id: str = "") -> int:
