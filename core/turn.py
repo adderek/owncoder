@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from agent.memory.compactor import compact, _count_tokens_approx
 from agent.tools import get_schemas
-from openai import BadRequestError
+from openai import APIConnectionError, APITimeoutError, BadRequestError, InternalServerError
 
 from .prompts import _build_call_kwargs, _inject_think_hint, _inject_autonomy_hint, _inject_aei_hint, _log_llm_request
 from .tool_calls import _tool_result_message, _FakeToolCall, execute_tool, _parse_raw_tool_calls
@@ -388,6 +388,7 @@ async def run_turn(
 
     stall_retry_count = 0
     _tier_escalated = False  # auto-tier: at most one mid-turn fast->strong switch
+    failover_count = 0       # remote->local failovers taken this turn
     while True:
         # Re-expose any tools the model activated via find_tools last iteration.
         if _discovery_on:
@@ -420,6 +421,30 @@ async def run_turn(
                 logger.warning("Post-truncation: %d tokens (budget %d)", _count_tokens_approx(messages), budget)
 
         api_messages = _normalize_api_messages(messages)
+
+        # Privacy routing: if the active endpoint is remote and the outbound
+        # payload carries a secret, redact / reroute-local / block per policy.
+        # Local endpoints are exempt (nothing leaves the machine).
+        if getattr(getattr(config, "privacy", None), "enabled", False):
+            from agent.core import model_routing
+            decision = model_routing.route_privacy(config, api_messages)
+            action = decision["action"]
+            if action == "redact":
+                api_messages = decision["messages"]
+                _phase("privacy_redact", f"{decision['n']} msg(s) masked → remote")
+                logger.info("privacy: redacted %d message(s) before remote send", decision["n"])
+            elif action == "switch":
+                new_client = model_routing.switch_to_entry(config, decision["entry"])
+                if new_client is not None:
+                    client = new_client
+                    _phase("privacy_local", f"-> {config.llm.model}")
+                    logger.warning("privacy: secret in payload — routed turn to local '%s'", decision["entry"])
+                    continue  # re-run loop top; endpoint now local, policy passes
+            elif action == "block":
+                reason = decision["reason"]
+                _phase("privacy_block", reason)
+                logger.warning("%s", reason)
+                return reason, messages
 
         turn_reasoning: str = ""
         try:
@@ -513,6 +538,22 @@ async def run_turn(
                 if token_est > budget:
                     messages = _truncate_large_messages(messages, budget)
                 continue
+            raise
+        except (APIConnectionError, APITimeoutError, InternalServerError) as e:
+            # Remote endpoint unreachable / timed out / 5xx. If failover is on and
+            # we are on a remote endpoint, degrade to a local model and retry so
+            # the agent keeps working offline. Otherwise surface the error.
+            fcfg = getattr(config, "failover", None)
+            if (fcfg is not None and fcfg.enabled
+                    and failover_count < max(1, int(fcfg.max_retries))):
+                from agent.core import model_routing
+                new_client = model_routing.failover_to_local(config)
+                if new_client is not None:
+                    client = new_client
+                    failover_count += 1
+                    _phase("failover", f"remote down → local {config.llm.model}")
+                    logger.warning("failover: remote error (%s) — retrying on local", e)
+                    continue
             raise
 
         finish_reason = getattr(choice, "finish_reason", None)

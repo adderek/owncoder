@@ -765,6 +765,39 @@ class AutoTierConfig:
 
 
 @dataclass
+class FailoverConfig:
+    """Remote→local failover: when the active (remote) endpoint is unreachable
+    or erroring, transparently retry the turn on a local model so the agent keeps
+    working offline. The fallback direction is always toward local, so it never
+    weakens privacy. Off by default.
+    """
+    enabled: bool = False
+    local_entry: str = ""       # fallback entry name ("" = first local-tier entry)
+    max_retries: int = 1        # at most this many remote→local switches per turn
+
+
+@dataclass
+class PrivacyConfig:
+    """Per-turn privacy routing for outbound payloads to REMOTE endpoints.
+
+    Local endpoints are always exempt (nothing leaves the machine). When the
+    active endpoint is remote and the turn payload contains a secret/credential
+    shape (reuses security.redaction patterns), apply *strategy*:
+
+      "redact"      — mask the secrets in the wire copy only, then send remote
+                      (history is untouched). Keeps remote power on the 95% that
+                      is not sensitive.
+      "force-local" — switch this (and subsequent) turns to a local model.
+      "block"       — refuse the turn with a clear message.
+
+    Off by default; opt-in via [privacy] enabled = true.
+    """
+    enabled: bool = False
+    strategy: str = "redact"    # "redact" | "force-local" | "block"
+    local_entry: str = ""       # entry used by force-local ("" = first local-tier entry)
+
+
+@dataclass
 class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
@@ -802,3 +835,5 @@ class Config:
     mcp: MCPConfig = field(default_factory=MCPConfig)
     speech: SpeechConfig = field(default_factory=SpeechConfig)
     auto_tier: AutoTierConfig = field(default_factory=AutoTierConfig)
+    failover: FailoverConfig = field(default_factory=FailoverConfig)
+    privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
