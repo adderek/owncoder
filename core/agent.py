@@ -100,6 +100,7 @@ class Agent:
         self._similar_sessions_injected: bool = False
         self._project_memory_store = None  # project-level MemoryStore for session indexing
         self._last_turn_time: float = 0.0
+        self._turn_busy: bool = False  # True while a turn runs (scheduler defers)
         self._idle_compact_task: asyncio.Task | None = None
         self._active_step_skills: list[str] = []
         self._skill_loader = None
@@ -723,6 +724,7 @@ class Agent:
             _excluded.update({"web_search", "web_fetch"})
         else:
             _excluded.add("ask_internet")
+        self._turn_busy = True
         try:
             response, self.messages = await _run_turn_fn(
                 self.messages,
@@ -751,8 +753,9 @@ class Agent:
             # consecutive user messages (which causes a 400 deadloop).
             self.messages = self.messages[:pre_turn_len]
             raise
-
-        self._last_turn_time = time.monotonic()
+        finally:
+            self._turn_busy = False
+            self._last_turn_time = time.monotonic()
 
         # Snapshot the round's model-call breakdown before background tasks
         # (qa-summary, idle compaction, naming) schedule their own LLM calls.

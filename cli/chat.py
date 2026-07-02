@@ -347,6 +347,17 @@ def cmd_chat(args, config):
     agent.session = session
     agent.set_session_mode(session.mode)
 
+    # Scheduled jobs: idle-kind jobs hook into the idle sweep; time-based jobs
+    # fire from a ticker thread that defers to the interactive agent.
+    _sched_stop = None
+    if getattr(config, "scheduler", None) and config.scheduler.enabled:
+        try:
+            from agent.core.scheduler import start_ticker, register_idle_hook
+            register_idle_hook()
+            _sched_stop = start_ticker(config, agent)
+        except Exception:
+            logger.debug("scheduler start failed", exc_info=True)
+
     # Tamper check: warn if sealed skills/config drifted, or pinned weights moved.
     try:
         from agent.security.integrity import warn_if_tampered
@@ -406,6 +417,8 @@ def cmd_chat(args, config):
             pass
         raise
     finally:
+        if _sched_stop is not None:
+            _sched_stop.set()
         try:
             _sentinel.unlink(missing_ok=True)
         except Exception:

@@ -491,6 +491,14 @@ class WebSearchConfig:
     max_results_per_search: int = 10
     max_search_calls_per_turn: int = 3
     max_fetch_calls_per_turn: int = 5
+    # Minimum spacing between web_search/web_fetch calls (seconds).
+    min_call_interval_s: float = 1.0
+    # When True, calls made sooner than min_call_interval_s block (sleep) until
+    # the interval elapses instead of returning a rate-limit error. Avoids the
+    # error-retry loop when the agent fires calls back-to-back.
+    rate_limit_wait: bool = True
+    # Hard cap on how long a single call will block waiting for the cooldown.
+    max_rate_limit_wait_s: float = 5.0
     execution_mode: str = "sandboxed"  # "sandboxed" or "direct"
     timeout_connect_s: int = 10
     timeout_total_s: int = 30
@@ -798,6 +806,19 @@ class PrivacyConfig:
 
 
 @dataclass
+class SchedulerConfig:
+    """Scheduled jobs (cron-like + delayed prompts) — core/scheduler.py.
+
+    Jobs live in <agent_dir>/schedule/jobs.json and fire from three paths:
+    the in-process ticker (long-running chat), `agent cron run` (external
+    crontab/systemd-timer), and the idle sweep (kind "idle" jobs).
+    """
+    enabled: bool = True
+    tick_seconds: float = 60.0       # in-process ticker period
+    min_quiet_seconds: float = 30.0  # defer jobs until this long after the last turn
+
+
+@dataclass
 class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
@@ -837,3 +858,4 @@ class Config:
     auto_tier: AutoTierConfig = field(default_factory=AutoTierConfig)
     failover: FailoverConfig = field(default_factory=FailoverConfig)
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
+    scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)

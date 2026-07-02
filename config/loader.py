@@ -200,6 +200,7 @@ def _merge(config: Config, data: dict) -> None:
         ("auto_tier", config.auto_tier),
         ("failover", config.failover),
         ("privacy", config.privacy),
+        ("scheduler", config.scheduler),
     ):
         section_data = data.get(section_name, {})
         _merge_obj(obj, section_data)

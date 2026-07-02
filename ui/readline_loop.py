@@ -50,6 +50,7 @@ def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
   [{c}]/skills [show|history|rm <name>][/{c}]  manage saved skills
   [{c}]/commands[/{c}] ([{c}]/cmds[/{c}])       list project ':name' prompt-template commands
   [{c}]/checkpoint [new|rollback <id>][/{c}]  restore point across all files
+  [{c}]/schedule[/{c}] [add <spec> :: <prompt> [:: <name>] | rm | on/off | runs | run]  cron-like scheduled jobs (alias [{c}]/sched[/{c}])
   [{c}]/mcp[/{c}]                MCP server status + tools
   [{c}]/speech[/{c}]             speech-to-text input status
   [{c}]/security[/{c}] [scan|diff|triage|selfaudit|report|baseline|airgap|integrity|weights|sbom|taint|evolve|knowledge|verify|full|review] [path]  local security audit
@@ -337,6 +338,10 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
             elif cmd in ("/checkpoint", "/cp"):
                 from agent.core.checkpoint import run_checkpoint_command
                 console.print(run_checkpoint_command(arg))
+
+            elif cmd in ("/schedule", "/sched"):
+                from agent.core.scheduler import run_schedule_command
+                console.print(run_schedule_command(agent.config, arg))
 
             elif cmd == "/mcp":
                 from agent.mcp import run_mcp_command

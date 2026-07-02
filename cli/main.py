@@ -134,6 +134,24 @@ def main() -> None:
     pr_clr = pr_sub.add_parser("clear", help="Delete cached compiled variants")
     pr_clr.add_argument("name", nargs="?", help="Prompt name. Omit for all.")
 
+    # cron (scheduled jobs)
+    cron_p = sub.add_parser("cron", help="Manage/run scheduled jobs (see /schedule in chat)")
+    cron_sub = cron_p.add_subparsers(dest="cron_action")
+    cron_run = cron_sub.add_parser("run", help="Run all due jobs and exit (crontab/systemd-timer entry point)")
+    cron_run.add_argument("--job", type=str, help="Force this job (id or name) to run now")
+    cron_add = cron_sub.add_parser("add", help="Add a job")
+    cron_add.add_argument("spec", type=str, help="Schedule: 'in 20m' | 'at 07:00' | 'every 6h' | '0 7 * * *' | '@daily' | 'idle'")
+    cron_add.add_argument("prompt", type=str, help="Prompt the agent runs")
+    cron_add.add_argument("--name", type=str, help="Job name (addressable, unique)")
+    cron_rm = cron_sub.add_parser("rm", help="Remove a job")
+    cron_rm.add_argument("job", type=str, help="Job id or name")
+    cron_en = cron_sub.add_parser("enable", help="Enable a job")
+    cron_en.add_argument("job", type=str, help="Job id or name")
+    cron_dis = cron_sub.add_parser("disable", help="Disable a job")
+    cron_dis.add_argument("job", type=str, help="Job id or name")
+    cron_sub.add_parser("runs", help="Show recent scheduled runs")
+    cron_sub.add_parser("list", help="List jobs (default)")
+
     # diag
     diag_p = sub.add_parser("diag", help="Tool health report from audit.jsonl")
     diag_p.add_argument("--json", action="store_true", help="Output raw JSON (for scripting)")
@@ -252,6 +270,11 @@ def main() -> None:
         elif args.command == "debug":
             from agent.cli.debug import cmd_debug_context
             cmd_debug_context(args, config)
+        elif args.command == "cron":
+            from agent.cli.cron import cmd_cron
+            if getattr(args, "cron_action", None) == "run":
+                check_reachability(config)
+            cmd_cron(args, config)
         elif args.command == "diag":
             from agent.cli.diag import cmd_diag
             cmd_diag(args, config)
