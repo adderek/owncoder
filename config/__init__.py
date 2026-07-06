@@ -18,6 +18,7 @@ from .models import (
     PlanningConfig,
     RecoveryConfig,
     WebSearchConfig,
+    ExploreConfig,
     OutputStoreConfig,
     TurnSignalsConfig,
     ModelEntry,

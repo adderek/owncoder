@@ -61,8 +61,10 @@ _READONLY_TOOLS = frozenset({
 # Tools available in "internet" worker mode — fetch-only, no fs access.
 _INTERNET_TOOLS = frozenset({"web_search", "web_fetch"})
 
-# Tool always stripped from workers regardless of worker_tools setting.
-_WORKER_EXCLUDED = frozenset({"spawn_agents"})
+# Tools always stripped from workers regardless of worker_tools setting.
+# `explore` is excluded so workers cannot recurse into another isolated
+# exploration run (and explore's own worker cannot re-enter itself).
+_WORKER_EXCLUDED = frozenset({"spawn_agents", "explore"})
 
 
 def setup(config: "Config", data_provider=None) -> None:

@@ -138,6 +138,11 @@ def load_all_tools(config=None, store=None, embedder=None, asm_store=None, data_
         from agent.tools import parallel  # noqa: F401
         parallel.setup(config, data_provider)
 
+    # explore has its own config switch and works even when [parallel] is off.
+    if config is not None:
+        from agent.tools import explore  # noqa: F401
+        explore.setup(config, data_provider)
+
     if config is not None and getattr(getattr(config, "mcp", None), "enabled", False):
         try:
             from agent.mcp import load_mcp_tools

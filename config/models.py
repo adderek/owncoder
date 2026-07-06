@@ -403,6 +403,15 @@ class ParallelConfig:
 
 
 @dataclass
+class ExploreConfig:
+    """explore tool: one read-only worker with isolated context for codebase questions."""
+    enabled: bool = True
+    model: str = ""            # model entry name; empty = main llm config
+    max_iterations: int = 10
+    timeout_seconds: int = 180
+
+
+@dataclass
 class AgentConfig:
     """Agent runtime behavior (independent of model/endpoint choice)."""
     # Operating mode:
@@ -856,6 +865,7 @@ class Config:
     planning: PlanningConfig = field(default_factory=PlanningConfig)
     recovery: RecoveryConfig = field(default_factory=RecoveryConfig)
     parallel: ParallelConfig = field(default_factory=ParallelConfig)
+    explore: ExploreConfig = field(default_factory=ExploreConfig)
     web_search: WebSearchConfig = field(default_factory=WebSearchConfig)
     output_store: OutputStoreConfig = field(default_factory=OutputStoreConfig)
     concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
