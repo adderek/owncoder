@@ -161,11 +161,15 @@ class TestRateLimiting:
         query_gate.reset_rate_limits()
 
         import time
-        assert isinstance(query_gate.gate_query("a"), str)
+        # The gate guarantees the second call finishes no earlier than
+        # min_call_interval_s after the FIRST call — measure from there.
+        # (Measuring only the second call flakes: any test overhead between
+        # the calls shrinks the remaining sleep below the asserted floor.)
         start = time.monotonic()
+        assert isinstance(query_gate.gate_query("a"), str)
         result = query_gate.gate_query("b")  # immediate → should wait, not error
         assert isinstance(result, str)
-        assert time.monotonic() - start >= 0.04
+        assert time.monotonic() - start >= 0.045
 
     def test_too_fast_call_rejects_when_wait_disabled(self, enabled_config):
         enabled_config.web_search.min_call_interval_s = 10.0
