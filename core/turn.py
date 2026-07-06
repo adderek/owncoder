@@ -112,14 +112,18 @@ def _patch_read_file_result(tc, result: str, read_path_counts: dict,
         # Serving the identical window again just feeds the loop, so return the
         # NEXT lines of the file instead. read_file already advertises
         # "read offset=N for more"; this enforces it behaviourally.
+        auto_advanced = False
         if read_advance is not None and count >= 2:
             try:
-                from agent.tools.files.read import read_file as _rf
+                from agent.tools.files.read import read_file as _rf, READ_WINDOW_LINES
                 try:
                     total = int(json.loads(result).get("metadata", {}).get("total_lines") or 0)
                 except Exception:
                     total = 0
-                win = 200
+                win = READ_WINDOW_LINES
+                # The advance cursor is keyed per path (not per range like the
+                # counts): once a file is stuck, every repeat pages forward
+                # regardless of which range the model keeps asking for.
                 nxt = read_advance.get(rpath)
                 if nxt is None:
                     sl, el = a.get("start_line"), a.get("end_line")
@@ -133,6 +137,7 @@ def _patch_read_file_result(tc, result: str, read_path_counts: dict,
                     )
                     result = json.dumps({"content": note, "end_of_file": True,
                                          "metadata": {"total_lines": total}})
+                    auto_advanced = True
                 else:
                     adv = _rf(rpath, start_line=nxt, end_line=nxt + win - 1)
                     if isinstance(adv, dict) and not adv.get("error"):
@@ -144,6 +149,7 @@ def _patch_read_file_result(tc, result: str, read_path_counts: dict,
                         )
                         read_advance[rpath] = nxt + win
                         result = json.dumps(adv)
+                        auto_advanced = True
             except Exception:
                 pass
 
@@ -155,7 +161,10 @@ def _patch_read_file_result(tc, result: str, read_path_counts: dict,
                 f"Stop re-reading — use search_files to find a specific anchor, "
                 f"or report what you need and ask the user for guidance.]"
             )
-        if count >= warn_threshold:
+        # When auto-advance replaced the result it already carries its own
+        # note about a *different* range — adding the "same range read N×"
+        # warning on top would contradict it and confuse weak models.
+        if count >= warn_threshold and not auto_advanced:
             try:
                 r_parsed = json.loads(result)
             except Exception:
