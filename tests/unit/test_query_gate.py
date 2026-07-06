@@ -127,13 +127,10 @@ class TestDisabledBehavior:
 
 class TestRateLimiting:
     def test_search_rate_limit(self, enabled_config, monkeypatch):
+        # Zero the inter-call interval so we test the per-turn count cap, not spacing
+        enabled_config.web_search.min_call_interval_s = 0.0
         query_gate.setup(enabled_config)
         query_gate.reset_rate_limits()
-
-        # Fake time to bypass 1s cooldown
-        t = [0.0]
-        import agent.security.query_gate as qg
-        monkeypatch.setattr(qg, '_COOLDOWN_S', 0.0)
 
         for _ in range(3):
             result = query_gate.gate_query("test")
@@ -144,17 +141,53 @@ class TestRateLimiting:
         assert "Rate limit" in result["error"]
 
     def test_fetch_rate_limit(self, enabled_config, monkeypatch):
+        enabled_config.web_search.min_call_interval_s = 0.0
         query_gate.setup(enabled_config)
         query_gate.reset_rate_limits()
-
-        import agent.security.query_gate as qg
-        monkeypatch.setattr(qg, '_COOLDOWN_S', 0.0)
 
         for _ in range(5):
             result = query_gate.gate_fetch("http://example.com/test")
             assert isinstance(result, GateFetchResult)
         # 6th should be rate limited
         result = query_gate.gate_fetch("http://example.com/extra")
+        assert isinstance(result, dict)
+        assert "Rate limit" in result["error"]
+
+    def test_too_fast_call_waits_then_succeeds(self, enabled_config):
+        # Short interval, wait mode on: back-to-back call blocks then succeeds
+        enabled_config.web_search.min_call_interval_s = 0.05
+        enabled_config.web_search.rate_limit_wait = True
+        query_gate.setup(enabled_config)
+        query_gate.reset_rate_limits()
+
+        import time
+        assert isinstance(query_gate.gate_query("a"), str)
+        start = time.monotonic()
+        result = query_gate.gate_query("b")  # immediate → should wait, not error
+        assert isinstance(result, str)
+        assert time.monotonic() - start >= 0.04
+
+    def test_too_fast_call_rejects_when_wait_disabled(self, enabled_config):
+        enabled_config.web_search.min_call_interval_s = 10.0
+        enabled_config.web_search.rate_limit_wait = False
+        query_gate.setup(enabled_config)
+        query_gate.reset_rate_limits()
+
+        assert isinstance(query_gate.gate_query("a"), str)
+        result = query_gate.gate_query("b")  # immediate → reject (won't wait 10s)
+        assert isinstance(result, dict)
+        assert "Rate limit" in result["error"]
+
+    def test_long_wait_falls_back_to_reject(self, enabled_config):
+        # Interval beyond max_rate_limit_wait_s → reject instead of blocking forever
+        enabled_config.web_search.min_call_interval_s = 10.0
+        enabled_config.web_search.rate_limit_wait = True
+        enabled_config.web_search.max_rate_limit_wait_s = 0.1
+        query_gate.setup(enabled_config)
+        query_gate.reset_rate_limits()
+
+        assert isinstance(query_gate.gate_query("a"), str)
+        result = query_gate.gate_query("b")
         assert isinstance(result, dict)
         assert "Rate limit" in result["error"]
 
