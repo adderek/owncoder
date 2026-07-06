@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import subprocess
 import time
 from typing import TYPE_CHECKING
 
@@ -232,6 +233,26 @@ def _patch_edit_file_result(tc, result: str, read_path_counts: dict,
     return result
 
 
+# Tool names that mutate files on disk — a successful call marks the turn
+# "dirty" for the post-edit verify hook (see run_turn / VerifyConfig).
+_MUTATING_TOOLS = {"edit_file", "write_file", "patch_file", "replace_text", "replace_symbol", "undo_file"}
+
+
+def _run_verify_command(command: str, cwd: str, timeout_s: int) -> tuple[int, str]:
+    """Run the configured project verify command; returns (returncode, combined output).
+
+    A timeout is reported as a synthetic non-zero result rather than raising,
+    so the caller always gets a (rc, text) pair to feed back to the model.
+    """
+    try:
+        proc = subprocess.run(command, shell=True, cwd=cwd, capture_output=True, text=True, timeout=timeout_s)
+        return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+    except subprocess.TimeoutExpired as e:
+        out = e.stdout if isinstance(e.stdout, str) else (e.stdout or b"").decode("utf-8", "replace")
+        err = e.stderr if isinstance(e.stderr, str) else (e.stderr or b"").decode("utf-8", "replace")
+        return 1, f"[verify] command timed out after {timeout_s}s\n{out}{err}"
+
+
 def _normalize_api_messages(messages: list[dict]) -> list[dict]:
     """Strip internal keys and apply model-quirk fixups to produce API-ready messages.
 
@@ -426,6 +447,9 @@ async def run_turn(
             threshold=int(loop_cfg.repeat_threshold),
             per_tool_threshold=loop_cfg.per_tool_threshold,
         )
+    verify_cfg = config.verify
+    _dirty = False           # a mutating tool call succeeded this turn
+    _verify_attempts = 0     # verify runs so far this turn
     conf_cfg = config.confidence_guard
     confidence_monitor: ConfidenceMonitor | None = None
     if conf_cfg.enabled:
@@ -783,6 +807,8 @@ async def run_turn(
                         ok = False
                 except Exception:
                     pass
+                if ok and tc.function.name in _MUTATING_TOOLS:
+                    _dirty = True
                 # Persist full tool I/O to the side-log at execution time so the
                 # UI can show what each tool (web_search, …) was called with and
                 # what it returned — fetched on demand, never in live context.
@@ -1008,5 +1034,33 @@ async def run_turn(
         messages = messages + [stamp_reasoning({"role": "assistant", "content": content})]
         messages = _collapse_tool_rounds(messages, side_log=side_log, turn_id=turn_index)
         messages = _merge_consecutive_assistants(messages)
+
+        if (_dirty and verify_cfg.enabled and verify_cfg.command
+                and _verify_attempts < verify_cfg.max_attempts):
+            _phase("verify", f"running: {verify_cfg.command[:60]}")
+            loop = asyncio.get_running_loop()
+            rc, output = await loop.run_in_executor(
+                None, _run_verify_command, verify_cfg.command, config.tools.working_dir, verify_cfg.timeout_s,
+            )
+            if rc == 0:
+                _dirty = False
+                _phase("verify_ok", "")
+            else:
+                _verify_attempts += 1
+                tail = output[-verify_cfg.max_output_chars:]
+                logger.warning("verify: '%s' failed (exit %d), attempt %d/%d",
+                               verify_cfg.command, rc, _verify_attempts, verify_cfg.max_attempts)
+                _phase("verify_fail", f"attempt {_verify_attempts}/{verify_cfg.max_attempts}")
+                note = (
+                    f"[verify] `{verify_cfg.command}` failed (exit {rc}). "
+                    f"Fix the failures before finishing. Output (tail):\n{tail}"
+                )
+                messages = messages + [{"role": "user", "content": note}]
+                if _verify_attempts < verify_cfg.max_attempts:
+                    continue
+                content_parts.append(
+                    f"\n\n[verify still failing after {_verify_attempts} attempt(s): "
+                    f"`{verify_cfg.command}` exit {rc}]"
+                )
 
         return "".join(content_parts), messages

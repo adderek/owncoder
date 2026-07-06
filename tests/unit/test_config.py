@@ -53,6 +53,12 @@ class TestEnvOverrides:
         _apply_env_overrides(c)
         assert c.llm.model == original_model
 
+    def test_verify_command_override(self, monkeypatch):
+        c = Config()
+        monkeypatch.setenv("AGENT_VERIFY_COMMAND", ".venv/bin/pytest tests/unit -q")
+        _apply_env_overrides(c)
+        assert c.verify.command == ".venv/bin/pytest tests/unit -q"
+
     def test_goal_env_reaches_llm_section(self, tmp_path, monkeypatch):
         # AGENT_GOAL/AGENT_GOAL_MAX_ITERATIONS land on config.agent, but run_turn
         # reads config.llm.goal — load_config must re-sync them after env override.

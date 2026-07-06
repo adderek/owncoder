@@ -183,6 +183,16 @@ class LoopGuardConfig:
 
 
 @dataclass
+class VerifyConfig:
+    """Post-edit verification: run a project command before ending a turn that edited files."""
+    enabled: bool = False
+    command: str = ""          # e.g. ".venv/bin/pytest tests/unit -q"; empty disables
+    timeout_s: int = 120
+    max_attempts: int = 2      # verify-fail -> fix cycles per turn
+    max_output_chars: int = 4000   # tail of failing output injected into context
+
+
+@dataclass
 class ConfidenceGuardConfig:
     """Behavioral non-convergence detector.
 
@@ -836,6 +846,7 @@ class Config:
     asm: AsmAnalysisConfig = field(default_factory=AsmAnalysisConfig)
     logs: LogsConfig = field(default_factory=LogsConfig)
     loop_guard: LoopGuardConfig = field(default_factory=LoopGuardConfig)
+    verify: VerifyConfig = field(default_factory=VerifyConfig)
     confidence_guard: ConfidenceGuardConfig = field(default_factory=ConfidenceGuardConfig)
     compile_prompts: CompilePromptsConfig = field(default_factory=CompilePromptsConfig)
     token_limits: TokenLimitsConfig = field(default_factory=TokenLimitsConfig)
