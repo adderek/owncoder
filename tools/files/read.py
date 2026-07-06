@@ -6,6 +6,11 @@ from agent.tools import register
 from agent.tools.rules import get_rules
 from .paths import _resolve, _working_dir, _undo_stack
 
+# Default window (lines) served for an unbounded read of a large file. The
+# loop-guard auto-advance in core/turn.py pages through files in this same
+# unit — keep the two in sync via this constant.
+READ_WINDOW_LINES = 200
+
 
 def _format_size(bytes_val: int) -> str:
     for unit in ["B", "KB", "MB", "GB"]:
@@ -102,10 +107,10 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
         )
 
     if start_line is None and end_line is None and total > 500:
-        head_lines = lines[:200]
+        head_lines = lines[:READ_WINDOW_LINES]
         numbered = "\n".join(f"{i + 1}:{l}" for i, l in enumerate(head_lines))
         return {
-            "content": _make_header(1, 200) + "\n" + numbered,
+            "content": _make_header(1, READ_WINDOW_LINES) + "\n" + numbered,
             "metadata": {"total_lines": total, "file_size": filesize},
         }
 

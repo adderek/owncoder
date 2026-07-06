@@ -61,7 +61,7 @@ _BLOCKED_NETWORKS = [
 _BLOCKED_SCHEMES = {"file", "ftp", "gopher", "dict", "data", "javascript", "vbscript"}
 
 # ── Rate limiting ───────────────────────────────────────────────────────
-_COOLDOWN_S = 1.0
+_COOLDOWN_S = 1.0  # fallback when no config loaded
 
 
 @dataclass
@@ -203,15 +203,29 @@ def _sanitize_unicode(text: str) -> str:
 
 
 def _check_rate_limit(is_fetch: bool = False) -> str | None:
-    """Return error if rate limit exceeded, None if allowed."""
-    max_search = _config.web_search.max_search_calls_per_turn if _config else 3
-    max_fetch = _config.web_search.max_fetch_calls_per_turn if _config else 5
+    """Enforce per-call spacing + per-turn caps.
+
+    On too-fast calls: by default sleep until the interval elapses (rate_limit_wait)
+    rather than rejecting, so the agent doesn't burn calls in an error-retry loop.
+    Per-turn count caps remain hard rejects (no amount of waiting fixes them).
+    """
+    ws = _config.web_search if _config else None
+    max_search = ws.max_search_calls_per_turn if ws else 3
+    max_fetch = ws.max_fetch_calls_per_turn if ws else 5
+    interval = ws.min_call_interval_s if ws else _COOLDOWN_S
+    do_wait = ws.rate_limit_wait if ws else True
+    max_wait = ws.max_rate_limit_wait_s if ws else 5.0
 
     lim = _get_limiter()
     now = time.monotonic()
     elapsed = now - lim.last_call_ts
-    if elapsed < _COOLDOWN_S:
-        return f"Rate limit: minimum {_COOLDOWN_S}s between calls ({elapsed:.1f}s elapsed)"
+    if lim.last_call_ts > 0.0 and elapsed < interval:
+        remaining = interval - elapsed
+        if do_wait and remaining <= max_wait:
+            time.sleep(remaining)
+            now = time.monotonic()
+        else:
+            return f"Rate limit: minimum {interval}s between calls ({elapsed:.1f}s elapsed)"
 
     if is_fetch:
         lim.fetch_count += 1

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent.core.loop_detector import LoopDetector
-from agent.core.turn import run_turn
+from agent.core.turn import run_turn, _patch_read_file_result, _patch_edit_file_result
 from agent.config import Config
 
 
@@ -147,3 +147,134 @@ async def test_run_turn_continues_when_callback_returns_true(monkeypatch):
     # Callback fired at least once; we still terminated via max_iterations note
     assert calls["n"] >= 1
     assert "iteration limit" in response or "loop guard" not in response
+
+
+# ── read_file auto-advance ─────────────────────────────────────────────────
+
+
+WARN = 3
+STOP = 8
+
+
+class TestReadAutoAdvance:
+    @pytest.fixture(autouse=True)
+    def _setup(self, tmp_path):
+        """Point the file tools at an isolated working dir."""
+        from agent.tools.files import setup as files_setup
+        from agent.tools.rules import load_rules
+
+        cfg = Config()
+        cfg.tools.working_dir = str(tmp_path)
+        cfg.tools.agent_dir = str(tmp_path / ".agent")
+        files_setup(cfg)
+        load_rules(str(tmp_path))
+        self.work = tmp_path
+
+    def _make_file(self, name: str, n_lines: int) -> str:
+        (self.work / name).write_text(
+            "\n".join(f"line {i + 1}" for i in range(n_lines)) + "\n"
+        )
+        return name
+
+    def _read_result(self, path: str, **kw) -> str:
+        from agent.tools.files.read import read_file
+        return json.dumps(read_file(path, **kw))
+
+    def test_repeat_read_serves_next_block(self):
+        path = self._make_file("big.txt", 600)
+        tc = _fake_tool_call("read_file", {"path": path})
+        result = self._read_result(path)  # head window (file > 500 lines)
+        counts, adv = {}, {}
+
+        r1, stop = _patch_read_file_result(tc, result, counts, WARN, STOP, adv)
+        assert stop is None
+        assert r1 == result  # first read passes through untouched
+        assert adv == {}
+
+        r2, stop = _patch_read_file_result(tc, result, counts, WARN, STOP, adv)
+        assert stop is None
+        parsed = json.loads(r2)
+        assert "_auto_advanced" in parsed
+        assert "line 201" in parsed["content"]
+        assert adv[path] == 401
+
+        r3, _ = _patch_read_file_result(tc, result, counts, WARN, STOP, adv)
+        assert "line 401" in json.loads(r3)["content"]
+        assert adv[path] == 601
+
+    def test_advance_past_eof_reports_all_lines_shown(self):
+        path = self._make_file("mid.txt", 300)
+        tc = _fake_tool_call("read_file", {"path": path, "start_line": 1, "end_line": 200})
+        result = self._read_result(path, start_line=1, end_line=200)
+        counts, adv = {}, {}
+
+        _patch_read_file_result(tc, result, counts, WARN, STOP, adv)
+        r2, _ = _patch_read_file_result(tc, result, counts, WARN, STOP, adv)
+        assert "line 201" in json.loads(r2)["content"]  # clamped 201-300 block
+
+        r3, stop = _patch_read_file_result(tc, result, counts, WARN, STOP, adv)
+        assert stop is None
+        parsed = json.loads(r3)
+        assert parsed.get("end_of_file") is True
+        assert "all 300 lines" in parsed["content"]
+
+    def test_successful_edit_resets_advance_cursor(self):
+        path = self._make_file("edited.txt", 600)
+        read_tc = _fake_tool_call("read_file", {"path": path})
+        result = self._read_result(path)
+        counts, adv = {}, {}
+
+        _patch_read_file_result(read_tc, result, counts, WARN, STOP, adv)
+        _patch_read_file_result(read_tc, result, counts, WARN, STOP, adv)
+        assert adv[path] == 401 and counts
+
+        edit_tc = _fake_tool_call("edit_file", {"path": path})
+        _patch_edit_file_result(edit_tc, json.dumps({"ok": True}), counts, {}, 2, adv)
+        assert adv == {}
+        assert counts == {}
+
+    def test_errored_read_does_not_advance(self):
+        tc = _fake_tool_call("read_file", {"path": "missing.txt"})
+        result = json.dumps({"error": "File not found: missing.txt"})
+        counts, adv = {}, {}
+
+        _patch_read_file_result(tc, result, counts, WARN, STOP, adv)
+        r2, stop = _patch_read_file_result(tc, result, counts, WARN, STOP, adv)
+        assert stop is None
+        assert r2 == result  # auto-advance read errored too → passthrough
+        assert adv == {}
+
+    def test_warn_not_injected_on_auto_advanced_result(self):
+        path = self._make_file("warn.txt", 600)
+        tc = _fake_tool_call("read_file", {"path": path})
+        result = self._read_result(path)
+        counts, adv = {}, {}
+
+        for _ in range(2):
+            _patch_read_file_result(tc, result, counts, WARN, STOP, adv)
+        r3, _ = _patch_read_file_result(tc, result, counts, WARN, STOP, adv)  # count=3
+        parsed = json.loads(r3)
+        assert "_auto_advanced" in parsed
+        assert "_loop_warning" not in parsed
+
+    def test_warn_still_injected_without_auto_advance(self):
+        path = self._make_file("legacy.txt", 600)
+        tc = _fake_tool_call("read_file", {"path": path})
+        result = self._read_result(path)
+        counts = {}
+
+        for _ in range(2):
+            _patch_read_file_result(tc, result, counts, WARN, STOP, None)
+        r3, _ = _patch_read_file_result(tc, result, counts, WARN, STOP, None)
+        assert "_loop_warning" in json.loads(r3)
+
+    def test_stop_note_at_hard_ceiling(self):
+        path = self._make_file("stop.txt", 600)
+        tc = _fake_tool_call("read_file", {"path": path})
+        result = self._read_result(path)
+        counts, adv = {}, {}
+
+        stop = None
+        for _ in range(STOP):
+            _, stop = _patch_read_file_result(tc, result, counts, WARN, STOP, adv)
+        assert stop is not None and "loop guard" in stop

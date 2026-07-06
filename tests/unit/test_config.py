@@ -41,6 +41,12 @@ class TestEnvOverrides:
         _apply_env_overrides(c)
         assert c.tools.allow_shell is False
 
+    def test_request_timeout_override(self, monkeypatch):
+        c = Config()
+        monkeypatch.setenv("AGENT_LLM_REQUEST_TIMEOUT", "1800")
+        _apply_env_overrides(c)
+        assert c.llm.request_timeout == 1800
+
     def test_unset_env_no_change(self):
         c = Config()
         original_model = c.llm.model

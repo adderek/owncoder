@@ -20,6 +20,7 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_LLM_MODEL": ("llm", "model"),
         "AGENT_LLM_MAX_OUTPUT_TOKENS": ("llm", "max_output_tokens"),
         "AGENT_LLM_TEMPERATURE": ("llm", "temperature"),
+        "AGENT_LLM_REQUEST_TIMEOUT": ("llm", "request_timeout"),
         "AGENT_GOAL": ("agent", "goal"),
         "AGENT_GOAL_MAX_ITERATIONS": ("agent", "goal_max_iterations"),
         "AGENT_LLM_THINK_LEVEL": ("agent", "think_level"),
