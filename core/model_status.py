@@ -68,8 +68,9 @@ def get_model_counts() -> dict[str, int]:
 def provider_label(base_url: str | None) -> str:
     """Short endpoint label for concurrency display.
 
-    "local" for loopback / non-network schemes; otherwise the distinctive part
-    of the hostname (api.groq.com → "groq", llama.cerebras.ai → "cerebras").
+    "local" for loopback / non-network schemes, "remote" for private LAN
+    addresses; otherwise the distinctive part of the hostname
+    (api.groq.com → "groq", llama.cerebras.ai → "cerebras").
     """
     try:
         from agent.security.airgap import is_local_url
@@ -85,6 +86,14 @@ def provider_label(base_url: str | None) -> str:
         return "cloud"
     if not host:
         return "cloud"
+    import ipaddress
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_loopback:
+            return "local"
+        return "remote" if ip.is_private else "cloud"
+    except ValueError:
+        pass
     parts = [p for p in host.split(".") if p not in ("api", "www", "openai", "v1")]
     # Drop the TLD; keep the most specific remaining label.
     if len(parts) >= 2:

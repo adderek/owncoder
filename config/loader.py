@@ -451,32 +451,109 @@ def _resolve_role_pools(config: Config, timeout: int = 3) -> None:
                 continue
 
 
-def check_reachability(config: Config) -> None:
+def _probe_models(base_url: str, api_key: str, timeout: int = 3) -> dict | None:
+    """GET <base_url>/models; return parsed JSON ({} on parse failure) or None if unreachable."""
     import json
-    import sys
-    url = config.llm.base_url.rstrip("/") + "/models"
-    print(f"Checking model endpoint {config.llm.base_url} ...", end=" ", flush=True)
+    url = base_url.rstrip("/") + "/models"
     try:
         req = urllib.request.Request(url, method="GET")
-        req.add_header("Authorization", f"Bearer {config.llm.api_key}")
-        with urllib.request.urlopen(req, timeout=3) as resp:
+        req.add_header("Authorization", f"Bearer {api_key}")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             try:
-                data = json.loads(resp.read())
+                return json.loads(resp.read())
             except Exception:
-                data = {}
+                return {}
+    except (urllib.error.URLError, OSError):
+        return None
+
+
+def entry_tier(entry: "ModelEntry | None") -> str:
+    """Classify a model entry endpoint as "local", "remote" (LAN) or "cloud"."""
+    if entry is None:
+        return "cloud"
+    base_url = entry.base_url or ""
+    try:
+        from agent.security.airgap import is_local_url
+        if is_local_url(base_url):
+            return "local"
+    except Exception:
+        pass
+    import ipaddress
+    from urllib.parse import urlparse
+    try:
+        host = (urlparse(base_url).hostname or "").lower()
+    except Exception:
+        return "cloud"
+    if not host:
+        return "local"
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_loopback:
+            return "local"
+        if ip.is_private:
+            return "remote"
+    except ValueError:
+        pass  # hostname, not an IP literal
+    return "cloud"
+
+
+def check_reachability(config: Config) -> None:
+    """Pick the first reachable default-pool endpoint: local, then remote LAN, then cloud.
+
+    Failed probes are logged (never printed) so the textual UI stays clean; the
+    single selected entry is announced with its tier so the user knows whether
+    a local, remote or cloud model is serving this session.
+    """
+    import sys
+
+    current = config.model_roles.get("default") or _resolve_default_entry(config)
+    pool = config.model_pools.get("default", [])
+    ordered = [current] + [n for n in pool if n != current]
+
+    selected: str | None = None
+    for name in ordered:
+        entry = config.model_entries.get(name)
+        if entry is None:
+            # legacy fallback key: probe whatever config.llm points at
+            if name == current and name not in config.model_entries:
+                data = _probe_models(config.llm.base_url, config.llm.api_key)
+                if data is not None:
+                    if config.llm.auto_detect_ctx:
+                        _try_auto_select_model(config, data)
+                        _try_detect_ctx_window(config, data)
+                    selected = config.model_roles.get("default", name)
+                    break
+                logger.info("LLM endpoint unreachable: %s (%s)", name, config.llm.base_url)
+            continue
+        data = _probe_models(entry.base_url, entry.api_key)
+        if data is None:
+            logger.info("LLM endpoint unreachable: %s (%s)", name, entry.base_url)
+            continue
+        if name != current or config.llm.base_url != entry.base_url:
+            config.model_roles["default"] = name
+            _apply_entry_to_llm(config, name, entry)
         if config.llm.auto_detect_ctx:
             _try_auto_select_model(config, data)
             _try_detect_ctx_window(config, data)
-        print("ok", flush=True)
-    except (urllib.error.URLError, OSError) as e:
-        print("unreachable", flush=True)
+        selected = config.model_roles.get("default", name)
+        break
+
+    if selected is not None:
+        entry = config.model_entries.get(selected)
+        tier = entry_tier(entry) if entry else entry_tier(None)
+        base = entry.base_url if entry else config.llm.base_url
+        msg = f"model: {selected} [{tier}] {base}"
+        print(msg, flush=True)
+        logger.info(msg)
+    else:
+        tried = ", ".join(ordered) if ordered else config.llm.base_url
         print(
-            f"\nWarning: LLM endpoint not reachable at {config.llm.base_url}\n"
-            f"  Reason: {e}\n"
-            f"  Make sure your LLM server is running, or configure [models] in agent.toml.\n"
-            f"  Continuing anyway — chat will fail until the server is available.\n",
+            f"\nWarning: no LLM endpoint reachable (tried: {tried})\n"
+            f"  Make sure a server is running, or configure [models] in agent.toml.\n"
+            f"  Continuing anyway — chat will fail until a server is available.\n",
             file=sys.stderr,
         )
+        logger.warning("no LLM endpoint reachable; tried: %s", tried)
 
     _resolve_role_pools(config)
 
@@ -502,10 +579,18 @@ def _try_auto_select_model(config: Config, data: dict) -> None:
     if not live_ids:
         return
 
-    # Prefer explicit pool; fall back to all entries at the same endpoint
+    # Prefer explicit pool; fall back to all entries at the same endpoint.
+    # Either way only entries on the probed endpoint may match — pools can mix
+    # local/remote/cloud entries sharing one model name (e.g. qwen3.6-27B both
+    # on the local router and the LAN server) and `data` came from one endpoint.
     pool = config.model_pools.get("default")
     if pool:
-        candidates = {n: config.model_entries[n] for n in pool if n in config.model_entries}
+        candidates = {
+            n: config.model_entries[n]
+            for n in pool
+            if n in config.model_entries
+            and config.model_entries[n].base_url == config.llm.base_url
+        }
     else:
         base_url = config.llm.base_url
         candidates = {
