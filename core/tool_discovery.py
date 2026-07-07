@@ -36,6 +36,9 @@ CORE_TOOLS: frozenset[str] = frozenset({
     "run_command",
     "save_note",
     "find_tools",
+    # explore exists precisely so small-context models avoid many raw reads —
+    # hiding it behind find_tools would defeat that purpose.
+    "explore",
 })
 
 # ── Categories: (label, "use when" hint, prefix/name matchers) ──────────────
@@ -45,7 +48,8 @@ CORE_TOOLS: frozenset[str] = frozenset({
 _CATEGORIES: list[tuple[str, str, tuple[str, ...], frozenset[str]]] = [
     ("read & search code", "find/inspect code before editing",
      (), frozenset({"read_file", "search_code", "grep_code", "list_files",
-                    "search_archive", "retrieve_output", "project_file_stats"})),
+                    "search_archive", "retrieve_output", "project_file_stats",
+                    "explore"})),
     ("edit code", "apply changes to files",
      (), frozenset({"edit_file", "write_file", "replace_symbol", "undo_file"})),
     ("run commands", "execute shell/build/test commands",

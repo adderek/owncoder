@@ -418,6 +418,12 @@ async def run_turn(
         def _discovery_tools():
             return _td.select_schemas(_all_tools, _td.active_names(), config)
         tools = _discovery_tools()
+        _full_tok = _count_tokens_approx([{"content": json.dumps(_all_tools)}])
+        _core_tok = _count_tokens_approx([{"content": json.dumps(tools)}])
+        logger.info(
+            "tool_discovery: %d/%d tool schemas exposed (~%d of ~%d tokens, saving ~%d)",
+            len(tools), len(_all_tools), _core_tok, _full_tok, _full_tok - _core_tok,
+        )
     else:
         # find_tools is meaningless without the catalog → never offer it.
         tools = [t for t in tools if t.get("function", {}).get("name") != "find_tools"]
