@@ -59,6 +59,19 @@ class TestEnvOverrides:
         _apply_env_overrides(c)
         assert c.verify.command == ".venv/bin/pytest tests/unit -q"
 
+    def test_auto_tier_escalate_on_loop_guard_override(self, monkeypatch):
+        c = Config()
+        assert c.auto_tier.escalate_on_loop_guard is True  # default
+        monkeypatch.setenv("AGENT_AUTO_TIER_ESCALATE_ON_LOOP_GUARD", "false")
+        _apply_env_overrides(c)
+        assert c.auto_tier.escalate_on_loop_guard is False
+
+    def test_auto_tier_escalate_on_verify_fail_override(self, monkeypatch):
+        c = Config()
+        monkeypatch.setenv("AGENT_AUTO_TIER_ESCALATE_ON_VERIFY_FAIL", "false")
+        _apply_env_overrides(c)
+        assert c.auto_tier.escalate_on_verify_fail is False
+
     def test_goal_env_reaches_llm_section(self, tmp_path, monkeypatch):
         # AGENT_GOAL/AGENT_GOAL_MAX_ITERATIONS land on config.agent, but run_turn
         # reads config.llm.goal — load_config must re-sync them after env override.

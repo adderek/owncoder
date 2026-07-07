@@ -783,6 +783,8 @@ class AutoTierConfig:
     min_prompt_chars: int = 600     # prompt at/above this length escalates
     escalate_on_code: bool = True   # a fenced code block in the prompt escalates
     escalate_on_confidence: bool = True  # mid-turn escalate when the confidence guard fires
+    escalate_on_loop_guard: bool = True   # escalate instead of hard-stopping the turn on a loop-guard trip
+    escalate_on_verify_fail: bool = True  # escalate when the [verify] command fails
     keywords: list = field(default_factory=lambda: [
         "refactor", "debug", "architecture", "design", "implement", "rewrite",
         "optimize", "trace", "root cause", "multi-file", "across files", "migrate",
@@ -880,3 +882,8 @@ class Config:
     failover: FailoverConfig = field(default_factory=FailoverConfig)
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
+    # Runtime (non-persisted) flag: True while the active session pins every LLM
+    # call to a LOCAL endpoint (private session mode). Set by
+    # Agent.set_session_mode("private"); read by mid-turn routing so an auto-tier
+    # escalation can't silently move a private turn onto a remote endpoint.
+    runtime_local_only: bool = False

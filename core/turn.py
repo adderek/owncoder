@@ -470,6 +470,48 @@ async def run_turn(
     stall_retry_count = 0
     _tier_escalated = False  # auto-tier: at most one mid-turn fast->strong switch
     failover_count = 0       # remote->local failovers taken this turn
+
+    def _loop_guard_escalation_note() -> dict:
+        return {"role": "user", "content": (
+            f"[loop guard: switching to a stronger model ({config.llm.model}) — the previous "
+            f"model was stuck repeating tool calls. Take a different approach.]"
+        )}
+
+    def _try_escalate_loop_guard(reset, inject_note: bool = True) -> bool:
+        """Before a loop-guard hard stop, try swapping to the strong model instead.
+
+        *reset* is a no-arg callback clearing the tripped detector state so the
+        strong model isn't instantly re-tripped on the same repeated calls. On
+        success: swaps ``client``, flags one-shot escalation, resets the detector,
+        injects a user note (unless *inject_note* is False — used when tool result
+        messages must land first to keep assistant tool_calls paired), and returns
+        True. Returns False (escalation disabled/unavailable/already used) to stop
+        exactly as before.
+        """
+        nonlocal client, _tier_escalated, messages
+        if not (config.auto_tier.enabled and config.auto_tier.escalate_on_loop_guard
+                and not _tier_escalated):
+            return False
+        try:
+            from agent.core.model_tier import escalate_mid_turn
+            _new_client = escalate_mid_turn(config, reason="loop_guard")
+        except Exception as _e:
+            logger.warning("auto-tier loop-guard escalation failed: %s", _e)
+            return False
+        if _new_client is None:
+            return False
+        client = _new_client
+        _tier_escalated = True
+        _phase("tier_escalate", f"loop-guard -> {config.llm.model}")
+        logger.warning("auto-tier: escalated to strong model '%s' mid-turn (loop guard)", config.llm.model)
+        try:
+            reset()
+        except Exception:
+            logger.debug("loop-guard detector reset failed (ignored)", exc_info=True)
+        if inject_note:
+            messages = messages + [_loop_guard_escalation_note()]
+        return True
+
     while True:
         # Re-expose any tools the model activated via find_tools last iteration.
         if _discovery_on:
@@ -693,6 +735,11 @@ async def run_turn(
                         for _, sig, _, _ in triggered:
                             loop_detector.acknowledge(sig)
                     else:
+                        def _ack_triggered():
+                            for _, _sig, _, _ in triggered:
+                                loop_detector.acknowledge(_sig)
+                        if _try_escalate_loop_guard(_ack_triggered):
+                            continue
                         note = _loop_guard_stop_note(summary, triggered)
                         messages = messages + [{"role": "assistant", "content": note}]
                         return "".join(content_parts + [note]), messages
@@ -782,6 +829,7 @@ async def run_turn(
             # fetch the real tool I/O on demand even when context was compacted.
             raw_results = [raw_results_map[i] for i in range(len(tool_calls))]
             patched_results: list[str] = []
+            _read_guard_escalated = False
             for tc, result in zip(tool_calls, results):
                 if tc.function.name == "read_file":
                     result, stop_note = _patch_read_file_result(
@@ -789,9 +837,25 @@ async def run_turn(
                         _READ_PATH_WARN_THRESHOLD, _READ_PATH_STOP_THRESHOLD,
                         _read_advance,
                     )
-                    if stop_note is not None:
-                        messages = messages + [{"role": "assistant", "content": stop_note}]
-                        return "".join(content_parts + [stop_note]), messages
+                    if stop_note is not None and not _read_guard_escalated:
+                        def _clear_read_counts():
+                            try:
+                                a = json.loads(tc.function.arguments or "{}")
+                            except Exception:
+                                a = {}
+                            rpath = str(a.get("path", ""))
+                            for k in [k for k in list(_read_path_counts)
+                                      if isinstance(k, tuple) and k and k[0] == rpath]:
+                                _read_path_counts.pop(k, None)
+                            _read_advance.pop(rpath, None)
+                        # The assistant tool_calls message is already in history
+                        # here, so tool results must be appended before any user
+                        # note — escalate now, note lands after the result loop.
+                        if _try_escalate_loop_guard(_clear_read_counts, inject_note=False):
+                            _read_guard_escalated = True
+                        else:
+                            messages = messages + [{"role": "assistant", "content": stop_note}]
+                            return "".join(content_parts + [stop_note]), messages
                 elif tc.function.name == "edit_file":
                     result = _patch_edit_file_result(
                         tc, result, _read_path_counts, _edit_file_fails, _EDIT_FILE_FAIL_THRESHOLD,
@@ -836,6 +900,11 @@ async def run_turn(
                         on_tool_result(tc.function.name, ok)
                     except Exception:
                         logger.exception("on_tool_result callback failed")
+
+            if _read_guard_escalated:
+                # Tool results are paired up now; deliver the escalation note and
+                # fall through to compaction/iteration bookkeeping as usual.
+                messages = messages + [_loop_guard_escalation_note()]
 
             # Typed turn signals (axis B): a signal-tool call ends the turn. We
             # surface a canonical ">>>KIND: payload" line in the returned response
@@ -1055,6 +1124,23 @@ async def run_turn(
                     f"[verify] `{verify_cfg.command}` failed (exit {rc}). "
                     f"Fix the failures before finishing. Output (tail):\n{tail}"
                 )
+                # auto-tier: if a fix round remains, escalate to the strong model
+                # so it performs the fix. One escalation per turn (shared flag).
+                if (_verify_attempts < verify_cfg.max_attempts
+                        and config.auto_tier.enabled and config.auto_tier.escalate_on_verify_fail
+                        and not _tier_escalated):
+                    try:
+                        from agent.core.model_tier import escalate_mid_turn
+                        _new_client = escalate_mid_turn(config, reason="verify")
+                    except Exception as _e:
+                        _new_client = None
+                        logger.warning("auto-tier verify escalation failed: %s", _e)
+                    if _new_client is not None:
+                        client = _new_client
+                        _tier_escalated = True
+                        _phase("tier_escalate", f"verify -> {config.llm.model}")
+                        logger.warning("auto-tier: escalated to strong model '%s' mid-turn (verify fail)", config.llm.model)
+                        note += f"\n[switching to a stronger model ({config.llm.model}) for this fix round.]"
                 messages = messages + [{"role": "user", "content": note}]
                 if _verify_attempts < verify_cfg.max_attempts:
                     continue

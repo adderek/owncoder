@@ -110,6 +110,8 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_NOTIFY_ANSWER_TIMEOUT": ("notify", "answer_timeout_s"),
         "AGENT_NOTIFY_ON_TIMEOUT": ("notify", "on_timeout"),
         "AGENT_NOTIFY_REMOTE_ANSWERS": ("notify", "remote_answers"),
+        "AGENT_AUTO_TIER_ESCALATE_ON_LOOP_GUARD": ("auto_tier", "escalate_on_loop_guard"),
+        "AGENT_AUTO_TIER_ESCALATE_ON_VERIFY_FAIL": ("auto_tier", "escalate_on_verify_fail"),
     }
     for env_key, (section, attr) in env_map.items():
         val = os.environ.get(env_key)
