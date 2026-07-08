@@ -194,6 +194,9 @@ def run_task(task: dict, agent_cmd_template: str, keep: bool,
 
     workspace = Path(tempfile.mkdtemp(prefix=f"eval-{task_id}-"))
     shutil.copytree(fixture_dir, workspace, dirs_exist_ok=True)
+    # `agent run` refuses to start outside an initialized project; the marker
+    # is a bare .agent/ directory (full `agent init` would try to index/embed).
+    (workspace / ".agent").mkdir(exist_ok=True)
 
     command = build_command(agent_cmd_template, prompt)
 
