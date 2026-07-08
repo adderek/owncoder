@@ -144,6 +144,7 @@ def _save_problem_report(
         "diff_size_chars": diff_chars,
         "final_cleaned": final_message,
         "raw_outputs": raw_outputs,
+        "model_failures": state.get("model_failures", []),
         "config": {
             "reasoning_effort": "low",
             "temperature": 0.2,
@@ -178,6 +179,20 @@ def _save_problem_report(
         return report_dir
     except OSError:
         return None
+
+
+class CommitModelError(RuntimeError):
+    """Every candidate model failed; ``failures`` holds per-model diagnostics."""
+
+    def __init__(self, failures: list[dict]):
+        super().__init__("no usable model for commit-message generation")
+        self.failures = failures
+
+
+def _err_brief(exc: Exception) -> str:
+    """One-line ``Type: first line of message`` summary, capped at 200 chars."""
+    s = str(exc).strip().splitlines()[0] if str(exc).strip() else ""
+    return f"{type(exc).__name__}: {s[:200]}" if s else type(exc).__name__
 
 
 def _pick_fast_entry(registry, gpu_pool: list[str]):
@@ -312,7 +327,8 @@ def cmd_commit(args, config):
     import time as _time
     from openai import AsyncOpenAI
 
-    state = {"tokens": 0, "buf": "", "start": _time.monotonic(), "phase": "starting", "raw_outputs": [], "fallback": False}
+    state = {"tokens": 0, "buf": "", "start": _time.monotonic(), "phase": "starting",
+             "raw_outputs": [], "fallback": False, "cand_idx": 0, "model_failures": []}
 
     # Resolve summarizer entry:
     # 1. explicit -m NAME flag
@@ -341,11 +357,12 @@ def cmd_commit(args, config):
     # else the active default endpoint (config.llm).
     commit_entry = registry.for_role("commit")
     if commit_entry is not None and commit_entry.base_url:
-        primary_client = AsyncOpenAI(base_url=commit_entry.base_url, api_key=commit_entry.api_key)
+        primary_base_url, primary_api_key = commit_entry.base_url, commit_entry.api_key
         primary_model = commit_entry.model or config.llm.model
     else:
-        primary_client = AsyncOpenAI(base_url=config.llm.base_url, api_key=config.llm.api_key)
+        primary_base_url, primary_api_key = config.llm.base_url, config.llm.api_key
         primary_model = config.llm.model
+    primary_client = AsyncOpenAI(base_url=primary_base_url, api_key=primary_api_key)
 
     if chunked:
         summ_label = f" · summarizer: {summ_entry.model}" if summ_entry else f" · summarizer: {primary_model}"
@@ -366,6 +383,46 @@ def cmd_commit(args, config):
     else:
         summ_client = primary_client
         summ_model = primary_model
+
+    # Fallback chain: preferred summarizer first, then the primary endpoint,
+    # then remaining GPU-pool entries, then any other local-tier entry. Tried
+    # in order whenever a model errors out (connection refused, 5xx "cannot
+    # load model", 404 unknown model, timeout); a failed candidate is skipped
+    # for the rest of the run.
+    candidates: list[dict] = []
+    _seen_cand: set = set()
+
+    def _add_candidate(name: str, base_url: str, api_key: str, model: str) -> None:
+        key = (base_url, model)
+        if not model or key in _seen_cand:
+            return
+        _seen_cand.add(key)
+        candidates.append({"name": name or model, "base_url": base_url,
+                           "api_key": api_key, "model": model, "client": None})
+
+    if summ_entry:
+        _add_candidate(summ_entry_name, summ_entry.base_url, summ_entry.api_key, summ_model)
+    _add_candidate("primary", primary_base_url, primary_api_key, primary_model)
+    for _name in gpu_pool:
+        _e = registry.get(_name)
+        if _e is not None:
+            _add_candidate(_name, _e.base_url, _e.api_key, _e.model)
+    from agent.config import entry_tier as _entry_tier
+    for _name in registry.names():
+        _e = registry.get(_name)
+        if _e is not None and _entry_tier(_e) == "local":
+            _add_candidate(_name, _e.base_url, _e.api_key, _e.model)
+
+    for _c in candidates:
+        if _c["base_url"] == primary_base_url and _c["model"] == primary_model:
+            _c["client"] = primary_client
+        elif summ_entry and _c["base_url"] == summ_entry.base_url and _c["model"] == summ_model:
+            _c["client"] = summ_client
+
+    def _cand_client(c: dict):
+        if c["client"] is None:
+            c["client"] = AsyncOpenAI(base_url=c["base_url"], api_key=c["api_key"])
+        return c["client"]
 
     async def _do_stream(client, model: str, messages: list[dict], max_tokens: int, entry_name: str) -> tuple[str, str, int, float]:
         """Low-level stream call. Returns (raw_content, raw_reasoning, completion_tokens, elapsed)."""
@@ -409,37 +466,44 @@ def cmd_commit(args, config):
                 pass
         return "".join(content_parts), "".join(reasoning_parts), usage_completion_tokens, elapsed
 
-    async def _stream(
-        messages: list[dict],
-        *,
-        max_tokens: int,
-        client=None,
-        model: str = "",
-        entry_name: str = "",
-    ) -> str:
+    async def _stream(messages: list[dict], *, max_tokens: int) -> str:
+        """Stream one completion, walking the fallback chain on any API error.
+
+        ``state["cand_idx"]`` persists across calls so a candidate that failed
+        once (endpoint down, model cannot be loaded, …) is not retried on later
+        chunks. Raises CommitModelError when every candidate has failed.
+        """
         from agent.core.streaming import _clean_output
-        from openai import APIConnectionError as _APIConnErr
-        _client = client or primary_client
-        _model = model or primary_model
-
-        try:
-            raw_content, raw_reasoning, _, _ = await _do_stream(_client, _model, messages, max_tokens, entry_name)
-        except _APIConnErr:
-            if _client is not primary_client:
+        import openai as _openai
+        last_exc: Exception | None = None
+        while state["cand_idx"] < len(candidates):
+            cand = candidates[state["cand_idx"]]
+            try:
+                raw_content, raw_reasoning, _, _ = await _do_stream(
+                    _cand_client(cand), cand["model"], messages, max_tokens, cand["name"])
+            except (_openai.OpenAIError, OSError) as exc:
+                brief = _err_brief(exc)
+                state["model_failures"].append(
+                    {"entry": cand["name"], "model": cand["model"],
+                     "base_url": cand["base_url"], "error": brief})
                 state["fallback"] = True
-                console.print(
-                    f"[yellow]Summarizer unreachable ({summ_entry.base_url if summ_entry else '?'}). "
-                    f"Falling back to primary model.[/yellow]"
-                )
-                raw_content, raw_reasoning, _, _ = await _do_stream(primary_client, primary_model, messages, max_tokens, "")
-            else:
-                raise
-
-        state["raw_outputs"].append({"content": raw_content, "reasoning": raw_reasoning})
-        full = _clean_output(raw_content)
-        if not full:
-            full = _clean_output(raw_reasoning)
-        return full
+                state["cand_idx"] += 1
+                nxt = (candidates[state["cand_idx"]]
+                       if state["cand_idx"] < len(candidates) else None)
+                if nxt is not None:
+                    console.print(
+                        f"[yellow]Model '{cand['name']}' unavailable at {cand['base_url']} "
+                        f"({_markup_escape(brief)}) — falling back to "
+                        f"'{nxt['name']}' ({nxt['model']}).[/yellow]"
+                    )
+                last_exc = exc
+                continue
+            state["raw_outputs"].append({"content": raw_content, "reasoning": raw_reasoning})
+            full = _clean_output(raw_content)
+            if not full:
+                full = _clean_output(raw_reasoning)
+            return full
+        raise CommitModelError(list(state["model_failures"])) from last_exc
 
     summary_system = (
         "You summarize a large git diff one chunk at a time. Goal: build a running "
@@ -484,21 +548,15 @@ def cmd_commit(args, config):
             {"role": "system", "content": summary_system},
             {"role": "user", "content": _build_user(False, False)},
         ]
-        out = (await _stream(messages, max_tokens=summary_tokens,
-                             client=summ_client, model=summ_model,
-                             entry_name=summ_entry_name)).strip()
+        out = (await _stream(messages, max_tokens=summary_tokens)).strip()
 
         first_line = out.splitlines()[0].strip() if out else ""
         if first_line == _REQUEST_PREV_RAW and prev_raw:
             messages[-1]["content"] = _build_user(True, False)
-            out = (await _stream(messages, max_tokens=summary_tokens,
-                                 client=summ_client, model=summ_model,
-                                 entry_name=summ_entry_name)).strip()
+            out = (await _stream(messages, max_tokens=summary_tokens)).strip()
         elif first_line == _REQUEST_PREV_SUMMARY and running_summary:
             messages[-1]["content"] = _build_user(False, True)
-            out = (await _stream(messages, max_tokens=summary_tokens,
-                                 client=summ_client, model=summ_model,
-                                 entry_name=summ_entry_name)).strip()
+            out = (await _stream(messages, max_tokens=summary_tokens)).strip()
         return out
 
     final_system = (
@@ -520,16 +578,12 @@ def cmd_commit(args, config):
             f"{label}:\n{diff_or_summary}\n\n"
             "Write the commit message."
         )
-        _final_entry = summ_entry_name if (summ_override or summ_entry) else ""
         return (await _stream(
             [
                 {"role": "system", "content": final_system},
                 {"role": "user", "content": user_prompt},
             ],
             max_tokens=config.token_limits.commit_message_max_tokens,
-            client=summ_client if summ_entry else None,
-            model=summ_model if summ_entry else "",
-            entry_name=_final_entry,
         )).strip()
 
     async def _run() -> str:
@@ -556,9 +610,33 @@ def cmd_commit(args, config):
                 await asyncio.sleep(0.15)
         return await task
 
-    message = asyncio.run(_run_with_status()).strip()
+    try:
+        message = asyncio.run(_run_with_status()).strip()
+    except CommitModelError as exc:
+        elapsed = _time.monotonic() - state["start"]
+        console.print("[red]Commit-message generation failed — no usable model.[/red]")
+        for f in exc.failures:
+            console.print(
+                f"  [red]✗[/red] {f['entry']} ({f['model']}) @ {f['base_url']} — "
+                f"{_markup_escape(f['error'])}"
+            )
+        console.print(
+            "[dim]Check the endpoints above, or pick a working entry with "
+            "'agent commit -m NAME' ('-m' alone lists entries).[/dim]"
+        )
+        report_dir = _save_problem_report(
+            state, "", chunked, len(chunks), diff_chars, config, primary_model,
+            summ_model, elapsed, path, "auto: all candidate models failed",
+        )
+        if report_dir:
+            console.print(f"[dim]Error dump: {report_dir}[/dim]")
+        return
     elapsed = _time.monotonic() - state["start"]
-    console.print(f"[dim]done in {elapsed:.1f}s · {state['tokens']} tokens[/dim]")
+    _fb = ""
+    if state["fallback"] and state["cand_idx"] < len(candidates):
+        _fb = (f" · fell back to '{candidates[state['cand_idx']]['name']}' "
+               f"({candidates[state['cand_idx']]['model']})")
+    console.print(f"[dim]done in {elapsed:.1f}s · {state['tokens']} tokens{_fb}[/dim]")
 
     if message.startswith("```"):
         lines = message.splitlines()
