@@ -717,6 +717,76 @@ def build_widget_classes(t) -> SimpleNamespace:
             if event.key in ("escape", "q"):
                 self.dismiss()
 
+    class ModelsScreen(ModalScreen):
+        """Modal listing all model entries; click a row (or press Enter) to
+        enable/disable that entry for the session."""
+
+        CSS = """
+        ModelsScreen { align: center middle; }
+        #models-dialog {
+            width: 110; height: auto; max-height: 90%;
+            border: solid $primary; background: $surface; padding: 1 2;
+        }
+        #models-table { height: auto; max-height: 24; }
+        #models-hint { margin-top: 1; color: $text-muted; }
+        """
+
+        def __init__(self, config) -> None:
+            super().__init__()
+            self._config = config
+
+        def _status(self, name: str, e) -> str:
+            from agent.core.model_control import entry_status
+            st = entry_status(self._config, name, e)
+            return {"off": "OFF", "cool": "cooldown"}.get(st, "on")
+
+        def compose(self):
+            from textual.containers import Vertical
+            from textual.widgets import DataTable, Static
+            with Vertical(id="models-dialog"):
+                yield Static("[bold]Model entries[/bold] — click a row to enable/disable (session only)")
+                dt = DataTable(id="models-table", cursor_type="row")
+                yield dt
+                yield Static("Esc closes.  'off' entries are skipped by tier ladder + failover.", id="models-hint")
+
+        def on_mount(self) -> None:
+            from agent.config.registry import entry_tier
+            dt = self.query_one("#models-table")
+            dt.add_columns("state", "name", "tier", "model", "ctx", "out")
+            entries = getattr(self._config, "model_entries", None) or {}
+            for name in sorted(entries):
+                e = entries[name]
+                if getattr(e, "dimensions", 0):  # embeddings — not toggleable chat entries
+                    continue
+                dt.add_row(
+                    self._status(name, e), name, entry_tier(e),
+                    getattr(e, "model", "") or "—",
+                    f"{e.ctx_window // 1024}k" if e.ctx_window >= 1024 else str(e.ctx_window),
+                    f"{e.max_output_tokens // 1024}k" if e.max_output_tokens >= 1024 else str(e.max_output_tokens),
+                    key=name,
+                )
+
+        def on_data_table_row_selected(self, event) -> None:
+            from agent.core.model_control import set_model_enabled, is_disabled
+            name = event.row_key.value
+            if not name:
+                return
+            entries = getattr(self._config, "model_entries", None) or {}
+            e = entries.get(name)
+            if e is None:
+                return
+            enable = is_disabled(self._config, name)
+            set_model_enabled(self._config, name, enable)
+            dt = self.query_one("#models-table")
+            try:
+                dt.update_cell(event.row_key, dt.ordered_columns[0].key, self._status(name, e))
+            except Exception:
+                pass
+
+        def on_key(self, event) -> None:
+            if event.key in ("escape", "q"):
+                self.dismiss()
+
     class SessionPickerScreen(ModalScreen):
         """Live session search/picker. Filters as the user types.
 
@@ -2013,6 +2083,7 @@ def build_widget_classes(t) -> SimpleNamespace:
         ToolCallDetailScreen=ToolCallDetailScreen,
         FileDiffScreen=FileDiffScreen,
         ModelCallsScreen=ModelCallsScreen,
+        ModelsScreen=ModelsScreen,
         EffortChip=EffortChip,
         _QALineTrackingMixin=_QALineTrackingMixin,
         QView=QView,

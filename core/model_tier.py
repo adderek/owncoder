@@ -77,10 +77,13 @@ def build_ladder(config: "Config", *, check_available: bool = True) -> list[tupl
     # Dedupe by (base_url, model): role aliases (e.g. the synthesized "default"
     # entry) duplicate a named entry, usually with no power metadata — keep the
     # strongest-rated duplicate so the alias can't drag the model to the bottom.
+    from agent.core.model_control import is_disabled
     best: dict[tuple, tuple[str, float]] = {}
     for name, e in (config.model_entries or {}).items():
         tags = getattr(e, "tags", None) or []
         if any(t in tags for t in _NON_CHAT_TAGS) or getattr(e, "dimensions", 0):
+            continue
+        if is_disabled(config, name):
             continue
         if not mode_allows(e, mode):
             continue
@@ -150,24 +153,25 @@ def next_stronger(config: "Config") -> Optional[str]:
 
 def resolve_tiers(config: "Config") -> tuple[Optional[str], Optional[str]]:
     """Return (fast_entry_name, strong_entry_name), each None if unresolved."""
+    from agent.core.model_control import is_disabled
     cfg = config.auto_tier
     entries = config.model_entries
 
     fast = cfg.fast_entry or None
-    if fast and fast not in entries:
+    if fast and (fast not in entries or is_disabled(config, fast)):
         fast = None
     if not fast:
         for name, e in entries.items():
-            if "fast" in (getattr(e, "tags", None) or []):
+            if "fast" in (getattr(e, "tags", None) or []) and not is_disabled(config, name):
                 fast = name
                 break
 
     strong = cfg.strong_entry or None
-    if strong and strong not in entries:
+    if strong and (strong not in entries or is_disabled(config, strong)):
         strong = None
     if not strong:
         cand = config.model_roles.get("default", "default")
-        strong = cand if cand in entries else None
+        strong = cand if cand in entries and not is_disabled(config, cand) else None
 
     return fast, strong
 

@@ -675,6 +675,13 @@ async def run_turn(
             # HTTP 429 from the endpoint (common on free/shared tiers). Wait and
             # retry a bounded number of times, honoring Retry-After when present;
             # once exhausted, degrade to the local model like a remote outage.
+            # Put this (endpoint, model) on cooldown so tier ladders and
+            # escalation stop picking it while it rejects requests.
+            try:
+                from agent.config.model_probe import mark_rate_limited
+                mark_rate_limited(config.llm.base_url, config.llm.model)
+            except Exception:
+                logger.debug("mark_rate_limited failed (ignored)", exc_info=True)
             max_rl = max(0, int(getattr(config.llm, "rate_limit_retries", 3)))
             if rate_limit_count < max_rl:
                 rate_limit_count += 1
@@ -712,6 +719,13 @@ async def run_turn(
                     continue
             raise
         except (APIConnectionError, APITimeoutError, InternalServerError) as e:
+            # Failure cooldown: keep the tier ladder off this endpoint until a
+            # fresh availability probe confirms it works again (retry-to-revive).
+            try:
+                from agent.config.model_probe import mark_rate_limited
+                mark_rate_limited(config.llm.base_url, config.llm.model)
+            except Exception:
+                logger.debug("mark failure cooldown failed (ignored)", exc_info=True)
             # Remote endpoint unreachable / timed out / 5xx. If failover is on and
             # we are on a remote endpoint, degrade to a local model and retry so
             # the agent keeps working offline. Otherwise surface the error.

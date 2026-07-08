@@ -32,12 +32,13 @@ def is_remote_endpoint(config: "Config") -> bool:
 
 def resolve_local_entry(config: "Config", preferred: str = "") -> Optional[str]:
     """Name of a local-tier model entry to route to, or None if none configured."""
+    from agent.core.model_control import is_disabled
     entries = config.model_entries or {}
-    if preferred and preferred in entries:
+    if preferred and preferred in entries and not is_disabled(config, preferred):
         return preferred
     from agent.config import entry_tier
     for name, e in entries.items():
-        if entry_tier(e) == "local":
+        if entry_tier(e) == "local" and not is_disabled(config, name):
             return name
     return None
 

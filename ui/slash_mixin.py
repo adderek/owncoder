@@ -511,10 +511,22 @@ class SlashHandlerMixin:
 
         elif cmd == "/models":
             import asyncio
-            from agent.ui.slash import _render_models_table
+            from agent.ui.slash import _render_models_table, handle_models_toggle
             from rich.console import Console
             from io import StringIO
             cfg = self._server._agent.config
+
+            toggled = handle_models_toggle(cfg, arg)
+            if toggled is not None:
+                _ok, _msg = toggled
+                self._write_sys(f"[{t.success if _ok else t.warning}]{_msg}[/]")
+                return
+            if arg.strip() != "table":
+                # Interactive modal: click a row (or Enter) to enable/disable
+                # the entry for this session. '/models table' keeps the full
+                # probe-and-print behavior.
+                self.push_screen(self._wt.ModelsScreen(cfg))
+                return
 
             def _render() -> str:
                 # Probe runs off the UI thread — a dead endpoint must not freeze it.

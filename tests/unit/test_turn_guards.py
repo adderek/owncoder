@@ -214,3 +214,61 @@ async def test_name_cap_stops_rephrased_calls(monkeypatch):
     response, _ = await run_turn(messages, cfg, client)
     assert "loop guard" in response
     assert client.chat.completions.calls == 4
+
+
+# ── 429 endpoint cooldown ───────────────────────────────────────────────────
+
+def test_rate_limit_cooldown_marks_entry_unavailable(monkeypatch):
+    from agent.config import model_probe as mp
+    mp.clear_availability_cache()
+    entry = SimpleNamespace(base_url="http://rl", api_key="k", model="m1")
+    monkeypatch.setattr(mp, "list_endpoint_models", lambda *a, **k: {"m1"})
+    assert mp.entry_available(entry) is True
+    mp.mark_rate_limited("http://rl", "m1", cooldown_s=60)
+    assert mp.is_rate_limited("http://rl", "m1") is True
+    assert mp.entry_available(entry) is False
+    # Other models on the same endpoint are unaffected.
+    assert mp.is_rate_limited("http://rl", "m2") is False
+    mp.clear_availability_cache()
+    assert mp.is_rate_limited("http://rl", "m1") is False
+
+
+# ── session model enable/disable ────────────────────────────────────────────
+
+def test_model_disable_enable_cycle():
+    from agent.core.model_control import set_model_enabled, is_disabled
+    cfg = Config()
+    cfg.model_entries = {"m1": SimpleNamespace(base_url="http://a", model="x", tags=[], dimensions=0)}
+    cfg.model_roles = {"default": "m1"}
+    ok, msg = set_model_enabled(cfg, "nope", False)
+    assert ok is False
+    ok, msg = set_model_enabled(cfg, "m1", False)
+    assert ok and is_disabled(cfg, "m1")
+    ok, msg = set_model_enabled(cfg, "m1", True)
+    assert ok and not is_disabled(cfg, "m1")
+
+
+def test_disabled_entry_skipped_by_ladder(monkeypatch):
+    from agent.core.model_tier import build_ladder
+    from agent.core.model_control import set_model_enabled
+    cfg = Config()
+    e1 = SimpleNamespace(base_url="http://a", model="x", tags=[], dimensions=0, local=True)
+    e2 = SimpleNamespace(base_url="http://b", model="y", tags=[], dimensions=0, local=True)
+    cfg.model_entries = {"m1": e1, "m2": e2}
+    cfg.model_roles = {"default": "m1"}
+    ladder = build_ladder(cfg, check_available=False)
+    assert {n for n, _ in ladder} == {"m1", "m2"}
+    set_model_enabled(cfg, "m2", False)
+    ladder = build_ladder(cfg, check_available=False)
+    assert {n for n, _ in ladder} == {"m1"}
+
+
+def test_call_kwargs_clamps_max_tokens():
+    from agent.core.prompts import _build_call_kwargs
+    cfg = Config()
+    cfg.llm.ctx_window = 262144
+    cfg.llm.max_output_tokens = 262144  # misconfigured: output == whole window
+    kw = _build_call_kwargs(cfg)
+    assert kw["max_tokens"] == 131072
+    cfg.llm.max_output_tokens = 8192
+    assert _build_call_kwargs(cfg)["max_tokens"] == 8192

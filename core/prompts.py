@@ -275,9 +275,21 @@ def _build_system_prompt(
 
 
 def _build_call_kwargs(config: "Config") -> dict:
+    # Clamp max_tokens so prompt + completion can never exceed the context
+    # window: a misconfigured entry with max_output_tokens == ctx_window makes
+    # the server reject every request ("requested N tokens > limit").
+    max_out = config.llm.max_output_tokens
+    ctx = int(getattr(config.llm, "ctx_window", 0) or 0)
+    if ctx > 0 and max_out >= ctx:
+        clamped = max(256, ctx // 2)
+        logger.warning(
+            "_build_call_kwargs: max_output_tokens=%d >= ctx_window=%d — clamping to %d",
+            max_out, ctx, clamped,
+        )
+        max_out = clamped
     kw: dict = {
         "model": config.llm.model,
-        "max_tokens": config.llm.max_output_tokens,
+        "max_tokens": max_out,
         "temperature": float(getattr(config.llm, "temperature", 0.7)),
     }
     if config.llm.max_output_tokens > 8192:

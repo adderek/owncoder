@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -37,6 +38,16 @@ Raw output follows:
 {result}
 """
 
+
+# A compaction that *starts* with the model narrating its task is leaked
+# reasoning, not an extract (weak/reasoning models do this despite the
+# "no preamble" rule). Anchored at start — these phrases mid-text are fine.
+_META_PREAMBLE_RE = re.compile(
+    r"^(we need to|we must|we should|let's|let us|okay[,.]|first[, ]|"
+    r"the raw output|the agent (needs|wants|called)|to extract|"
+    r"looking at the (raw )?output)",
+    re.IGNORECASE,
+)
 
 _client_cache: dict[tuple[str, str], "AsyncOpenAI"] = {}
 _semaphore_cache: dict[int, asyncio.Semaphore] = {}
@@ -156,6 +167,14 @@ async def compact_result(
         if not text:
             info["skipped"] = True
             info["reason"] = "empty_response"
+            return result_str, info
+        if _META_PREAMBLE_RE.match(text):
+            # The compactor model leaked its own reasoning ("We need to
+            # extract…") instead of the extract — feeding that to the main
+            # model pollutes the turn. Fall back to the raw result.
+            logger.warning("tool_compaction: meta-preamble leak for %s — using raw result", tool_name)
+            info["skipped"] = True
+            info["reason"] = "meta_preamble"
             return result_str, info
         info["compacted_len"] = len(text)
         info["seconds"] = time.monotonic() - t0

@@ -68,7 +68,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/schedule", ["/sched"], "scheduled jobs: list | add <spec> :: <prompt> [:: <name>] | rm <id|name> | on/off <id|name> | runs | run", True),
     ("/notify", [], "notification channels  [on | off | status]", True),
     ("/model", [], "switch active model  [<entry> | role=<entry> | role=? | refresh]", True),
-    ("/models", [], "show all configured model entries + live availability (✓/✗)", False),
+    ("/models", [], "model entries: table + toggles  [table | enable <name> | disable <name>]", False),
     ("/recoveries", [], "list pending crash-recovery records", False),
     ("/resummarize", [], "re-summarize Q/A entries with stale or missing summaries  [--force]", True),
     ("/idea", [], "ideas: <title> | add [--type T] [--tags t] [--priority N] <title> [| body] | show <id> | update <id> k=v | done <id> | reject <id>", True),
@@ -332,6 +332,18 @@ def _apply_model(agent, arg: str) -> tuple[bool, str]:
     return True, f"role '{role}' → [bold]{entry_name}[/bold]  (model={entry.model})"
 
 
+def handle_models_toggle(config: "Config", arg: str) -> tuple[bool, str] | None:
+    """Handle '/models enable|disable <name>'. None when arg isn't a toggle
+    (caller shows the table instead)."""
+    parts = (arg or "").split()
+    if len(parts) == 2 and parts[0] in ("enable", "disable"):
+        from agent.core.model_control import set_model_enabled
+        return set_model_enabled(config, parts[1], parts[0] == "enable")
+    if len(parts) == 1 and parts[0] in ("enable", "disable"):
+        return False, f"usage: /models {parts[0]} <entry-name>"
+    return None
+
+
 def _render_models_table(config: "Config", probe: bool = True):
     """Return a Rich Table showing all model_entries with capabilities.
 
@@ -368,6 +380,8 @@ def _render_models_table(config: "Config", probe: bool = True):
     tbl.add_column("name", style="cyan", no_wrap=True)
     tbl.add_column("model id", no_wrap=True)
     tbl.add_column("live", justify="center", no_wrap=True)
+    tbl.add_column("st", justify="center", no_wrap=True)   # off (disabled) / cool (failure cooldown)
+    tbl.add_column("tier", no_wrap=True)                    # local / free / bundled / paid
     tbl.add_column("endpoint", style="dim", no_wrap=True)
     tbl.add_column("ctx", justify="right", no_wrap=True)
     tbl.add_column("out", justify="right", no_wrap=True)
@@ -380,9 +394,18 @@ def _render_models_table(config: "Config", probe: bool = True):
     tbl.add_column("$/out", justify="right", no_wrap=True)
     tbl.add_column("roles/tags", style="dim")
 
+    from agent.config.registry import entry_tier
+    from agent.core.model_control import entry_status
+    _TIER_STYLE = {"local": "green", "free": "cyan", "bundled": "yellow", "paid": "magenta"}
+
     for name in sorted(entries):
         e = entries[name]
         is_active = name == active_entry
+
+        _st = entry_status(config, name, e)
+        st_str = {"off": "[red]off[/red]", "cool": "[yellow]cool[/yellow]"}.get(_st, "")
+        _tier = entry_tier(e)
+        tier_str = f"[{_TIER_STYLE.get(_tier, 'white')}]{_tier}[/{_TIER_STYLE.get(_tier, 'white')}]"
 
         ctx_str = f"{e.ctx_window // 1024}k" if e.ctx_window >= 1024 else str(e.ctx_window)
         out_str = f"{e.max_output_tokens // 1024}k" if e.max_output_tokens >= 1024 else str(e.max_output_tokens)
@@ -404,7 +427,7 @@ def _render_models_table(config: "Config", probe: bool = True):
         model_str = (f"[bold]{e.model}[/bold]" if is_active else e.model) or "[dim]—[/dim]"
 
         tbl.add_row(
-            name_str, model_str, _live_cell(e), e.base_url,
+            name_str, model_str, _live_cell(e), st_str, tier_str, e.base_url,
             ctx_str, out_str, temp_str, params_str, tps_str,
             local_str, think_str,
             cost_in_str, cost_out_str, badge_str,

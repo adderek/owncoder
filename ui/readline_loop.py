@@ -382,8 +382,13 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                     console.print(run_security_command(agent.config, arg))
 
             elif cmd == "/models":
-                from agent.ui.slash import _render_models_table
-                console.print(_render_models_table(agent.config))
+                from agent.ui.slash import _render_models_table, handle_models_toggle
+                toggled = handle_models_toggle(agent.config, arg)
+                if toggled is not None:
+                    ok, msg = toggled
+                    console.print(f"[{'green' if ok else 'yellow'}]{msg}[/]")
+                else:
+                    console.print(_render_models_table(agent.config))
 
             elif cmd == "/apply":
                 from agent.core.history_ops import extract_last_code_block

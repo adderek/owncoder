@@ -379,6 +379,8 @@ def entry_available(entry, timeout: int = 2, ttl: float = _AVAIL_TTL) -> bool:
     base_url = getattr(entry, "base_url", "") or ""
     if not base_url:
         return False
+    if is_rate_limited(base_url, getattr(entry, "model", "") or ""):
+        return False
     now = _t.monotonic()
     hit = _AVAIL_CACHE.get(base_url)
     if hit is not None and now - hit[0] < ttl:
@@ -394,6 +396,31 @@ def entry_available(entry, timeout: int = 2, ttl: float = _AVAIL_TTL) -> bool:
 
 def clear_availability_cache() -> None:
     _AVAIL_CACHE.clear()
+    _RL_COOLDOWN.clear()
+
+
+# (base_url, model) -> monotonic deadline until which the pair is considered
+# rate-limited. A 429 means "endpoint up but rejecting requests" — the /models
+# probe still succeeds, so without this the tier ladder keeps escalating onto
+# an endpoint that rejects every request.
+_RL_COOLDOWN: dict[tuple[str, str], float] = {}
+
+
+def mark_rate_limited(base_url: str, model: str, cooldown_s: float = 300.0) -> None:
+    """Record a 429 for (base_url, model); treated as unavailable for cooldown_s."""
+    import time as _t
+    _RL_COOLDOWN[(base_url or "", model or "")] = _t.monotonic() + max(1.0, cooldown_s)
+
+
+def is_rate_limited(base_url: str, model: str) -> bool:
+    import time as _t
+    deadline = _RL_COOLDOWN.get((base_url or "", model or ""))
+    if deadline is None:
+        return False
+    if _t.monotonic() >= deadline:
+        _RL_COOLDOWN.pop((base_url or "", model or ""), None)
+        return False
+    return True
 
 
 def model_in_server(model: str, server_ids: set[str]) -> bool:
