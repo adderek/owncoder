@@ -1,0 +1,9 @@
+id: add-cli-flag
+prompt: "Add a --verbose flag to greet.py. When passed, the script should print \"verbose on\" (in addition to its normal output)."
+fixture: add-cli-flag
+timeout_s: 300
+checks:
+  - type: command
+    run: "python greet.py --verbose | grep -q 'verbose on'"
+  - type: command
+    run: "python greet.py --name Ann | grep -q 'hello Ann'"

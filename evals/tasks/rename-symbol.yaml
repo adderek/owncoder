@@ -1,0 +1,19 @@
+id: rename-symbol
+prompt: "Rename the function `procces` to `process` everywhere it is defined or used in this project (module_a.py and module_b.py), including its call sites and imports."
+fixture: rename-symbol
+timeout_s: 300
+checks:
+  - type: file_contains
+    path: module_a.py
+    text: "def process("
+  - type: file_contains
+    path: module_b.py
+    text: "process"
+  - type: file_not_contains
+    path: module_a.py
+    text: "procces"
+  - type: file_not_contains
+    path: module_b.py
+    text: "procces"
+  - type: command
+    run: "python -m pytest test_rename.py -q"

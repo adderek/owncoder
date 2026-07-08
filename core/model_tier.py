@@ -112,15 +112,36 @@ def select_for_turn(config: "Config", user_text: str, source: str) -> Optional[s
     return fast
 
 
-def escalate_mid_turn(config: "Config"):
-    """Switch ``config.llm`` to the strong entry mid-turn (confidence guard).
+def escalate_mid_turn(config: "Config", reason: str = "confidence"):
+    """Switch ``config.llm`` to the strong entry mid-turn on a failure signal.
+
+    *reason* selects which AutoTierConfig gate must be on:
+      "confidence"  → escalate_on_confidence (default; the confidence guard),
+      "loop_guard"  → escalate_on_loop_guard (a loop-guard trip),
+      "verify"      → escalate_on_verify_fail (a failed [verify] command).
 
     Returns a fresh client bound to the strong endpoint if a switch happened,
     else None. Caller (run_turn) reassigns its local ``client``. ``agent._client``
     is intentionally not touched — the next turn re-decides from fast.
+
+    Privacy gate: when this turn is pinned local-only — ``config.runtime_local_only``
+    is True (set by ``Agent.set_session_mode("private")``, the same flag the
+    private-mode enforcement reads) — a strong entry whose ``ModelEntry.local`` is
+    False is refused: we log and return None rather than move a private turn onto
+    a remote endpoint. Privacy ``force-local`` (PrivacyConfig) does NOT block the
+    escalation here: ``route_privacy`` still runs per-payload afterward and will
+    re-route a secret-bearing payload back to local, so remote escalation stays
+    safe under that strategy.
     """
     cfg = getattr(config, "auto_tier", None)
-    if cfg is None or not cfg.enabled or not cfg.escalate_on_confidence:
+    if cfg is None or not cfg.enabled:
+        return None
+    gate = {
+        "confidence": getattr(cfg, "escalate_on_confidence", True),
+        "loop_guard": getattr(cfg, "escalate_on_loop_guard", True),
+        "verify": getattr(cfg, "escalate_on_verify_fail", True),
+    }.get(reason, True)
+    if not gate:
         return None
     _fast, strong = resolve_tiers(config)
     if not strong:
@@ -128,6 +149,13 @@ def escalate_mid_turn(config: "Config"):
     e = config.model_entries.get(strong)
     if e is None or config.llm.model == (e.model or config.llm.model):
         return None  # already strong
+    # Privacy gate: never move a local-only-pinned turn to a remote endpoint.
+    if getattr(config, "runtime_local_only", False) and not getattr(e, "local", False):
+        logger.info(
+            "auto-tier: not escalating (%s) — strong entry '%s' is remote but this "
+            "turn is pinned local-only (private mode)", reason, strong,
+        )
+        return None
     config.llm.base_url = e.base_url
     config.llm.api_key = e.api_key
     if e.model:

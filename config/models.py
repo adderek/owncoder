@@ -183,6 +183,16 @@ class LoopGuardConfig:
 
 
 @dataclass
+class VerifyConfig:
+    """Post-edit verification: run a project command before ending a turn that edited files."""
+    enabled: bool = False
+    command: str = ""          # e.g. ".venv/bin/pytest tests/unit -q"; empty disables
+    timeout_s: int = 120
+    max_attempts: int = 2      # verify-fail -> fix cycles per turn
+    max_output_chars: int = 4000   # tail of failing output injected into context
+
+
+@dataclass
 class ConfidenceGuardConfig:
     """Behavioral non-convergence detector.
 
@@ -390,6 +400,15 @@ class ParallelConfig:
     # "internet" = web_search/web_fetch only (for dedicated internet fetch workers).
     worker_tools: str = "readonly"
     worker_timeout_seconds: int = 120
+
+
+@dataclass
+class ExploreConfig:
+    """explore tool: one read-only worker with isolated context for codebase questions."""
+    enabled: bool = True
+    model: str = ""            # model entry name; empty = main llm config
+    max_iterations: int = 10
+    timeout_seconds: int = 180
 
 
 @dataclass
@@ -764,6 +783,8 @@ class AutoTierConfig:
     min_prompt_chars: int = 600     # prompt at/above this length escalates
     escalate_on_code: bool = True   # a fenced code block in the prompt escalates
     escalate_on_confidence: bool = True  # mid-turn escalate when the confidence guard fires
+    escalate_on_loop_guard: bool = True   # escalate instead of hard-stopping the turn on a loop-guard trip
+    escalate_on_verify_fail: bool = True  # escalate when the [verify] command fails
     keywords: list = field(default_factory=lambda: [
         "refactor", "debug", "architecture", "design", "implement", "rewrite",
         "optimize", "trace", "root cause", "multi-file", "across files", "migrate",
@@ -836,6 +857,7 @@ class Config:
     asm: AsmAnalysisConfig = field(default_factory=AsmAnalysisConfig)
     logs: LogsConfig = field(default_factory=LogsConfig)
     loop_guard: LoopGuardConfig = field(default_factory=LoopGuardConfig)
+    verify: VerifyConfig = field(default_factory=VerifyConfig)
     confidence_guard: ConfidenceGuardConfig = field(default_factory=ConfidenceGuardConfig)
     compile_prompts: CompilePromptsConfig = field(default_factory=CompilePromptsConfig)
     token_limits: TokenLimitsConfig = field(default_factory=TokenLimitsConfig)
@@ -845,6 +867,7 @@ class Config:
     planning: PlanningConfig = field(default_factory=PlanningConfig)
     recovery: RecoveryConfig = field(default_factory=RecoveryConfig)
     parallel: ParallelConfig = field(default_factory=ParallelConfig)
+    explore: ExploreConfig = field(default_factory=ExploreConfig)
     web_search: WebSearchConfig = field(default_factory=WebSearchConfig)
     output_store: OutputStoreConfig = field(default_factory=OutputStoreConfig)
     concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
@@ -859,3 +882,8 @@ class Config:
     failover: FailoverConfig = field(default_factory=FailoverConfig)
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
+    # Runtime (non-persisted) flag: True while the active session pins every LLM
+    # call to a LOCAL endpoint (private session mode). Set by
+    # Agent.set_session_mode("private"); read by mid-turn routing so an auto-tier
+    # escalation can't silently move a private turn onto a remote endpoint.
+    runtime_local_only: bool = False

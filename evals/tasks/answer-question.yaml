@@ -1,0 +1,8 @@
+id: answer-question
+prompt: "Which function in app.py reads the config file? Write just its name into ANSWER.txt (nothing else)."
+fixture: answer-question
+timeout_s: 300
+checks:
+  - type: file_contains
+    path: ANSWER.txt
+    text: "load_config"

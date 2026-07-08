@@ -1,0 +1,14 @@
+id: multi-file-edit
+prompt: "Change DEFAULT_LIMIT from 10 to 25 everywhere it appears (config.py, module_x.py's MAX_ITEMS, and module_y.py's PAGE_SIZE), keeping all three values in sync at 25."
+fixture: multi-file-edit
+timeout_s: 300
+checks:
+  - type: file_contains
+    path: config.py
+    text: "DEFAULT_LIMIT = 25"
+  - type: file_contains
+    path: module_x.py
+    text: "MAX_ITEMS = 25"
+  - type: file_contains
+    path: module_y.py
+    text: "PAGE_SIZE = 25"

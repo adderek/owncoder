@@ -130,3 +130,10 @@ def test_find_tools_tool_activates(monkeypatch):
     assert "git_blame" in out["activated"]
     assert "git_blame" in td.active_names()
     td.reset_active()
+
+
+def test_explore_is_core_and_categorized():
+    # explore must never be deferred behind find_tools: it is the designated
+    # low-context alternative to many raw reads.
+    assert "explore" in td.CORE_TOOLS
+    assert td.categorize("explore")[0] == "read & search code"

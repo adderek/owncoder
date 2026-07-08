@@ -801,6 +801,13 @@ class Agent:
         endpoint is local, enforced per-turn by ``_validate_private_mode``.
         """
         self._session_mode = mode or "standard"
+        # Pin mid-turn routing (auto-tier escalation) to local endpoints while
+        # private mode is active, mirroring the per-turn _validate_private_mode
+        # guard. Non-persisted runtime flag on config, read by escalate_mid_turn.
+        try:
+            self.config.runtime_local_only = (self._session_mode == "private")
+        except Exception:
+            logger.debug("set runtime_local_only failed (ignored)", exc_info=True)
         try:
             from agent.tools.notes import notes as _notes
             _notes.set_session_mode(self._session_mode)

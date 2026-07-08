@@ -59,6 +59,11 @@ markers = [
     "e2e: end-to-end tests requiring a live LLM server",
 ]
 addopts = "-m 'not e2e'"
+# Concurrent pytest sessions (e.g. parallel agent workers) share
+# /tmp/pytest-of-<user>/; the default retention (3) lets one session prune
+# another LIVE session's tmp roots mid-run, randomly breaking disk-backed
+# tests (seen in test_prompt_compiler A/B index round-trips).
+tmp_path_retention_count = 50
 
 [tool.setuptools.packages.find]
 where = [".."]
