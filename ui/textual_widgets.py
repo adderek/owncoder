@@ -1671,8 +1671,9 @@ def build_widget_classes(t) -> SimpleNamespace:
                     cmd_part = f"[bold {t.cmd_color}]{cmd}[/bold {t.cmd_color}]"
                 else:
                     cmd_part = f"[{t.cmd_color}]{cmd}[/{t.cmd_color}]"
+                desc_esc = desc.replace("[", "\\[")  # backslash illegal inside f-string expr on py<3.12
                 lines.append(
-                    f" {marker} {cmd_part:<20} [{t.text_dim}]{desc.replace('[', '\\[')}[/{t.text_dim}]"
+                    f" {marker} {cmd_part:<20} [{t.text_dim}]{desc_esc}[/{t.text_dim}]"
                 )
             if len(matches) > self.MAX_VISIBLE:
                 lines.append(
