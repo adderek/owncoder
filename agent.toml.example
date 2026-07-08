@@ -186,6 +186,27 @@ max_output_tokens = 8192
 temperature       = 0.7
 tags              = ["reasoning", "background"]
 
+# ── Per-turn model tiering (effort ladder) ───────────────────────────────────
+# Rank chat entries weakest→strongest by "power" and pick per turn. Power comes
+# from declared benchmark indices on each [models.*] entry (intelligence_index /
+# coding_index / agentic_index, OpenRouter-style 0–100) or, if unset, from
+# params_b (model size in billions). Entries with neither sort weakest — declare
+# at least params_b for sane ordering. Only live endpoints are considered
+# (per-endpoint /models probe, cached ~60s). Mid-turn failure signals
+# (confidence guard, loop guard, failed [verify]) climb one rung; a fresh turn
+# re-decides, so escalation never sticks.
+#
+# [auto_tier]
+# enabled = true
+# ladder  = true          # power-ladder mode (false = legacy fast/strong pair)
+# effort  = "smart"       # quick | smart | deep — switch live with /effort or
+#                         # the header chip in the textual UI:
+#                         #   quick — weakest live model (fast simple answers)
+#                         #   smart — predict per turn from the prompt (default)
+#                         #   deep  — strongest live model (complex work)
+# min_prompt_chars = 600  # smart: prompt at/above this length counts as deep
+# escalate_on_code = true # smart: fenced code block counts as deep
+
 # ── Agent runtime behavior ────────────────────────────────────────────────────
 
 [agent]

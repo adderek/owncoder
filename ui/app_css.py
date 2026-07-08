@@ -34,6 +34,12 @@ def build_app_css(t) -> str:
         height: 1;
         color: {t.text_dim};
     }}
+    #effort-chip {{
+        width: auto;
+        height: 1;
+        margin-right: 2;
+        color: {t.text_dim};
+    }}
     TabbedContent {{
         height: 1fr;
     }}

@@ -96,6 +96,7 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
     ContextPanel = _w.ContextPanel
     GitStatusBar = _w.GitStatusBar
     ModelStatusBar = _w.ModelStatusBar
+    EffortChip = _w.EffortChip
     HintBar = _w.HintBar
     CompletionBar = _w.CompletionBar
     PathsView = _w.PathsView
@@ -244,6 +245,7 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                     f"[bold]{_escape(_project_name)}[/bold]  [{t.text_dim}]{_info['model']}[/{t.text_dim}]{session_label}",
                     id="header-title",
                 )
+                yield EffortChip("", id="effort-chip")
                 yield ModelStatusBar("", id="model-status")
             yield TokenBar(
                 _info["ctx_window"],

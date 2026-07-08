@@ -47,6 +47,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/think", ["/effort"], "set thinking level  off|low|normal|high|max", True),
     ("/autonomy", ["/auto", "/verbose"], "set autonomy level  0.0–1.0 (or %) or supervised|explain|balanced|brisk|autopilot", True),
     ("/mode", [], "show/switch model-mode  local-only|free-cloud|free-hybrid|paid-cloud|manual|any", True),
+    ("/effort", [], "show/set per-turn model effort  quick|smart|deep (power ladder)", True),
     ("/max_tokens", [], "set max tokens   [out <n> | in <n> | <n> | default]", True),
     ("/maxiter", ["/max_iter"], "set max tool-call iterations per turn  [<n> | 0/none = unlimited]", True),
     ("/wrap", [], "toggle line wrapping", False),

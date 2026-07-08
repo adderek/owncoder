@@ -362,6 +362,40 @@ def list_endpoint_models(base_url: str, api_key: str = "", timeout: int = 3) -> 
     return {m["id"] for m in data.get("data", []) if isinstance(m, dict) and "id" in m}
 
 
+# Per-endpoint /models cache for cheap repeated availability checks (the tier
+# ladder consults this every turn). Keyed by base_url; None = unreachable is
+# cached too, so a dead endpoint costs one timeout per TTL window, not per turn.
+_AVAIL_CACHE: dict[str, tuple[float, "set[str] | None"]] = {}
+_AVAIL_TTL = 60.0
+
+
+def entry_available(entry, timeout: int = 2, ttl: float = _AVAIL_TTL) -> bool:
+    """Best-effort: is this entry's endpoint up and advertising its model?
+
+    Cached per base_url for *ttl* seconds. An endpoint that answers /models but
+    does not list the configured model counts as unavailable. Never raises.
+    """
+    import time as _t
+    base_url = getattr(entry, "base_url", "") or ""
+    if not base_url:
+        return False
+    now = _t.monotonic()
+    hit = _AVAIL_CACHE.get(base_url)
+    if hit is not None and now - hit[0] < ttl:
+        ids = hit[1]
+    else:
+        ids = list_endpoint_models(base_url, getattr(entry, "api_key", ""), timeout)
+        _AVAIL_CACHE[base_url] = (now, ids)
+    if ids is None:
+        return False
+    model = getattr(entry, "model", "") or ""
+    return model_in_server(model, ids) if model else True
+
+
+def clear_availability_cache() -> None:
+    _AVAIL_CACHE.clear()
+
+
 def model_in_server(model: str, server_ids: set[str]) -> bool:
     """Fuzzy-match a configured model name against live server ids.
 

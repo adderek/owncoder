@@ -66,6 +66,33 @@ def mode_allows(entry: "ModelEntry", mode: str) -> bool:
     return entry_tier(entry) in MODE_TIERS.get(mode, MODE_TIERS["any"])
 
 
+def model_power(entry: "ModelEntry") -> float:
+    """Comparable capability score for ranking entries weakest → strongest.
+
+    Declared benchmark indices win (OpenRouter-style 0–100 scale:
+    ``intelligence_index`` / ``coding_index`` / ``agentic_index`` — the max is
+    used). Otherwise ``params_b`` is mapped onto a rough index-equivalent
+    (12·ln(B+1): 9B→27.6, 27B→40, 70B→51, 235B→65) so configs mixing rated and
+    size-only entries still order sensibly. Extended-thinking support adds +5.
+    Returns 0.0 when nothing is declared — such entries sort weakest.
+    """
+    import math
+    base = max(
+        getattr(entry, "intelligence_index", 0.0) or 0.0,
+        getattr(entry, "coding_index", 0.0) or 0.0,
+        getattr(entry, "agentic_index", 0.0) or 0.0,
+    )
+    if base <= 0.0:
+        params = getattr(entry, "params_b", 0.0) or 0.0
+        if params > 0.0:
+            base = 12.0 * math.log(params + 1.0)
+    if base <= 0.0:
+        return 0.0
+    if getattr(entry, "thinking", False):
+        base += 5.0
+    return base
+
+
 class ModelRegistry:
     """Thin wrapper around the `model_entries` dict from Config."""
 

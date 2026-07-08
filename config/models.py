@@ -778,8 +778,16 @@ class AutoTierConfig:
     """
     enabled: bool = False
     remote_only: bool = True        # only tier remote/Android turns; terminal keeps default
+                                    # (legacy fast/strong mode only — the ladder tiers ALL sources)
     fast_entry: str = ""            # explicit fast entry name ("" = first 'fast'-tagged)
     strong_entry: str = ""          # explicit strong entry name ("" = 'default' role)
+    # Ladder mode: instead of a fixed fast/strong pair, rank every allowed chat
+    # entry by model_power() (declared benchmark indices, else params_b), keep
+    # only live endpoints, and pick per-turn by predicted effort. Mid-turn
+    # escalation climbs to the next-stronger live entry (no-op at the top).
+    ladder: bool = False
+    effort: str = "smart"           # quick | smart | deep — "smart" predicts per turn;
+                                    # quick/deep pin the ladder bottom/top. /effort sets this at runtime.
     min_prompt_chars: int = 600     # prompt at/above this length escalates
     escalate_on_code: bool = True   # a fenced code block in the prompt escalates
     escalate_on_confidence: bool = True  # mid-turn escalate when the confidence guard fires

@@ -1427,6 +1427,54 @@ def build_widget_classes(t) -> SimpleNamespace:
             if event.key in ("escape", "q"):
                 self.dismiss()
 
+    class EffortChip(Static):
+        """Clickable per-turn effort selector: quick → smart → deep (cycles on click).
+
+        Mirrors the copilot/chatgpt-style effort dropdown: quick pins turns to
+        the weakest live model, deep to the strongest, smart lets the tier
+        algorithm predict per turn. Backed by ``/effort`` (auto_tier ladder).
+        """
+
+        _ICONS = {"quick": "⚡", "smart": "✨", "deep": "🧠"}
+
+        def _config(self):
+            server = getattr(self.app, "_server", None)
+            agent = getattr(server, "_agent", None) if server is not None else None
+            return getattr(agent, "config", None)
+
+        def _label(self) -> str:
+            cfg = self._config()
+            at = getattr(cfg, "auto_tier", None) if cfg is not None else None
+            if at is None or not (at.enabled and getattr(at, "ladder", False)):
+                return f"[{t.text_dim}]effort:off[/{t.text_dim}]"
+            eff = (getattr(at, "effort", "smart") or "smart").lower()
+            return f"{self._ICONS.get(eff, '')}{eff}"
+
+        def on_mount(self) -> None:
+            self.tooltip = ("Per-turn model effort — click to cycle "
+                            "quick (weakest live model) / smart (auto) / deep (strongest)")
+            self.update(self._label())
+            # Keep in sync when the level is changed via /effort instead of a click.
+            self.set_interval(2.0, lambda: self.update(self._label()))
+
+        def on_click(self, event) -> None:
+            cfg = self._config()
+            if cfg is None:
+                return
+            from agent.core.model_tier import run_effort_command, _EFFORT_LEVELS
+            at = getattr(cfg, "auto_tier", None)
+            cur = (getattr(at, "effort", "smart") or "smart").lower() if at else "smart"
+            if at is None or not (at.enabled and getattr(at, "ladder", False)):
+                nxt = "smart"  # first click turns the ladder on in smart mode
+            else:
+                order = list(_EFFORT_LEVELS)
+                nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else "smart"
+            msg = run_effort_command(cfg, nxt)
+            self.update(self._label())
+            writer = getattr(self.app, "_write_sys", None)
+            if writer is not None:
+                writer(_escape(msg))
+
     class ModelStatusBar(Static):
         """Compact inline indicator of model request states (idle/running). Click to view config."""
 
@@ -1965,6 +2013,7 @@ def build_widget_classes(t) -> SimpleNamespace:
         ToolCallDetailScreen=ToolCallDetailScreen,
         FileDiffScreen=FileDiffScreen,
         ModelCallsScreen=ModelCallsScreen,
+        EffortChip=EffortChip,
         _QALineTrackingMixin=_QALineTrackingMixin,
         QView=QView,
         AView=AView,

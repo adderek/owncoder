@@ -429,6 +429,12 @@ class SlashHandlerMixin:
             for line in msg.splitlines():
                 self._write_sys(_escape(line))
 
+        elif cmd == "/effort":
+            from agent.core.model_tier import run_effort_command
+            msg = run_effort_command(self._server._agent.config, arg)
+            for line in msg.splitlines():
+                self._write_sys(_escape(line))
+
         elif cmd in ("/temperature", "/temp"):
             ok, msg = self._server.set_temperature(arg)
             color = t.success if ok else t.warning
