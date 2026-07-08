@@ -38,7 +38,7 @@ def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
   [{c}]/continue[/{c}] (or [{c}]continue[/{c}], Ctrl+R)  resume after iteration cap / truncation
   [{c}]/tokens[/{c}]             show token usage breakdown
   [{c}]/perf[/{c}]               session performance: LLM vs tool time + slowest tools
-  [{c}]/modelcalls[/{c}] [{c}]/mc[/{c}]      model calls this session by cost tier (local/free/bundled/paid)
+  [{c}]/modelcalls[/{c}] [{c}]/mc[/{c}]      model calls this session by cost tier; 'detail' adds role × model table
   [{c}]/who[/{c}]                 list other agents active on this worktree
   [{c}]/clear[/{c}]              clear the screen
   [{c}]/reset[/{c}]              drop conversation history (keep system prompt)

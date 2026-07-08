@@ -115,7 +115,7 @@ async def _call_llm(config: "Config", system: str, user_content: str) -> str:
     client = AsyncOpenAI(base_url=entry.base_url, api_key=entry.api_key)
     try:
         from agent.metrics import model_calls
-        model_calls.record_entry(entry)
+        model_calls.record_entry(entry, role="qa-summary")
     except Exception:
         pass
     _ms_inc("sum", None, entry.model)

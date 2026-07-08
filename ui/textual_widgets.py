@@ -420,6 +420,14 @@ def build_widget_classes(t) -> SimpleNamespace:
                 )
                 return
 
+            # Round model-call line ("models: N calls (…)") → per-call detail.
+            model_lines = getattr(self.app, "_chat_model_lines", {})
+            if line_idx in model_lines:
+                self.app.push_screen(
+                    self.app._wt.ModelCallsScreen(model_lines[line_idx])
+                )
+                return
+
             qa_data = getattr(self.app, "_chat_qa_data", [])
             if not qa_data:
                 return
@@ -1343,6 +1351,82 @@ def build_widget_classes(t) -> SimpleNamespace:
             if event.key in ("escape", "q"):
                 self.dismiss()
 
+    class ModelCallsScreen(ModalScreen):
+        """Modal showing which model handled each LLM call in one round."""
+
+        CSS = """
+        ModelCallsScreen {
+            align: center middle;
+        }
+        #mc-dialog {
+            width: 90%;
+            max-width: 100;
+            height: auto;
+            max-height: 80%;
+            border: solid $accent;
+            background: $surface;
+            padding: 1 2;
+        }
+        #mc-body {
+            max-height: 30;
+            overflow-y: auto;
+            margin-bottom: 1;
+        }
+        #mc-close {
+            width: 100%;
+        }
+        """
+
+        def __init__(self, calls: list[dict]) -> None:
+            super().__init__()
+            self._calls = list(calls or [])
+
+        def _render_table(self) -> str:
+            from collections import Counter
+            grouped: Counter = Counter(
+                (c.get("role", "?"), c.get("model", "?"), c.get("tier", "?"))
+                for c in self._calls
+            )
+            items = sorted(grouped.items(), key=lambda kv: (-kv[1], kv[0]))
+            rw = max(len("role"), max(len(k[0]) for k, _ in items))
+            mw = max(len("model"), max(len(k[1]) for k, _ in items))
+            tw = max(len("tier"), max(len(k[2]) for k, _ in items))
+            lines = [
+                f"[bold]{'role':<{rw}}  {'model':<{mw}}  {'tier':<{tw}}  calls[/bold]"
+            ]
+            for (role, model, tier), n in items:
+                lines.append(
+                    f"{_escape(role):<{rw}}  {_escape(model):<{mw}}  "
+                    f"[{t.text_dim}]{tier:<{tw}}[/{t.text_dim}]  ×{n}"
+                )
+            return "\n".join(lines)
+
+        def compose(self):
+            from textual.containers import Vertical, ScrollableContainer
+            from textual.widgets import Button, Static
+
+            n = len(self._calls)
+            with Vertical(id="mc-dialog"):
+                yield Static(
+                    f"[bold]🧠 model calls this round[/bold]"
+                    f"  [{t.text_dim}]{n} call{'s' if n != 1 else ''}[/{t.text_dim}]",
+                    markup=True,
+                )
+                with ScrollableContainer(id="mc-body"):
+                    yield Static(
+                        self._render_table() if self._calls
+                        else f"[{t.text_dim}]no calls recorded[/{t.text_dim}]",
+                        markup=True,
+                    )
+                yield Button("Close  [ESC]", id="mc-close")
+
+        def on_button_pressed(self, event) -> None:
+            self.dismiss()
+
+        def on_key(self, event) -> None:
+            if event.key in ("escape", "q"):
+                self.dismiss()
+
     class ModelStatusBar(Static):
         """Compact inline indicator of model request states (idle/running). Click to view config."""
 
@@ -1880,6 +1964,7 @@ def build_widget_classes(t) -> SimpleNamespace:
         SessionPickerScreen=SessionPickerScreen,
         ToolCallDetailScreen=ToolCallDetailScreen,
         FileDiffScreen=FileDiffScreen,
+        ModelCallsScreen=ModelCallsScreen,
         _QALineTrackingMixin=_QALineTrackingMixin,
         QView=QView,
         AView=AView,

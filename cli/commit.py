@@ -372,7 +372,7 @@ def cmd_commit(args, config):
         from agent.metrics.model_stats import update_stats
         try:
             from agent.metrics import model_calls
-            model_calls.record_entry_name(config, entry_name)
+            model_calls.record_entry_name(config, entry_name, role="commit")
         except Exception:
             pass
         t0 = _time.monotonic()

@@ -41,6 +41,7 @@ class ViewMixin:
         chat_log = self.query_one("#chat-log", self._wt.ConversationView)
         chat_log.clear()
         self._chat_user_lines = []
+        self._chat_model_lines = {}
         self._chat_qa_data: list[tuple] = []
         self._chat_line_to_ordinal: list[int] = []
         current_ordinal: list[int] = [-1]  # mutable cell; -1 = pre-first-turn lines

@@ -133,7 +133,7 @@ async def _call_llm_one_line(
     client = AsyncOpenAI(base_url=entry.base_url, api_key=entry.api_key)
     try:
         from agent.metrics import model_calls
-        model_calls.record_entry(entry)
+        model_calls.record_entry(entry, role="summarizer")
     except Exception:
         pass
     _ep = provider_label(entry.base_url)

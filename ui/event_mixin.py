@@ -422,7 +422,15 @@ class EventHandlerMixin:
                 from agent.metrics import model_calls
                 _mc = model_calls.format_line(model_calls.round_counts())
                 if _mc:
+                    # Remember which chat-log lines hold this round line so a
+                    # click can open the per-call role × model detail modal.
+                    detail = model_calls.round_detail()
+                    chat_log = self.query_one("#chat-log", self._wt.ConversationView)
+                    before = len(chat_log.lines)
                     self._write_chat(f"[{self._t.text_dim}]{_mc}[/{self._t.text_dim}]")
+                    if detail:
+                        for li in range(before, len(chat_log.lines)):
+                            self._chat_model_lines[li] = detail
             except Exception:
                 pass
             self._append_qa_turn(getattr(self, "_current_user_text", ""), response or "")

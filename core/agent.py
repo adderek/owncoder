@@ -581,7 +581,11 @@ class Agent:
         s["calls"] += 1
         try:
             from agent.metrics import model_calls
-            model_calls.record(self._model_tier)
+            model_calls.record(
+                self._model_tier, role="main",
+                model=getattr(self, "_model_entry_name", "")
+                or getattr(self.config.llm, "model", ""),
+            )
         except Exception:
             logger.debug("model_calls.record failed", exc_info=True)
         gen = u.get("gen_seconds") or 0.0

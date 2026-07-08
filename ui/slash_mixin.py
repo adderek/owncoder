@@ -143,6 +143,7 @@ class SlashHandlerMixin:
 
         elif cmd == "/clear":
             self.query_one("#chat-log", self._wt.ConversationView).clear()
+            self._chat_model_lines = {}
             self._switch_to_chat()
 
         elif cmd == "/tokens":

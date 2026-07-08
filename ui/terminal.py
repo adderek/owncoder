@@ -176,6 +176,10 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             self._stream_last_render: float = 0.0
             self._modified_files: list[dict] = []
             self._chat_file_lines: dict[int, dict] = {}
+            # chat-log line index → round_detail list; backs click-to-inspect
+            # on the per-round "models: N calls (…)" line. Not reset per turn —
+            # older round lines stay clickable for the life of the session.
+            self._chat_model_lines: dict[int, list] = {}
             self._loading_timer = None
             self._iter_done: int = 0
             self._iter_limit: int = 0

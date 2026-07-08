@@ -233,7 +233,7 @@ async def _analyze_transcript(
     try:
         try:
             from agent.metrics import model_calls
-            model_calls.record_main(config)
+            model_calls.record_main(config, role="compaction")
         except Exception:
             pass
         response = await client.chat.completions.create(
@@ -282,7 +282,7 @@ async def _synthesize_summary(
     async def _call(max_tokens: int) -> tuple[str, str | None]:
         try:
             from agent.metrics import model_calls
-            model_calls.record_main(config)
+            model_calls.record_main(config, role="compaction")
         except Exception:
             pass
         response = await client.chat.completions.create(
@@ -358,7 +358,7 @@ async def _check_goal_drift(
         try:
             try:
                 from agent.metrics import model_calls
-                model_calls.record_entry(entry)
+                model_calls.record_entry(entry, role="compaction")
             except Exception:
                 pass
             response = await sum_client.chat.completions.create(

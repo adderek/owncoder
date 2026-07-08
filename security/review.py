@@ -187,7 +187,7 @@ async def _review_window(client, model, rel: str, base_line: int, chunk: list[st
     for s in range(max(1, samples)):
         try:
             from agent.metrics import model_calls
-            model_calls.record(tier)
+            model_calls.record(tier, role="security-review", model=model)
         except Exception:
             pass
         resp = await client.chat.completions.create(
@@ -406,7 +406,7 @@ async def _self_critique(client, model, findings: list[dict], target: str, base,
     """One LLM pass judging each finding keep/drop. Returns {index: verdict-dict}."""
     try:
         from agent.metrics import model_calls
-        model_calls.record(tier)
+        model_calls.record(tier, role="security-critique", model=model)
     except Exception:
         pass
     items = []

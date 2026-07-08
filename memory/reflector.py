@@ -92,7 +92,7 @@ def reflect_session(
         client = OpenAI(base_url=config.llm.base_url, api_key=config.llm.api_key)
         try:
             from agent.metrics import model_calls
-            model_calls.record_main(config)
+            model_calls.record_main(config, role="reflector")
         except Exception:
             pass
         response = client.chat.completions.create(
