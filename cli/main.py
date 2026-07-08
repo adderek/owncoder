@@ -286,8 +286,13 @@ def main() -> None:
             handle_exec_command(args, config)
         else:
             parser.print_help()
-    except (KeyboardInterrupt, SystemExit):
+    except SystemExit:
         raise
+    except KeyboardInterrupt:
+        # A plain Ctrl+C during teardown otherwise surfaces as a stack of
+        # CancelledError tracebacks — exit quietly with the conventional code.
+        print("\nInterrupted.", file=sys.stderr)
+        sys.exit(130)
     except Exception as exc:
         import logging as _logging
         dump_path = _write_exception_dump(exc, argv=sys.argv, config=config, log_path=log_path)

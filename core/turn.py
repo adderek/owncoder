@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 from agent.memory.compactor import compact, _count_tokens_approx
 from agent.tools import get_schemas
-from openai import APIConnectionError, APITimeoutError, BadRequestError, InternalServerError
+from openai import APIConnectionError, APITimeoutError, BadRequestError, InternalServerError, RateLimitError
 
 from .prompts import _build_call_kwargs, _inject_think_hint, _inject_autonomy_hint, _inject_aei_hint, _log_llm_request
 from .tool_calls import _tool_result_message, _FakeToolCall, execute_tool, _parse_raw_tool_calls
@@ -452,6 +452,7 @@ async def run_turn(
             window=int(loop_cfg.window),
             threshold=int(loop_cfg.repeat_threshold),
             per_tool_threshold=loop_cfg.per_tool_threshold,
+            per_tool_call_cap=getattr(loop_cfg, "per_tool_call_cap", None),
         )
     verify_cfg = config.verify
     _dirty = False           # a mutating tool call succeeded this turn
@@ -476,6 +477,8 @@ async def run_turn(
     stall_retry_count = 0
     _tier_escalated = False  # auto-tier: at most one mid-turn fast->strong switch
     failover_count = 0       # remote->local failovers taken this turn
+    rate_limit_count = 0     # 429 backoff-retries taken this turn
+    _error_streak = 0        # consecutive iterations where every tool call errored
 
     def _loop_guard_escalation_note() -> dict:
         return {"role": "user", "content": (
@@ -668,6 +671,46 @@ async def run_turn(
                     messages = _truncate_large_messages(messages, budget)
                 continue
             raise
+        except RateLimitError as e:
+            # HTTP 429 from the endpoint (common on free/shared tiers). Wait and
+            # retry a bounded number of times, honoring Retry-After when present;
+            # once exhausted, degrade to the local model like a remote outage.
+            max_rl = max(0, int(getattr(config.llm, "rate_limit_retries", 3)))
+            if rate_limit_count < max_rl:
+                rate_limit_count += 1
+                retry_after = 0.0
+                try:
+                    resp = getattr(e, "response", None)
+                    if resp is not None:
+                        retry_after = float(resp.headers.get("retry-after") or 0)
+                except Exception:
+                    retry_after = 0.0
+                delay = min(120.0, max(retry_after, 5.0 * (2 ** (rate_limit_count - 1))))
+                logger.warning("rate limited (429) — waiting %.0fs, retry %d/%d", delay, rate_limit_count, max_rl)
+                _phase("rate_limit", f"429 — wait {delay:.0f}s ({rate_limit_count}/{max_rl})")
+                # Sleep in 1s slices so a user stop request lands promptly.
+                waited = 0.0
+                while waited < delay:
+                    if stop_event is not None and stop_event.is_set():
+                        note = "[stopped by user during rate-limit wait]"
+                        messages = messages + [{"role": "assistant", "content": note}]
+                        return "".join(content_parts + [note]), messages
+                    step = min(1.0, delay - waited)
+                    await asyncio.sleep(step)
+                    waited += step
+                continue
+            fcfg = getattr(config, "failover", None)
+            if (fcfg is not None and fcfg.enabled
+                    and failover_count < max(1, int(fcfg.max_retries))):
+                from agent.core import model_routing
+                new_client = model_routing.failover_to_local(config)
+                if new_client is not None:
+                    client = new_client
+                    failover_count += 1
+                    _phase("failover", f"rate limited → local {config.llm.model}")
+                    logger.warning("failover: rate limit persists (%s) — retrying on local", e)
+                    continue
+            raise
         except (APIConnectionError, APITimeoutError, InternalServerError) as e:
             # Remote endpoint unreachable / timed out / 5xx. If failover is on and
             # we are on a remote endpoint, degrade to a local model and retry so
@@ -724,6 +767,9 @@ async def run_turn(
                     cnt = loop_detector.observe(sig)
                     if loop_detector.triggered(sig, cnt):
                         triggered.append((tc.function.name, sig, cnt, tc.function.arguments or "{}"))
+                    name_cnt = loop_detector.observe_name(tc.function.name)
+                    if loop_detector.name_capped(tc.function.name, name_cnt):
+                        triggered.append((tc.function.name, f"name:{tc.function.name}", name_cnt, tc.function.arguments or "{}"))
                 if triggered:
                     summary = ", ".join(f"{n}×{c}" for n, _, c, _ in triggered)
                     logger.warning("loop_guard: repeated tool calls detected: %s", summary)
@@ -868,6 +914,7 @@ async def run_turn(
                         _read_advance,
                     )
                 patched_results.append(result)
+            _batch_errs = 0
             for i, (tc, result) in enumerate(zip(tool_calls, patched_results)):
                 messages.append(_tool_result_message(tc.id, result))
                 ok = True
@@ -901,11 +948,31 @@ async def run_turn(
                     logger.exception("prompt_compiler.record_call failed")
                 if confidence_monitor is not None:
                     confidence_monitor.observe_result(result, is_error=not ok)
+                if not ok:
+                    _batch_errs += 1
                 if on_tool_result is not None:
                     try:
                         on_tool_result(tc.function.name, ok)
                     except Exception:
                         logger.exception("on_tool_result callback failed")
+
+            # Error-streak guard: when every tool call in an iteration fails for
+            # several iterations in a row (e.g. a rate-limited backend erroring
+            # on each retry, with the model rephrasing arguments so the loop
+            # detector's exact-signature match never fires), hard-stop the turn
+            # instead of burning iterations on a dead backend.
+            if tool_calls and _batch_errs == len(tool_calls):
+                _error_streak += 1
+            else:
+                _error_streak = 0
+            _streak_max = int(getattr(loop_cfg, "error_streak_threshold", 4))
+            if _streak_max > 0 and _error_streak >= _streak_max:
+                logger.warning("error_guard: %d consecutive all-error tool rounds — stopping turn", _error_streak)
+                _phase("error_guard", f"{_error_streak} failed rounds")
+                note = (f"[error guard: tools failed in {_error_streak} consecutive rounds — "
+                        f"the backend may be down or rate-limited. Stopping; type 'continue' to retry.]")
+                messages = messages + [{"role": "assistant", "content": note}]
+                return "".join(content_parts + [note]), messages
 
             if _read_guard_escalated:
                 # Tool results are paired up now; deliver the escalation note and

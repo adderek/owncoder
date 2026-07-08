@@ -33,6 +33,7 @@ class LLMConfig:
     stream_heartbeat_seconds: int = 20  # while waiting on a quiet stream, emit a progress heartbeat this
     #                                     often so a slow-but-alive backend never looks frozen (0 = off)
     stream_stall_retries: int = 1   # retries after a stall/timeout before giving up
+    rate_limit_retries: int = 3   # backoff-retries on HTTP 429 per turn before failover/surfacing
 
 
 @dataclass
@@ -180,6 +181,15 @@ class LoopGuardConfig:
         "read_file": 5,
         "search_code": 5,
     })
+    # Absolute per-turn call budget per tool name, args-independent — catches a
+    # model rephrasing the same failing call so exact signatures never repeat.
+    per_tool_call_cap: dict = field(default_factory=lambda: {
+        "web_search": 15,
+        "web_fetch": 30,
+    })
+    # Consecutive iterations in which EVERY tool call errored before the turn is
+    # hard-stopped (0 = off). Catches dead/rate-limited backends.
+    error_streak_threshold: int = 4
 
 
 @dataclass
