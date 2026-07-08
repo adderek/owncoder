@@ -74,7 +74,10 @@ def build_ladder(config: "Config", *, check_available: bool = True) -> list[tupl
     """
     from agent.config.registry import mode_allows, model_power
     mode = getattr(getattr(config, "agent", None), "model_mode", "any")
-    out: list[tuple[str, float]] = []
+    # Dedupe by (base_url, model): role aliases (e.g. the synthesized "default"
+    # entry) duplicate a named entry, usually with no power metadata — keep the
+    # strongest-rated duplicate so the alias can't drag the model to the bottom.
+    best: dict[tuple, tuple[str, float]] = {}
     for name, e in (config.model_entries or {}).items():
         tags = getattr(e, "tags", None) or []
         if any(t in tags for t in _NON_CHAT_TAGS) or getattr(e, "dimensions", 0):
@@ -85,7 +88,12 @@ def build_ladder(config: "Config", *, check_available: bool = True) -> list[tupl
             from agent.config.model_probe import entry_available
             if not entry_available(e):
                 continue
-        out.append((name, model_power(e)))
+        key = (getattr(e, "base_url", ""), getattr(e, "model", ""))
+        power = model_power(e)
+        cur = best.get(key)
+        if cur is None or power > cur[1] or (power == cur[1] and name < cur[0]):
+            best[key] = (name, power)
+    out = list(best.values())
     out.sort(key=lambda kv: (kv[1], kv[0]))
     return out
 

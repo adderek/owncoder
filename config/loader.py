@@ -568,6 +568,18 @@ def check_reachability(config: Config) -> None:
 
     _resolve_role_pools(config)
 
+    # A pool-pinned embeddings role lands AFTER the load-time bridge ran, so
+    # config.embeddings still holds defaults — re-apply the pinned entry here.
+    # Skip when an env override set the endpoint explicitly (env wins).
+    emb_name = config.model_roles.get("embeddings")
+    emb_entry = config.model_entries.get(emb_name) if emb_name else None
+    if emb_entry is not None and not os.environ.get("AGENT_EMBEDDINGS_BASE_URL"):
+        config.embeddings.base_url = emb_entry.base_url
+        if emb_entry.model:
+            config.embeddings.model = emb_entry.model
+        if emb_entry.dimensions:
+            config.embeddings.dimensions = emb_entry.dimensions
+
     decision_cfg = getattr(config.parallel, "decision", None)
     if decision_cfg is not None and getattr(decision_cfg, "verify_on_startup", False):
         from agent.config.model_probe import enrich_model_entries
