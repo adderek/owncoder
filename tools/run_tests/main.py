@@ -108,7 +108,9 @@ def detect_framework(root: str) -> str | None:
 
 def _build_argv(framework: str, root: str, pattern: str) -> list[str]:
     if framework == "pytest":
-        argv = [_project_python(root), "-m", "pytest", "-q", "--no-header"]
+        # -l (--showlocals): locals in failure tracebacks — post-mortem variable
+        # state in one shot, the batch-evidence substitute for a debugger.
+        argv = [_project_python(root), "-m", "pytest", "-q", "--no-header", "-l"]
         if pattern:
             # A path-ish pattern targets files/dirs; anything else is a -k expression.
             if "/" in pattern or pattern.endswith(".py"):
