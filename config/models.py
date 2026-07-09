@@ -205,6 +205,40 @@ class VerifyConfig:
 
 
 @dataclass
+class TestSuiteConfig:
+    """One declared test suite (see TestsConfig).
+
+    agent.toml example:
+
+        [[tests.suites]]
+        name = "agent-unit"
+        dir = "agent"                                  # relative to working_dir
+        command = ".venv/bin/python -m pytest tests/unit -q"
+    """
+    __test__ = False  # not a test class, despite the Test* name (pytest collector)
+    name: str = ""
+    dir: str = "."             # cwd for the command, relative to working_dir
+    command: str = ""          # shell command; carries its own interpreter/env choices
+    env: dict = field(default_factory=dict)   # extra environment variables
+    timeout_s: int = 0         # 0 = use the run_tests call's timeout
+    default: bool = True       # included when run_tests() is called with no suite/pattern
+    parser: str = "auto"       # output parser: auto|pytest|go|cargo|none
+
+
+@dataclass
+class TestsConfig:
+    """Declared test suites for the run_tests tool.
+
+    Declaration beats detection: a polyglot/monorepo project lists its suites
+    here (each with its own dir, interpreter, env), and run_tests runs them
+    as written. Projects with no suites fall back to convention detection
+    (make test / just test / scripts/test.sh) and then framework heuristics.
+    """
+    __test__ = False  # not a test class, despite the Test* name (pytest collector)
+    suites: list = field(default_factory=list)
+
+
+@dataclass
 class ConfidenceGuardConfig:
     """Behavioral non-convergence detector.
 
@@ -878,6 +912,7 @@ class Config:
     logs: LogsConfig = field(default_factory=LogsConfig)
     loop_guard: LoopGuardConfig = field(default_factory=LoopGuardConfig)
     verify: VerifyConfig = field(default_factory=VerifyConfig)
+    tests: TestsConfig = field(default_factory=TestsConfig)
     confidence_guard: ConfidenceGuardConfig = field(default_factory=ConfidenceGuardConfig)
     compile_prompts: CompilePromptsConfig = field(default_factory=CompilePromptsConfig)
     token_limits: TokenLimitsConfig = field(default_factory=TokenLimitsConfig)

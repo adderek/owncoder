@@ -192,6 +192,7 @@ def _merge(config: Config, data: dict) -> None:
         ("logs", config.logs),
         ("loop_guard", config.loop_guard),
         ("verify", config.verify),
+        ("tests", config.tests),
         ("confidence_guard", config.confidence_guard),
         ("compile_prompts", config.compile_prompts),
         ("token_limits", config.token_limits),
@@ -239,6 +240,14 @@ def _coerce_notify_channels(config: Config) -> None:
     """Convert notify.channels dicts (TOML [[notify.channels]] / YAML list) to NotifyChannelConfig."""
     config.notify.channels = _coerce_dataclass_list(
         config.notify.channels, NotifyChannelConfig, "notify.channels"
+    )
+
+
+def _coerce_test_suites(config: Config) -> None:
+    """Convert tests.suites dicts (TOML [[tests.suites]] / YAML list) to TestSuiteConfig."""
+    from agent.config.models import TestSuiteConfig
+    config.tests.suites = _coerce_dataclass_list(
+        config.tests.suites, TestSuiteConfig, "tests.suites"
     )
 
 
@@ -437,6 +446,7 @@ def load_config(extra_path: Path | list[Path] | None = None) -> Config:
     _ensure_model_registry_keys(config)
     _coerce_notify_channels(config)
     _coerce_mcp_servers(config)
+    _coerce_test_suites(config)
     return config
 
 
