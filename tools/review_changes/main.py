@@ -151,23 +151,37 @@ def _static_findings(cwd: str) -> tuple[list[dict], list[str]]:
 
 
 def _pick_reviewer(config: "Config") -> tuple[str, Any] | None:
-    """Strongest live chat entry, preferring one that is NOT the active model
-    (self-review is a weak signal). Returns (entry_name, ModelEntry) or None."""
+    """Pick the reviewing entry. Preference: a live entry on a DIFFERENT
+    endpoint that is at least as strong as the active model. A weaker reviewer
+    critiquing a stronger author generates noise findings, so when no equal-or-
+    stronger alternative exists we fall back to the strongest entry overall —
+    usually the active model itself, which the caller flags as self_review.
+    Returns (entry_name, ModelEntry) or None."""
     from agent.core.model_tier import build_ladder
     try:
-        ladder = build_ladder(config)
+        ladder = build_ladder(config)  # weakest → strongest
     except Exception:
         return None
     if not ladder:
         return None
     active = (config.llm.base_url, config.llm.model)
-    for name, _power in reversed(ladder):  # strongest first
+
+    def _is_active(e) -> bool:
+        return (e.base_url, e.model or config.llm.model) == active
+
+    active_power = 0.0
+    for name, p in ladder:
         e = config.model_entries.get(name)
-        if e is None:
+        if e is not None and _is_active(e):
+            active_power = max(active_power, p)
+    for name, p in reversed(ladder):  # strongest first
+        e = config.model_entries.get(name)
+        if e is None or _is_active(e):
             continue
-        if (e.base_url, e.model or config.llm.model) != active:
+        if p >= active_power:
             return name, e
-    # Only the active model is alive — better than nothing, but flag it.
+        break  # strongest non-active is weaker than the author — don't use it
+    # Flagged self-review beats a weaker second opinion.
     name = ladder[-1][0]
     e = config.model_entries.get(name)
     return (name, e) if e is not None else None

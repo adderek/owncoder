@@ -4,13 +4,14 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from agent.tools.analyze_deps.main import (
     _collect_imports,
     _find_unused,
+    _idle_dep_hygiene,
     _pip_outdated,
     _venv_dist_modules,
     analyze_dependencies,
@@ -122,9 +123,10 @@ class TestAnalyzeDependenciesTool:
         setup(_make_config(tmp_path))
         r = asyncio.run(analyze_dependencies(path=str(tmp_path), check_outdated=False))
         assert r["components"] == {"pypi": 2}
-        assert [u["name"] for u in r["unused"]] == ["leftpad"]
+        assert [u["name"] for u in r["possibly_unused"]] == ["leftpad"]
         assert any(u["name"] == "leftpad" for u in r["unpinned"])
-        assert r["ok"] is False
+        # possibly_unused is informational — it must NOT flip ok to False.
+        assert r["ok"] is True
         assert any("no project venv" in n for n in r["notes"])
 
     def test_airgap_skips_outdated(self, tmp_path):
@@ -155,3 +157,45 @@ class TestAnalyzeDependenciesTool:
             r = asyncio.run(analyze_dependencies(path=str(tmp_path), check_outdated=False))
         assert len(r["conflicts"]) == 1
         assert r["ok"] is False
+
+
+class TestIdleDepHygiene:
+    def _agent(self, tmp_path):
+        agent = MagicMock()
+        agent.config.tools.working_dir = str(tmp_path)
+        agent.config.tools.agent_dir = ".agent"
+        return agent
+
+    def test_files_idea_on_conflicts(self, tmp_path):
+        agent = self._agent(tmp_path)
+        report = {"ok": False, "conflicts": ["a requires b>=2"], "vulnerabilities": []}
+        with patch("agent.tools.analyze_deps.main.analyze_dependencies",
+                   new=AsyncMock(return_value=report)), \
+             patch("agent.tools.ideas.main.submit_idea",
+                   return_value={"saved": True}) as si:
+            did = asyncio.run(_idle_dep_hygiene(agent))
+        assert did is True
+        si.assert_called_once()
+        assert "1 conflicts" in si.call_args.kwargs["title"]
+        assert (tmp_path / ".agent" / "dep_hygiene.stamp").exists()
+
+    def test_clean_report_files_nothing(self, tmp_path):
+        agent = self._agent(tmp_path)
+        report = {"ok": True, "conflicts": [], "vulnerabilities": [],
+                  "possibly_unused": [{"name": "x"}]}
+        with patch("agent.tools.analyze_deps.main.analyze_dependencies",
+                   new=AsyncMock(return_value=report)), \
+             patch("agent.tools.ideas.main.submit_idea") as si:
+            did = asyncio.run(_idle_dep_hygiene(agent))
+        assert did is False
+        si.assert_not_called()
+
+    def test_stamp_throttles(self, tmp_path):
+        agent = self._agent(tmp_path)
+        d = tmp_path / ".agent"
+        d.mkdir()
+        (d / "dep_hygiene.stamp").touch()
+        with patch("agent.tools.analyze_deps.main.analyze_dependencies") as ad:
+            did = asyncio.run(_idle_dep_hygiene(agent))
+        assert did is False
+        ad.assert_not_called()

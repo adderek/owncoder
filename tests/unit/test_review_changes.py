@@ -104,7 +104,21 @@ class TestParseReview:
 
 
 class TestPickReviewer:
-    def test_prefers_non_active_entry(self):
+    def test_prefers_equal_or_stronger_non_active(self):
+        cfg = MagicMock()
+        cfg.llm.base_url = "http://active:1/v1"
+        cfg.llm.model = "m-active"
+        other = MagicMock(base_url="http://other:1/v1", model="m-big")
+        active = MagicMock(base_url="http://active:1/v1", model="m-active")
+        cfg.model_entries = {"other": other, "active": active}
+        with patch("agent.core.model_tier.build_ladder",
+                   return_value=[("active", 5.0), ("other", 9.0)]):
+            name, entry = _pick_reviewer(cfg)
+        assert name == "other"
+
+    def test_weaker_alternative_rejected_for_self_review(self):
+        # Only non-active entry is weaker than the author → flagged self-review
+        # beats a noisy weak-model review.
         cfg = MagicMock()
         cfg.llm.base_url = "http://active:1/v1"
         cfg.llm.model = "m-active"
@@ -114,7 +128,7 @@ class TestPickReviewer:
         with patch("agent.core.model_tier.build_ladder",
                    return_value=[("weak", 1.0), ("strong", 9.0)]):
             name, entry = _pick_reviewer(cfg)
-        assert name == "weak"
+        assert name == "strong"
 
     def test_falls_back_to_active_when_alone(self):
         cfg = MagicMock()

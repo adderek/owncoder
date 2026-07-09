@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import glob
 import json
+import logging
 import os
 import re
 import subprocess
@@ -33,6 +34,8 @@ from agent.tools._common import working_dir
 
 if TYPE_CHECKING:
     from agent.config import Config
+
+logger = logging.getLogger(__name__)
 
 _config: "Config | None" = None
 
@@ -69,6 +72,13 @@ _INDIRECT_NAMES = frozenset({
 def setup(config: "Config") -> None:
     global _config
     _config = config
+    # Dependency hygiene is a periodic concern, not a per-turn one: register an
+    # idle action so findings surface without the model ever calling the tool.
+    try:
+        from agent.core.idle_tasks import register_idle_action
+        register_idle_action("dep-hygiene", _idle_dep_hygiene)
+    except Exception:
+        pass
 
 
 def _find_venv(root: str) -> str | None:
@@ -197,16 +207,76 @@ def _pip_outdated(venv: str) -> tuple[list[dict], str | None]:
              "latest": r.get("latest_version", "")} for r in rows][:100], None
 
 
+# ── Idle action: periodic hygiene sweep ──────────────────────────────────────
+
+_HYGIENE_INTERVAL_S = 7 * 86400  # at most once a week
+_HYGIENE_STAMP = "dep_hygiene.stamp"
+
+
+async def _idle_dep_hygiene(agent) -> bool:
+    """Run the dependency report during idle time; file OBJECTIVE findings
+    (conflicts, vulns) as an idea. possibly_unused is never escalated from
+    here — too false-positive-prone to act on without a human in the loop."""
+    import time as _time
+    from pathlib import Path
+
+    config = getattr(agent, "config", None)
+    if config is None:
+        return False
+    agent_dir = Path(config.tools.working_dir) / config.tools.agent_dir
+    stamp = agent_dir / _HYGIENE_STAMP
+    try:
+        if stamp.exists() and _time.time() - stamp.stat().st_mtime < _HYGIENE_INTERVAL_S:
+            return False
+    except OSError:
+        return False
+
+    # No network from an idle sweep the user didn't ask for.
+    report = await analyze_dependencies(check_outdated=False)
+    try:
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        stamp.touch()
+    except OSError:
+        pass
+    if "error" in report or report.get("ok", True):
+        return False
+
+    conflicts = report.get("conflicts", [])
+    vulns = report.get("vulnerabilities", [])
+    lines = []
+    if conflicts:
+        lines.append("Version conflicts (pip check):")
+        lines += [f"  - {c}" for c in conflicts[:10]]
+    if vulns:
+        lines.append("Vulnerability matches (offline DB):")
+        lines += [f"  - {v}" for v in vulns[:10]]
+    try:
+        from agent.tools.ideas.main import submit_idea
+        submit_idea(
+            title=f"Dependency hygiene: {len(conflicts)} conflicts, {len(vulns)} vuln matches",
+            body="\n".join(lines),
+            type="bug",
+            tags=["dependencies", "hygiene"],
+            priority=4 if vulns else 3,
+        )
+    except Exception:
+        logger.debug("dep-hygiene: submit_idea failed", exc_info=True)
+        return False
+    return True
+
+
 @register(
     "analyze_dependencies",
     {
         "description": (
-            "Dependency hygiene report: unused declared dependencies (declared in "
-            "requirements/pyproject but never imported), version conflicts (pip check "
-            "in the project venv), outdated packages (pip list --outdated; skipped "
-            "when air-gapped), unpinned/floating versions, and offline vuln-DB "
-            "matches. Python-first; other ecosystems (npm/cargo/go) are included in "
-            "component counts and vuln matching via the SBOM layer."
+            "Dependency hygiene REPORT (read-only): possibly-unused declared "
+            "dependencies, version conflicts (pip check in the project venv), "
+            "outdated packages (pip list --outdated; skipped when air-gapped), "
+            "unpinned/floating versions, and offline vuln-DB matches. Python-first; "
+            "other ecosystems (npm/cargo/go) appear in component counts and vuln "
+            "matching via the SBOM layer. NEVER remove a dependency based only on "
+            "possibly_unused — static import scanning misses importlib/plugin loads; "
+            "verify each candidate first."
         ),
         "parameters": {
             "type": "object",
@@ -292,11 +362,14 @@ async def analyze_dependencies(path: str = "", check_outdated: bool = True) -> d
 
     return {
         "components": by_eco,
-        "unused": unused,
+        # Candidates, not verdicts: static scan misses dynamic imports.
+        "possibly_unused": unused,
         "conflicts": conflicts,
         "outdated": outdated,
         "unpinned": unpinned,
         "vulnerabilities": vulns,
         "notes": notes,
-        "ok": not (unused or conflicts or vulns),
+        # Objective findings only — possibly_unused is informational and must
+        # not push the agent toward removing dependencies.
+        "ok": not (conflicts or vulns),
     }
