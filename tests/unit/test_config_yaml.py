@@ -92,3 +92,70 @@ def test_non_mapping_yaml_exits(tmp_path):
     p = _write(tmp_path / "agent.yaml", "- just\n- a list\n")
     with pytest.raises(SystemExit):
         load_config(p)
+
+
+class TestConfigLayers:
+    """User → device (agent.<hostname>.yaml) → local (agent.local.yaml) layering."""
+
+    def _global_dir(self, tmp_path, monkeypatch) -> Path:
+        home = tmp_path / "home"
+        d = home / ".config" / "agent"
+        d.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr("socket.gethostname", lambda: "testbox.lan")
+        return d
+
+    def test_device_layer_overrides_entry_fields_only(self, tmp_path, monkeypatch):
+        d = self._global_dir(tmp_path, monkeypatch)
+        _write(d / "agent.yaml", """
+            models:
+              worker:
+                base_url: "http://192.168.1.9:8093/v1"
+                model: big-model
+                ctx_window: 262144
+                local: false
+                params_b: 27.0
+        """)
+        _write(d / "agent.testbox.yaml", """
+            models:
+              worker:
+                base_url: "http://localhost:8093/v1"
+                local: true
+        """)
+        config = load_config()
+        e = config.model_entries["worker"]
+        assert e.base_url == "http://localhost:8093/v1"   # device wins
+        assert e.local is True                             # device wins
+        assert e.model == "big-model"                      # user layer preserved
+        assert e.ctx_window == 262144
+        assert e.params_b == 27.0
+
+    def test_local_layer_wins_over_device(self, tmp_path, monkeypatch):
+        d = self._global_dir(tmp_path, monkeypatch)
+        _write(d / "agent.yaml", "agent:\n  think_level: low\n")
+        _write(d / "agent.testbox.yaml", "agent:\n  think_level: medium\n")
+        _write(d / "agent.local.yaml", "agent:\n  think_level: high\n")
+        config = load_config()
+        assert config.agent.think_level == "high"
+
+    def test_project_config_wins_over_all_globals(self, tmp_path, monkeypatch):
+        d = self._global_dir(tmp_path, monkeypatch)
+        _write(d / "agent.yaml", "agent:\n  autonomy: 0.1\n")
+        _write(d / "agent.testbox.yaml", "agent:\n  autonomy: 0.5\n")
+        proj = _write(tmp_path / "proj.yaml", "agent:\n  autonomy: 0.9\n")
+        config = load_config(proj)
+        assert config.agent.autonomy == 0.9
+
+    def test_other_hosts_device_file_ignored(self, tmp_path, monkeypatch):
+        d = self._global_dir(tmp_path, monkeypatch)
+        _write(d / "agent.yaml", "agent:\n  think_level: low\n")
+        _write(d / "agent.otherbox.yaml", "agent:\n  think_level: high\n")
+        config = load_config()
+        assert config.agent.think_level == "low"
+
+    def test_hostname_is_short_and_lowercased(self, tmp_path, monkeypatch):
+        d = self._global_dir(tmp_path, monkeypatch)
+        monkeypatch.setattr("socket.gethostname", lambda: "TestBox.example.com")
+        _write(d / "agent.testbox.yaml", "agent:\n  think_level: high\n")
+        config = load_config()
+        assert config.agent.think_level == "high"

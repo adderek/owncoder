@@ -394,18 +394,31 @@ def load_config(extra_path: Path | list[Path] | None = None) -> Config:
     config = Config()
 
     # Search order (later files override earlier ones):
-    #   1. ~/.config/agent/agent.{toml,yaml,yml}  — user-global settings
-    #   2. extra_path                             — project config(s) (absolute)
+    #   1. ~/.config/agent/agent.{toml,yaml,yml}          — user layer (portable)
+    #   2. ~/.config/agent/agent.<hostname>.{toml,yaml,yml} — device layer
+    #      (endpoints, paths, gpu slots). Hostname-keyed so the same synced
+    #      config dir serves every machine; each picks its own file at load.
+    #   3. ~/.config/agent/agent.local.{toml,yaml,yml}    — unsynced overrides
+    #   4. extra_path                                      — project config(s)
+    # Sections deep-merge per field; model entries merge per name, per field
+    # (a device file can override just base_url/local of a named entry).
+    # Lists replace wholesale — keep a list (e.g. notify.channels) in ONE layer.
     # Note: we deliberately omit CWD-relative paths to avoid accidentally
     # loading a config from a subdirectory of the project.
     global_dir = Path.home() / ".config" / "agent"
     search_paths = [global_dir / name for name in CONFIG_FILENAMES]
+    import socket
+    host = socket.gethostname().split(".")[0].lower()
+    if host and host != "local":  # "local" would collide with agent.local.*
+        search_paths += [global_dir / f"agent.{host}.{ext}" for ext in ("toml", "yaml", "yml")]
+    search_paths += [global_dir / f"agent.local.{ext}" for ext in ("toml", "yaml", "yml")]
     if isinstance(extra_path, Path):
         search_paths.append(extra_path)
     elif extra_path:
         search_paths.extend(extra_path)
 
     raw_data: list[dict] = []
+    loaded_layers: list[str] = []
     for p in search_paths:
         if p.exists():
             try:
@@ -423,7 +436,11 @@ def load_config(extra_path: Path | list[Path] | None = None) -> Config:
                 )
                 sys.exit(1)
             raw_data.append(data)
+            loaded_layers.append(str(p))
             _merge(config, data)
+
+    if loaded_layers:
+        logger.info("config layers (later overrides earlier): %s", " -> ".join(loaded_layers))
 
     for data in raw_data:
         _merge_models(config, data)
