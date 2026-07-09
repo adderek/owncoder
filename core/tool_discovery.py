@@ -82,7 +82,7 @@ _CATEGORIES: list[tuple[str, str, tuple[str, ...], frozenset[str]]] = [
     ("agents & parallel", "delegate work to sub-agents",
      (), frozenset({"spawn_agents", "consult_crows"})),
     ("access & review", "request path grants, reviews, feedback",
-     ("request_",), frozenset()),
+     ("request_",), frozenset({"review_changes"})),
     ("turn control", "signal completion / ask user / report blocked",
      (), frozenset({"ask_user", "mark_done", "blocked", "report_blocking_issue"})),
 ]
