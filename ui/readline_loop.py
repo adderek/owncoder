@@ -804,7 +804,8 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
         # Per-round model-call breakdown by cost tier (local/free/bundled/paid).
         try:
             from agent.metrics import model_calls
-            _mc = model_calls.format_line(model_calls.round_counts())
+            _mc = model_calls.format_line(model_calls.round_counts(),
+                                          duration=model_calls.round_duration())
             if _mc:
                 console.print(f"[{t.text_dim}]{_mc}[/{t.text_dim}]")
         except Exception:

@@ -405,6 +405,23 @@ def build_widget_classes(t) -> SimpleNamespace:
     class ConversationView(RichLog):
         """Live chat log — user ↔ agent turns. Click any line to expand that turn."""
 
+        def on_mouse_move(self, event) -> None:
+            # Hover feedback: name what a click on this line would open.
+            line_idx = int(self.scroll_offset.y) + int(event.y)
+            if line_idx in getattr(self.app, "_chat_model_lines", {}):
+                tip = "Click: model-call detail for this round"
+            elif line_idx in getattr(self.app, "_chat_file_lines", {}):
+                tip = "Click: diff for this file"
+            elif getattr(self.app, "_chat_qa_data", []):
+                tip = "Click: expand this turn"
+            else:
+                tip = None
+            if tip != self.tooltip:
+                self.tooltip = tip
+
+        def on_leave(self, event) -> None:
+            self.tooltip = None
+
         def on_click(self, event) -> None:
             line_idx = int(self.scroll_offset.y) + int(event.y)
 
@@ -1447,9 +1464,18 @@ def build_widget_classes(t) -> SimpleNamespace:
         }
         """
 
-        def __init__(self, calls: list[dict]) -> None:
+        def __init__(self, calls: "list[dict] | dict") -> None:
             super().__init__()
-            self._calls = list(calls or [])
+            # Accepts either the raw round_detail list or a payload dict
+            # {"calls": [...], "duration": seconds}.
+            if isinstance(calls, dict):
+                self._calls = list(calls.get("calls") or [])
+                self._duration = calls.get("duration")
+                self._stats = dict(calls.get("stats") or {})
+            else:
+                self._calls = list(calls or [])
+                self._duration = None
+                self._stats = {}
 
         def _render_table(self) -> str:
             from collections import Counter
@@ -1471,23 +1497,61 @@ def build_widget_classes(t) -> SimpleNamespace:
                 )
             return "\n".join(lines)
 
+        def _render_timeline(self) -> str:
+            """Per-call dispatch order with seconds-from-round-start offsets."""
+            calls = [c for c in self._calls if c.get("t") is not None]
+            if not calls:
+                return ""
+            rw = max(len(c.get("role", "?")) for c in calls)
+            lines = [f"\n[bold]timeline[/bold] [{t.text_dim}](dispatch offset from round start)[/{t.text_dim}]"]
+            for c in calls:
+                lines.append(
+                    f"[{t.text_dim}]+{c['t']:>7.1f}s[/{t.text_dim}]  "
+                    f"{_escape(c.get('role', '?')):<{rw}}  "
+                    f"{_escape(c.get('model', '?'))}"
+                    f"  [{t.text_dim}]{c.get('tier', '?')}[/{t.text_dim}]"
+                )
+            return "\n".join(lines)
+
+        def _render_stats(self) -> str:
+            """Session token totals — cumulative, not just this round."""
+            s = self._stats
+            if not s or not s.get("calls"):
+                return ""
+            parts = [f"↑{s.get('input_tokens', 0):,}",
+                     f"↓{s.get('output_tokens', 0):,}"]
+            if s.get("in_tps"):
+                parts.append(f"{s['in_tps']:.0f} in-tok/s")
+            if s.get("out_tps"):
+                parts.append(f"{s['out_tps']:.0f} out-tok/s")
+            if s.get("reasoning_tokens"):
+                parts.append(f"think {s['reasoning_tokens']:,}")
+            if s.get("tool_tokens"):
+                parts.append(f"tool {s['tool_tokens']:,}")
+            return (f"\n\n[bold]session totals[/bold]  "
+                    f"[{t.text_dim}]{'  '.join(parts)}[/{t.text_dim}]")
+
         def compose(self):
             from textual.containers import Vertical, ScrollableContainer
             from textual.widgets import Button, Static
 
             n = len(self._calls)
+            header = (
+                f"[bold]🧠 model calls this round[/bold]"
+                f"  [{t.text_dim}]{n} call{'s' if n != 1 else ''}[/{t.text_dim}]"
+            )
+            if self._duration:
+                from agent.metrics.model_calls import format_duration
+                header += (f"  [{t.text_dim}]│ round took "
+                           f"{format_duration(self._duration)}[/{t.text_dim}]")
             with Vertical(id="mc-dialog"):
-                yield Static(
-                    f"[bold]🧠 model calls this round[/bold]"
-                    f"  [{t.text_dim}]{n} call{'s' if n != 1 else ''}[/{t.text_dim}]",
-                    markup=True,
-                )
+                yield Static(header, markup=True)
                 with ScrollableContainer(id="mc-body"):
-                    yield Static(
-                        self._render_table() if self._calls
-                        else f"[{t.text_dim}]no calls recorded[/{t.text_dim}]",
-                        markup=True,
-                    )
+                    body = (self._render_table() + self._render_timeline()
+                            + self._render_stats()
+                            if self._calls
+                            else f"[{t.text_dim}]no calls recorded[/{t.text_dim}]")
+                    yield Static(body, markup=True)
                 yield Button("Close  [ESC]", id="mc-close")
 
         def on_button_pressed(self, event) -> None:
@@ -1546,7 +1610,20 @@ def build_widget_classes(t) -> SimpleNamespace:
                 writer(_escape(msg))
 
     class ModelStatusBar(Static):
-        """Compact inline indicator of model request states (idle/running). Click to view config."""
+        """Compact inline indicator of model request states (idle/running).
+
+        Each role chip (llm/emb/sum/sec/name) is a markup link — hovering
+        highlights it, clicking any chip opens the model config popup
+        immediately (availability refresh stays on the popup's button)."""
+
+        DEFAULT_CSS = """
+        ModelStatusBar {
+            link-style: none;
+            link-color-hover: $text;
+            link-background-hover: $primary 40%;
+            link-style-hover: bold;
+        }
+        """
 
         def on_mount(self) -> None:
             self.set_interval(0.5, self._refresh)
@@ -1589,17 +1666,20 @@ def build_widget_classes(t) -> SimpleNamespace:
                 # Offline (configured model missing on its endpoint) → red, takes
                 # priority over idle/running so the user can spot it at a glance.
                 if avail.get(label) is False:
-                    parts.append(f"[rgb(198,40,40)]{label}:✗[/]")
+                    chip = f"[rgb(198,40,40)]{label}:✗[/]"
                 elif n > 1:
                     # >1 concurrent call (parallel fan-out) → show the count.
-                    parts.append(f"[rgb(56,142,60)]{label}:{n}[/]")
+                    chip = f"[rgb(56,142,60)]{label}:{n}[/]"
                 elif n > 0:
-                    parts.append(f"[rgb(56,142,60)]{label}:●[/]")
+                    chip = f"[rgb(56,142,60)]{label}:●[/]"
                 else:
-                    parts.append(f"[dim]{label}:○[/dim]")
+                    chip = f"[dim]{label}:○[/dim]"
+                # Wrap in an action link: precise click target + hover highlight.
+                parts.append(f"[@click=show_role('{label}')]{chip}[/]")
             worker_count = get_counts().get("workers", 0)
             if worker_count > 0:
-                parts.append(f"[rgb(232,128,26)]agents:{worker_count}●[/]")
+                parts.append(
+                    f"[@click=show_workers][rgb(232,128,26)]agents:{worker_count}●[/][/]")
             # Endpoint split — how many requests overlap on each backend right now.
             # Only shown when >1 endpoint is active at once, or any cloud traffic
             # is in flight, so a plain local-only turn stays uncluttered.
@@ -1629,23 +1709,46 @@ def build_widget_classes(t) -> SimpleNamespace:
                             f"[dim]│[/dim] [rgb(124,77,255)]" + " ".join(mparts) + "[/]")
             self.update("  ".join(parts))
 
-        async def on_click(self) -> None:
-            import asyncio
-            from agent.core.model_status import get_workers
-            if get_workers():
-                self.app.push_screen(WorkersScreen())
+        def _open_config(self) -> None:
+            """Open the config popup immediately — no blocking availability
+            refresh first (that caused seconds of delay, and queued clicks
+            then opened several popups). Refresh lives on the popup button."""
+            # One modal at a time: ignore clicks while ours is already up.
+            if isinstance(self.app.screen, (ModelConfigScreen, WorkersScreen)):
                 return
             server = getattr(self.app, "_server", None)
-            if server is not None:
-                try:
-                    await asyncio.to_thread(server.refresh_model_info)
-                except Exception:
-                    pass
             try:
                 configs = server.get_model_configs() if server else {}
             except Exception:
                 configs = {}
             self.app.push_screen(ModelConfigScreen(configs, server=server))
+
+        def action_show_role(self, label: str) -> None:
+            """A role chip (llm/emb/…) was clicked."""
+            self._open_config()
+
+        def action_show_workers(self) -> None:
+            from agent.core.model_status import get_workers
+            if isinstance(self.app.screen, (ModelConfigScreen, WorkersScreen)):
+                return
+            if get_workers():
+                self.app.push_screen(WorkersScreen())
+            else:
+                self._open_config()
+
+        def on_click(self, event) -> None:
+            # Clicks on a chip link are handled by the action broker; this
+            # fallback covers the gaps between chips.
+            try:
+                if event.style.meta.get("@click"):
+                    return
+            except Exception:
+                pass
+            from agent.core.model_status import get_workers
+            if get_workers():
+                self.action_show_workers()
+            else:
+                self._open_config()
 
     class HintBar(Static):
         """Contextual hints shown during history navigation."""

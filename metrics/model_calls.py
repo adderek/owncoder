@@ -17,6 +17,7 @@ per-round detail backs the clickable round line in the Textual UI;
 """
 from __future__ import annotations
 
+import time
 from collections import Counter
 
 # Display order. Unknown tiers (should not happen) are appended after these.
@@ -24,10 +25,12 @@ TIERS = ("local", "free", "bundled", "paid")
 
 _session: Counter = Counter()
 _round: Counter = Counter()
-# Per-call detail: list of {"role", "model", "tier"} dicts for the current
-# round, and a session-wide Counter keyed by (role, model, tier).
+# Per-call detail: list of {"role", "model", "tier", "t"} dicts for the
+# current round ("t" = seconds since round start), and a session-wide
+# Counter keyed by (role, model, tier).
 _round_detail: list[dict] = []
 _session_detail: Counter = Counter()
+_round_started: float = time.monotonic()
 
 
 def record(tier: str | None, role: str = "", model: str = "") -> None:
@@ -41,7 +44,8 @@ def record(tier: str | None, role: str = "", model: str = "") -> None:
     _round[t] += 1
     r = role or "?"
     m = model or "?"
-    _round_detail.append({"role": r, "model": m, "tier": t})
+    _round_detail.append({"role": r, "model": m, "tier": t,
+                          "t": time.monotonic() - _round_started})
     _session_detail[(r, m, t)] += 1
 
 
@@ -83,8 +87,15 @@ def record_entry_name(config, name: str, role: str = "") -> None:
 
 def reset_round() -> None:
     """Clear the per-round counters — called at the start of each agent turn."""
+    global _round_started
     _round.clear()
     _round_detail.clear()
+    _round_started = time.monotonic()
+
+
+def round_duration() -> float:
+    """Seconds elapsed since the current round started."""
+    return time.monotonic() - _round_started
 
 
 def round_counts() -> dict:
@@ -105,13 +116,29 @@ def _ordered(counts: dict) -> list[str]:
     return [t for t in TIERS if counts.get(t)] + [t for t in extra if counts.get(t)]
 
 
-def format_line(counts: dict, label: str = "models") -> str:
-    """One-line breakdown, e.g. ``models: 4 calls (local=3 paid=1)``. Empty if none."""
+def format_duration(seconds: float) -> str:
+    """Human round duration: ``8.2s`` / ``1m 04s`` / ``1h 02m``."""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    m, s = divmod(int(seconds), 60)
+    if m < 60:
+        return f"{m}m {s:02d}s"
+    h, m = divmod(m, 60)
+    return f"{h}h {m:02d}m"
+
+
+def format_line(counts: dict, label: str = "models",
+                duration: float | None = None) -> str:
+    """One-line breakdown, e.g. ``models: 4 calls (local=3 paid=1) in 8.2s``.
+    Empty if no calls. *duration* (seconds) is appended when given."""
     total = sum(counts.values())
     if not total:
         return ""
     parts = " ".join(f"{t}={counts[t]}" for t in _ordered(counts))
-    return f"{label}: {total} call{'s' if total != 1 else ''} ({parts})"
+    line = f"{label}: {total} call{'s' if total != 1 else ''} ({parts})"
+    if duration is not None and duration > 0:
+        line += f" in {format_duration(duration)}"
+    return line
 
 
 def format_detail(detail: "Counter | dict") -> list[str]:
