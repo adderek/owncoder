@@ -375,6 +375,13 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
         missing = [r for r in required if r not in args]
         if missing:
             rules.record_tool_usage(name, False)
+            _fr.report("invalid_tool_call", {
+                "tool": name,
+                "reason": "missing_required_args",
+                "missing": missing,
+                "arguments": args,
+                "tool_call_id": getattr(tool_call, "id", None),
+            }, config=config)
             return json.dumps({
                 "error": f"Missing required arguments: {', '.join(missing)}",
                 "tool": name
@@ -384,6 +391,15 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
             unknown = [k for k in args if k not in allowed]
             if unknown:
                 logger.warning("execute_tool: %s stripping unknown args %s", name, unknown)
+                # Repaired, not failed — but keep the evidence flowing so the
+                # failure data still shows which arg shapes models get wrong.
+                _fr.report("repaired_tool_call", {
+                    "tool": name,
+                    "reason": "stripped_unknown_args",
+                    "unknown": unknown,
+                    "arguments": args,
+                    "tool_call_id": getattr(tool_call, "id", None),
+                }, config=config)
                 args = {k: v for k, v in args.items() if k in allowed}
 
     try:
