@@ -85,3 +85,40 @@ class TestGrepReadDeny:
         assert grep_mod._is_read_protected("sub/.env", deny)
         assert grep_mod._is_read_protected("id.pem", deny)
         assert not grep_mod._is_read_protected("src/main.py", deny)
+
+
+class TestGrepContextLines:
+    def _project(self, tmp_path):
+        (tmp_path / "mod.py").write_text(
+            "\n".join(f"line{i}" for i in range(1, 6))
+            + "\nNEEDLE = 1\n"
+            + "\n".join(f"line{i}" for i in range(7, 12)) + "\n")
+        return tmp_path
+
+    def test_context_attached_and_marked(self, tmp_path, monkeypatch):
+        import agent.tools.search.grep as g
+        cfg = type("C", (), {"tools": type("T", (), {"working_dir": str(tmp_path)})()})()
+        monkeypatch.setattr(g, "_config", cfg)
+        self._project(tmp_path)
+        r = g.grep_code("NEEDLE", context_lines=2)
+        assert r["count"] == 1
+        ctx = r["results"][0]["context"]
+        assert "6> NEEDLE = 1" in ctx        # match line marked with '>'
+        assert "4: line4" in ctx and "8: line8" in ctx
+        assert "2: " not in ctx              # outside the window
+
+    def test_no_context_by_default(self, tmp_path, monkeypatch):
+        import agent.tools.search.grep as g
+        cfg = type("C", (), {"tools": type("T", (), {"working_dir": str(tmp_path)})()})()
+        monkeypatch.setattr(g, "_config", cfg)
+        self._project(tmp_path)
+        r = g.grep_code("NEEDLE")
+        assert "context" not in r["results"][0]
+
+    def test_context_lines_clamped(self, tmp_path, monkeypatch):
+        import agent.tools.search.grep as g
+        cfg = type("C", (), {"tools": type("T", (), {"working_dir": str(tmp_path)})()})()
+        monkeypatch.setattr(g, "_config", cfg)
+        self._project(tmp_path)
+        r = g.grep_code("NEEDLE", context_lines=999)  # clamps to 10, must not error
+        assert r["count"] == 1 and "context" in r["results"][0]

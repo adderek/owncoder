@@ -21,7 +21,9 @@ _SOURCE_GLOBS = (
 )
 
 _DEFAULT_MAX = 60
+_CONTEXT_DEFAULT_MAX = 20   # lower match cap when each hit carries context lines
 _MAX_LINE_LEN = 300
+_MAX_CONTEXT_CHARS = 2000   # per-match context cap
 
 
 def setup(config) -> None:
@@ -62,7 +64,16 @@ def setup(config) -> None:
                 },
                 "max_results": {
                     "type": "integer",
-                    "description": f"Max matches (default: {_DEFAULT_MAX})",
+                    "description": f"Max matches (default: {_DEFAULT_MAX}, "
+                                   f"or {_CONTEXT_DEFAULT_MAX} when context_lines is set)",
+                },
+                "context_lines": {
+                    "type": "integer",
+                    "description": (
+                        "Lines of surrounding code attached to each match as `context` "
+                        "(max 10). Use when you need to see how a match is used — e.g. "
+                        "refactoring — instead of a read_file round trip per hit."
+                    ),
                 },
             },
             "required": ["pattern"],
@@ -76,6 +87,7 @@ def grep_code(
     fixed_string: bool = False,
     case_insensitive: bool = False,
     max_results: int | None = None,
+    context_lines: int = 0,
 ) -> dict:
     working_dir = (_config.tools.working_dir if _config else None) or os.getcwd()
     search_root = Path(path).expanduser() if path else Path(working_dir)
@@ -96,7 +108,8 @@ def grep_code(
                 "pattern": pattern,
             }
 
-    limit = max_results or _DEFAULT_MAX
+    context_lines = max(0, min(int(context_lines or 0), 10))
+    limit = max_results or (_CONTEXT_DEFAULT_MAX if context_lines else _DEFAULT_MAX)
 
     cmd = ["grep", "-rn", "--color=never"]
     if fixed_string:
@@ -153,6 +166,33 @@ def grep_code(
             continue
 
         results.append({"path": rel, "line": lineno, "content": content[:_MAX_LINE_LEN]})
+
+    # Attach surrounding lines per match. Reading files here (instead of grep -C)
+    # keeps the output parsing unambiguous and reuses the ignore/secret filters
+    # already applied above; one read per file, shared across its matches.
+    if context_lines and results:
+        file_cache: dict[str, list[str] | None] = {}
+        for r in results:
+            fp = r["path"]
+            if fp not in file_cache:
+                abs_path = Path(fp)
+                if not abs_path.is_absolute():
+                    abs_path = Path(working_dir) / fp
+                try:
+                    file_cache[fp] = abs_path.read_text(
+                        encoding="utf-8", errors="replace").splitlines()
+                except OSError:
+                    file_cache[fp] = None
+            lines = file_cache[fp]
+            if lines is None:
+                continue
+            lo = max(0, r["line"] - 1 - context_lines)
+            hi = min(len(lines), r["line"] + context_lines)
+            block = "\n".join(
+                f"{i + 1}{'>' if i + 1 == r['line'] else ':'} {lines[i]}"
+                for i in range(lo, hi)
+            )
+            r["context"] = block[:_MAX_CONTEXT_CHARS]
 
     return {
         "results": results,
