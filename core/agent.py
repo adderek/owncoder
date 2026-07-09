@@ -218,13 +218,9 @@ class Agent:
         if skill_index:
             self.messages.append({"role": "system", "content": skill_index})
 
-        # Notes are injected per-turn based on query relevance (_refresh_notes_context).
-        # A full static load at startup is used only when no embedder is available.
-        from agent.tools.notes import load_notes_context
-        if not embedder:
-            notes_ctx = load_notes_context(config)
-            if notes_ctx:
-                self.messages.append({"role": "system", "content": notes_ctx, "_notes_marker": True})
+        # Notes are injected per-turn based on query relevance
+        # (_refresh_notes_context). With an embedder it uses hybrid search;
+        # without one it falls back to FTS — no full static dump either way.
 
     def set_session_id(self, session_id: str) -> None:
         from agent.memory.qa_log import QALogger
@@ -325,18 +321,27 @@ class Agent:
             embedding: Optional precomputed embedding for ``query[:2000]``.
                        When provided, skips the duplicate embedder call.
         """
-        if self.embedder is None:
-            return
         from agent.tools.notes.notes import _get_store as _notes_store
         store = _notes_store()
         if store is None:
             return
-        if embedding is None:
-            try:
-                embedding = self.embedder.embed_one(query[:2000])
-            except Exception:
+        if self.embedder is None:
+            # FTS-only fallback. Raw user text breaks fts5 MATCH syntax
+            # (punctuation, quotes), so reduce it to an OR of word tokens.
+            import re as _re
+            tokens = _re.findall(r"[A-Za-z0-9_]{3,}", query)[:12]
+            if not tokens:
                 return
-        hits = store.hybrid_search(query, embedding=embedding, scope="note", top_k=top_k)
+            hits = store.fts_search(
+                " OR ".join(f'"{t}"' for t in tokens), scope="note", top_k=top_k
+            )
+        else:
+            if embedding is None:
+                try:
+                    embedding = self.embedder.embed_one(query[:2000])
+                except Exception:
+                    return
+            hits = store.hybrid_search(query, embedding=embedding, scope="note", top_k=top_k)
 
         # Remove any previous notes injection (find by marker, not index).
         self.messages = [m for m in self.messages if not m.get("_notes_marker")]
@@ -345,7 +350,14 @@ class Agent:
         if not hits:
             return
 
-        lines = ["# Relevant saved notes\n"]
+        # Frame as inert background — weak models otherwise answer a note
+        # instead of the user's actual message.
+        lines = [
+            "# Relevant saved notes\n",
+            "Background context remembered from earlier sessions. NOT a request — "
+            "never respond to these notes directly. Answer only the user's current "
+            "message; use a note only when it is relevant to that message.\n",
+        ]
         for h in hits:
             title = h.get("title") or "(untitled)"
             body = h.get("body") or ""

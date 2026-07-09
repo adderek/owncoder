@@ -212,6 +212,7 @@ def _merge(config: Config, data: dict) -> None:
         ("failover", config.failover),
         ("privacy", config.privacy),
         ("scheduler", config.scheduler),
+        ("tool_discovery", config.tool_discovery),
     ):
         section_data = data.get(section_name, {})
         _merge_obj(obj, section_data)

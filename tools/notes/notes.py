@@ -1,8 +1,8 @@
 """`save_note` tool — persist cross-session facts to project notes store.
 
-Notes survive session boundaries. They are loaded at agent startup and
-injected into context, giving the model memory of prior decisions, preferences,
-and facts that aren't derivable from the codebase alone.
+Notes survive session boundaries. Relevant notes are injected per turn
+(query-relevance search over the store), giving the model memory of prior
+decisions, preferences, and facts that aren't derivable from the codebase alone.
 
 Storage: project-scoped MemoryStore at <agent_dir>/memory.db, scope='note'.
 """
@@ -122,8 +122,10 @@ def save_note(
 def load_notes_context(config=None, limit: int = 50) -> str | None:
     """Return all saved notes formatted for system context injection.
 
-    Called at agent startup to load the full notes corpus. Commit 3 will
-    replace this with selective per-turn injection based on query relevance.
+    Full-corpus dump. No longer used at agent startup — per-turn selective
+    injection (Agent._refresh_notes_context) replaced it, with an FTS fallback
+    when no embedder is available. Kept for tooling/tests that need the whole
+    notes set at once.
     """
     cfg = config or _config
     if cfg is None:
