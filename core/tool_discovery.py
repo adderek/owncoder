@@ -74,7 +74,7 @@ _CATEGORIES: list[tuple[str, str, tuple[str, ...], frozenset[str]]] = [
     ("indexing", "build/refresh code index, graph, asm analysis",
      ("graph_build", "index_"), frozenset({"index_code", "analyze_asm"})),
     ("security audit", "scan code for vulnerabilities",
-     (), frozenset({"security_audit"})),
+     (), frozenset({"security_audit", "analyze_dependencies"})),
     ("web", "search/fetch external information",
      ("web_",), frozenset({"ask_internet"})),
     ("ideas & notes", "capture out-of-scope ideas/bugs",
