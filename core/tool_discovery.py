@@ -53,7 +53,7 @@ _CATEGORIES: list[tuple[str, str, tuple[str, ...], frozenset[str]]] = [
     ("edit code", "apply changes to files",
      (), frozenset({"edit_file", "write_file", "replace_symbol", "undo_file"})),
     ("run commands", "execute shell/build/test commands",
-     (), frozenset({"run_argv", "run_command", "run_tests"})),
+     (), frozenset({"run_argv", "run_command", "run_tests", "build_project"})),
     ("git", "history, blame, diffs, related files",
      ("git_",), frozenset()),
     ("call graph (structure)", "who calls / what depends on / where defined",
