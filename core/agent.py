@@ -329,7 +329,9 @@ class Agent:
             # FTS-only fallback. Raw user text breaks fts5 MATCH syntax
             # (punctuation, quotes), so reduce it to an OR of word tokens.
             import re as _re
-            tokens = _re.findall(r"[A-Za-z0-9_]{3,}", query)[:12]
+            # \w (unicode) — ASCII-only class split words like "prasówka"
+            # into fragments that never match fts5 unicode61 tokens.
+            tokens = _re.findall(r"\w{3,}", query)[:12]
             if not tokens:
                 return
             hits = store.fts_search(
