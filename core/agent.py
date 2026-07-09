@@ -766,8 +766,12 @@ class Agent:
         try:
             from agent.metrics import model_calls
             self.last_round_model_calls = model_calls.round_counts()
+            _round_detail = model_calls.round_detail()
+            _round_duration = model_calls.round_duration()
         except Exception:
             self.last_round_model_calls = {}
+            _round_detail = []
+            _round_duration = 0.0
 
         if self._qa_logger is not None:
             task = asyncio.create_task(
@@ -780,6 +784,8 @@ class Agent:
                     list(_turn_tool_calls),
                     list(_turn_modified_files),
                     on_summarized=self.on_turn_summarized,
+                    model_calls=_round_detail,
+                    duration=_round_duration,
                 )
             )
             self._pending_bg_tasks.add(task)

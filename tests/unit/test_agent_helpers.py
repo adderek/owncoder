@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+import re
 import pytest
 from agent.core.tool_calls import (
     _parse_raw_tool_calls,
+    _parse_agent_exec_xml,
     _FakeToolCall,
 )
 from agent.core.streaming import (
@@ -16,6 +18,7 @@ from agent.core.streaming import (
 )
 from agent.core.history_ops import (
     _collapse_tool_rounds,
+    _short_repr,
     _merge_consecutive_assistants,
     _truncate_large_messages,
     extract_last_code_block,
@@ -164,6 +167,64 @@ class TestCollapseToolRounds:
         ]
         collapsed = _collapse_tool_rounds(messages)
         assert collapsed == messages
+
+    def test_long_arg_truncation_keeps_quotes_balanced(self):
+        """A long URL arg must not lose its closing quote in the summary
+        (models imitate the unbalanced form and the parser splices args)."""
+        long_url = "https://www.polsatnews.pl/wiadomosc/2026-07-09/placa-raty-za-mieszkania/"
+        messages = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "tc1", "type": "function", "function": {"name": "web_fetch", "arguments": json.dumps({"url": long_url, "purpose": "x"})}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc1", "content": '{"status_code": 200}'},
+        ]
+        collapsed = _collapse_tool_rounds(messages)
+        summary = collapsed[0]["content"]
+        m = re.search(r'args="([^"]*)"', summary.replace("&quot;", '"'))
+        assert m is not None
+        args_part = m.group(1)
+        assert args_part.count("'") % 2 == 0  # quotes balanced
+        assert "…" in args_part  # truncation is explicit
+
+
+class TestShortRepr:
+    def test_short_string_untouched(self):
+        assert _short_repr("abc") == "'abc'"
+
+    def test_long_string_balanced_with_marker(self):
+        r = _short_repr("https://example.com/" + "a" * 100)
+        assert len(r) <= 42
+        assert r.startswith("'") and r.endswith("'")
+        assert "…" in r
+
+    def test_non_string_capped(self):
+        r = _short_repr(list(range(100)))
+        assert len(r) <= 40
+        assert r.endswith("…")
+
+
+class TestParseAgentExecRejectsTruncated:
+    def test_spliced_url_from_truncated_summary_rejected(self):
+        # Exact shape from session 20260709T050349.749Z_ec19: repr-sliced url
+        # lost its closing quote, splicing ", purpose=" into the value.
+        text = ("<agent_exec tool=\"web_fetch\" args=\"url='https://www.polsatnews.pl/wiadomosc/202, "
+                "purpose='pobierz pełny artykuł o pogorzelcach'\">")
+        assert _parse_agent_exec_xml(text) is None
+
+    def test_ellipsis_marked_value_rejected(self):
+        text = "<agent_exec tool=\"web_fetch\" args=\"url='https://www.polsatnews.pl/wiado…'\"/>"
+        assert _parse_agent_exec_xml(text) is None
+
+    def test_clean_call_still_parses(self):
+        text = "<agent_exec tool=\"web_fetch\" args=\"url='https://example.com/a', purpose='check'\"/>"
+        calls = _parse_agent_exec_xml(text)
+        assert calls is not None
+        assert calls[0]["name"] == "web_fetch"
+        assert calls[0]["arguments"]["url"] == "https://example.com/a"
 
 
 class TestFakeToolCall:

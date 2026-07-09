@@ -111,6 +111,12 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
     if _start_notify is not None:
         _start_notify()
 
+    # Patched-tilix scrollback folds around each round (opt-in; see ui/term_folds.py).
+    import sys as _sys
+    _tilix_folds = bool(_ui_cfg.get("tilix_folds", False)) and _sys.stdout.isatty()
+    _fold_seq = 0
+    _open_fold: "str | None" = None
+
     prompt_esc = _hex_to_ansi(t.prompt)
     console.print(
         f"[bold {t.agent_color}]local-code-agent[/bold {t.agent_color}]  [dim]{_llm_cfg['model']}  {_llm_cfg['ctx_window']} ctx[/dim]"
@@ -627,6 +633,15 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
 
         _set_term_title(f"{_title_icon} agent — working{_session_suffix()}")
 
+        if _tilix_folds:
+            from agent.ui import term_folds
+            if _open_fold is not None:
+                # Previous round left open (e.g. Ctrl-C mid-turn) — close it.
+                term_folds.fold_end(_open_fold, summary="interrupted", status="warning")
+            _fold_seq += 1
+            _open_fold = f"agent-turn-{_fold_seq}"
+            term_folds.fold_start(_open_fold, title=user_input, group="agent-rounds")
+
         verbose = _os.environ.get("AGENT_VERBOSE", "").lower() in ("1", "true", "yes")
 
         tool_results: list[str] = []
@@ -757,6 +772,10 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
             if _bell_enabled:
                 sys.stdout.write("\007")
                 sys.stdout.flush()
+            if _open_fold is not None:
+                from agent.ui import term_folds
+                term_folds.fold_end(_open_fold, summary=f"error: {e}", status="error")
+                _open_fold = None
             continue
         finally:
             _spinner_stop.set()
@@ -802,6 +821,7 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
             console.print(f"[{t.text_dim}]{'  '.join(parts)}[/{t.text_dim}]")
 
         # Per-round model-call breakdown by cost tier (local/free/bundled/paid).
+        _mc = ""
         try:
             from agent.metrics import model_calls
             _mc = model_calls.format_line(model_calls.round_counts(),
@@ -815,5 +835,10 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
             console.print(
                 f"\n{_token_bar(server.token_estimate(), _llm_cfg['ctx_window'])}\n"
             )
+
+        if _open_fold is not None:
+            from agent.ui import term_folds
+            term_folds.fold_end(_open_fold, summary=_mc or "done", status="success")
+            _open_fold = None
 
     return session

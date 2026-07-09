@@ -167,6 +167,12 @@ class TestStreamResponseClean:
             ("a b c d e f g h", False),
             ("de-facto de-facto something-else de-facto de-facto", False),
             ("repeat repeat repeat repeat repeat repeat repeat", True),
+            # Degenerate single-char run with no whitespace (session ec19:
+            # URL followed by thousands of '0's formed one giant "word")
+            ("https://www.polsatnews.pl/wiadomosc/202607081625" + "0" * 8000, True),
+            ("0" * 120, True),
+            ("0" * 119, False),
+            ("normal text then " + "=" * 80 + " separator", False),
         ],
     )
     def test_repetition_guard_detects_loops(self, text, expected_repeat):

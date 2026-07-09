@@ -419,6 +419,7 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             self._reload_qa_views()
             if msgs:
                 self._restore_chat_history(msgs, qa_entries=getattr(self, "_last_qa_entries", None))
+            self._restore_ui_state()
             try:
                 app_ref = self
 

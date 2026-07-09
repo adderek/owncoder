@@ -211,15 +211,29 @@ def _parse_qwen_function_xml(text: str) -> list[dict] | None:
     return calls if calls else None
 
 
+# Arg values imitated from compacted-history summaries, not real calls: the …
+# truncation marker (_short_repr in history_ops), or a spliced trailing `key=`
+# left over from a quote-unbalanced summary (e.g. url='…/wiadomosc/202, purpose=').
+# Executing them fetches garbage URLs / writes garbage paths, so drop the value —
+# the call then fails to parse and the unexecuted-tag nudge handles it.
+_TRUNCATED_VALUE_RE = re.compile(r"…|,\s*\w+=$")
+
+
+def _looks_truncated(val: str) -> bool:
+    return bool(_TRUNCATED_VALUE_RE.search(val))
+
+
 def _parse_agent_exec_args(raw: str) -> dict:
     """Extract key=value pairs from agent_exec args content."""
     args: dict = {}
     # Single-quoted values (handle escaped single-quotes and backslash sequences)
     for pm in re.finditer(r"""(\w+)\s*=\s*'((?:[^'\\]|\\.)*)'""", raw):
+        if _looks_truncated(pm.group(2)):
+            continue
         args[pm.group(1)] = pm.group(2)
     # Double-quoted values (handle escaped double-quotes)
     for pm in re.finditer(r'(\w+)\s*=\s*"((?:[^"\\]|\\.)*)"', raw):
-        if pm.group(1) not in args:
+        if pm.group(1) not in args and not _looks_truncated(pm.group(2)):
             args[pm.group(1)] = pm.group(2)
     # Integer values
     for pm in re.finditer(r"""(\w+)\s*=\s*(\d+)""", raw):

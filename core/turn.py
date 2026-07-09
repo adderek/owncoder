@@ -38,11 +38,14 @@ async def _post_turn_capture_and_summarize(
     tool_calls: list[str],
     modified_files: list[str],
     on_summarized=None,
+    model_calls: list[dict] | None = None,
+    duration: float = 0.0,
 ) -> None:
     try:
         q_path, a_path = await asyncio.gather(
             qa_logger.capture_q(turn_id, user_input),
-            qa_logger.capture_a(turn_id, response, tool_calls=tool_calls, modified_files=modified_files),
+            qa_logger.capture_a(turn_id, response, tool_calls=tool_calls, modified_files=modified_files,
+                                model_calls=model_calls, duration=duration),
         )
         if config.ui.q_summaries:
             from agent.summarizer import summarize_turn_background

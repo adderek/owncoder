@@ -151,6 +151,8 @@ class UIConfig:
     qa_summary_mode: str = "lazy"  # "lazy" (on tab open) | "background" (after each turn) | "off"
     spinner_animation: str = "box"  # preset name or custom chars; see ui/spinner.py SPINNER_PRESETS
     show_active_models: str = "auto"  # status-bar model breakdown: "auto" (when >1 model or subagents live) | "always" | "off"
+    chat_restore_expand_last: int = 3  # on resume, render last N turns in full; older turns fold to one line (0 = fold all)
+    tilix_folds: bool = False  # emit OSC-777 fold escapes around each round (patched tilix only; simple/readline UI)
     theme: ThemeConfig = field(default_factory=ThemeConfig)
 
 

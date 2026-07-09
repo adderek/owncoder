@@ -448,6 +448,7 @@ class EventHandlerMixin:
         self.call_later(self._refresh_git)
 
     def on_tabbed_content_tab_activated(self, event) -> None:
+        self._save_ui_state()
         mode = self._server.get_ui_config().get("qa_summary_mode", "lazy")
         if mode != "lazy":
             return

@@ -412,10 +412,15 @@ def build_widget_classes(t) -> SimpleNamespace:
                 tip = "Click: model-call detail for this round"
             elif line_idx in getattr(self.app, "_chat_file_lines", {}):
                 tip = "Click: diff for this file"
-            elif getattr(self.app, "_chat_qa_data", []):
-                tip = "Click: expand this turn"
             else:
-                tip = None
+                line_map = getattr(self.app, "_chat_line_to_ordinal", [])
+                if 0 <= line_idx < len(line_map) and line_map[line_idx] >= 0:
+                    folded = getattr(self.app, "_chat_folded", set())
+                    tip = ("Click: unfold this turn"
+                           if line_map[line_idx] in folded
+                           else "Click: fold this turn")
+                else:
+                    tip = None
             if tip != self.tooltip:
                 self.tooltip = tip
 
@@ -445,36 +450,15 @@ def build_widget_classes(t) -> SimpleNamespace:
                 )
                 return
 
+            # Turn line → toggle fold/unfold in place. Lines past the rendered
+            # map (live streamed output) are left alone — they are already full.
             qa_data = getattr(self.app, "_chat_qa_data", [])
-            if not qa_data:
-                return
-
-            # Primary: per-visual-line ordinal map built during _restore_chat_history.
             line_to_ordinal = getattr(self.app, "_chat_line_to_ordinal", [])
-            if line_to_ordinal:
-                if 0 <= line_idx < len(line_to_ordinal):
-                    ordinal = line_to_ordinal[line_idx]
-                else:
-                    ordinal = len(qa_data) - 1  # past end → last turn
-                if ordinal < 0 or ordinal >= len(qa_data):
-                    return
-                q_d, a_d = qa_data[ordinal]
-                self.post_message(ExpandTurn(ordinal, q_d, a_d))
+            if not qa_data or not (0 <= line_idx < len(line_to_ordinal)):
                 return
-
-            # Fallback: anchor search for live sessions without line_to_ordinal.
-            anchors = getattr(self.app, "_chat_user_lines", [])
-            if not anchors:
-                return
-            ordinal = 0
-            for i, line_no in enumerate(anchors):
-                if line_no <= line_idx:
-                    ordinal = i
-                else:
-                    break
-            if ordinal < len(qa_data):
-                q_d, a_d = qa_data[ordinal]
-                self.post_message(ExpandTurn(ordinal, q_d, a_d))
+            ordinal = line_to_ordinal[line_idx]
+            if 0 <= ordinal < len(qa_data):
+                self.app._toggle_chat_fold(ordinal)
 
     class SysView(RichLog):
         """System log — commands, session info, help output."""

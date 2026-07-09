@@ -53,6 +53,10 @@ def build_streamed_choice(finish_reason, full_content, raw_tool_calls, reasoning
 # Repetition guard: break stream if last N content/reasoning chunks are identical
 _REPEAT_WINDOW = 10
 _REPEAT_THRESHOLD = 6
+# Degenerate single-char runs (e.g. a URL followed by thousands of '0's) have no
+# whitespace, so the word-based repetition guard never fires; 120 stays above
+# legitimate horizontal rules / separator lines.
+_CHAR_RUN_LIMIT = 120
 
 _NARRATION_PHRASES = [
     "i'll apply", "i will apply", "let me apply",
@@ -93,6 +97,9 @@ def _repetition_guard(content: str, threshold: int = _REPEAT_THRESHOLD) -> bool:
     Splits tail into word tokens, counts runs of identical tokens.
     Returns True when same token appears >threshold times consecutively.
     """
+    tail = content[-_CHAR_RUN_LIMIT:]
+    if len(tail) >= _CHAR_RUN_LIMIT and len(set(tail)) == 1:
+        return True
     words = content.split()
     if len(words) < threshold:
         return False

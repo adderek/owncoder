@@ -36,35 +36,20 @@ class ViewMixin:
         resume_marker: bool = False,
         qa_entries: "list | None" = None,
     ) -> None:
-        t = self._t
-        _one_line = self._wt._one_line
-        chat_log = self.query_one("#chat-log", self._wt.ConversationView)
-        chat_log.clear()
-        self._chat_user_lines = []
-        self._chat_model_lines = {}
-        self._chat_qa_data: list[tuple] = []
-        self._chat_line_to_ordinal: list[int] = []
-        current_ordinal: list[int] = [-1]  # mutable cell; -1 = pre-first-turn lines
+        """Rebuild the chat log from session data.
 
-        def _cw(line) -> None:
-            """Write one line to chat_log and extend the ordinal map by however many visual lines result."""
-            before = len(chat_log.lines)
-            chat_log.write(line)
-            added = len(chat_log.lines) - before
-            self._chat_line_to_ordinal.extend([current_ordinal[0]] * max(added, 1))
-
-        # Build parallel Q/A data and summary lists from Q/A log (best-effort by turn count).
-        qa_list: list[tuple] = []
-        q_summaries: list[str] = []
-        a_summaries: list[str] = []
-        if qa_entries:
-            for _tid, q, a in qa_entries:
-                qa_list.append((q or {}, a or {}))
-                q_summaries.append((q or {}).get("summary_q", "") or "")
-                a_summaries.append((a or {}).get("summary_a", "") or "")
-
-        q_idx = 0
-        a_idx = 0
+        Turns are rendered from ``_chat_qa_data``: the last
+        ``chat_restore_expand_last`` turns in full (Markdown response, tool
+        icons, file diffs, round-stats line — same output as before the app
+        closed), older turns folded to a one-line summary. Clicking a turn
+        toggles its fold."""
+        # ── build per-turn (q_d, a_d) data: pair user messages with Q/A log
+        #    entries by index, falling back to raw message content.
+        qa_list: list[tuple] = [
+            (q or {}, a or {}) for _tid, q, a in (qa_entries or [])
+        ]
+        pairs: list[tuple] = []   # (q_text, tool_names, a_texts)
+        cur: "list | None" = None
         for m in messages:
             role = m.get("role", "")
             if role == "system":
@@ -72,27 +57,171 @@ class ViewMixin:
             content = m.get("content") or ""
             if isinstance(content, list):
                 content = _json.dumps(content)
-            tool_calls = m.get("tool_calls") or []
             if role == "user":
-                self._chat_user_lines.append(len(chat_log.lines))
-                q_d, a_d = qa_list[q_idx] if q_idx < len(qa_list) else ({"content": content}, {})
-                self._chat_qa_data.append((q_d, a_d))
-                display = (q_summaries[q_idx] if q_idx < len(q_summaries) else "") or content
-                current_ordinal[0] = q_idx
-                q_idx += 1
-                _cw(f"[bold {t.user_color}]You:[/bold {t.user_color}] {_escape(_one_line(display, wrap=False))}")
-            elif role == "assistant":
-                for tc in tool_calls:
+                if cur is not None:
+                    pairs.append(tuple(cur))
+                cur = [content, [], []]
+            elif role == "assistant" and cur is not None:
+                for tc in m.get("tool_calls") or []:
                     if isinstance(tc, dict):
-                        name = tc.get("function", {}).get("name", "?")
-                        from agent.ui.render import tool_icon as _ti
-                        _cw(f"[{t.tool_color}]  {_ti(name)} {name}[/{t.tool_color}]")
+                        cur[1].append(tc.get("function", {}).get("name", "?"))
                 if content:
-                    summary = (a_summaries[a_idx] if a_idx < len(a_summaries) else "") or content
-                    _cw(f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}] {_escape(_one_line(summary, wrap=False))}")
-                    a_idx += 1
-        if resume_marker:
-            _cw(f"[{t.text_dim}]─── resumed ───[/{t.text_dim}]")
+                    cur[2].append(content)
+        if cur is not None:
+            pairs.append(tuple(cur))
+
+        self._chat_qa_data = []
+        for i, (q_text, tool_names, a_texts) in enumerate(pairs):
+            if i < len(qa_list):
+                q_d, a_d = dict(qa_list[i][0]), dict(qa_list[i][1])
+            else:
+                q_d, a_d = {}, {}
+            q_d.setdefault("content", q_text)
+            a_d.setdefault("content", "\n\n".join(a_texts))
+            if not a_d.get("tool_calls"):
+                a_d["tool_calls"] = tool_names
+            self._chat_qa_data.append((q_d, a_d))
+
+        # ── fold defaults: expand the tail, fold the rest
+        try:
+            expand_last = int(self._server.get_ui_config().get(
+                "chat_restore_expand_last", 3))
+        except Exception:
+            expand_last = 3
+        n = len(self._chat_qa_data)
+        self._chat_folded = set(range(max(0, n - expand_last)))
+        self._chat_restored_count = n
+        self._chat_resume_marker = resume_marker
+        self._rerender_chat()
+
+    def _rerender_chat(self) -> None:
+        """Clear and re-render the whole chat log from ``_chat_qa_data``,
+        honouring per-turn fold state and rebuilding all click-target maps."""
+        t = self._t
+        _one_line = self._wt._one_line
+        chat_log = self.query_one("#chat-log", self._wt.ConversationView)
+        chat_log.clear()
+        self._chat_user_lines = []
+        self._chat_model_lines = {}
+        self._chat_file_lines = {}
+        self._chat_line_to_ordinal = []
+        folded = getattr(self, "_chat_folded", set())
+        marker_after = (getattr(self, "_chat_restored_count", 0) - 1
+                        if getattr(self, "_chat_resume_marker", False) else None)
+        current_ordinal: list[int] = [-1]
+
+        def _cw(line) -> None:
+            """Write one item and extend the ordinal map by the visual lines it produced."""
+            before = len(chat_log.lines)
+            chat_log.write(line)
+            added = len(chat_log.lines) - before
+            self._chat_line_to_ordinal.extend([current_ordinal[0]] * max(added, 1))
+
+        for ordinal, (q_d, a_d) in enumerate(self._chat_qa_data):
+            current_ordinal[0] = ordinal
+            self._chat_user_lines.append(len(chat_log.lines))
+            if ordinal in folded:
+                self._render_folded_turn(_cw, q_d, a_d, _one_line, t)
+            else:
+                self._render_full_turn(_cw, chat_log, q_d, a_d, t)
+            if marker_after is not None and ordinal == marker_after:
+                current_ordinal[0] = -1
+                _cw(f"[{t.text_dim}]─── resumed ───[/{t.text_dim}]")
+        chat_log.scroll_end(animate=False)
+
+    def _render_folded_turn(self, _cw, q_d: dict, a_d: dict, _one_line, t) -> None:
+        q = (q_d.get("summary_q") or q_d.get("content") or "").strip()
+        a = (a_d.get("summary_a") or a_d.get("content") or "").strip()
+        tools = a_d.get("tool_calls") or []
+        a_part = a or (f"{len(tools)} tool call{'s' if len(tools) != 1 else ''}" if tools else "(no reply)")
+        _cw(
+            f"[{t.text_dim}]▸[/{t.text_dim}] "
+            f"[bold {t.user_color}]You:[/bold {t.user_color}] {_escape(_one_line(q, limit=80, wrap=False))}"
+            f"  [{t.text_dim}]·[/{t.text_dim}] "
+            f"[{t.agent_color}]A:[/{t.agent_color}] [{t.text_dim}]{_escape(_one_line(a_part, limit=100, wrap=False))}[/{t.text_dim}]"
+        )
+
+    def _render_full_turn(self, _cw, chat_log, q_d: dict, a_d: dict, t) -> None:
+        from rich.markdown import Markdown as _Markdown
+        from agent.ui.render import _delatex, tool_icon as _ti
+        q = (q_d.get("content") or "").strip()
+        _cw(f"[{t.text_dim}]▾[/{t.text_dim}] [bold {t.user_color}]You:[/bold {t.user_color}] {_escape(q)}")
+        for name in a_d.get("tool_calls") or []:
+            _cw(f"[{t.tool_color}]  {_ti(name)} {name}[/{t.tool_color}]")
+        for entry in a_d.get("modified_files") or []:
+            if isinstance(entry, str):
+                entry = {"path": entry, "added": 0, "removed": 0}
+            p = entry.get("path", "")
+            add, rem = entry.get("added", 0), entry.get("removed", 0)
+            stat = f" [rgb(56,142,60)]+{add}[/] [rgb(198,40,40)]-{rem}[/]" if (add or rem) else ""
+            before = len(chat_log.lines)
+            _cw(f"  [{t.tool_color}]✎ {_escape(p)}[/{t.tool_color}]{stat}")
+            for li in range(before, len(chat_log.lines)):
+                self._chat_file_lines[li] = entry
+        a = (a_d.get("content") or "").strip()
+        if a:
+            _cw(f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}]")
+            _cw(_Markdown(_delatex(a)))
+        # Round-stats line — clickable, same as live turns.
+        mc = a_d.get("model_calls") or []
+        dur = a_d.get("duration") or 0.0
+        if mc:
+            from agent.metrics import model_calls as _mcm
+            from collections import Counter
+            counts = Counter(c.get("tier", "local") for c in mc)
+            line = _mcm.format_line(dict(counts), duration=dur or None)
+            before = len(chat_log.lines)
+            _cw(f"[{t.text_dim}]{line}  [i]▸ click for detail[/i][/{t.text_dim}]")
+            payload = {"calls": mc, "duration": dur}
+            for li in range(before, len(chat_log.lines)):
+                self._chat_model_lines[li] = payload
+
+    def _toggle_chat_fold(self, ordinal: int) -> None:
+        """Fold/unfold one turn and re-render. No-op while a turn is streaming."""
+        if getattr(self, "_agent_running", False):
+            return
+        if not (0 <= ordinal < len(getattr(self, "_chat_qa_data", []))):
+            return
+        if not hasattr(self, "_chat_folded"):
+            self._chat_folded = set()
+        if ordinal in self._chat_folded:
+            self._chat_folded.discard(ordinal)
+        else:
+            self._chat_folded.add(ordinal)
+        self._rerender_chat()
+
+    # ── per-session UI state (active tab, …) ────────────────────────────────
+
+    def _ui_state_path(self):
+        from agent.memory.session import _get_session_dir, get_session_subpath
+        if not self._session:
+            return None
+        return _get_session_dir() / get_session_subpath(self._session.id) / "ui_state.json"
+
+    def _save_ui_state(self) -> None:
+        path = self._ui_state_path()
+        if path is None:
+            return
+        try:
+            from textual.widgets import TabbedContent
+            state = {"active_tab": self.query_one(TabbedContent).active}
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(_json.dumps(state), encoding="utf-8")
+        except Exception:
+            logger.debug("_save_ui_state failed (ignored)", exc_info=True)
+
+    def _restore_ui_state(self) -> None:
+        path = self._ui_state_path()
+        if path is None or not path.exists():
+            return
+        try:
+            from textual.widgets import TabbedContent
+            state = _json.loads(path.read_text(encoding="utf-8"))
+            tab = state.get("active_tab")
+            if tab:
+                self.query_one(TabbedContent).active = tab
+        except Exception:
+            logger.debug("_restore_ui_state failed (ignored)", exc_info=True)
 
     def _reload_sys_view(self) -> None:
         sys_log = self.query_one("#sys-log", self._wt.SysView)
@@ -208,6 +337,13 @@ class ViewMixin:
                     for f in self._modified_files
                 ],
             }
+            # Round stats so fold/unfold re-renders keep the clickable line.
+            try:
+                from agent.metrics import model_calls as _mcm
+                a_data["model_calls"] = _mcm.round_detail()
+                a_data["duration"] = _mcm.round_duration()
+            except Exception:
+                pass
             # Keep chat_qa_data in sync so click-to-expand works for live turns too.
             if not hasattr(self, "_chat_qa_data"):
                 self._chat_qa_data = []

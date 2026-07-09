@@ -383,6 +383,8 @@ class LocalUIServer:
             "qa_summary_mode": getattr(cfg.ui, "qa_summary_mode", "lazy"),
             "spinner_animation": getattr(cfg.ui, "spinner_animation", "box"),
             "show_active_models": getattr(cfg.ui, "show_active_models", "auto"),
+            "chat_restore_expand_last": int(getattr(cfg.ui, "chat_restore_expand_last", 3)),
+            "tilix_folds": bool(getattr(cfg.ui, "tilix_folds", False)),
         }
 
     def get_turn_id(self, session_id: str = "") -> int:

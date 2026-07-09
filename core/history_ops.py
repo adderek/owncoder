@@ -83,6 +83,23 @@ def _merge_consecutive_assistants(messages: list[dict]) -> list[dict]:
     return out
 
 
+def _short_repr(v, limit: int = 40) -> str:
+    """repr() capped at `limit` chars without splitting string quotes.
+
+    A blindly sliced repr like `'https://x.pl/wiadomosc/202` (closing quote
+    lost) lands in <agent_exec args="..."> summaries; models imitate that form
+    and _parse_agent_exec_args then splices the next `key=` into the value.
+    Strings are shortened before repr so quoting stays balanced, and the `…`
+    marker makes truncation visible — and rejectable — in imitations.
+    """
+    r = repr(v)
+    if len(r) <= limit:
+        return r
+    if isinstance(v, str):
+        return repr(v[: max(1, limit - 4)] + "…")
+    return r[: limit - 1] + "…"
+
+
 def _collapse_tool_rounds(
     messages: list[dict],
     result_preview: int = 200,
@@ -110,7 +127,7 @@ def _collapse_tool_rounds(
                 args_raw = tc.get("function", {}).get("arguments", "{}")
                 try:
                     t_args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
-                    t_arg_str = ", ".join(f"{k}={repr(v)[:40]}" for k, v in list(t_args.items())[:2])
+                    t_arg_str = ", ".join(f"{k}={_short_repr(v)}" for k, v in list(t_args.items())[:2])
                 except Exception:
                     t_arg_str = str(args_raw)[:60]
 

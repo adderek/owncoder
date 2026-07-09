@@ -463,9 +463,10 @@ class SlashHandlerMixin:
             self._write_sys(f"[{t.success}]Line wrapping {state}.[/{t.success}]")
             self.query_one("#chat-log", self._wt.ConversationView).clear()
             msgs = self._server.get_messages()
-            if msgs:
-                self._restore_chat_history(msgs)
             self._reload_qa_views()
+            if msgs:
+                self._restore_chat_history(
+                    msgs, qa_entries=getattr(self, "_last_qa_entries", None))
 
         elif cmd in ("/round-summary", "/summary"):
             from agent.ui.prefs import load_prefs, save_prefs
