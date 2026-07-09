@@ -227,8 +227,8 @@ def _parse_agent_exec_args(raw: str) -> dict:
         if key not in args:
             val = pm.group(2)
             args[key] = int(val) if val.isdigit() else val
-    # Bare-word values
-    for pm in re.finditer(r"""(\w+)\s*=\s*(\w+)""", raw):
+    # Bare-word values (include path chars: "path=a/b.py" must not truncate to "a")
+    for pm in re.finditer(r"""(\w+)\s*=\s*([\w./~-]+)""", raw):
         key = pm.group(1)
         if key not in args:
             args[key] = pm.group(2)

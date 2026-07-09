@@ -9,6 +9,9 @@ from agent.core.tool_calls import (
 )
 from agent.core.streaming import (
     _is_narrating_tool_use,
+    _has_unexecuted_agent_exec,
+    _mark_unexecuted_agent_exec,
+    _UNEXECUTED_EXEC_NOTE,
     _strip_tool_blocks,
 )
 from agent.core.history_ops import (
@@ -92,6 +95,49 @@ class TestIsNarratingToolUse:
     ])
     def test_non_narration(self, text):
         assert not _is_narrating_tool_use(text)
+
+    def test_hallucinated_agent_exec_is_narration(self):
+        # Regression: session 20260708T214719.223Z_de9e — model imitated the
+        # history-summary format with an unparseable tool name and a fabricated
+        # "ok" result; nothing executed but the text claimed success.
+        text = (
+            "Testy przechodzą.\n\n"
+            "<agent_exec tool=\"run_argv (extracted)\" args=\"['gh', 'api', 'x', '--jq', '.conclusion']\">ok</agent_exec>\n\n"
+            "Sprawdzono konkluzję testów."
+        )
+        assert _is_narrating_tool_use(text)
+
+    def test_agent_exec_in_code_fence_not_narration(self):
+        text = "The summary format is:\n```\n<agent_exec tool=\"write_file\" args=\"path=x\">ok</agent_exec>\n```\nas shown."
+        assert not _is_narrating_tool_use(text)
+
+
+class TestUnexecutedAgentExec:
+    def test_detects_outside_fence(self):
+        assert _has_unexecuted_agent_exec('before <agent_exec tool="a b" args="c">ok</agent_exec> after')
+
+    def test_ignores_inside_fence(self):
+        assert not _has_unexecuted_agent_exec('```\n<agent_exec tool="x" args="y">ok</agent_exec>\n```')
+
+    def test_mark_replaces_tag_with_note(self):
+        text = 'claim\n\n<agent_exec tool="run_argv (extracted)" args="[\'gh\']">ok</agent_exec>\n\ndone'
+        out = _mark_unexecuted_agent_exec(text)
+        assert "<agent_exec" not in out
+        assert _UNEXECUTED_EXEC_NOTE in out
+        assert "claim" in out and "done" in out
+
+    def test_mark_replaces_unclosed_tail(self):
+        text = 'claim <agent_exec tool="x" args="never closed'
+        out = _mark_unexecuted_agent_exec(text)
+        assert "<agent_exec" not in out
+        assert _UNEXECUTED_EXEC_NOTE in out
+
+    def test_mark_preserves_code_fences(self):
+        fenced = '```\n<agent_exec tool="x" args="y">ok</agent_exec>\n```'
+        text = f'<agent_exec tool="a b" args="c">ok</agent_exec>\n{fenced}'
+        out = _mark_unexecuted_agent_exec(text)
+        assert fenced in out
+        assert out.count("<agent_exec") == 1  # only the fenced one remains
 
 
 class TestCollapseToolRounds:

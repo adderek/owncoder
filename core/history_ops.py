@@ -213,8 +213,13 @@ def _build_extracted_summary(filename: str, code: str, outcome: str, err: str | 
     else:
         arrow = f"ERROR: {err}"
 
-    safe_path = filename.replace('"', '&quot;').replace('>', '&gt;').replace('<', '&lt;')
-    summary_text = f"<agent_exec tool=\"write_file (extracted)\" args=\"path={safe_path}\">{arrow}</agent_exec>"
+    safe_path = filename.replace("\\", "\\\\").replace("'", "\\'").replace('"', '&quot;').replace('>', '&gt;').replace('<', '&lt;')
+    # Tool name must stay a plain \w+ identifier: models imitate these history
+    # summaries verbatim, and a name like "write_file (extracted)" is unparseable
+    # by _parse_agent_exec_xml — the imitation then neither executes nor gets
+    # stripped, and a fabricated "ok" result reaches the user as fact. The path
+    # is single-quoted so imitations parse whole instead of truncating at "/".
+    summary_text = f"<agent_exec tool=\"write_file\" args=\"path='{safe_path}'\">{arrow} (extracted from narration)</agent_exec>"
     summary_msg: dict = {"role": "assistant", "content": summary_text}
 
     if side_log is not None:

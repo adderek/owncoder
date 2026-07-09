@@ -283,7 +283,7 @@ def test_sessions_split_command_extracts_tool_rounds(tmp_path, monkeypatch):
     assert "huge file content" in rows[0]["result"]
 
     rewritten = _json.loads(session_json.read_text(encoding="utf-8"))
-    summaries = [m for m in rewritten["messages"] if m.get("role") == "assistant" and "<agent_exec " in m.get("content", "")]
+    summaries = [m for m in rewritten["messages"] if m.get("role") == "assistant" and "[old-session tool: " in m.get("content", "")]
     assert summaries and summaries[0].get("_tool_refs") == [0]
     assert (sdir / "session.json.bak").exists()
 

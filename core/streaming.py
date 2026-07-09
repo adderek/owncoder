@@ -157,6 +157,36 @@ def _strip_agent_exec_xml(text: str) -> str:
     return text.strip()
 
 
+# No literal "<agent_exec" in the note — the marking regexes would re-match it.
+_UNEXECUTED_EXEC_NOTE = "[removed: agent_exec tag written as text — this tool was NOT executed]"
+
+
+def _mark_unexecuted_agent_exec(text: str) -> str:
+    """Replace leftover <agent_exec> tags with an explicit not-executed marker.
+
+    Tags still present at the end of a turn were rejected by the parser
+    (unparseable tool name like "run_argv (extracted)", malformed args) and so
+    never executed. Leaving them verbatim shows the model's fabricated result
+    to the user as if real, and re-seeds the format for future imitation.
+    """
+    _AV = r'(?:"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|[^>\'"])*'
+    note = _UNEXECUTED_EXEC_NOTE
+
+    def _sub(seg: str) -> str:
+        seg = re.sub(r'<agent_exec\b' + _AV + r'\s*/>', note, seg, flags=re.DOTALL)
+        seg = re.sub(r'<agent_exec\b' + _AV + r'\s*>.*?</agent_exec>', note, seg, flags=re.DOTALL)
+        # Malformed tail: tag opened but never closed before end of segment
+        seg = re.sub(r'<agent_exec\b' + _AV + r'\s*>?(?:(?!</agent_exec>).)*$', note, seg, flags=re.DOTALL)
+        return seg
+
+    # Leave ``` code fences untouched — quoted tags there are content, not calls.
+    parts = text.split("```")
+    for i in range(0, len(parts), 2):
+        if "<agent_exec" in parts[i]:
+            parts[i] = _sub(parts[i])
+    return "```".join(parts).strip()
+
+
 def _clean_output(text: str) -> str:
     """Strip leaked control tokens and thinking artifacts from model output."""
     text = _THINK_TAG_RE.sub("", text)
@@ -175,7 +205,24 @@ def _clean_output(text: str) -> str:
     return text.strip()
 
 
+def _has_unexecuted_agent_exec(text: str) -> bool:
+    """True if an <agent_exec> tag appears outside ``` code fences.
+
+    A tag surviving to this point was rejected by the parser (unparseable tool
+    name, malformed args) and never executed. Fenced occurrences are excluded:
+    quoting the tag in a code block (e.g. when working on this codebase) is
+    legitimate content, not a hallucinated call.
+    """
+    parts = text.split("```")
+    return any("<agent_exec" in p for p in parts[::2])
+
+
 def _is_narrating_tool_use(text: str) -> bool:
+    # A leftover <agent_exec> tag means the parser rejected it (bad tool name /
+    # malformed args) — the model wrote a tool call as text, often with a
+    # fabricated result. Treat as narration so the turn loop re-prompts.
+    if _has_unexecuted_agent_exec(text):
+        return True
     lower = text.lower()
     if any(phrase in lower for phrase in _NARRATION_PHRASES):
         return True

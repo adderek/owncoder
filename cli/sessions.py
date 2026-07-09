@@ -102,6 +102,7 @@ def _split_sessions(target: str, console, dry_run: bool = False) -> None:
                 and (
                     (m.get("role") == "system" and m["content"].startswith("[tools:"))
                     or ("<agent_exec " in m.get("content", ""))
+                    or ("[old-session tool: " in m.get("content", ""))
                 )
             ):
                 if not dry_run:
@@ -161,9 +162,11 @@ def _split_sessions(target: str, console, dry_run: bool = False) -> None:
 
                 if m.get("content") and str(m["content"]).strip():
                     new_messages.append({"role": "assistant", "content": m["content"]})
-                # Build <agent_exec> tags for each tool call in the summary
+                # Plain-text summary, deliberately NOT <agent_exec> syntax:
+                # "(retro)" is not a parseable tool name, so a model imitating
+                # these lines would emit tags that neither execute nor strip.
                 exec_tags = "\n".join(
-                    f'<agent_exec tool="(retro)" args="{p}">(old-session)</agent_exec>'
+                    f"[old-session tool: {p}]"
                     for p in parts
                 ) if parts else "(no tools)"
                 summary_msg: dict = {"role": "assistant", "content": exec_tags}
