@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import base64
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -16,9 +16,11 @@ def reset_state():
     ws_main._config = None
     from agent.security import query_gate
     query_gate.reset_rate_limits()
+    query_gate._worker_limiter_var.set(None)  # clear leaked worker limiter
     yield
     ws_main._config = None
     query_gate.reset_rate_limits()
+    query_gate._worker_limiter_var.set(None)
 
 
 @pytest.fixture
@@ -57,7 +59,7 @@ class TestWebSearch:
         mock_results = [
             {"index": 1, "title": "Example", "url": "https://example.com", "snippet": "An example site."}
         ]
-        with patch.object(ws_main, "_search_backend", return_value=mock_results):
+        with patch.object(ws_main, "_search_backend", return_value=(mock_results, [])):
             result = ws_main.web_search("example")
         assert "results" in result
         assert "meta" in result
@@ -67,14 +69,14 @@ class TestWebSearch:
 
     def test_empty_backend_returns_no_results_note(self, enabled_cfg):
         ws_main.setup(enabled_cfg)
-        with patch.object(ws_main, "_search_backend", return_value=[]):
+        with patch.object(ws_main, "_search_backend", return_value=([], [])):
             result = ws_main.web_search("nothing")
         assert result["meta"]["total_results"] == 0
         assert "note" in result["meta"]
 
     def test_meta_query_hash_is_hex64(self, enabled_cfg):
         ws_main.setup(enabled_cfg)
-        with patch.object(ws_main, "_search_backend", return_value=[]):
+        with patch.object(ws_main, "_search_backend", return_value=([], [])):
             result = ws_main.web_search("my query")
         h = result["meta"]["query_hash"]
         assert len(h) == 64
@@ -86,7 +88,7 @@ class TestWebSearch:
 
         def fake_backend(query, num_results):
             seen["num"] = num_results
-            return []
+            return [], []
 
         with patch.object(ws_main, "_search_backend", side_effect=fake_backend):
             ws_main.web_search("test", num_results=9999)
@@ -97,7 +99,7 @@ class TestWebSearch:
         mock_results = [
             {"index": 1, "title": "T", "url": "https://t.com", "snippet": "snippet text"}
         ]
-        with patch.object(ws_main, "_search_backend", return_value=mock_results):
+        with patch.object(ws_main, "_search_backend", return_value=(mock_results, [])):
             result = ws_main.web_search("t")
         assert "snippet_hash" in result["results"][0]
 
@@ -106,7 +108,7 @@ class TestWebSearch:
         mock_results = [
             {"index": 1, "title": "T", "url": "https://t.com", "snippet": "plain snippet"}
         ]
-        with patch.object(ws_main, "_search_backend", return_value=mock_results):
+        with patch.object(ws_main, "_search_backend", return_value=(mock_results, [])):
             result = ws_main.web_search("t")
         snippet = result["results"][0]["snippet"]
         assert "<web_result" not in snippet
@@ -132,7 +134,7 @@ class TestDDGParser:
 
     def _ddg_search(self, enabled_cfg, html: bytes, num: int = 5):
         ws_main.setup(enabled_cfg)
-        with patch.object(ws_main, "_fetch_raw", return_value=(html, {})):
+        with patch.object(ws_main, "_fetch_raw", return_value=(html, {}, 200)):
             return ws_main._search_duckduckgo("test query", num)
 
     def test_parses_single_result(self, enabled_cfg):
@@ -296,7 +298,7 @@ class TestBackendFailureClearError:
 
     def test_empty_results_not_confused_with_error(self, enabled_cfg):
         ws_main.setup(enabled_cfg)
-        with patch.object(ws_main, "_search_backend", return_value=[]):
+        with patch.object(ws_main, "_search_backend", return_value=([], [])):
             result = ws_main.web_search("obscure thing")
         assert "error" not in result
         assert result["meta"]["total_results"] == 0
@@ -386,3 +388,140 @@ class TestRateLimiterIsolation:
         lim.search_count = 99
         # Main limiter must be untouched since we only mutated lim directly
         assert _main_limiter.search_count == 0
+
+
+class TestAntibotDetection:
+    def test_ddg_202_challenge_raises_backend_blocked(self, enabled_cfg):
+        ws_main.setup(enabled_cfg)
+        html = b"<html><head><title>Captcha</title></head><body>verify you are human</body></html>"
+        with patch.object(ws_main, "_fetch_raw", return_value=(html, {}, 202)):
+            with pytest.raises(ws_main.BackendBlocked):
+                ws_main._search_duckduckgo("q", 5)
+
+    def test_connection_reset_is_backend_blocked(self, enabled_cfg):
+        ws_main.setup(enabled_cfg)
+        with patch.object(ws_main, "_fetch_raw",
+                          side_effect=Exception("Connection reset by peer")):
+            with pytest.raises(ws_main.BackendBlocked):
+                ws_main._search_duckduckgo("q", 5)
+
+    def test_detect_markers(self):
+        assert ws_main._detect_antibot(200, "Please Wait For Verification ...")
+        assert ws_main._detect_antibot(403, "")
+        assert ws_main._detect_antibot(202, "js challenge")
+        assert ws_main._detect_antibot(200, "<html>normal page</html>") is None
+
+    def test_blocked_note_reaches_model(self, enabled_cfg):
+        ws_main.setup(enabled_cfg)
+        with patch.object(ws_main, "_search_backend",
+                          return_value=([], ["duckduckgo: blocked — HTTP 202 challenge"])):
+            result = ws_main.web_search("q")
+        assert "BLOCKED" in result["meta"]["note"]
+        assert "internet" in result["meta"]["note"].lower()
+        assert result["meta"]["backend_notes"]
+
+    def test_fetch_flags_antibot_page(self, enabled_cfg):
+        ws_main.setup(enabled_cfg)
+        body = b"<html><title>Attention Required</title>cf-chl challenge</html>"
+        import base64 as b64
+        with patch.object(ws_main.query_gate, "gate_fetch") as gf, \
+             patch.object(ws_main.http_executor, "fetch") as hf:
+            gf.return_value = MagicMock(url="https://x.com", pinned_ip=None)
+            hf.return_value = {
+                "status_code": 403, "final_url": "https://x.com",
+                "body_base64": b64.b64encode(body).decode(),
+                "headers": {"content-type": "text/html"},
+            }
+            result = ws_main.web_fetch("https://x.com")
+        assert "antibot" in result
+        assert "network itself is fine" in result["antibot"]
+
+
+class TestBackendChain:
+    def test_auto_chain_falls_through_blocked_backend(self, enabled_cfg):
+        enabled_cfg.web_search.backend = "auto"
+        ws_main.setup(enabled_cfg)
+        hit = ws_main._mk_result(1, "T", "https://t.com", "s", "mojeek")
+        with patch.dict(ws_main._WEB_BACKENDS, {
+            "duckduckgo": MagicMock(side_effect=ws_main.BackendBlocked("202")),
+            "mojeek": MagicMock(return_value=[hit]),
+        }):
+            results, notes = ws_main._search_backend("q", 5)
+        assert results == [hit]
+        assert any("duckduckgo: blocked" in n for n in notes)
+
+    def test_all_blocked_raises_actionable_error(self, enabled_cfg):
+        enabled_cfg.web_search.backend = "auto"
+        ws_main.setup(enabled_cfg)
+        blocked = MagicMock(side_effect=ws_main.BackendBlocked("x"))
+        with patch.dict(ws_main._WEB_BACKENDS,
+                        {k: blocked for k in ws_main._WEB_BACKENDS}):
+            with pytest.raises(RuntimeError, match="anti-bot"):
+                ws_main._search_backend("q", 5)
+
+    def test_searxng_first_when_configured(self, enabled_cfg):
+        enabled_cfg.web_search.searxng_url = "http://lan:8888"
+        ws_main.setup(enabled_cfg)
+        assert ws_main._auto_chain()[0] == "searxng"
+
+    def test_explicit_backend_no_chain(self, enabled_cfg):
+        enabled_cfg.web_search.backend = "mojeek"
+        ws_main.setup(enabled_cfg)
+        m = MagicMock(return_value=[])
+        with patch.dict(ws_main._WEB_BACKENDS, {"mojeek": m}):
+            results, notes = ws_main._search_backend("q", 5)
+        assert m.called
+        assert results == []
+
+
+class TestSourceGroups:
+    def test_social_merges_engines_and_tolerates_failure(self, enabled_cfg):
+        ws_main.setup(enabled_cfg)
+        hn = [ws_main._mk_result(1, "HN post", "https://hn.com/1", "42 points", "hackernews")]
+        with patch.object(ws_main, "_search_hackernews", return_value=hn), \
+             patch.object(ws_main, "_search_lemmy", side_effect=ws_main.BackendBlocked("403")), \
+             patch.object(ws_main, "_search_reddit", side_effect=Exception("down")):
+            # rebuild group with patched callables
+            with patch.dict(ws_main._SOURCE_GROUPS, {"social": [
+                ("hackernews", ws_main._search_hackernews),
+                ("lemmy", ws_main._search_lemmy),
+                ("reddit", ws_main._search_reddit),
+            ]}):
+                results, notes = ws_main._search_source("social", "q", 5)
+        assert len(results) == 1
+        assert results[0]["origin"] == "hackernews"
+        assert any("blocked" in n for n in notes)
+
+    def test_web_search_source_param_routes_to_group(self, enabled_cfg):
+        ws_main.setup(enabled_cfg)
+        wiki = [ws_main._mk_result(1, "Page", "https://en.wikipedia.org/wiki/P", "exc", "wikipedia")]
+        with patch.object(ws_main, "_search_source", return_value=(wiki, [])) as m:
+            result = ws_main.web_search("q", source="wiki")
+        assert m.call_args[0][0] == "wiki"
+        assert result["results"][0]["origin"] == "wikipedia"
+        assert result["meta"]["source"] == "wiki"
+
+    def test_hackernews_parses_algolia_hits(self, enabled_cfg):
+        ws_main.setup(enabled_cfg)
+        data = {"hits": [{"objectID": "1", "title": "Show HN", "url": "https://x.com",
+                          "points": 10, "num_comments": 3, "created_at": "2026-07-01T00:00:00Z"}]}
+        with patch.object(ws_main, "_get_json", return_value=data):
+            r = ws_main._search_hackernews("q", 5)
+        assert r[0]["url"] == "https://x.com"
+        assert "10 points" in r[0]["snippet"]
+
+    def test_stackexchange_gzip_body_decoded(self, enabled_cfg):
+        ws_main.setup(enabled_cfg)
+        import gzip, json as _json
+        payload = _json.dumps({"items": [{"title": "Q", "link": "https://so.com/q",
+                                          "score": 5, "answer_count": 2,
+                                          "is_answered": True, "tags": ["python"]}]}).encode()
+        with patch.object(ws_main, "_fetch_raw",
+                          side_effect=lambda url, h, t, m: (payload, {}, 200)):
+            r = ws_main._search_stackexchange("q", 5)
+        assert r[0]["title"] == "Q"
+
+    def test_gunzip_transparent(self):
+        import gzip
+        assert ws_main._gunzip_if_needed(gzip.compress(b"hello")) == b"hello"
+        assert ws_main._gunzip_if_needed(b"plain") == b"plain"

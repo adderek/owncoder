@@ -237,7 +237,7 @@ compaction_threshold      = 0.75     # compact context when usage exceeds this f
 compaction_message_threshold = 15    # also compact after this many messages
 narration_fallback        = true     # emit narration text if model skips tool-call
 auto_detect_ctx           = true     # query server for actual context size on startup
-think_level               = "normal" # "none" | "min" | "normal" | "max"
+think_level               = "normal" # "off" | "low" | "normal" | "medium" | "high" | "max"
 stream_stall_seconds      = 90       # mid-stream gap (after first token) before declaring a wedge (0 = off)
 stream_ttft_seconds       = 600      # wait for FIRST token before declaring a wedge; must exceed worst-case
 #                                      prefill on a big prompt, which emits no chunks (0 = off)
@@ -399,11 +399,18 @@ max_results = 8       # max tools returned/activated per find_tools call
 
 [web_search]
 enabled                     = false    # off by default — set true to enable
-backend                     = "duckduckgo"  # "duckduckgo" (no key) or "brave" (needs API key)
+backend                     = "auto"   # "auto" | "duckduckgo" | "brave" | "mojeek" | "searxng" | "marginalia"
+                                       # auto = fallback chain: searxng (if url set) → duckduckgo →
+                                       # brave (if key) → mojeek → marginalia; anti-bot blocks skip
+                                       # to the next backend instead of reporting "no results".
+searxng_url                 = ""       # self-hosted SearXNG instance (most robust, no anti-bot);
+                                       # instance must enable JSON output. e.g. "http://192.168.31.42:8888"
+# web_search tool also takes source="social" (HackerNews/Lemmy/Reddit), "code"
+# (GitHub/StackOverflow), "wiki" (Wikipedia) — keyless JSON APIs, no anti-bot.
 max_results_per_search      = 10
 max_search_calls_per_turn   = 3
 max_fetch_calls_per_turn    = 5
-sandbox                     = true     # run HTTP requests under bwrap/firejail
+execution_mode              = "sandboxed"  # "sandboxed" (HTTP under bwrap/firejail) | "direct"
 timeout_connect_s           = 10
 timeout_total_s             = 30
 user_agent                  = "owncoder-agent/1.0"
@@ -419,15 +426,19 @@ max_steps                    = 50
 
 [recovery]
 enabled            = true
-prompt_mode        = "ask"   # "ask" | "always" | "never"
+prompt_mode        = "ask"   # "ask" | "auto_recover" | "auto_skip"
 keep_resolved_days = 14
 
 # ── Security / sandbox ────────────────────────────────────────────────────────
 
 [security]
-sandbox_backend    = "auto"  # "auto" | "bubblewrap" | "seccomp" | "none"
-require_sandbox    = false
-network            = "off"   # "off" | "lo" | "full"
+sandbox_backend    = "auto"  # "auto" | "bwrap" | "firejail" | "none"
+                             # auto tries bwrap then firejail; explicit value must
+                             # be the binary name. bwrap gets the curated seccomp
+                             # filter; firejail uses its own generic one.
+require_sandbox    = false   # default true: refuse host exec when no backend found
+network            = "off"   # "off" | "on" — allow sandboxed commands to opt into
+                             # network access (run_shell/run_argv network=true)
 cpu_seconds        = 20
 wall_seconds       = 30
 rss_mb             = 512
@@ -471,6 +482,7 @@ workers                = ["local-coder"] # flat list used round-robin when task.
 global_max_concurrent  = 4              # cap for models not in any group
 worker_tools           = "readonly"     # "readonly" = read_file/search_code/list_files/grep/recall only
                                         # "all"      = full tool set minus spawn_agents
+                                        # "internet" = web_search/web_fetch only
 worker_timeout_seconds = 120
 
 # ── Model groups (optional) ───────────────────────────────────────────────────

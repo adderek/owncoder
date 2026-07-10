@@ -340,3 +340,82 @@ class TestLoadConfig:
         c = load_config(toml_path)
         assert c.llm.model == "from-toml"
         assert c.llm.base_url == "http://localhost:9999/v1"
+
+
+class TestConfigValidation:
+    """agent/config/validate.py + loader structural checks."""
+
+    def test_example_config_is_clean(self):
+        import tomllib
+        from pathlib import Path
+        from agent.config.loader import _merge, _merge_models, _apply_model_entry_to_llm
+        from agent.config.validate import validate_config
+        example = Path(__file__).resolve().parents[2] / "agent.toml.example"
+        with open(example, "rb") as f:
+            data = tomllib.load(f)
+        c = Config()
+        _merge(c, data)
+        _merge_models(c, data)
+        _apply_model_entry_to_llm(c)
+        assert validate_config(c) == []
+
+    def test_invalid_enum_values_reported(self):
+        from agent.config.validate import validate_config
+        c = Config()
+        c.security.network = "full"          # only off|on supported
+        c.security.sandbox_backend = "bubblewrap"  # binary name is bwrap
+        c.recovery.prompt_mode = "always"
+        issues = validate_config(c)
+        joined = "\n".join(issues)
+        assert "security.network = 'full'" in joined
+        assert "security.sandbox_backend = 'bubblewrap'" in joined
+        assert "recovery.prompt_mode = 'always'" in joined
+
+    def test_out_of_range_reported(self):
+        from agent.config.validate import validate_config
+        c = Config()
+        c.agent.compaction_threshold = 1.5
+        assert any("compaction_threshold" in i for i in validate_config(c))
+
+    def test_model_tier_validated(self):
+        from agent.config.validate import validate_config
+        c = Config()
+        c.model_entries["x"] = ModelEntry(tier="cheap")
+        assert any("models.x.tier" in i for i in validate_config(c))
+
+    def test_default_config_is_clean(self):
+        from agent.config.validate import validate_config
+        assert validate_config(Config()) == []
+
+    def test_unknown_section_reported(self, capsys):
+        from agent.config.loader import _check_unknown_sections
+        _check_unknown_sections({"llm": {"base_url": "x"}, "agent": {}})
+        err = capsys.readouterr().err
+        assert "unknown section [llm]" in err
+
+    def test_type_mismatch_ignored_and_reported(self, capsys):
+        c = Config()
+        _merge_obj(c.security, {"cpu_seconds": "twenty"}, path="security.")
+        assert c.security.cpu_seconds == 20  # bad value not applied
+        assert "security.cpu_seconds" in capsys.readouterr().err
+
+    def test_int_accepted_for_float_field(self):
+        c = Config()
+        _merge_obj(c.agent, {"compaction_threshold": 1}, path="agent.")
+        assert c.agent.compaction_threshold == 1
+
+    def test_agent_stream_fields_bridge_to_llm(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "agent.toml").write_bytes(
+            b"[agent]\nstream_ttft_seconds = 111\nstream_stall_seconds = 22\n"
+        )
+        c = load_config(tmp_path / "agent.toml")
+        assert c.llm.stream_ttft_seconds == 111
+        assert c.llm.stream_stall_seconds == 22
+
+    def test_strict_mode_exits(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AGENT_CONFIG_STRICT", "1")
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "agent.toml").write_bytes(b'[security]\nnetwork = "full"\n')
+        with pytest.raises(SystemExit):
+            load_config(tmp_path / "agent.toml")

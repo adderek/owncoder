@@ -170,8 +170,9 @@ def _merge_obj(obj: object, data: dict, path: str = "") -> None:
     doing nothing.
     """
     for key, val in data.items():
+        full_key = f"{path}{key}" if path else key
         if not hasattr(obj, key):
-            logger.warning("config: ignoring unknown key %r", f"{path}{key}" if path else key)
+            _config_problem(f"unknown key {full_key!r} — check spelling; the key is ignored")
             continue
         attr = getattr(obj, key)
         if isinstance(val, dict) and hasattr(attr, "__dataclass_fields__"):
@@ -179,7 +180,42 @@ def _merge_obj(obj: object, data: dict, path: str = "") -> None:
         elif isinstance(val, dict) and isinstance(attr, dict):
             attr.update(val)
         else:
+            if not _type_compatible(attr, val):
+                _config_problem(
+                    f"key {full_key!r} expects {type(attr).__name__}, got "
+                    f"{type(val).__name__} ({val!r}) — the value is ignored"
+                )
+                continue
             setattr(obj, key, val)
+
+
+def _type_compatible(current: object, val: object) -> bool:
+    """True if *val* may replace *current* on a config dataclass.
+
+    None defaults (int|None etc. fields) accept anything; int is accepted for
+    float fields; bool never silently coerces to/from numbers.
+    """
+    if current is None or val is None:
+        return True
+    if isinstance(current, bool) or isinstance(val, bool):
+        return isinstance(current, bool) and isinstance(val, bool)
+    if isinstance(current, float) and isinstance(val, (int, float)):
+        return True
+    if isinstance(current, (int, float)) and isinstance(val, (int, float)):
+        return True
+    return isinstance(val, type(current))
+
+
+def _config_problem(msg: str) -> None:
+    """Report a structural config problem loudly.
+
+    stderr is the user-facing channel (logging isn't configured yet during
+    config load); the log line is INFO so a stderr log handler at WARNING
+    doesn't print the same message twice.
+    """
+    import sys
+    print(f"Config error: {msg}", file=sys.stderr, flush=True)
+    logger.info("config: %s", msg)
 
 
 def _merge(config: Config, data: dict) -> None:
@@ -214,9 +250,36 @@ def _merge(config: Config, data: dict) -> None:
         ("privacy", config.privacy),
         ("scheduler", config.scheduler),
         ("tool_discovery", config.tool_discovery),
+        ("summarization", config.summarization),
+        ("output_store", config.output_store),
+        ("turn_signals", config.turn_signals),
+        ("ui_server", config.ui_server),
     ):
         section_data = data.get(section_name, {})
-        _merge_obj(obj, section_data)
+        _merge_obj(obj, section_data, path=f"{section_name}.")
+
+
+# Top-level table names accepted in a config file: every section _merge maps
+# plus [models] (handled by _merge_models). [llm]/[embeddings] are NOT config
+# sections — endpoints live in [models.<entry>]; behavior knobs in [agent].
+_KNOWN_SECTIONS = {
+    "agent", "rag", "tools", "ui", "asm_analysis", "logs", "loop_guard",
+    "verify", "tests", "confidence_guard", "compile_prompts", "token_limits",
+    "tool_compaction", "security", "planning", "recovery", "parallel",
+    "explore", "web_search", "concurrency", "kb", "aei", "notify", "mcp",
+    "speech", "auto_tier", "failover", "privacy", "scheduler",
+    "tool_discovery", "summarization", "output_store", "turn_signals",
+    "ui_server", "models",
+}
+
+
+def _check_unknown_sections(data: dict) -> None:
+    for name in data:
+        if name not in _KNOWN_SECTIONS:
+            hint = ""
+            if name in ("llm", "embeddings"):
+                hint = " (endpoints go in [models.<entry>]; behavior knobs in [agent])"
+            _config_problem(f"unknown section [{name}]{hint} — the section is ignored")
 
 
 def _coerce_dataclass_list(items: list, cls: type, label: str) -> list:
@@ -346,6 +409,10 @@ def _apply_model_entry_to_llm(config: Config) -> None:
     config.llm.narration_fallback = config.agent.narration_fallback
     config.llm.auto_detect_ctx = config.agent.auto_detect_ctx
     config.llm.think_level = config.agent.think_level
+    config.llm.stream_stall_seconds = config.agent.stream_stall_seconds
+    config.llm.stream_ttft_seconds = config.agent.stream_ttft_seconds
+    config.llm.stream_heartbeat_seconds = config.agent.stream_heartbeat_seconds
+    config.llm.stream_stall_retries = config.agent.stream_stall_retries
 
     # Embeddings from the resolved embeddings model entry
     emb_name = config.model_roles.get("embeddings", "embeddings")
@@ -437,6 +504,7 @@ def load_config(extra_path: Path | list[Path] | None = None) -> Config:
                 sys.exit(1)
             raw_data.append(data)
             loaded_layers.append(str(p))
+            _check_unknown_sections(data)
             _merge(config, data)
 
     if loaded_layers:
@@ -464,6 +532,8 @@ def load_config(extra_path: Path | list[Path] | None = None) -> Config:
     _coerce_notify_channels(config)
     _coerce_mcp_servers(config)
     _coerce_test_suites(config)
+    from .validate import validate_config, report_issues
+    report_issues(validate_config(config))
     return config
 
 

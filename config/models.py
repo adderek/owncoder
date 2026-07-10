@@ -491,6 +491,12 @@ class AgentConfig:
     narration_fallback: bool = True
     auto_detect_ctx: bool = True
     think_level: str = "normal"
+    # Stream-wedge detection knobs; bridged onto config.llm by the loader
+    # (mirrors LLMConfig — [agent] is the TOML section users set these in).
+    stream_stall_seconds: int = 90
+    stream_ttft_seconds: int = 600
+    stream_heartbeat_seconds: int = 20
+    stream_stall_retries: int = 1
     autonomy: float = 0.5  # 0.0=supervised … 1.0=autopilot; >1.0 treated as percentage
     distill_skills: bool = True  # session-end: distill reusable skills into .agent/skills/
     skills_index_max: int = 40   # cap skills listed in the per-prompt index (token bound)
@@ -552,7 +558,14 @@ class DecisionConfig:
 class WebSearchConfig:
     """Web search feature. Off by default — user must opt in."""
     enabled: bool = False
-    backend: str = "duckduckgo"
+    # "auto" tries a fallback chain: searxng (if searxng_url set) → duckduckgo →
+    # brave (if key) → mojeek → marginalia. Anti-bot blocks move to the next
+    # backend instead of surfacing as "no results".
+    backend: str = "auto"
+    # Self-hosted SearXNG metasearch instance, e.g. "http://192.168.31.42:8888".
+    # Most robust general-web backend (no anti-bot, aggregates engines); the
+    # instance must enable JSON output (settings.yaml search.formats: [html, json]).
+    searxng_url: str = ""
     max_results_per_search: int = 10
     max_search_calls_per_turn: int = 3
     max_fetch_calls_per_turn: int = 5
