@@ -108,11 +108,14 @@ re-login (or `cooldown` on a soft block).
 
 ### 5. Nice-behavior lifecycle
 
-- **Provisioning** (`agent/net/accounts.py`, follow-up): sign-up per service.
-  CAPTCHA / email verification are handed to a human via the existing `notify`
-  relay (push question → user solves → resume). The agent does **not** auto-solve
-  CAPTCHAs — that is the arms race we are avoiding.
-- **Politeness governor**: per-account rate limits, jittered delays, honor
+- **Provisioning is MANUAL only** — the human creates the free account themselves
+  (through the normal signup flow, as a real user) and registers it with
+  `/credpool add`. **Automated account registration is a deliberate non-goal on
+  ethical grounds** (owner's decision, 2026-07-10): the agent signing up for
+  accounts on a user's behalf is considered unfair to the service, so
+  `agent/net/accounts.py` is intentionally NOT built and should not be.
+- **Politeness governor** (optional follow-up, does not create accounts):
+  per-account rate limits, jittered delays, honor
   `Retry-After` and `robots.txt`, one stable identity per service, rotate to
   another account on a soft block rather than hammering. On block →
   `status=cooldown`, never retry immediately.
@@ -146,6 +149,8 @@ enabled = false          # off by default
 
 ## Non-goals
 
+- **Automated account registration** — rejected on ethical grounds (owner,
+  2026-07-10). Accounts are created by the human; the agent only uses them.
 - Anti-bot fingerprint spoofing / CAPTCHA auto-solving.
 - Sharing one account across many concurrent identities.
 - Storing plaintext secrets in config files.
