@@ -122,3 +122,49 @@ class TestGrepContextLines:
         self._project(tmp_path)
         r = g.grep_code("NEEDLE", context_lines=999)  # clamps to 10, must not error
         assert r["count"] == 1 and "context" in r["results"][0]
+
+
+class TestAllTextFiles:
+    """grep_code must cover non-source text files (.example, .template, no-ext)."""
+
+    @pytest.fixture
+    def rich_project(self, tmp_path):
+        (tmp_path / "cfg.example").write_text("MAGIC_MARKER = 42\n")
+        (tmp_path / "page.template").write_text("MAGIC_MARKER here too\n")
+        (tmp_path / "Makefile").write_text("MAGIC_MARKER: all\n")
+        (tmp_path / "img.png").write_bytes(b"\x89PNG\x00\x00MAGIC_MARKER\x00")
+        (tmp_path / "code.py").write_text("MAGIC_MARKER = 'py'\n")
+        cfg = Config(tools=ToolsConfig(working_dir=str(tmp_path)))
+        grep_mod.setup(cfg)
+        return tmp_path
+
+    def test_nonstandard_extensions_found(self, rich_project):
+        res = grep_mod.grep_code("MAGIC_MARKER")
+        paths = {r["path"] for r in res["results"]}
+        assert "cfg.example" in paths
+        assert "page.template" in paths
+        assert "Makefile" in paths
+        assert "code.py" in paths
+
+    def test_binary_not_matched(self, rich_project):
+        res = grep_mod.grep_code("MAGIC_MARKER")
+        paths = {r["path"] for r in res["results"]}
+        assert "img.png" not in paths
+
+    def test_file_glob_still_narrows(self, rich_project):
+        res = grep_mod.grep_code("MAGIC_MARKER", file_glob="*.example")
+        paths = {r["path"] for r in res["results"]}
+        assert paths == {"cfg.example"}
+
+    def test_source_field_names_tool(self, rich_project):
+        res = grep_mod.grep_code("MAGIC_MARKER")
+        assert res["source"] in ("ripgrep", "grep")
+
+    def test_grep_fallback_covers_text_files(self, rich_project, monkeypatch):
+        import shutil as _sh
+        monkeypatch.setattr(grep_mod.shutil, "which", lambda name: None)
+        res = grep_mod.grep_code("MAGIC_MARKER")
+        assert res["source"] == "grep"
+        paths = {r["path"] for r in res["results"]}
+        assert "cfg.example" in paths
+        assert "img.png" not in paths

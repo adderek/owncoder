@@ -1,7 +1,13 @@
-"""grep_code tool — raw text search, works without an index."""
+"""grep_code tool — raw text search, works without an index.
+
+Searches ALL text files (any extension — .example, .template, Makefile,
+extension-less), not just recognized source extensions: ripgrep when
+available (fast, gitignore-aware, binary-skipping), else grep -rI.
+"""
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -11,14 +17,7 @@ from agent.tools.rules import get_rules
 
 _config = None
 
-_SOURCE_GLOBS = (
-    "*.py", "*.c", "*.cpp", "*.cc", "*.cxx", "*.h", "*.hpp",
-    "*.js", "*.ts", "*.jsx", "*.tsx", "*.go", "*.rs", "*.java",
-    "*.rb", "*.php", "*.cs", "*.swift", "*.kt", "*.lua", "*.zig",
-    "*.sh", "*.bash", "*.zsh", "*.fish",
-    "*.toml", "*.yaml", "*.yml", "*.json", "*.md",
-    "*.S", "*.asm", "*.s",
-)
+_EXCLUDE_DIRS = (".git", "__pycache__", "node_modules", ".agent", ".venv", "venv", "build", "dist")
 
 _DEFAULT_MAX = 60
 _CONTEXT_DEFAULT_MAX = 20   # lower match cap when each hit carries context lines
@@ -35,7 +34,8 @@ def setup(config) -> None:
     "grep_code",
     {
         "description": (
-            "Grep raw source files — no index needed, always works. "
+            "Grep ALL text files (any extension: source, configs, .example/.template, "
+            "Makefile, docs) — no index needed, always works. "
             "Use for exact matches: names, constants, error codes, hex values. "
             "Also use to verify search_code hits before editing."
         ),
@@ -111,29 +111,40 @@ def grep_code(
     context_lines = max(0, min(int(context_lines or 0), 10))
     limit = max_results or (_CONTEXT_DEFAULT_MAX if context_lines else _DEFAULT_MAX)
 
-    cmd = ["grep", "-rn", "--color=never"]
-    if fixed_string:
-        cmd.append("-F")
-    if case_insensitive:
-        cmd.append("-i")
-
-    if file_glob:
-        cmd += ["--include", file_glob]
+    if shutil.which("rg"):
+        # ripgrep: skips binaries and .gitignore'd files natively; much faster.
+        cmd = ["rg", "-n", "--no-heading", "--with-filename", "--color=never", "--no-messages"]
+        if fixed_string:
+            cmd.append("-F")
+        if case_insensitive:
+            cmd.append("-i")
+        if file_glob:
+            cmd += ["-g", file_glob]
+        for excl in _EXCLUDE_DIRS:
+            cmd += ["-g", f"!{excl}/"]
+        cmd += ["--", pattern, str(search_root)]
+        tool_name = "ripgrep"
     else:
-        for g in _SOURCE_GLOBS:
-            cmd += ["--include", g]
-
-    for excl in (".git", "__pycache__", "node_modules", ".agent", ".venv", "venv", "build", "dist"):
-        cmd += ["--exclude-dir", excl]
-
-    cmd += [pattern, str(search_root)]
+        # grep -I: search every file but treat binaries as non-matching, so
+        # .example/.template/extension-less text files are covered too.
+        cmd = ["grep", "-rnI", "--color=never"]
+        if fixed_string:
+            cmd.append("-F")
+        if case_insensitive:
+            cmd.append("-i")
+        if file_glob:
+            cmd += ["--include", file_glob]
+        for excl in _EXCLUDE_DIRS:
+            cmd += ["--exclude-dir", excl]
+        cmd += ["--", pattern, str(search_root)]
+        tool_name = "grep"
 
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15, errors="replace")
     except subprocess.TimeoutExpired:
-        return {"error": "grep timed out", "pattern": pattern}
+        return {"error": f"{tool_name} timed out", "pattern": pattern}
     except FileNotFoundError:
-        return {"error": "grep not found on PATH", "pattern": pattern}
+        return {"error": f"{tool_name} not found on PATH", "pattern": pattern}
 
     rules = get_rules()
     deny_globs = _read_deny_globs()
@@ -199,5 +210,5 @@ def grep_code(
         "count": len(results),
         "truncated": truncated,
         "pattern": pattern,
-        "source": "grep",
+        "source": tool_name,
     }

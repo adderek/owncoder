@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from .chunker import (
     chunk_file, LANGUAGE_MAP, TREE_SITTER_LANG, CHUNK_NODE_TYPES,
+    is_text_candidate, TEXT_MAX_BYTES,
 )
 
 if TYPE_CHECKING:
@@ -19,6 +20,25 @@ __all__ = [
     "chunk_file", "LANGUAGE_MAP", "TREE_SITTER_LANG", "CHUNK_NODE_TYPES",
     "prune_index", "restore_paths", "index_directory", "pending_files",
 ]
+
+
+def _wanted_file(fpath: Path, allowed_exts: set[str] | None, include_text: bool, cfg=None) -> bool:
+    """Should the walk index *fpath*?
+
+    Code files (LANGUAGE_MAP) always qualify (subject to the language filter);
+    generic text files (.md, .toml, .example, .template, Makefile, ...) qualify
+    when rag.index_text_files is on (the default) and *include_text* is true
+    (no language filter given, or the filter names "text").
+    """
+    ext = fpath.suffix.lower()
+    if ext in LANGUAGE_MAP:
+        return allowed_exts is None or ext in allowed_exts
+    if not include_text:
+        return False
+    if cfg is not None and not getattr(cfg, "index_text_files", True):
+        return False
+    max_bytes = getattr(cfg, "text_max_bytes", TEXT_MAX_BYTES) if cfg else TEXT_MAX_BYTES
+    return is_text_candidate(fpath, max_bytes)
 
 
 def _fast_file_checksum(path: str) -> str | None:
@@ -84,6 +104,7 @@ def pending_files(
     store: "VectorStore",
     languages: list[str] | None = None,
     exclude: list[str] | None = None,
+    cfg=None,
 ) -> dict:
     """Walk disk and compare against indexed mtimes. Returns counts without embedding."""
     root_path = Path(root).resolve()
@@ -97,6 +118,7 @@ def pending_files(
     allowed_exts: set[str] | None = None
     if languages:
         allowed_exts = {ext for ext, lang in LANGUAGE_MAP.items() if lang in languages}
+    include_text = languages is None or "text" in (languages or [])
 
     from agent.tools.rules import get_rules
     rules = get_rules()
@@ -117,9 +139,7 @@ def pending_files(
             dirnames[:] = filtered
         for fname in filenames:
             fpath = Path(dirpath) / fname
-            if allowed_exts and fpath.suffix.lower() not in allowed_exts:
-                continue
-            if fpath.suffix.lower() not in LANGUAGE_MAP:
+            if not _wanted_file(fpath, allowed_exts, include_text, cfg):
                 continue
             rel = str(fpath.relative_to(root_path))
             if rules.ignore.matches(rel):
@@ -190,6 +210,7 @@ def index_directory(
     allowed_exts: set[str] | None = None
     if languages:
         allowed_exts = {ext for ext, lang in LANGUAGE_MAP.items() if lang in languages}
+    include_text = languages is None or "text" in (languages or [])
 
     from agent.tools.rules import get_rules
     rules = get_rules()
@@ -206,9 +227,7 @@ def index_directory(
             dirnames[:] = filtered
         for fname in filenames:
             fpath = Path(dirpath) / fname
-            if allowed_exts and fpath.suffix.lower() not in allowed_exts:
-                continue
-            if fpath.suffix.lower() not in LANGUAGE_MAP:
+            if not _wanted_file(fpath, allowed_exts, include_text, cfg):
                 continue
             rel = str(fpath.relative_to(root_path))
             if rules.ignore.matches(rel):

@@ -254,6 +254,10 @@ chunk_min_tokens = 20
 chunk_max_tokens = 400
 top_k            = 8
 hybrid           = true
+index_text_files = true    # also index generic text files: .md, .toml, .example,
+                           # .template, Makefile, unknown extensions that sniff as
+                           # text. false = code extensions only (old behavior)
+text_max_bytes   = 262144  # per-file cap for generic text files (code files exempt)
 
 # ── Tools ─────────────────────────────────────────────────────────────────────
 

@@ -342,12 +342,60 @@ def _fallback_chunks(content: str, path: str, language: str, cfg: "RAGConfig") -
     return chunks
 
 
+# Extensions that are always binary/generated — never worth sniffing.
+BINARY_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".svgz", ".bmp",
+    ".woff", ".woff2", ".ttf", ".otf", ".eot",
+    ".zip", ".gz", ".bz2", ".xz", ".zst", ".tar", ".7z", ".rar", ".jar",
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt",
+    ".so", ".o", ".a", ".dll", ".dylib", ".exe", ".bin", ".elf", ".ko",
+    ".pyc", ".pyo", ".class", ".wasm",
+    ".db", ".sqlite", ".sqlite3", ".db-shm", ".db-wal",
+    ".mp3", ".mp4", ".mkv", ".avi", ".wav", ".ogg", ".flac", ".webm",
+    ".pt", ".pth", ".onnx", ".gguf", ".safetensors", ".npy", ".npz",
+    ".lock",  # lockfiles are generated noise (poetry.lock, Cargo.lock, ...)
+}
+
+# Default byte cap for generic text files (code files have no such cap).
+TEXT_MAX_BYTES = 256 * 1024
+
+
+def is_text_candidate(path: str | Path, max_bytes: int = TEXT_MAX_BYTES) -> bool:
+    """True if *path* is a non-code file worth indexing as plain text.
+
+    Covers docs/configs/templates with any (or no) extension: .md, .toml,
+    .example, .template, Makefile, Dockerfile, ... Rejects known-binary
+    extensions, empty/oversized files, and anything with NUL bytes in the
+    first 8 KB (binary sniff — same heuristic as grep/ripgrep).
+    """
+    p = Path(path)
+    ext = p.suffix.lower()
+    if ext in LANGUAGE_MAP or ext in BINARY_EXTENSIONS:
+        return False
+    if p.name.startswith("."):  # dotfiles: .env, .gitignore — skip (secret-adjacent / noise)
+        return False
+    try:
+        size = p.stat().st_size
+        if size == 0 or size > max_bytes:
+            return False
+        with open(p, "rb") as fh:
+            head = fh.read(8192)
+    except OSError:
+        return False
+    return b"\x00" not in head
+
+
 def chunk_file(path: str, cfg: "RAGConfig") -> list[dict]:
     p = Path(path)
     ext = p.suffix.lower()
     language = LANGUAGE_MAP.get(ext)
     if not language:
-        return []
+        if getattr(cfg, "index_text_files", True) and is_text_candidate(
+            p, getattr(cfg, "text_max_bytes", TEXT_MAX_BYTES)
+        ):
+            language = "text"
+        else:
+            return []
 
     try:
         content = p.read_text(encoding="utf-8", errors="replace")

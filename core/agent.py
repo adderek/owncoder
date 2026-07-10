@@ -154,7 +154,7 @@ class Agent:
         if store and indexed_count > 0:
             try:
                 from agent.rag.indexer import pending_files as _pending_files
-                pf = _pending_files(config.tools.working_dir, store)
+                pf = _pending_files(config.tools.working_dir, store, cfg=config.rag)
                 total_files = pf["total"]
                 if total_files > 0:
                     index_percent = round(100 * pf["indexed"] / total_files)

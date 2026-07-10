@@ -54,6 +54,11 @@ class RAGConfig:
     chunk_max_tokens: int = 400
     top_k: int = 8
     hybrid: bool = True
+    # Also index generic text files (.md, .toml, .example, .template, Makefile,
+    # any unknown extension that sniffs as text). Code extensions are unaffected.
+    index_text_files: bool = True
+    # Per-file byte cap for generic text files (binary-sniffed; code files exempt).
+    text_max_bytes: int = 256 * 1024
 
 
 @dataclass

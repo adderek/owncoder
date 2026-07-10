@@ -146,7 +146,7 @@ def _run_indexing(config, console, root: str | None = None, languages=None, excl
     if workers > 1:
         console.print(f"[dim]Embedding workers: {workers}[/dim]")
 
-    pre = pending_files(root=index_root, store=store, languages=languages, exclude=exclude or [])
+    pre = pending_files(root=index_root, store=store, languages=languages, exclude=exclude or [], cfg=config.rag)
     total_to_index = pre["pending"] if not force else pre["total"]
 
     with Progress(
@@ -607,7 +607,7 @@ def cmd_index_stats(args, config):
     stats = store.stats()
 
     load_rules(config.tools.working_dir)
-    pending = pending_files(root=config.tools.working_dir, store=store)
+    pending = pending_files(root=config.tools.working_dir, store=store, cfg=config.rag)
     store.close()
 
     archive = _open_archive(config)
