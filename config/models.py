@@ -388,6 +388,20 @@ class SecurityConfig:
 
 
 @dataclass
+class CredPoolConfig:
+    """Credential pool for authenticated, well-behaved internet access.
+
+    Accounts (one real free account per service) are held in an encrypted vault
+    below the LLM; the session cookie is attached at the HTTP transport layer so
+    a prompt-injectable internet subagent never sees credentials. Off by default.
+    Accounts are added via the /credpool slash command, never in this config,
+    so plaintext secrets never live in agent.toml. See docs/credential-pool.md.
+    """
+    enabled: bool = False
+    cooldown_seconds: int = 3600   # how long to rest an account after a soft block
+
+
+@dataclass
 class PlanningConfig:
     """Plan-driven execution cycle."""
     enabled: bool = True
@@ -955,6 +969,7 @@ class Config:
     failover: FailoverConfig = field(default_factory=FailoverConfig)
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
+    credpool: CredPoolConfig = field(default_factory=CredPoolConfig)
     # Runtime (non-persisted) flag: True while the active session pins every LLM
     # call to a LOCAL endpoint (private session mode). Set by
     # Agent.set_session_mode("private"); read by mid-turn routing so an auto-tier

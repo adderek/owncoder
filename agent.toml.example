@@ -435,6 +435,16 @@ keep_resolved_days = 14
 
 # ── Security / sandbox ────────────────────────────────────────────────────────
 
+[credpool]
+# Credential pool: authenticated, well-behaved internet access. Hold one real
+# (free) account per service so blocked-by-default sites see a logged-in user.
+# Credentials live in an encrypted vault below the LLM and are attached at the
+# HTTP transport layer, so a prompt-injectable internet subagent never sees them.
+# Add accounts via /credpool add <service> <domain> <username> <password>
+# (never in this file — secrets stay out of config). See docs/credential-pool.md.
+enabled            = false
+cooldown_seconds   = 3600    # rest an account this long after a soft block (401/403/429)
+
 [security]
 sandbox_backend    = "auto"  # "auto" | "bwrap" | "firejail" | "none"
                              # auto tries bwrap then firejail; explicit value must

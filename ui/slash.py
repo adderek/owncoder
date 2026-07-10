@@ -66,6 +66,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/stash-plan", [], "git stash current changes + mark plan stashed", False),
     ("/pause-plan", [], "mark active plan paused; resume later", False),
     ("/schedule", ["/sched"], "scheduled jobs: list | add <spec> :: <prompt> [:: <name>] | rm <id|name> | on/off <id|name> | runs | run", True),
+    ("/credpool", ["/creds"], "credential pool: list|status | add <service> <domain> <username> <password> | remove <service>", True),
     ("/notify", [], "notification channels  [on | off | status]", True),
     ("/model", [], "switch active model  [<entry> | role=<entry> | role=? | refresh]", True),
     ("/models", [], "model entries: table + toggles  [table | enable <name> | disable <name>]", False),

@@ -742,10 +742,32 @@ def web_fetch(url: str) -> dict:
     if isinstance(gated, dict):
         return gated
 
+    # Credential injection (below the LLM): if the credential pool holds an
+    # account bound to this URL's domain, attach its session cookie + stable
+    # User-Agent at the transport layer. The cookie is domain-gated (a redirect
+    # to another host gets nothing) and is NEVER placed in a tool argument or
+    # result the LLM can read. See agent/security/credpool.py.
+    from agent.security import credpool
+    cred_headers, cred_ua = credpool.headers_for(_config, gated.url)
+
     # Layer 2: Sandboxed HTTP (pinned_ip prevents DNS rebind TOCTOU)
-    http_result = http_executor.fetch(gated.url, pinned_ip=gated.pinned_ip)
+    http_result = http_executor.fetch(
+        gated.url,
+        pinned_ip=gated.pinned_ip,
+        headers=cred_headers or None,
+        user_agent=cred_ua,
+    )
     if http_result.get("error"):
         return {"url": url, "error": http_result["error"]}
+
+    # Refresh the session (Set-Cookie) or rest the account on a soft block.
+    status = http_result.get("status_code")
+    if cred_headers or cred_ua:
+        if status in (401, 403, 429):
+            credpool.mark_blocked(_config, gated.url,
+                                  cooldown_seconds=_config.credpool.cooldown_seconds)
+        else:
+            credpool.capture_cookies(_config, gated.url, http_result.get("headers", {}))
 
     # Decode base64 body
     body_b64 = http_result.get("body_base64", "")

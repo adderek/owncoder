@@ -275,6 +275,7 @@ def fetch(
     total_timeout: int | None = None,
     max_redirects: int = 3,
     max_bytes: int | None = None,
+    user_agent: str | None = None,
 ) -> dict:
     """Execute a sandboxed HTTP request.
 
@@ -306,7 +307,7 @@ def fetch(
         "timeout_total": total_timeout,
         "max_redirects": max_redirects,
         "max_bytes": max_bytes,
-        "user_agent": ws_cfg.user_agent,
+        "user_agent": user_agent or ws_cfg.user_agent,
     }
 
     script_path = _script_path or _write_fetcher_script()
