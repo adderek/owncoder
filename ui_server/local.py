@@ -453,6 +453,65 @@ class LocalUIServer:
         from agent.ui.slash import _apply_model
         return _apply_model(self._agent, arg)
 
+    def models_overview(self, session_id: str = "") -> dict:
+        """Structured model entries + role matrix — backs management UIs
+        (HTTP UI models panel). Display-safe plain data, no Rich markup."""
+        from agent.config.registry import entry_tier
+        from agent.core.model_control import entry_status
+        cfg = self._agent.config
+        entries = getattr(cfg, "model_entries", {}) or {}
+        model_roles = getattr(cfg, "model_roles", {}) or {}
+        roles = []
+        try:
+            from agent.config import make_registry
+            for role, (entry_name, tier) in make_registry(cfg).matrix().items():
+                roles.append({"role": role, "entry": entry_name, "tier": tier,
+                              "pinned": role in model_roles})
+        except Exception:
+            logger.debug("models_overview: matrix failed", exc_info=True)
+        active = model_roles.get("default", "")
+        rows = []
+        for name in sorted(entries):
+            e = entries[name]
+            rows.append({
+                "name": name,
+                "model": getattr(e, "model", "") or "",
+                "base_url": getattr(e, "base_url", "") or "",
+                "tier": entry_tier(e),
+                "status": entry_status(cfg, name, e) or "on",
+                "ctx": getattr(e, "ctx_window", 0) or 0,
+                "out": getattr(e, "max_output_tokens", 0) or 0,
+                "tags": list(getattr(e, "tags", []) or []),
+                "thinking": bool(getattr(e, "thinking", False)),
+                "local": bool(getattr(e, "local", False)),
+                "embeddings": bool(getattr(e, "dimensions", 0)),
+                "active": name == active,
+            })
+        try:
+            from agent.core.model_mode import _ORDER as modes
+        except Exception:
+            modes = ["local-only", "free-cloud", "free-hybrid", "paid-cloud", "manual", "any"]
+        return {
+            "mode": getattr(getattr(cfg, "agent", None), "model_mode", "") or "",
+            "modes": list(modes),
+            "active_model": cfg.llm.model or "",
+            "active_url": cfg.llm.base_url or "",
+            "roles": roles,
+            "entries": rows,
+        }
+
+    def set_model_entry_enabled(self, name: str, enabled: bool,
+                                session_id: str = "") -> "tuple[bool, str]":
+        """Session-scoped enable/disable of a model entry (skipped by ladder
+        and failover while disabled)."""
+        from agent.core.model_control import set_model_enabled
+        return set_model_enabled(self._agent.config, name, enabled)
+
+    def set_model_mode(self, arg: str, session_id: str = "") -> "tuple[bool, str]":
+        """Show/switch model-mode (local-only / free-cloud / … / any)."""
+        from agent.core.model_mode import run_mode_command
+        return True, run_mode_command(self._agent.config, arg)
+
     def set_plan(self, arg: str, session_id: str = "") -> "tuple[bool, str]":
         from agent.ui.slash import _apply_plan
         return _apply_plan(self._agent, arg)

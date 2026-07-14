@@ -8,9 +8,11 @@ browser through per-client SSE queues.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import queue
+import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING
@@ -22,6 +24,20 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _QUIT = object()
+
+# Rich style tags leak into slash-command output written for the terminal UIs
+# ([bold]…[/bold]); the browser shows them literally. Strip style-word tags
+# only — bracketed data like [embeddings] or [local] must survive.
+_RICH_STYLE_WORDS = (
+    "bold|dim|italic|underline|strike|blink|reverse|"
+    "red|green|yellow|blue|cyan|magenta|white|black"
+)
+_RICH_TAG_RE = re.compile(
+    rf"\[/?(?:{_RICH_STYLE_WORDS})(?:\s+(?:{_RICH_STYLE_WORDS}))*\]")
+
+
+def _strip_rich(text: str) -> str:
+    return _RICH_TAG_RE.sub("", text)
 
 
 def _args_preview(args, limit: int = 200) -> str:
@@ -139,6 +155,28 @@ aside.open { width: 280px; }
 .dsec pre { font-family: var(--mono); font-size: 11px; color: var(--dim); white-space: pre;
             overflow-x: auto; background: var(--bg); border: 1px solid var(--border);
             border-radius: 6px; padding: 6px 8px; max-height: 40vh; overflow-y: auto; }
+/* Models management panel */
+#modelsbody { font-size: 11px; font-family: var(--mono); }
+.modeline { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; color: var(--dim); }
+.modeline select { background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+                   border-radius: 5px; font-size: 11px; padding: 2px 4px; }
+.mrolesec { color: var(--dimmer); margin: 6px 0 4px; }
+.mrow { display: flex; gap: 6px; align-items: center; padding: 3px 6px; border-radius: 5px;
+        border: 1px solid transparent; }
+.mrow:hover { background: var(--panel2); border-color: var(--border); }
+.mrow.off { opacity: .5; }
+.mrow .mst { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--ok); }
+.mrow.off .mst { background: var(--err); }
+.mrow.cool .mst { background: var(--warn); }
+.mrow .mname { color: var(--fg); overflow: hidden; text-overflow: ellipsis;
+               white-space: nowrap; }
+.mrow.active .mname { color: #9ecbf3; font-weight: bold; }
+.mrow .mtier { color: var(--dimmer); }
+.mrow .mid { color: var(--dimmer); overflow: hidden; text-overflow: ellipsis;
+             white-space: nowrap; flex: 1; }
+.mbtn { background: var(--panel2); border: 1px solid var(--border); color: var(--dim);
+        font-size: 10px; padding: 1px 7px; border-radius: 5px; cursor: pointer; }
+.mbtn:hover { color: var(--fg); border-color: var(--accent); filter: none; }
 .placeholder { color: var(--dimmer); font-style: italic; line-height: 1.6; }
 .dfold { margin-bottom: 14px; }
 .dfold > summary { list-style: none; cursor: pointer; user-select: none; }
@@ -287,7 +325,7 @@ button:hover { filter: brightness(1.15); }
 <div id="header">
   <button class="icon" id="lefttoggle" title="Sessions panel (coming features)">☰</button>
   <b>owncoder</b>
-  <span class="chip" id="model" title="Click for LLM call details"></span>
+  <span class="chip" id="model" title="Click to manage models"></span>
   <span class="chip" id="session"></span>
   <div id="statuswrap"><span id="dot"></span><span id="status">idle</span></div>
   <span class="chip btn" id="layout" title="Cycle chat width: centered / wide / full">center</span>
@@ -316,6 +354,7 @@ button:hover { filter: brightness(1.15); }
 </div>
 <aside id="right"><div class="aside-inner">
   <div class="ptitle">Details</div>
+  <div class="dsec"><div class="dhead" id="d-models">Models ⟳</div><div id="modelsbody">—</div></div>
   <div class="dsec"><div class="dhead" id="d-stats">Session stats ⟳</div><pre id="statsbody">—</pre></div>
   <div class="dsec"><div class="dhead" id="d-mc">LLM calls this session ⟳</div><pre id="mcbody">—</pre></div>
   <div class="dsec"><div class="dhead" id="d-ctx">Context buffer ⟳</div><pre id="ctxbody">—</pre></div>
@@ -670,6 +709,63 @@ function setIoChip(inTok, outTok) {
     '↑' + fmtK(inTok) + ' ↓' + fmtK(outTok);
 }
 
+// Models management: switch the active entry, enable/disable entries for the
+// session, change model-mode. Actions POST /api/model then reload the panel.
+async function modelAction(payload) {
+  try {
+    const r = await (await fetch('/api/model', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    })).json();
+    row('sys' + (r.ok ? '' : ' error'), null, r.msg || (r.ok ? 'ok' : 'failed'));
+  } catch (e) {
+    row('sys error', null, 'model action failed: ' + e);
+  }
+  loadModels();
+}
+
+async function loadModels() {
+  const el = document.getElementById('modelsbody');
+  el.textContent = '…';
+  try {
+    const d = await (await fetch('/api/models')).json();
+    let h = '<div class="modeline">mode <select id="modesel">' +
+      (d.modes || []).map(m => '<option' + (m === d.mode ? ' selected' : '') + '>' +
+        esc(m) + '</option>').join('') + '</select></div>';
+    h += '<div class="mrolesec">active: ' + esc(d.active_model || '?') + '</div>';
+    if (d.roles && d.roles.length) {
+      h += '<div class="mrolesec">roles' +
+        d.roles.map(r => '<div style="padding-left:8px">' +
+          (r.pinned ? '📌 ' : '&nbsp;&nbsp; ') + esc(r.role) + ' → ' + esc(r.entry) +
+          ' [' + esc(r.tier) + ']</div>').join('') + '</div>';
+    }
+    h += '<div class="mrolesec">entries — use switches default, on/off is session-scoped</div>';
+    for (const e of (d.entries || [])) {
+      const off = e.status === 'off';
+      h += '<div class="mrow ' + esc(e.status) + (e.active ? ' active' : '') + '"' +
+        ' title="' + esc(e.model + '\n' + e.base_url +
+          (e.tags.length ? '\ntags: ' + e.tags.join(', ') : '')) + '">' +
+        '<span class="mst"></span>' +
+        '<span class="mname">' + (e.active ? '▸ ' : '') + esc(e.name) + '</span>' +
+        '<span class="mtier">[' + esc(e.tier) + ']</span>' +
+        '<span class="mid">' + esc(e.model) + '</span>' +
+        (e.embeddings ? '<span class="mtier">emb</span>' :
+          '<button class="mbtn" data-use="' + esc(e.name) + '">use</button>') +
+        '<button class="mbtn" data-toggle="' + esc(e.name) + '" data-en="' +
+          (off ? '1' : '') + '">' + (off ? 'enable' : 'disable') + '</button>' +
+        '</div>';
+    }
+    el.innerHTML = h;
+    el.querySelectorAll('[data-use]').forEach(b => b.addEventListener('click', () =>
+      modelAction({action: 'use', entry: b.dataset.use})));
+    el.querySelectorAll('[data-toggle]').forEach(b => b.addEventListener('click', () =>
+      modelAction({action: 'toggle', entry: b.dataset.toggle, enabled: !!b.dataset.en})));
+    document.getElementById('modesel').addEventListener('change', (ev) =>
+      modelAction({action: 'mode', mode: ev.target.value}));
+  } catch (e) { el.textContent = 'failed: ' + e; }
+}
+
 async function loadStats() {
   const el = document.getElementById('statsbody');
   el.textContent = '…';
@@ -723,11 +819,14 @@ function openDetails(loader) {
 document.getElementById('lefttoggle').addEventListener('click', () =>
   toggleDrawer('left', 'lefttoggle'));
 document.getElementById('righttoggle').addEventListener('click', () => {
-  if (toggleDrawer('right', 'righttoggle')) { loadStats(); loadModelCalls(); loadContext(); }
+  if (toggleDrawer('right', 'righttoggle')) {
+    loadModels(); loadStats(); loadModelCalls(); loadContext();
+  }
 });
-document.getElementById('model').addEventListener('click', () => openDetails(loadModelCalls));
+document.getElementById('model').addEventListener('click', () => openDetails(loadModels));
 document.getElementById('tokenwrap').addEventListener('click', () => openDetails(loadContext));
 document.getElementById('iostats').addEventListener('click', () => openDetails(loadStats));
+document.getElementById('d-models').addEventListener('click', loadModels);
 document.getElementById('d-stats').addEventListener('click', loadStats);
 document.getElementById('d-mc').addEventListener('click', loadModelCalls);
 document.getElementById('d-ctx').addEventListener('click', loadContext);
@@ -971,6 +1070,60 @@ class _HttpUI:
             logger.exception("http ui: modelcalls info failed")
             return {"text": "model call metrics unavailable"}
 
+    def _call_on_loop(self, fn, *args):
+        """Run *fn* on the asyncio loop thread and return its result.
+
+        Model switching recreates the AsyncOpenAI client; keep such config
+        mutations on the loop thread instead of HTTP handler threads.
+        """
+        fut: concurrent.futures.Future = concurrent.futures.Future()
+
+        def _run() -> None:
+            try:
+                fut.set_result(fn(*args))
+            except Exception as exc:  # surfaced to the HTTP caller
+                fut.set_exception(exc)
+
+        self.loop.call_soon_threadsafe(_run)
+        return fut.result(timeout=30)
+
+    def models_info(self) -> dict:
+        """Structured entries/roles for the models management panel."""
+        try:
+            overview = getattr(self.server, "models_overview", None)
+            return overview() if overview is not None else {}
+        except Exception:
+            logger.exception("http ui: models_overview failed")
+            return {}
+
+    def model_action(self, payload: dict) -> dict:
+        """Mutating model ops from the browser: use / toggle / mode."""
+        action = str(payload.get("action") or "")
+        try:
+            if action == "use":
+                entry = str(payload.get("entry") or "")
+                role = str(payload.get("role") or "").strip()
+                arg = f"{role}={entry}" if role and role != "default" else entry
+                ok, msg = self._call_on_loop(self.server.set_model, arg)
+            elif action == "toggle":
+                setter = getattr(self.server, "set_model_entry_enabled", None)
+                if setter is None:
+                    return {"ok": False, "msg": "server does not support entry toggling"}
+                ok, msg = self._call_on_loop(
+                    setter, str(payload.get("entry") or ""),
+                    bool(payload.get("enabled")))
+            elif action == "mode":
+                setter = getattr(self.server, "set_model_mode", None)
+                if setter is None:
+                    return {"ok": False, "msg": "server does not support model-mode"}
+                ok, msg = self._call_on_loop(setter, str(payload.get("mode") or ""))
+            else:
+                return {"ok": False, "msg": f"unknown action {action!r}"}
+        except Exception as exc:
+            logger.exception("http ui: model action failed")
+            return {"ok": False, "msg": f"failed: {exc}"}
+        return {"ok": bool(ok), "msg": _strip_rich(str(msg))}
+
     def sessions_info(self) -> dict:
         """Recent saved sessions — backs the left-drawer session list."""
         try:
@@ -1042,6 +1195,8 @@ def _make_handler(ui: _HttpUI):
                 self._json(ui.stats_info())
             elif self.path == "/api/sessions":
                 self._json(ui.sessions_info())
+            elif self.path == "/api/models":
+                self._json(ui.models_info())
             elif self.path == "/api/events":
                 self._sse()
             else:
@@ -1089,6 +1244,8 @@ def _make_handler(ui: _HttpUI):
                 mode = str(payload.get("mode") or "soft").lower()
                 ui.request_stop("hard" if mode == "hard" else "soft")
                 self._json({"ok": True})
+            elif self.path == "/api/model":
+                self._json(ui.model_action(payload))
             else:
                 self._json({"error": "not found"}, 404)
 
@@ -1139,7 +1296,13 @@ def _publish_usage(server, pub) -> None:
 
 async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
     server = ui.server
-    pub = ui.bus.publish
+
+    def pub(ev: dict) -> None:
+        # Slash handlers reuse terminal-oriented helpers whose messages may
+        # carry Rich style tags — strip them for the browser.
+        if ev.get("type") == "sys" and isinstance(ev.get("text"), str):
+            ev = {**ev, "text": _strip_rich(ev["text"])}
+        ui.bus.publish(ev)
 
     def _apply(setter) -> None:
         ok, msg = setter(arg)
@@ -1149,7 +1312,8 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
         pub({"type": "sys", "text":
              "/tokens  context usage        /compact    summarise old messages\n"
              "/reset   drop history         /stop       stop after current iteration\n"
-             "/model   switch model         /models     model roles + availability\n"
+             "/model   switch model         /models     roles + availability; enable|disable <entry>\n"
+             "/mode    model-mode tiers     \n"
              "/think   reasoning level      /autonomy   autonomy level\n"
              "/temp    temperature          /maxtokens  output token cap\n"
              "/maxiter tool iterations      /unlimited  on|off unlimited iterations\n"
@@ -1207,6 +1371,16 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
         from agent.metrics.model_calls import run_modelcalls_command
         pub({"type": "sys", "text": run_modelcalls_command(arg)})
     elif cmd == "/models":
+        parts = arg.split()
+        if len(parts) == 2 and parts[0] in ("enable", "disable"):
+            setter = getattr(server, "set_model_entry_enabled", None)
+            if setter is None:
+                pub({"type": "sys", "error": True,
+                     "text": "entry toggling not supported by this server"})
+            else:
+                ok, msg = setter(parts[1], parts[0] == "enable")
+                pub({"type": "sys", "error": not ok, "text": msg})
+            return
         cfgs = server.get_model_configs()
         lines = []
         for role, c in cfgs.items():
@@ -1214,7 +1388,16 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
             mark = "?" if avail is None else ("✓" if avail else "✗")
             lines.append(f"{role}: {mark} {c.get('model')}  {c.get('base_url', '')}"
                          f"  ctx={c.get('ctx_window', '-')}")
+        lines.append("(/models enable|disable <entry> — toggle; models panel in Details drawer)")
         pub({"type": "sys", "text": "\n".join(lines)})
+    elif cmd == "/mode":
+        setter = getattr(server, "set_model_mode", None)
+        if setter is None:
+            pub({"type": "sys", "error": True,
+                 "text": "model-mode not supported by this server"})
+        else:
+            ok, msg = setter(arg)
+            pub({"type": "sys", "error": not ok, "text": msg})
     else:
         pub({"type": "sys", "error": True,
              "text": f"unknown command {cmd} — /help for the list "
