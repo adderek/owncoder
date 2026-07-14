@@ -25,6 +25,9 @@ logger = logging.getLogger(__name__)
 
 _QUIT = object()
 
+# Seconds the loop guard waits for a browser answer before it auto-stops.
+_LOOP_GUARD_TIMEOUT = 120
+
 # Rich style tags leak into slash-command output written for the terminal UIs
 # ([bold]…[/bold]); the browser shows them literally. Strip style-word tags
 # only — bracketed data like [embeddings] or [local] must survive.
@@ -327,6 +330,15 @@ details.tool .mark.pend { color: var(--warn); animation: pulse 1.1s ease-in-out 
 .phase, .sys { margin: 0 0 6px 6px; color: var(--dimmer); font-size: 12px;
                font-family: var(--mono); white-space: pre-wrap; }
 .sys.error { color: var(--err); }
+/* Loop-guard prompt: agent paused mid-turn on repeated tool calls, waiting
+   for a continue / soft stop / hard kill decision. */
+.loopguard { margin: 0 0 10px 0; font-size: 12.5px; font-family: var(--mono);
+             color: var(--warn); border: 1px solid var(--sig-border);
+             background: var(--sig-bg); border-radius: 8px; padding: 8px 12px; }
+.loopguard .lg-acts { display: flex; gap: 8px; align-items: center;
+                      margin-top: 7px; flex-wrap: wrap; }
+.loopguard .lg-note { color: var(--dim); font-size: 11px; }
+.loopguard .sbtn { font-size: 11.5px; padding: 2px 9px; }
 .signal { margin: 0 0 8px 6px; font-size: 12px; font-family: var(--mono);
           color: var(--warn); border: 1px solid var(--sig-border); background: var(--sig-bg);
           border-radius: 6px; padding: 4px 10px; display: inline-block; }
@@ -619,6 +631,50 @@ function metaRow(cls, text) {
   return metaMount(d);
 }
 
+// Loop-guard prompt: the turn is paused server-side awaiting a decision.
+// Mounted outside the work fold so it cannot be missed; a countdown shows
+// the auto-stop deadline. Choice posts to /api/loopguard.
+let lgEl = null;
+let lgTimer = null;
+function loopGuardPrompt(ev) {
+  resolveLoopGuard(null);   // stale prompt (reconnect edge) — clear it
+  const d = document.createElement('div');
+  d.className = 'loopguard';
+  d.innerHTML = '⚠ loop guard: agent repeats tool calls (' + esc(ev.summary || '?') +
+    ') — deadloop?' +
+    '<div class="lg-acts">' +
+    '<button class="sbtn" data-lg="continue" title="Let it keep going">▶ continue</button>' +
+    '<button class="sbtn" data-lg="stop" title="Finish this iteration, then stop the turn">■ soft stop</button>' +
+    '<button class="sbtn" data-lg="kill" title="Abort the turn immediately">✖ hard kill</button>' +
+    '<span class="lg-note"></span></div>';
+  d.querySelectorAll('[data-lg]').forEach(b => b.addEventListener('click', () => {
+    fetch('/api/loopguard', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({choice: b.dataset.lg}),
+    }).catch(e => row('sys error', null, 'loop-guard answer failed: ' + e));
+  }));
+  mount(d);
+  lgEl = d;
+  let left = ev.timeout || 120;
+  const note = d.querySelector('.lg-note');
+  const tick = () => {
+    note.textContent = 'auto-stops in ' + left + 's';
+    if (left-- <= 0) resolveLoopGuard('stop');
+  };
+  tick();
+  lgTimer = setInterval(tick, 1000);
+}
+function resolveLoopGuard(choice) {
+  if (lgTimer) { clearInterval(lgTimer); lgTimer = null; }
+  if (!lgEl) return;
+  const acts = lgEl.querySelector('.lg-acts');
+  if (acts) acts.innerHTML = '<span class="lg-note">→ ' +
+    (choice === 'continue' ? 'continuing' :
+     choice === 'kill' ? 'hard kill' : 'stopped') + '</span>';
+  lgEl = null;
+}
+
 function reasoning(text) {
   if (!thinkEl) {
     const d = document.createElement('details');
@@ -634,7 +690,8 @@ function reasoning(text) {
 function handle(ev) {
   // History preview is read-only: drop render events while it's open (header
   // chips still update); count them so the banner shows activity happened.
-  if (previewing && ['tokens','stats','state','switched'].indexOf(ev.type) < 0) {
+  if (previewing && ['tokens','stats','state','switched',
+                     'loopguard','loopguard_done'].indexOf(ev.type) < 0) {
     missedLive++;
     const lv = document.querySelector('#previewbar .pb-live');
     if (lv) lv.textContent = '· ' + missedLive + ' live event' +
@@ -679,6 +736,12 @@ function handle(ev) {
   } else if (ev.type === 'sys') {
     if (ev.error) row('sys error', null, ev.text);
     else metaRow('sys', ev.text);
+  } else if (ev.type === 'loopguard') {
+    endStream();
+    loopGuardPrompt(ev);
+    setBusy(true, 'loop guard — waiting for your decision');
+  } else if (ev.type === 'loopguard_done') {
+    resolveLoopGuard(ev.choice);
   } else if (ev.type === 'signal') {
     // Keep the raw streamed text as a folded intermediate step; the cleaned
     // final text arrives separately via `response`.
@@ -707,6 +770,7 @@ function handle(ev) {
       busyFlag = false;
       endStream();   // error/abort path: keep whatever streamed, folded
       endTurn();
+      resolveLoopGuard('stop');   // turn over — retire any pending prompt
     }
     setBusy(ev.state === 'busy', ev.state === 'busy' ? 'working…' : ev.state);
   } else if (ev.type === 'switched') {
@@ -1178,6 +1242,7 @@ class _HttpUI:
         self.prompt_queue: asyncio.Queue = asyncio.Queue()
         self.busy = False
         self.chat_task: asyncio.Task | None = None
+        self.loop_guard_fut: asyncio.Future | None = None
 
     def submit(self, text: str) -> bool:
         """Called from handler threads. Returns True if injected mid-turn."""
@@ -1216,6 +1281,19 @@ class _HttpUI:
         self.server.set_session_id(session.id)
         self.session = session
         return session.id
+
+    def loop_guard_choice(self, choice: str) -> bool:
+        """Resolve a pending loop-guard prompt from a handler thread."""
+        fut = self.loop_guard_fut
+        if fut is None:
+            return False
+
+        def _set() -> None:
+            if not fut.done():
+                fut.set_result(choice)
+
+        self.loop.call_soon_threadsafe(_set)
+        return True
 
     def request_stop(self, mode: str = "soft") -> None:
         """soft: finish the current tool iteration, then stop.
@@ -1564,6 +1642,14 @@ def _make_handler(ui: _HttpUI):
                 mode = str(payload.get("mode") or "soft").lower()
                 ui.request_stop("hard" if mode == "hard" else "soft")
                 self._json({"ok": True})
+            elif self.path == "/api/loopguard":
+                choice = str(payload.get("choice") or "stop")
+                if choice not in ("continue", "stop", "kill"):
+                    self._json({"ok": False, "msg": f"bad choice {choice!r}"}, 400)
+                elif ui.loop_guard_choice(choice):
+                    self._json({"ok": True})
+                else:
+                    self._json({"ok": False, "msg": "no loop-guard prompt pending"})
             elif self.path == "/api/model":
                 self._json(ui.model_action(payload))
             elif self.path == "/api/session":
@@ -1804,10 +1890,26 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
                         logger.exception("http ui: mid-turn save_session failed")
 
             async def _on_loop_detected(summary: str, count: int) -> bool:
-                # No interactive prompt over SSE — surface it and stop the loop.
-                pub({"type": "sys", "error": True,
-                     "text": f"⚠ loop guard: repeated tool calls ({summary}) — "
-                             f"stopping; send a new message to continue"})
+                # Interactive over SSE: the browser shows continue / soft stop /
+                # hard kill buttons; no answer within the window = safe stop.
+                # The turn engine awaits this, so no LLM calls burn meanwhile.
+                fut: asyncio.Future = loop.create_future()
+                ui.loop_guard_fut = fut
+                pub({"type": "loopguard", "summary": summary, "count": count,
+                     "timeout": _LOOP_GUARD_TIMEOUT})
+                try:
+                    choice = await asyncio.wait_for(fut, timeout=_LOOP_GUARD_TIMEOUT)
+                except asyncio.TimeoutError:
+                    choice = "stop"
+                finally:
+                    ui.loop_guard_fut = None
+                pub({"type": "loopguard_done", "choice": choice})
+                if choice == "continue":
+                    return True
+                if choice == "kill":
+                    # Hard-cancel the running chat task; the main loop's
+                    # CancelledError handler reports the abort.
+                    ui.request_stop("hard")
                 return False
 
             # Run the turn as a task so /api/stop mode=hard can cancel it
