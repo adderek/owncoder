@@ -2628,14 +2628,16 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
             def _on_signal(sig) -> None:
                 kind = getattr(sig, "kind", "")
                 payload = str(getattr(sig, "payload", ""))[:500]
+                # Always emit `signal` (transcript row; keeps stale tabs with
+                # pre-askbox JS working), plus `ask` for question-kind signals
+                # so current tabs pin an answer box above the input.
+                pub({"type": "signal", "kind": kind, "payload": payload})
                 if kind in ("ask_user", "blocked", "request_feedback",
                             "request_review"):
                     # The turn ends after this signal; the next submitted text
                     # is the user's answer (see _HttpUI.submit).
                     ui.pending_ask = payload
                     pub({"type": "ask", "kind": kind, "text": payload})
-                else:
-                    pub({"type": "signal", "kind": kind, "payload": payload})
 
             async def _on_loop_detected(summary: str, count: int) -> bool:
                 # Interactive over SSE: the browser shows continue / soft stop /
