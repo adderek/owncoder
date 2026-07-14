@@ -530,6 +530,23 @@ class LocalUIServer:
         from agent.tools.rate_session.rate_session import rate_session as _rate
         return _rate(outcome=outcome, voter=voter, session_id=session_id or None)
 
+    async def autoname_session(self, id_or_name: str, session_id: str = "") -> "tuple[bool, str]":
+        """LLM-generate name/description/tags for a stored session and persist.
+
+        Overwrites existing metadata (explicit user action, unlike the idle
+        auto-namer which only fills blanks)."""
+        from agent.memory.session import load_session, save_session
+        from agent.memory.session_namer import generate_session_meta, apply_meta
+        session, messages = load_session(id_or_name)
+        if session is None:
+            return False, f"session '{id_or_name}' not found"
+        meta = await generate_session_meta(session, messages, self._agent.config)
+        if not meta:
+            return False, "auto-name failed (model returned no usable metadata)"
+        apply_meta(session, meta, overwrite=True)
+        save_session(session, messages)
+        return True, f"auto-named: '{session.name}'"
+
     def load_session(self, name: str, session_id: str = "") -> "tuple[Session | None, list[dict]]":
         from agent.memory.session import load_session
         session, messages = load_session(name)

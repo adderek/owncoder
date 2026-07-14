@@ -108,7 +108,19 @@ _PAGE = r"""<!DOCTYPE html>
   --fg: #d6d9e0; --dim: #8b91a0; --dimmer: #5c6270;
   --accent: #4f8cc9; --accent-soft: #17324d;
   --ok: #6fbf73; --warn: #e0a63f; --err: #e06c75;
-  --user-bg: #1d3a55; --mono: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+  --user-bg: #1d3a55; --user-border: #27506f;
+  --code-bg: #14161b; --head-fg: #f0f2f7; --link: #7fb3e3;
+  --sig-bg: #2a230f; --sig-border: #4d3c17;
+  --mono: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+}
+body[data-theme="light"] {
+  --bg: #f2f3f6; --panel: #ffffff; --panel2: #e8eaef; --border: #d3d7df;
+  --fg: #25282f; --dim: #5b6170; --dimmer: #9096a5;
+  --accent: #2f6cab; --accent-soft: #dbe9f7;
+  --ok: #2f8f4e; --warn: #a06e14; --err: #c1454f;
+  --user-bg: #dcebfb; --user-border: #b9d4ee;
+  --code-bg: #eef0f4; --head-fg: #14161a; --link: #2762a8;
+  --sig-bg: #f7eed4; --sig-border: #dfc98a;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; }
@@ -116,7 +128,7 @@ body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; background: v
        color: var(--fg); display: flex; flex-direction: column; }
 #header { padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--border);
           display: flex; gap: 10px; align-items: center; flex-shrink: 0; flex-wrap: wrap; }
-#header b { color: #f0f2f7; font-size: 15px; letter-spacing: .3px; }
+#header b { color: var(--head-fg); font-size: 15px; letter-spacing: .3px; }
 .chip { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: var(--panel2);
         border: 1px solid var(--border); color: var(--dim); white-space: nowrap; }
 .chip.btn { cursor: pointer; }
@@ -170,7 +182,7 @@ aside.open { width: 280px; }
 .mrow.cool .mst { background: var(--warn); }
 .mrow .mname { color: var(--fg); overflow: hidden; text-overflow: ellipsis;
                white-space: nowrap; }
-.mrow.active .mname { color: #9ecbf3; font-weight: bold; }
+.mrow.active .mname { color: var(--link); font-weight: bold; }
 .mrow .mtier { color: var(--dimmer); }
 .mrow .mid { color: var(--dimmer); overflow: hidden; text-overflow: ellipsis;
              white-space: nowrap; flex: 1; }
@@ -189,6 +201,17 @@ aside.open { width: 280px; }
 .sess-item .sname { color: var(--fg); font-size: 12px; overflow: hidden;
                     text-overflow: ellipsis; white-space: nowrap; }
 .sess-item .smeta { color: var(--dimmer); font-size: 10.5px; font-family: var(--mono); }
+.sess-item { position: relative; }
+.sess-acts { display: none; gap: 2px; position: absolute; top: 3px; right: 4px; }
+.sess-item:hover .sess-acts { display: flex; }
+.sbtn { background: var(--panel); border: 1px solid var(--border); color: var(--dim);
+        font-size: 10px; padding: 0 5px; border-radius: 4px; cursor: pointer; line-height: 1.5; }
+.sbtn:hover { color: var(--fg); border-color: var(--accent); filter: none; }
+.sess-item input { width: 100%; background: var(--bg); color: var(--fg);
+                   border: 1px solid var(--accent); border-radius: 4px;
+                   font-size: 12px; padding: 1px 4px; }
+.sess-more { color: var(--dimmer); font-size: 11px; cursor: pointer; padding: 4px 8px; }
+.sess-more:hover { color: var(--fg); }
 #log { flex: 1; overflow-y: auto; padding: 18px 16px; scroll-behavior: smooth; }
 .row { max-width: 920px; margin: 0 auto; position: relative;
        animation: fadein .18s ease-out; }
@@ -223,11 +246,11 @@ details.think summary:hover { color: var(--dim); }
         border-radius: 5px; cursor: pointer; transition: opacity .12s, color .12s; }
 .row:hover > .copy { opacity: .85; }
 .copy:hover { color: var(--fg); background: var(--panel2); filter: none; }
-.user { background: var(--user-bg); border: 1px solid #27506f; margin-left: 12%;
+.user { background: var(--user-bg); border: 1px solid var(--user-border); margin-left: 12%;
         white-space: pre-wrap; }
 .assistant { background: var(--panel); border: 1px solid var(--border); margin-right: 6%; }
 .assistant.streaming { border-left: 3px solid var(--warn); white-space: pre-wrap; }
-.assistant .md h1, .assistant .md h2, .assistant .md h3 { margin: 10px 0 6px; color: #eef1f6; }
+.assistant .md h1, .assistant .md h2, .assistant .md h3 { margin: 10px 0 6px; color: var(--head-fg); }
 .assistant .md h1 { font-size: 18px; } .assistant .md h2 { font-size: 16px; }
 .assistant .md h3 { font-size: 14.5px; }
 .assistant .md p { margin: 6px 0; }
@@ -235,13 +258,13 @@ details.think summary:hover { color: var(--dim); }
 .assistant .md li { margin: 2px 0; }
 .assistant .md blockquote { border-left: 3px solid var(--accent); padding: 2px 10px;
                             color: var(--dim); margin: 6px 0; }
-.assistant .md code { font-family: var(--mono); font-size: 12.5px; background: #14161b;
+.assistant .md code { font-family: var(--mono); font-size: 12.5px; background: var(--code-bg);
                       border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
-.assistant .md pre { background: #14161b; border: 1px solid var(--border); border-radius: 8px;
+.assistant .md pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
                      padding: 10px 12px; margin: 8px 0; overflow-x: auto; }
 .assistant .md pre code { border: none; background: none; padding: 0; font-size: 12.5px;
                           white-space: pre; }
-.assistant .md a { color: #7fb3e3; }
+.assistant .md a { color: var(--link); }
 .assistant .md table { border-collapse: collapse; margin: 8px 0; }
 .assistant .md th, .assistant .md td { border: 1px solid var(--border); padding: 4px 9px;
                                        font-size: 13px; }
@@ -296,7 +319,7 @@ details.tool .mark.pend { color: var(--warn); animation: pulse 1.1s ease-in-out 
                font-family: var(--mono); white-space: pre-wrap; }
 .sys.error { color: var(--err); }
 .signal { margin: 0 0 8px 6px; font-size: 12px; font-family: var(--mono);
-          color: var(--warn); border: 1px solid #4d3c17; background: #2a230f;
+          color: var(--warn); border: 1px solid var(--sig-border); background: var(--sig-bg);
           border-radius: 6px; padding: 4px 10px; display: inline-block; }
 details.usage { margin: -6px 0 12px 6px; color: var(--dimmer); font-size: 11px;
                 font-family: var(--mono); }
@@ -331,6 +354,7 @@ button:hover { filter: brightness(1.15); }
   <span class="chip btn" id="layout" title="Cycle chat width: centered / wide / full">center</span>
   <span class="chip btn" id="iostats" title="Session totals: prompt in / completion out. Click for per-model split">↑0 ↓0</span>
   <div id="tokenwrap" title="Click for context buffer breakdown"><div id="tokenbar"><div id="tokenfill"></div></div><span id="tokens"></span></div>
+  <button class="icon" id="themetoggle" title="Toggle dark/light theme">◐</button>
   <button class="icon" id="righttoggle" title="Details panel">☰</button>
 </div>
 <div id="main">
@@ -667,6 +691,9 @@ function handle(ev) {
       endTurn();
     }
     setBusy(ev.state === 'busy', ev.state === 'busy' ? 'working…' : ev.state);
+  } else if (ev.type === 'switched') {
+    resyncView().then(() => row('sys', null, '⇄ switched to session ' + ev.session));
+    if (document.getElementById('left').classList.contains('open')) loadSessions();
   } else if (ev.type === 'stats') {
     setIoChip(ev.in, ev.out);
     // refresh the drawer section if it's visible
@@ -845,21 +872,92 @@ document.getElementById('layout').addEventListener('click', () => {
 });
 try { setLayout(localStorage.getItem('oc-layout') || 'center'); } catch (e) {}
 
+// Dark/light theme, persisted locally. Dark is the default.
+function setTheme(t) {
+  document.body.dataset.theme = t;
+  document.getElementById('themetoggle').textContent = t === 'light' ? '☀' : '◐';
+  try { localStorage.setItem('oc-theme', t); } catch (e) {}
+}
+document.getElementById('themetoggle').addEventListener('click', () =>
+  setTheme(document.body.dataset.theme === 'light' ? 'dark' : 'light'));
+try { setTheme(localStorage.getItem('oc-theme') || 'dark'); } catch (e) {}
+
 // Sessions list (left drawer) — loads lazily when the fold is opened.
+// Per-item actions: resume/switch, rename (inline), auto-name (LLM), hide.
+let showHidden = false;
+async function sessionAction(payload) {
+  try {
+    const r = await (await fetch('/api/session', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    })).json();
+    row('sys' + (r.ok ? '' : ' error'), null, r.msg || (r.ok ? 'ok' : 'failed'));
+  } catch (e) {
+    row('sys error', null, 'session action failed: ' + e);
+  }
+  loadSessions();
+}
+
+function startRename(item, id) {
+  const nameEl = item.querySelector('.sname');
+  const old = nameEl.textContent;
+  nameEl.innerHTML = '<input type="text" value="' + esc(old) + '">';
+  const inp = nameEl.querySelector('input');
+  inp.focus(); inp.select();
+  inp.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      const v = inp.value.trim();
+      if (v && v !== old) sessionAction({action: 'rename', id, name: v});
+      else loadSessions();
+    } else if (e.key === 'Escape') loadSessions();
+  });
+  inp.addEventListener('blur', () => loadSessions());
+}
+
 async function loadSessions() {
   const el = document.getElementById('sesslist');
   el.textContent = '…';
   try {
     const d = await (await fetch('/api/sessions')).json();
-    if (!d.sessions || !d.sessions.length) { el.textContent = 'none saved'; return; }
-    el.innerHTML = d.sessions.map(s => {
+    const all = d.sessions || [];
+    const shown = all.filter(s => showHidden || !s.hidden);
+    const hiddenN = all.length - all.filter(s => !s.hidden).length;
+    if (!shown.length && !hiddenN) { el.textContent = 'none saved'; return; }
+    el.innerHTML = shown.map(s => {
       const cur = s.id === d.current;
       const when = String(s.updated_at || '').replace('T', ' ').slice(0, 16);
-      return '<div class="sess-item' + (cur ? ' current' : '') + '" title="' +
-        esc(s.id) + '"><div class="sname">' + esc(s.name || s.id) + '</div>' +
-        '<div class="smeta">' + esc(when) + ' · ' + (s.messages || 0) +
-        ' msgs</div></div>';
-    }).join('');
+      return '<div class="sess-item' + (cur ? ' current' : '') + '" data-id="' +
+        esc(s.id) + '" title="' + esc(s.id) + '">' +
+        '<div class="sname">' + esc(s.name || s.id) + '</div>' +
+        '<div class="smeta">' + esc(when) + ' · ' + (s.messages || 0) + ' msgs' +
+        (s.hidden ? ' · hidden' : '') + '</div>' +
+        '<div class="sess-acts">' +
+        (cur ? '' : '<button class="sbtn" data-act="switch" title="Resume this session">⏵</button>') +
+        '<button class="sbtn" data-act="rename" title="Rename">✎</button>' +
+        '<button class="sbtn" data-act="autoname" title="Auto-name with LLM">✨</button>' +
+        '<button class="sbtn" data-act="hide" data-hidden="' + (s.hidden ? '1' : '') +
+        '" title="' + (s.hidden ? 'Unhide' : 'Hide from list') + '">' +
+        (s.hidden ? '👁' : '🚫') + '</button>' +
+        '</div></div>';
+    }).join('') +
+    (hiddenN ? '<div class="sess-more">' + (showHidden ? 'hide' : 'show') +
+               ' ' + hiddenN + ' hidden</div>' : '');
+    el.querySelectorAll('.sbtn').forEach(b => b.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const item = b.closest('.sess-item');
+      const id = item.dataset.id;
+      const act = b.dataset.act;
+      if (act === 'switch') sessionAction({action: 'switch', id});
+      else if (act === 'rename') startRename(item, id);
+      else if (act === 'autoname') {
+        b.textContent = '…';
+        sessionAction({action: 'autoname', id});
+      }
+      else if (act === 'hide') sessionAction({action: 'hide', id, hidden: !b.dataset.hidden});
+    }));
+    const more = el.querySelector('.sess-more');
+    if (more) more.addEventListener('click', () => { showHidden = !showHidden; loadSessions(); });
   } catch (e) { el.textContent = 'failed: ' + e; }
 }
 document.getElementById('sessfold').addEventListener('toggle', (e) => {
@@ -894,6 +992,21 @@ function applyState(s) {
   stateLoaded = true;
 }
 
+// Rebuild the whole view from /api/state — used after reconnect and after a
+// session switch (both invalidate the rendered log).
+async function resyncView() {
+  try {
+    const s = await (await fetch('/api/state')).json();
+    log.innerHTML = '';
+    turn = null; streamEl = null; thinkEl = null; pendingTools = {};
+    applyState(s);
+    return true;
+  } catch (e) {
+    row('sys error', null, 'state fetch failed: ' + e);
+    return false;
+  }
+}
+
 // SSE with reconnect: when the server goes away (restart, network blip) show
 // a red status, retry with backoff, and on reconnect re-sync the whole view
 // from /api/state (events missed while down cannot be replayed).
@@ -907,15 +1020,8 @@ function connect() {
     everConnected = true;
     reconnDelay = 1000;
     if (!wasDown && stateLoaded) return;
-    try {
-      const s = await (await fetch('/api/state')).json();
-      log.innerHTML = '';
-      turn = null; streamEl = null; thinkEl = null; pendingTools = {};
-      applyState(s);
-      if (wasDown) row('sys', null, '↻ reconnected — history restored from server');
-    } catch (e) {
-      row('sys error', null, 'reconnected but state fetch failed: ' + e);
-    }
+    const ok = await resyncView();
+    if (ok && wasDown) row('sys', null, '↻ reconnected — history restored from server');
   };
   es.onmessage = (m) => handle(JSON.parse(m.data));
   es.onerror = () => {
@@ -1130,9 +1236,10 @@ class _HttpUI:
             from agent.memory.session import list_sessions
             sessions = [
                 {"id": s.get("id", ""),
-                 "name": s.get("short_name") or s.get("name") or s.get("id", ""),
+                 "name": s.get("name") or s.get("short_name") or s.get("id", ""),
                  "updated_at": s.get("updated_at") or "",
-                 "messages": s.get("message_count", 0)}
+                 "messages": s.get("message_count", 0),
+                 "hidden": bool(s.get("hidden", False))}
                 for s in list_sessions(limit=30)
             ]
         except Exception:
@@ -1140,6 +1247,96 @@ class _HttpUI:
             sessions = []
         return {"sessions": sessions,
                 "current": self.session.id if self.session else ""}
+
+    def session_action(self, payload: dict) -> dict:
+        """Session list ops from the browser: rename / hide / autoname / switch."""
+        action = str(payload.get("action") or "")
+        sid = str(payload.get("id") or "")
+        cur = self.session is not None and sid == self.session.id
+        try:
+            if action == "rename":
+                new = str(payload.get("name") or "").strip()
+                if not new:
+                    return {"ok": False, "msg": "empty name"}
+                from agent.memory.session import _sanitize_short_name
+                short = _sanitize_short_name(new.replace(" ", "-").lower())
+                if cur:
+                    # Mutate the live object — a file round-trip would be
+                    # clobbered by the next turn-end save of the stale copy.
+                    def _do() -> None:
+                        self.session.name = new
+                        self.session.short_name = short
+                        self.server.save_session(self.session)
+                    self._call_on_loop(_do)
+                else:
+                    from agent.memory.session import update_session_fields
+                    s, err = update_session_fields(sid, name=new, short_name=short)
+                    if s is None:
+                        return {"ok": False, "msg": err}
+                return {"ok": True, "msg": f"renamed to '{new}'"}
+
+            if action == "hide":
+                hidden = bool(payload.get("hidden", True))
+                if cur:
+                    def _do() -> None:
+                        self.session.hidden = hidden
+                        self.server.save_session(self.session)
+                    self._call_on_loop(_do)
+                else:
+                    from agent.memory.session import update_session_fields
+                    s, err = update_session_fields(sid, hidden=hidden)
+                    if s is None:
+                        return {"ok": False, "msg": err}
+                return {"ok": True,
+                        "msg": f"session {'hidden' if hidden else 'unhidden'}"}
+
+            if action == "autoname":
+                fn = getattr(self.server, "autoname_session", None)
+                if fn is None:
+                    return {"ok": False, "msg": "auto-naming not supported by this server"}
+                fut = asyncio.run_coroutine_threadsafe(fn(sid), self.loop)
+                ok, msg = fut.result(timeout=120)
+                if ok and cur:
+                    # Sync the freshly generated metadata onto the live object.
+                    def _reload() -> None:
+                        from agent.memory.session import load_session
+                        s2, _ = load_session(sid)
+                        if s2 is not None:
+                            for a in ("name", "short_name", "description",
+                                      "summary", "tags", "classification"):
+                                setattr(self.session, a, getattr(s2, a))
+                    self._call_on_loop(_reload)
+                return {"ok": bool(ok), "msg": str(msg)}
+
+            if action == "switch":
+                if self.busy:
+                    return {"ok": False, "msg": "turn in progress — stop it before switching"}
+                if cur:
+                    return {"ok": True, "msg": "already the active session"}
+
+                def _do() -> str:
+                    session, messages = self.server.load_session(sid)
+                    if session is None:
+                        raise ValueError(f"session '{sid}' not found")
+                    if self.session is not None:
+                        try:
+                            self.server.save_session(self.session)
+                        except Exception:
+                            logger.exception("http ui: save before switch failed")
+                    self.server.set_messages(messages)
+                    self.server.set_session_id(session.id)
+                    self.session = session
+                    return session.id
+
+                new_id = self._call_on_loop(_do)
+                # All connected clients resync their view to the new session.
+                self.bus.publish({"type": "switched", "session": new_id})
+                return {"ok": True, "msg": f"switched to session {new_id}"}
+
+            return {"ok": False, "msg": f"unknown action {action!r}"}
+        except Exception as exc:
+            logger.exception("http ui: session action failed")
+            return {"ok": False, "msg": f"failed: {exc}"}
 
     def stats_info(self) -> dict:
         """Session stats — totals, per-model token split, output breakdown."""
@@ -1246,6 +1443,8 @@ def _make_handler(ui: _HttpUI):
                 self._json({"ok": True})
             elif self.path == "/api/model":
                 self._json(ui.model_action(payload))
+            elif self.path == "/api/session":
+                self._json(ui.session_action(payload))
             else:
                 self._json({"error": "not found"}, 404)
 
@@ -1459,9 +1658,9 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
             pub({"type": "state", "state": "busy"})
 
             def _on_user_message() -> None:
-                if session is not None:
+                if ui.session is not None:
                     try:
-                        server.save_session(session)
+                        server.save_session(ui.session)
                     except Exception:
                         logger.exception("http ui: mid-turn save_session failed")
 
@@ -1476,7 +1675,7 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
             # outright (e.g. when the model deadloops).
             chat_task = asyncio.ensure_future(server.chat(
                 text,
-                session_id=session.id if session else "",
+                session_id=ui.session.id if ui.session else "",
                 on_token=lambda tok: pub({"type": "token", "text": tok}),
                 on_tool_call=lambda name, args: pub(
                     {"type": "tool_call", "name": name,
@@ -1521,9 +1720,9 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
                 except Exception:
                     logger.debug("http ui: stats event failed", exc_info=True)
                 pub({"type": "state", "state": "idle"})
-                if session is not None:
+                if ui.session is not None:
                     try:
-                        server.save_session(session)
+                        server.save_session(ui.session)
                     except Exception:
                         logger.exception("http ui: save_session failed")
     except (KeyboardInterrupt, asyncio.CancelledError):
@@ -1533,4 +1732,4 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
         httpd.shutdown()
         httpd.server_close()
         console.print("[dim]HTTP UI stopped.[/dim]")
-    return session
+    return ui.session

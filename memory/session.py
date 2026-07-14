@@ -45,6 +45,7 @@ class Session:
 
     user_outcome: str | None = None   # "good" | "bad" | "ok" — set by user
     agent_outcome: str | None = None  # "good" | "bad" | "ok" — set by agent
+    hidden: bool = False  # hidden from session lists (still on disk, still loadable)
 
     # Path to the file this session was loaded from (not serialised)
     _file_path: Path | None = field(default=None, repr=False, compare=False)
@@ -162,6 +163,7 @@ def _session_from_data(data: dict, file_path: Path | None = None) -> Session:
         updated_at=data.get("updated_at", data.get("saved_at", time.time())),
         user_outcome=data.get("user_outcome"),
         agent_outcome=data.get("agent_outcome"),
+        hidden=bool(data.get("hidden", False)),
     )
     s._file_path = file_path
     return s
@@ -185,6 +187,8 @@ def _session_to_data(session: Session, messages: list[dict]) -> dict:
         data["user_outcome"] = session.user_outcome
     if session.agent_outcome is not None:
         data["agent_outcome"] = session.agent_outcome
+    if session.hidden:
+        data["hidden"] = True
     return data
 
 
@@ -329,6 +333,7 @@ def list_sessions(oldest_first: bool = False, limit: int | None = None) -> list[
                     "created_at": data.get("created_at", data.get("saved_at")),
                     "updated_at": data.get("updated_at", data.get("saved_at")),
                     "message_count": len(data.get("messages", [])),
+                    "hidden": bool(data.get("hidden", False)),
                 }
             )
         except Exception:
@@ -336,6 +341,21 @@ def list_sessions(oldest_first: bool = False, limit: int | None = None) -> list[
     if limit is not None and limit >= 0:
         sessions = sessions[:limit]
     return sessions
+
+
+def update_session_fields(id_or_name: str, **fields) -> "tuple[Session | None, str]":
+    """Load a session by id/name, set *fields*, persist. Returns (session, error).
+
+    Round-trips messages through load/save (preamble sidecar preserved).
+    Meant for occasional metadata edits (rename, hide) on non-active sessions.
+    """
+    session, messages = load_session(id_or_name)
+    if session is None:
+        return None, f"session '{id_or_name}' not found"
+    for k, v in fields.items():
+        setattr(session, k, v)
+    save_session(session, messages)
+    return session, ""
 
 
 def search_sessions(query: str, limit: int = 20) -> list[dict]:
