@@ -15,6 +15,7 @@ import queue
 import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -403,7 +404,7 @@ button:hover { filter: brightness(1.15); }
 </div>
 <div id="main">
 <aside id="left"><div class="aside-inner">
-  <div class="ptitle">Sessions</div>
+  <div class="ptitle">Sessions <button class="sbtn" id="sessnew" title="Start a fresh session">＋ new</button></div>
   <div class="dsec"><pre id="sessinfo">—</pre></div>
   <details id="sessfold" class="dfold">
     <summary class="dhead">recent sessions</summary>
@@ -1064,6 +1065,8 @@ try { setTheme(localStorage.getItem('oc-theme') || 'dark'); } catch (e) {}
 // Sessions list (left drawer) — loads lazily when the fold is opened.
 // Per-item actions: resume/switch, rename (inline), auto-name (LLM), hide.
 let showHidden = false;
+document.getElementById('sessnew').addEventListener('click', () =>
+  sessionAction({action: 'new'}));
 async function sessionAction(payload) {
   try {
     const r = await (await fetch('/api/session', {
@@ -1287,6 +1290,12 @@ async function init() {
 async function send() {
   const text = input.value.trim();
   if (!text) return;
+  if (text === '/clear') {   // purely visual — handled client-side
+    input.value = ''; input.style.height = 'auto';
+    log.innerHTML = '';
+    turn = null; streamEl = null; thinkEl = null; pendingTools = {};
+    return;
+  }
   const target = previewing;   // non-null: send to the previewed session
   input.value = '';
   input.style.height = 'auto';
@@ -1380,6 +1389,29 @@ class _HttpUI:
             except Exception:
                 logger.exception("http ui: save before switch failed")
         self.server.set_messages(messages)
+        self.server.set_session_id(session.id)
+        self.session = session
+        try:
+            from agent.security import path_grants
+            path_grants.apply_session(getattr(session, "path_grants", None))
+        except Exception:
+            logger.exception("http ui: applying session grants failed")
+        return session.id
+
+    def start_new_session(self) -> str:
+        """Save the current session and start a fresh one. Must run on the
+        asyncio loop thread."""
+        from agent.memory.session import new_session
+        mode = "standard"
+        if self.session is not None:
+            mode = getattr(self.session, "mode", "standard") or "standard"
+            try:
+                self._sync_grants()
+                self.server.save_session(self.session)
+            except Exception:
+                logger.exception("http ui: save before new session failed")
+        session = new_session(mode=mode)
+        self.server.reset_messages()
         self.server.set_session_id(session.id)
         self.session = session
         try:
@@ -1659,7 +1691,7 @@ class _HttpUI:
         return {"id": sid, "name": name, "workdir": workdir, "messages": messages}
 
     def session_action(self, payload: dict) -> dict:
-        """Session list ops from the browser: rename / hide / autoname / switch."""
+        """Session list ops from the browser: new / rename / hide / autoname / switch."""
         action = str(payload.get("action") or "")
         sid = str(payload.get("id") or "")
         cur = self.session is not None and sid == self.session.id
@@ -1717,6 +1749,13 @@ class _HttpUI:
                                 setattr(self.session, a, getattr(s2, a))
                     self._call_on_loop(_reload)
                 return {"ok": bool(ok), "msg": str(msg)}
+
+            if action == "new":
+                if self.busy:
+                    return {"ok": False, "msg": "turn in progress — stop it before starting a new session"}
+                new_id = self._call_on_loop(self.start_new_session)
+                self.bus.publish({"type": "switched", "session": new_id})
+                return {"ok": True, "msg": f"started new session {new_id}"}
 
             if action == "switch":
                 if self.busy:
@@ -1908,6 +1947,16 @@ def _publish_usage(server, pub) -> None:
         logger.exception("http ui: usage summary failed")
 
 
+# Commands below need the in-process agent (config, ideas, session mode);
+# remote/protocol-only servers can't serve them.
+_NEEDS_LOCAL = "not supported by this server (needs a local in-process agent)"
+
+
+def _agent_config(server):
+    a = getattr(server, "_agent", None)
+    return None if a is None else a.config
+
+
 async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
     server = ui.server
 
@@ -1924,15 +1973,32 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
 
     if cmd in ("/help", "/?"):
         pub({"type": "sys", "text":
-             "/tokens  context usage        /compact    summarise old messages\n"
-             "/reset   drop history         /stop       stop after current iteration\n"
-             "/model   switch model         /models     roles + availability; enable|disable <entry>\n"
-             "/mode    model-mode tiers     \n"
-             "/think   reasoning level      /autonomy   autonomy level\n"
-             "/temp    temperature          /maxtokens  output token cap\n"
-             "/maxiter tool iterations      /unlimited  on|off unlimited iterations\n"
-             "/goal    show/set goal        /stats      session LLM stats\n"
-             "/context context breakdown    /modelcalls LLM calls by tier ('detail', 'reset')\n"
+             "conversation:\n"
+             "  /tokens context usage      /compact summarise old   /reset drop history\n"
+             "  /clear  clear screen       /stop stop after iter    /continue resume capped turn\n"
+             "  /export [file] save chat as markdown\n"
+             "sessions:\n"
+             "  /save [name]  save/name session      /load <id> switch session\n"
+             "  /sessions [N|all] list saved         /incognito | /private toggle mode\n"
+             "models & tuning:\n"
+             "  /model switch model        /models roles; enable|disable <entry>\n"
+             "  /mode model-mode tiers     /effort quick|smart|deep\n"
+             "  /think reasoning level     /autonomy autonomy level\n"
+             "  /temp temperature          /max_tokens output token cap\n"
+             "  /maxiter tool iterations   /unlimited on|off unlimited iterations\n"
+             "insight:\n"
+             "  /stats session LLM stats   /context context breakdown\n"
+             "  /modelcalls calls by tier  /output think/tool/reply split\n"
+             "  /perf LLM vs tool time     /who agents on this worktree\n"
+             "  /goal show/set goal\n"
+             "workspace:\n"
+             "  /tools list tools          /skills list|show|rm skills\n"
+             "  /commands project cmds     /mcp MCP server status\n"
+             "  /undo [file] restore snapshot   /checkpoint list|new|rollback\n"
+             "  /plan …  /plans            /schedule jobs   /notify channels\n"
+             "  /idea /ideas               /recoveries      /resummarize [--force]\n"
+             "  /security scan|report|…    /credpool list|status|…\n"
+             "terminal-only: /a /q /sparse /wrap /round-summary /speech /exec /apply /analyze-asm /quit\n"
              "Anything else is sent to the agent."})
     elif cmd == "/tokens":
         info = server.get_llm_info()
@@ -1952,17 +2018,17 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
         pub({"type": "sys", "text": "stopping after current iteration…"})
     elif cmd == "/think":
         _apply(server.set_think_level)
-    elif cmd == "/autonomy":
+    elif cmd in ("/autonomy", "/auto", "/verbose"):
         _apply(server.set_autonomy)
     elif cmd in ("/temp", "/temperature"):
         _apply(server.set_temperature)
-    elif cmd == "/maxtokens":
+    elif cmd in ("/maxtokens", "/max_tokens"):
         _apply(server.set_max_tokens)
-    elif cmd == "/maxiter":
+    elif cmd in ("/maxiter", "/max_iter"):
         _apply(server.set_max_iter)
     elif cmd == "/model":
         _apply(server.set_model)
-    elif cmd == "/unlimited":
+    elif cmd in ("/unlimited", "/nomax"):
         enabled = arg.strip().lower() not in ("off", "no", "false", "0")
         server.set_unlimited_mode(enabled)
         pub({"type": "sys", "text": f"unlimited iterations: {'on' if enabled else 'off'}"})
@@ -1975,7 +2041,7 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
         s = server.stats()
         text = "\n".join(f"{k}: {v}" for k, v in s.items()) or "no stats yet"
         pub({"type": "sys", "text": text})
-    elif cmd == "/context":
+    elif cmd in ("/context", "/ctx", "/legend"):
         rows = server.context_breakdown()
         text = "\n".join(
             "  ".join(f"{k}={v}" for k, v in r.items()) for r in rows
@@ -2012,10 +2078,257 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
         else:
             ok, msg = setter(arg)
             pub({"type": "sys", "error": not ok, "text": msg})
+    elif cmd in ("/output", "/out"):
+        scope = arg.strip().lower() or "session"
+        if scope not in ("session", "last"):
+            pub({"type": "sys", "error": True, "text": "usage: /output [session|last]"})
+        else:
+            breakdown = server.output_breakdown(scope=scope)
+            total = sum(s["tokens"] for s in breakdown)
+            lines = ["output breakdown — "
+                     + ("cumulative session" if scope == "session" else "last turn")]
+            for seg in breakdown:
+                pct = (seg["tokens"] / total * 100) if total else 0
+                lines.append(f"  {seg['label']:<10} {seg['tokens']:>7,}  ({pct:5.1f}%)")
+            lines.append(f"  {'total':<10} {total:>7,}")
+            pub({"type": "sys", "text": "\n".join(lines)})
+    elif cmd in ("/perf", "/timing"):
+        from agent.metrics.turn_metrics import run_perf_command
+        agent_ = getattr(server, "_agent", None)
+        side_log = getattr(agent_, "_side_log", None) if agent_ is not None else None
+        pub({"type": "sys",
+             "text": run_perf_command(getattr(side_log, "session_dir", None))})
+    elif cmd in ("/who", "/agents"):
+        cfg = _agent_config(server)
+        if cfg is None:
+            pub({"type": "sys", "error": True, "text": _NEEDS_LOCAL})
+        else:
+            from agent import coord
+            pub({"type": "sys", "text": coord.summary(cfg.tools.working_dir)})
+    elif cmd == "/tools":
+        from agent.tools import get_schemas
+        names = [s["function"]["name"] for s in get_schemas()]
+        pub({"type": "sys", "text": "tools: " + "  ".join(names)})
+    elif cmd == "/skills":
+        cfg = _agent_config(server)
+        if cfg is None:
+            pub({"type": "sys", "error": True, "text": _NEEDS_LOCAL})
+        else:
+            from agent.skills import run_skills_command
+            pub({"type": "sys", "text": run_skills_command(cfg, arg)})
+    elif cmd in ("/commands", "/cmds"):
+        cfg = _agent_config(server)
+        if cfg is None:
+            pub({"type": "sys", "error": True, "text": _NEEDS_LOCAL})
+        else:
+            from agent.project_commands import list_commands_text
+            pub({"type": "sys", "text": list_commands_text(cfg)})
+    elif cmd in ("/checkpoint", "/cp"):
+        from agent.core.checkpoint import run_checkpoint_command
+        pub({"type": "sys", "text": run_checkpoint_command(arg)})
+    elif cmd == "/undo":
+        from agent.tools.files import undo_file, undo_candidates
+        target = arg.strip()
+        if not target:
+            candidates = undo_candidates()
+            pub({"type": "sys", "error": not candidates,
+                 "text": ("undo candidates: " + ", ".join(candidates))
+                         if candidates else "nothing to undo"})
+        else:
+            r = undo_file(target)
+            pub({"type": "sys", "error": "error" in r,
+                 "text": r.get("error") or f"restored {target}"})
+    elif cmd in ("/schedule", "/sched"):
+        cfg = _agent_config(server)
+        if cfg is None:
+            pub({"type": "sys", "error": True, "text": _NEEDS_LOCAL})
+        else:
+            from agent.core.scheduler import run_schedule_command
+            pub({"type": "sys", "text": run_schedule_command(cfg, arg)})
+    elif cmd == "/mcp":
+        cfg = _agent_config(server)
+        if cfg is None:
+            pub({"type": "sys", "error": True, "text": _NEEDS_LOCAL})
+        else:
+            from agent.mcp import run_mcp_command
+            pub({"type": "sys", "text": await asyncio.to_thread(run_mcp_command, cfg, arg)})
+    elif cmd in ("/credpool", "/creds"):
+        cfg = _agent_config(server)
+        if cfg is None:
+            pub({"type": "sys", "error": True, "text": _NEEDS_LOCAL})
+        else:
+            from agent.security.credpool import run_credpool_command
+            pub({"type": "sys",
+                 "text": await asyncio.to_thread(run_credpool_command, cfg, arg)})
+    elif cmd == "/notify":
+        _apply(server.set_notify)
+    elif cmd == "/effort":
+        cfg = _agent_config(server)
+        if cfg is None:
+            pub({"type": "sys", "error": True, "text": _NEEDS_LOCAL})
+        else:
+            from agent.core.model_tier import run_effort_command
+            pub({"type": "sys", "text": run_effort_command(cfg, arg)})
+    elif cmd == "/plan":
+        _apply(server.set_plan)
+    elif cmd == "/plans":
+        from agent.planning import list_plans
+        plans = list_plans()
+        if not plans:
+            pub({"type": "sys", "text": "no plans"})
+        else:
+            lines = []
+            for p in plans:
+                done, total = p.progress()
+                lines.append(f"{p.id} ({p.status}, {done}/{total}) {p.goal[:80]}")
+            pub({"type": "sys", "text": "\n".join(lines)})
+    elif cmd in ("/abort-plan", "/pause-plan", "/stash-plan"):
+        ok, msg = server.set_plan(cmd.split("-")[0].lstrip("/"))
+        pub({"type": "sys", "error": not ok, "text": msg})
+    elif cmd == "/save":
+        if ui.session is None:
+            pub({"type": "sys", "error": True, "text": "no active session"})
+        else:
+            if arg.strip():
+                from agent.memory.session import _sanitize_short_name
+                ui.session.name = arg.strip()
+                ui.session.short_name = _sanitize_short_name(arg.strip())
+            server.save_session(ui.session)
+            label = ui.session.short_name or ui.session.id
+            pub({"type": "sys", "text": f"saved session '{label}'"})
+    elif cmd == "/sessions":
+        from agent.memory.session import list_sessions
+        a = arg.strip().lower()
+        cap = None if a in ("all", "*") else (int(a) if a.isdigit() else 20)
+        sessions = [s for s in list_sessions(oldest_first=True)
+                    if s.get("message_count", 0) > 0]
+        lines = []
+        if cap is not None and len(sessions) > cap:
+            lines.append(f"… {len(sessions) - cap} older hidden — /sessions all to show")
+            sessions = sessions[-cap:]
+        for s in sessions:
+            label = s.get("short_name") or s["id"]
+            name = f"  {s['name']}" if s.get("name") else ""
+            lines.append(f"{label}{name}  {s['message_count']} msgs")
+        pub({"type": "sys", "text": "\n".join(lines) or "no sessions found"})
+    elif cmd in ("/load", "/resume", "/session"):
+        if not arg.strip():
+            pub({"type": "sys", "error": True,
+                 "text": "usage: /load <session-id-or-short-name> "
+                         "(or use the Sessions drawer, ☰ top-left)"})
+        else:
+            new_id = ui.switch_session(arg.strip())
+            ui.bus.publish({"type": "switched", "session": new_id})
+    elif cmd in ("/continue", "/c"):
+        ui.prompt_queue.put_nowait("continue")
+        pub({"type": "sys", "text": "continuing…"})
+    elif cmd == "/export":
+        import json as _json
+        lines = []
+        for m in server.get_messages():
+            role = m.get("role", "?")
+            if role == "system":
+                continue
+            content = m.get("content") or ""
+            if isinstance(content, list):
+                content = _json.dumps(content)
+            if role == "user":
+                lines.append(f"**You:** {content}\n")
+            elif role == "assistant":
+                tool_calls = m.get("tool_calls", [])
+                if tool_calls:
+                    names = ", ".join(tc["function"]["name"] for tc in tool_calls
+                                      if isinstance(tc, dict))
+                    lines.append(f"**Agent** *(tools: {names})*: {content}\n")
+                else:
+                    lines.append(f"**Agent:** {content}\n")
+        label = ((ui.session.short_name or ui.session.id)
+                 if ui.session else "session")
+        target = arg.strip() or f"{label}.md"
+        Path(target).write_text("\n---\n".join(lines), encoding="utf-8")
+        pub({"type": "sys", "text": f"exported to {target} ({len(lines)} turns)"})
+    elif cmd in ("/incognito", "/private"):
+        agent_ = getattr(server, "_agent", None)
+        if agent_ is None or ui.session is None:
+            pub({"type": "sys", "error": True, "text": _NEEDS_LOCAL})
+        else:
+            new_mode = "private" if cmd == "/private" else "incognito"
+            cur = getattr(ui.session, "mode", "standard")
+            target = "standard" if cur == new_mode else new_mode
+            ui.session.mode = target
+            agent_.set_session_mode(target)
+            desc = {
+                "standard": "session mode: standard (persistence on)",
+                "incognito": "incognito: this session and its notes will NOT be saved",
+                "private": "private: no persistence + non-local LLM endpoints refused",
+            }[target]
+            pub({"type": "sys", "text": desc})
+    elif cmd == "/idea":
+        agent_ = getattr(server, "_agent", None)
+        if agent_ is None:
+            pub({"type": "sys", "error": True, "text": _NEEDS_LOCAL})
+        else:
+            from agent.ui.slash_ideas import _apply_idea
+            ok, msg = _apply_idea(agent_, arg)
+            pub({"type": "sys", "error": not ok, "text": msg})
+    elif cmd == "/ideas":
+        agent_ = getattr(server, "_agent", None)
+        if agent_ is None:
+            pub({"type": "sys", "error": True, "text": _NEEDS_LOCAL})
+        else:
+            from agent.ui.slash_ideas import _apply_ideas
+            ok, msg = _apply_ideas(agent_, arg)
+            pub({"type": "sys", "error": not ok, "text": msg})
+    elif cmd == "/recoveries":
+        from agent.planning import recovery
+        recs = recovery.scan_pending()
+        pub({"type": "sys",
+             "text": "\n".join(f"{r.session_id}  {r.exception}" for r in recs)
+                     or "no pending crash recoveries"})
+    elif cmd == "/resummarize":
+        cfg = _agent_config(server)
+        if cfg is None or ui.session is None:
+            pub({"type": "sys", "error": True, "text": _NEEDS_LOCAL})
+        else:
+            from agent.summarizer import resummarize_session
+            force = "--force" in (arg or "")
+            pub({"type": "sys",
+                 "text": f"re-summarizing {'all' if force else 'stale'} entries…"})
+            updated, skipped = await resummarize_session(cfg, ui.session.id, force=force)
+            pub({"type": "sys",
+                 "text": f"re-summarized {updated} entr"
+                         f"{'y' if updated == 1 else 'ies'}, {skipped} skipped"})
+    elif cmd in ("/security", "/sec", "/audit"):
+        cfg = _agent_config(server)
+        if cfg is None:
+            pub({"type": "sys", "error": True, "text": _NEEDS_LOCAL})
+        else:
+            from agent.security.secaudit import run_security_command, _security_start_banner
+            parts_ = arg.strip().split()
+            sub = parts_[0].lower() if parts_ else ""
+            if sub == "review":
+                pub({"type": "sys", "text": _security_start_banner(cfg, parts_)})
+                from agent.security.review import run_review_command
+                rest = arg.strip()[len("review"):].strip()
+                prog = lambda m: pub({"type": "sys", "text": m})  # noqa: E731
+                out = await asyncio.to_thread(run_review_command, cfg, rest, prog)
+            elif sub in ("triage", "verify", "full"):
+                pub({"type": "sys", "text": _security_start_banner(cfg, parts_)})
+                out = await asyncio.to_thread(run_security_command, cfg, arg)
+            else:
+                out = await asyncio.to_thread(run_security_command, cfg, arg)
+            pub({"type": "sys", "text": out})
+    elif cmd == "/paths":
+        pub({"type": "sys",
+             "text": "paths are managed in the Access panel (☰ left drawer)"})
+    elif cmd in ("/a", "/q", "/sparse", "/wrap", "/round-summary", "/summary",
+                 "/speech", "/exec", "/apply", "/analyze-asm", "/asm",
+                 "/quit", "/exit", "/q!"):
+        pub({"type": "sys", "error": True,
+             "text": f"{cmd} is terminal-only — use the terminal UI for it"})
     else:
         pub({"type": "sys", "error": True,
-             "text": f"unknown command {cmd} — /help for the list "
-                     f"(some slash commands live only in the terminal UIs)"})
+             "text": f"unknown command {cmd} — /help for the list"})
 
 
 async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | None" = None):

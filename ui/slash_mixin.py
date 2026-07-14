@@ -31,7 +31,7 @@ class SlashHandlerMixin:
     async def _run_slash(self, cmd: str, arg: str) -> None:
         t = self._t
 
-        if cmd == "/help":
+        if cmd in ("/help", "/?"):
             from agent.ui.readline_loop import _make_help_text
             self._write_sys(_make_help_text(t))
 
@@ -360,6 +360,22 @@ class SlashHandlerMixin:
                 else:
                     self._write_sys(f"[{t.success}]Restored {target}[/{t.success}]")
 
+        elif cmd == "/apply":
+            from agent.core.history_ops import extract_last_code_block
+            from agent.tools.files import write_file
+            result = extract_last_code_block(self._server.get_messages())
+            if not result:
+                self._write_sys(f"[{t.warning}]No code block found in recent messages.[/{t.warning}]")
+            else:
+                fname, code = result
+                target = arg.strip() or fname
+                r = write_file(target, code)
+                if "error" in r:
+                    self._write_sys(f"[{t.error}]{r['error']}[/{t.error}]")
+                else:
+                    self._write_sys(f"[{t.success}]Written to {target}[/{t.success}] "
+                                    f"[{t.text_dim}](/undo {target} to revert)[/{t.text_dim}]")
+
         elif cmd == "/exec":
             if not arg.strip():
                 self._write_sys(f"[{t.warning}]Usage: /exec <command>[/{t.warning}]")
@@ -412,7 +428,7 @@ class SlashHandlerMixin:
                 f"[{t.text_dim}]Exported to {target} ({len(lines)} turns).[/{t.text_dim}]"
             )
 
-        elif cmd == "/analyze-asm":
+        elif cmd in ("/analyze-asm", "/asm"):
             await self._run_analyze_asm(arg)
 
         elif cmd == "/think":
@@ -447,6 +463,12 @@ class SlashHandlerMixin:
 
         elif cmd == "/notify":
             ok, msg = self._server.set_notify(arg)
+            color = t.success if ok else t.warning
+            for line in msg.splitlines():
+                self._write_sys(f"[{color}]{line}[/{color}]")
+
+        elif cmd in ("/max_tokens", "/maxtokens"):
+            ok, msg = self._server.set_max_tokens(arg)
             color = t.success if ok else t.warning
             for line in msg.splitlines():
                 self._write_sys(f"[{color}]{line}[/{color}]")

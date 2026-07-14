@@ -567,7 +567,7 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                 ok, msg = server.set_notify(arg)
                 console.print(f"[{'green' if ok else 'yellow'}]{msg}[/]")
 
-            elif cmd == "/max_tokens":
+            elif cmd in ("/max_tokens", "/maxtokens"):
                 ok, msg = server.set_max_tokens(arg)
                 console.print(f"[{'green' if ok else 'yellow'}]{msg}[/]")
 
