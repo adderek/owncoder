@@ -927,8 +927,6 @@ let missedLive = 0;
 function clearPreview() {
   previewing = null;
   missedLive = 0;
-  input.disabled = false;
-  document.getElementById('send').disabled = false;
   input.placeholder = 'Message… (Enter to send, Shift+Enter for newline, / for commands)';
 }
 
@@ -961,9 +959,7 @@ async function previewSession(id) {
       else if (m.content) assistantMd(m.content);
     }
     log.scrollTop = 0;
-    input.disabled = true;
-    document.getElementById('send').disabled = true;
-    input.placeholder = 'viewing history — "back to live" or ⏵ resume to chat';
+    input.placeholder = 'Message this session — switches now, or queues until the running turn ends';
     loadSessions();   // re-render list so the previewed item is marked
   } catch (e) {
     row('sys error', null, 'history load failed: ' + e);
@@ -1124,19 +1120,23 @@ async function init() {
 }
 
 async function send() {
-  if (previewing) return;   // read-only history view
   const text = input.value.trim();
   if (!text) return;
+  const target = previewing;   // non-null: send to the previewed session
   input.value = '';
   input.style.height = 'auto';
   try {
+    const body = target ? {text, session_id: target} : {text};
     const r = await fetch('/api/chat', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({text}),
+      body: JSON.stringify(body),
     });
     const res = await r.json();
     if (res.injected) row('sys', null, '↑ injected mid-turn: ' + text);
+    else if (res.status === 'queued')
+      row('sys', null, '⧗ queued — switches to this session after the running turn ends');
+    // status 'switching': the switched event resyncs the view shortly.
   } catch (e) {
     input.value = text;   // don't lose the draft
     row('sys error', null, 'send failed (server unreachable?): ' + e);
@@ -1186,6 +1186,36 @@ class _HttpUI:
             return True
         self.loop.call_soon_threadsafe(self.prompt_queue.put_nowait, text)
         return False
+
+    def submit_to(self, sid: str, text: str) -> str:
+        """Prompt aimed at a specific session (from the history preview).
+
+        Same-session prompts follow the normal path. Another session's prompt
+        is queued as a switch+run item: the main loop only picks it up between
+        turns, so a running turn finishes first, then the agent switches and
+        runs the prompt there. Returns 'started'|'injected'|'switching'|'queued'.
+        """
+        if self.session is not None and sid == self.session.id:
+            return "injected" if self.submit(text) else "started"
+        status = "queued" if self.busy else "switching"
+        self.loop.call_soon_threadsafe(
+            self.prompt_queue.put_nowait, {"sid": sid, "text": text})
+        return status
+
+    def switch_session(self, sid: str) -> str:
+        """Swap the active session. Must run on the asyncio loop thread."""
+        session, messages = self.server.load_session(sid)
+        if session is None:
+            raise ValueError(f"session '{sid}' not found")
+        if self.session is not None:
+            try:
+                self.server.save_session(self.session)
+            except Exception:
+                logger.exception("http ui: save before switch failed")
+        self.server.set_messages(messages)
+        self.server.set_session_id(session.id)
+        self.session = session
+        return session.id
 
     def request_stop(self, mode: str = "soft") -> None:
         """soft: finish the current tool iteration, then stop.
@@ -1414,21 +1444,7 @@ class _HttpUI:
                 if cur:
                     return {"ok": True, "msg": "already the active session"}
 
-                def _do() -> str:
-                    session, messages = self.server.load_session(sid)
-                    if session is None:
-                        raise ValueError(f"session '{sid}' not found")
-                    if self.session is not None:
-                        try:
-                            self.server.save_session(self.session)
-                        except Exception:
-                            logger.exception("http ui: save before switch failed")
-                    self.server.set_messages(messages)
-                    self.server.set_session_id(session.id)
-                    self.session = session
-                    return session.id
-
-                new_id = self._call_on_loop(_do)
+                new_id = self._call_on_loop(self.switch_session, sid)
                 # All connected clients resync their view to the new session.
                 self.bus.publish({"type": "switched", "session": new_id})
                 return {"ok": True, "msg": f"switched to session {new_id}"}
@@ -1539,8 +1555,11 @@ def _make_handler(ui: _HttpUI):
                 if not text:
                     self._json({"error": "empty"}, 400)
                     return
-                injected = ui.submit(text)
-                self._json({"ok": True, "injected": injected})
+                sid = str(payload.get("session_id") or "")
+                if sid:
+                    self._json({"ok": True, "status": ui.submit_to(sid, text)})
+                else:
+                    self._json({"ok": True, "injected": ui.submit(text)})
             elif self.path == "/api/stop":
                 mode = str(payload.get("mode") or "soft").lower()
                 ui.request_stop("hard" if mode == "hard" else "soft")
@@ -1748,7 +1767,23 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
     pub = ui.bus.publish
     try:
         while True:
-            text = await ui.prompt_queue.get()
+            item = await ui.prompt_queue.get()
+            if isinstance(item, dict):
+                # Cross-session prompt from the history preview: switch first,
+                # then run the text as a normal turn in that session.
+                sid = str(item.get("sid") or "")
+                text = str(item.get("text") or "")
+                if ui.session is None or sid != ui.session.id:
+                    try:
+                        new_id = ui.switch_session(sid)
+                        pub({"type": "switched", "session": new_id})
+                    except Exception as exc:
+                        pub({"type": "sys", "error": True,
+                             "text": f"queued prompt dropped — switch to "
+                                     f"'{sid}' failed: {exc}"})
+                        continue
+            else:
+                text = item
             if text.startswith("/"):
                 parts = text.split(None, 1)
                 try:
