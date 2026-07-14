@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 from agent.memory.compactor import compact, _count_tokens_approx
 from agent.tools import get_schemas
-from openai import APIConnectionError, APITimeoutError, BadRequestError, InternalServerError, RateLimitError
+from openai import APIConnectionError, APIError, APITimeoutError, BadRequestError, InternalServerError, RateLimitError
 
 from .prompts import _build_call_kwargs, _inject_think_hint, _inject_autonomy_hint, _inject_aei_hint, _log_llm_request
 from .tool_calls import _tool_result_message, _FakeToolCall, execute_tool, _parse_raw_tool_calls
@@ -724,7 +724,11 @@ async def run_turn(
                     logger.warning("failover: rate limit persists (%s) — retrying on '%s'", e, config.llm.model)
                     continue
             raise
-        except (APIConnectionError, APITimeoutError, InternalServerError) as e:
+        except (APIConnectionError, APITimeoutError, InternalServerError, APIError) as e:
+            # Plain APIError covers server errors delivered inside a 200 SSE
+            # stream body (openai raises the base class there, not
+            # InternalServerError) plus any remaining status errors not
+            # handled by the clauses above.
             # Failure cooldown: keep the tier ladder off this endpoint until a
             # fresh availability probe confirms it works again (retry-to-revive).
             try:

@@ -278,6 +278,15 @@ async def _next_chunk(stream_it, *, budget_s: int, heartbeat_s: int, waiting_for
     ``budget_s``/``heartbeat_s`` of 0 disable the limit / the heartbeat respectively.
     """
     pending = asyncio.ensure_future(stream_it.__anext__())
+
+    def _abandon() -> None:
+        # Cancel and retrieve any late exception, otherwise asyncio logs
+        # "exception was never retrieved" for a task that failed after we
+        # gave up on it.
+        pending.cancel()
+        pending.add_done_callback(
+            lambda t: t.cancelled() or t.exception())
+
     waited = 0.0
     while True:
         if budget_s <= 0 and heartbeat_s <= 0:
@@ -285,21 +294,25 @@ async def _next_chunk(stream_it, *, budget_s: int, heartbeat_s: int, waiting_for
         slice_s = heartbeat_s if heartbeat_s > 0 else budget_s
         if budget_s > 0:
             slice_s = min(slice_s, max(0.01, budget_s - waited))
-        try:
-            return await asyncio.wait_for(asyncio.shield(pending), timeout=slice_s)
-        except asyncio.TimeoutError:
-            waited += slice_s
-            if stop_event is not None and stop_event.is_set():
-                pending.cancel()
-                raise _StreamStopped
-            if budget_s > 0 and waited >= budget_s:
-                pending.cancel()
-                raise
-            if on_heartbeat is not None:
-                try:
-                    on_heartbeat(waiting_for, int(waited))
-                except Exception:
-                    logger.exception("on_heartbeat callback failed")
+        # asyncio.wait (not wait_for+shield): a timeout leaves `pending`
+        # untouched, so a chunk or error landing between slices is picked up
+        # on the next pass instead of tripping asyncio's "exception in
+        # shielded future" handler.
+        done, _ = await asyncio.wait({pending}, timeout=slice_s)
+        if done:
+            return pending.result()
+        waited += slice_s
+        if stop_event is not None and stop_event.is_set():
+            _abandon()
+            raise _StreamStopped
+        if budget_s > 0 and waited >= budget_s:
+            _abandon()
+            raise asyncio.TimeoutError
+        if on_heartbeat is not None:
+            try:
+                on_heartbeat(waiting_for, int(waited))
+            except Exception:
+                logger.exception("on_heartbeat callback failed")
 
 
 async def _stream_response(client, config: "Config", api_messages, tools, on_token, on_usage=None, on_reasoning=None, stop_event=None, on_stall_progress=None):

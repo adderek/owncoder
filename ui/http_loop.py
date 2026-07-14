@@ -1705,8 +1705,27 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
                 pub({"type": "sys", "error": True,
                      "text": "⛔ hard stop — turn aborted; last exchange may be incomplete"})
             except Exception as exc:
-                logger.exception("http ui: chat turn failed")
-                pub({"type": "sys", "error": True, "text": f"error: {exc}"})
+                # One-line summary + crash file, mirroring the terminal UI's
+                # _handle_exception, instead of dumping the traceback inline.
+                path = None
+                try:
+                    from agent.core.crash_report import write_crash_report
+                    cfg = getattr(getattr(server, "_agent", None), "config", None)
+                    if cfg is None:
+                        inner = getattr(server, "_inner", None)
+                        cfg = getattr(getattr(inner, "_agent", None), "config", None)
+                    if cfg is not None:
+                        path = write_crash_report(exc, cfg, context="http ui chat turn")
+                except Exception:
+                    path = None
+                if path is not None:
+                    logger.error("http ui: chat turn failed: %s: %s — full report: %s",
+                                 type(exc).__name__, exc, path)
+                    pub({"type": "sys", "error": True,
+                         "text": f"error: {type(exc).__name__}: {exc} — full report: {path}"})
+                else:
+                    logger.exception("http ui: chat turn failed")
+                    pub({"type": "sys", "error": True, "text": f"error: {exc}"})
             finally:
                 ui.chat_task = None
                 ui.busy = False
