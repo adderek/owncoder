@@ -243,6 +243,18 @@ aside.open { width: 280px; }
 #previewbar b { color: var(--fg); }
 #previewbar .pb-live { color: var(--dim); }
 #previewbar .sbtn { font-size: 11.5px; padding: 2px 9px; }
+/* Condensed Q/A view: one row per turn, click to expand the full turn. */
+.cond-turn { max-width: 920px; margin: 0 auto 8px; padding: 7px 12px;
+             border: 1px solid var(--border); border-radius: 8px;
+             cursor: pointer; }
+.cond-turn:hover { border-color: var(--sig-border); }
+.cond-q { color: var(--fg); font-weight: 600; font-size: 13.5px; }
+.cond-a { color: var(--dim); font-size: 12.5px; margin-top: 2px; }
+.cond-meta { opacity: .7; font-size: 11.5px; }
+.cond-full { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border);
+             cursor: auto; }
+.cond-fq { color: var(--fg); white-space: pre-wrap; font-size: 13px;
+           margin-bottom: 8px; }
 #log { flex: 1; overflow-y: auto; padding: 18px 16px; scroll-behavior: smooth; }
 .row { max-width: 920px; margin: 0 auto; position: relative;
        animation: fadein .18s ease-out; }
@@ -397,6 +409,7 @@ button:hover { filter: brightness(1.15); }
   <span class="chip btn" id="workdir" title="Project directory (session-scoped) — click to manage access"></span>
   <div id="statuswrap"><span id="dot"></span><span id="status">idle</span></div>
   <span class="chip btn" id="layout" title="Cycle chat width: centered / wide / full">center</span>
+  <span class="chip btn" id="condchip" title="Condensed Q/A view — one line per turn, click rows to expand">≣ Q/A</span>
   <span class="chip btn" id="iostats" title="Session totals: prompt in / completion out. Click for per-model split">↑0 ↓0</span>
   <div id="tokenwrap" title="Click for context buffer breakdown"><div id="tokenbar"><div id="tokenfill"></div></div><span id="tokens"></span></div>
   <button class="icon" id="themetoggle" title="Toggle dark/light theme">◐</button>
@@ -1113,10 +1126,12 @@ async function previewSession(id) {
       (d.workdir ? '<span class="pb-live">📁 ' + esc(d.workdir) + '</span>' : '') +
       '<span class="pb-live"></span>' +
       '<button class="sbtn" id="pb-switch" title="Make this the active session">⏵ resume</button>' +
+      '<button class="sbtn" id="pb-cond" title="Condensed Q/A view">≣ condensed</button>' +
       '<button class="sbtn" id="pb-back">← back to live</button>';
     log.appendChild(bar);
     document.getElementById('pb-switch').addEventListener('click', () =>
       sessionAction({action: 'switch', id}));
+    document.getElementById('pb-cond').addEventListener('click', () => condensedView(id));
     document.getElementById('pb-back').addEventListener('click', exitPreview);
     for (const m of (d.messages || [])) {
       if (m.role === 'user') row('msg user', null, m.content);
@@ -1129,6 +1144,73 @@ async function previewSession(id) {
     row('sys error', null, 'history load failed: ' + e);
   }
 }
+
+// Condensed Q/A view: one row per turn (LLM one-line summaries from the QA
+// log), click to expand the full turn inline. Uses the preview mechanism so
+// live events are held back until "back to live".
+function firstLine(s) {
+  s = (s || '').trim();
+  const i = s.indexOf('\n');
+  return (i < 0 ? s : s.slice(0, i)).slice(0, 160);
+}
+
+async function condensedView(id) {
+  try {
+    const d = await (await fetch('/api/qa?id=' + encodeURIComponent(id || ''))).json();
+    if (d.error) { row('sys error', null, d.error); return; }
+    previewing = d.id;
+    missedLive = 0;
+    log.innerHTML = '';
+    turn = null; streamEl = null; thinkEl = null; pendingTools = {};
+    const bar = document.createElement('div');
+    bar.id = 'previewbar';
+    bar.innerHTML = '≣ condensed: <b>' + esc(d.name || d.id) + '</b> (' +
+      d.turns.length + ' turns — click a row to expand)' +
+      '<span class="pb-live"></span>' +
+      '<button class="sbtn" id="pb-full" title="Full transcript">⏸ full</button>' +
+      '<button class="sbtn" id="pb-back">← back to live</button>';
+    log.appendChild(bar);
+    document.getElementById('pb-full').addEventListener('click', () => previewSession(d.id));
+    document.getElementById('pb-back').addEventListener('click', exitPreview);
+    if (!d.turns.length)
+      row('sys', null, 'no Q/A entries for this session yet — they are captured as turns complete');
+    let missing = 0;
+    for (const t of d.turns) {
+      if (t.q && !t.qs) missing++;
+      const el = document.createElement('div');
+      el.className = 'cond-turn';
+      const meta = [];
+      if (t.tools) meta.push(t.tools + ' tools');
+      if (t.files && t.files.length) meta.push(t.files.length + ' files');
+      if (t.duration >= 1) meta.push(Math.round(t.duration) + 's');
+      el.innerHTML =
+        '<div class="cond-q">' + esc(firstLine(t.qs || t.q)) + '</div>' +
+        '<div class="cond-a">' + esc(firstLine(t.as || t.a) || '…') +
+        (meta.length ? ' <span class="cond-meta">· ' + meta.join(' · ') + '</span>' : '') +
+        '</div><div class="cond-full" style="display:none"></div>';
+      el.addEventListener('click', (ev) => {
+        if (ev.target.closest('.cond-full')) return;   // selecting text inside
+        const f = el.querySelector('.cond-full');
+        if (f.style.display === 'none') {
+          if (!f.innerHTML)
+            f.innerHTML = '<div class="cond-fq">' + esc(t.q) + '</div>' +
+                          '<div class="md">' + renderMd(t.a || '') + '</div>';
+          f.style.display = '';
+        } else f.style.display = 'none';
+      });
+      log.appendChild(el);
+    }
+    if (missing)
+      row('sys', null, missing + ' turn(s) lack summaries — /resummarize fills them in');
+    log.scrollTop = 0;
+    input.placeholder = 'Message this session — switches now, or queues until the running turn ends';
+    loadSessions();
+  } catch (e) { row('sys error', null, 'condensed view failed: ' + e); }
+}
+document.getElementById('condchip').addEventListener('click', () => {
+  if (previewing) exitPreview();
+  else condensedView('');
+});
 
 function startRename(item, id) {
   const nameEl = item.querySelector('.sname');
@@ -1690,6 +1772,37 @@ class _HttpUI:
         ]
         return {"id": sid, "name": name, "workdir": workdir, "messages": messages}
 
+    def qa_info(self, sid: str = "") -> dict:
+        """Condensed Q/A data — per-turn one-line summaries from the QA log,
+        with full content for inline expansion. Backs the condensed view."""
+        if not sid:
+            if self.session is None:
+                return {"error": "no active session"}
+            sid = self.session.id
+        name = ""
+        if self.session is not None and sid == self.session.id:
+            name = self.session.name or self.session.short_name or ""
+        else:
+            from agent.memory.session import load_session
+            s, _ = load_session(sid)
+            if s is None:
+                return {"error": f"session '{sid}' not found"}
+            name = s.name or s.short_name or ""
+        from agent.memory.qa_log import read_history_sync
+        turns = []
+        for tid, q, a in read_history_sync(sid):
+            turns.append({
+                "turn": tid,
+                "q": q.get("content") or "",
+                "qs": q.get("summary_q") or "",
+                "a": a.get("content") or "",
+                "as": a.get("summary_a") or "",
+                "tools": len(a.get("tool_calls") or []),
+                "files": a.get("modified_files") or [],
+                "duration": a.get("duration") or 0,
+            })
+        return {"id": sid, "name": name, "turns": turns}
+
     def session_action(self, payload: dict) -> dict:
         """Session list ops from the browser: new / rename / hide / autoname / switch."""
         action = str(payload.get("action") or "")
@@ -1831,6 +1944,10 @@ def _make_handler(ui: _HttpUI):
                 from urllib.parse import parse_qs, urlparse
                 sid = (parse_qs(urlparse(self.path).query).get("id") or [""])[0]
                 self._json(ui.history_info(sid))
+            elif self.path.startswith("/api/qa"):
+                from urllib.parse import parse_qs, urlparse
+                sid = (parse_qs(urlparse(self.path).query).get("id") or [""])[0]
+                self._json(ui.qa_info(sid))
             elif self.path == "/api/models":
                 self._json(ui.models_info())
             elif self.path == "/api/grants":
@@ -1976,7 +2093,7 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
              "conversation:\n"
              "  /tokens context usage      /compact summarise old   /reset drop history\n"
              "  /clear  clear screen       /stop stop after iter    /continue resume capped turn\n"
-             "  /export [file] save chat as markdown\n"
+             "  /export [file] save chat as markdown   /export requirements [file] PRD draft from Q/A summaries\n"
              "sessions:\n"
              "  /save [name]  save/name session      /load <id> switch session\n"
              "  /sessions [N|all] list saved         /incognito | /private toggle mode\n"
@@ -2222,6 +2339,39 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
     elif cmd in ("/continue", "/c"):
         ui.prompt_queue.put_nowait("continue")
         pub({"type": "sys", "text": "continuing…"})
+    elif cmd == "/export" and arg.split(None, 1)[:1] == ["requirements"]:
+        # Requirements draft from the QA log: user intents (Q summaries) with
+        # agent outcomes (A summaries) — PRD prep from a working session.
+        if ui.session is None:
+            pub({"type": "sys", "error": True, "text": "no active session"})
+        else:
+            from agent.memory.qa_log import read_history_sync
+            rows = read_history_sync(ui.session.id)
+            label = ui.session.short_name or ui.session.id
+            lines = [f"# Requirements — {ui.session.name or label}", ""]
+            n = missing = 0
+            def _one_line(s: str, cap: int = 200) -> str:
+                s = (s or "").strip()
+                return s.splitlines()[0][:cap] if s else ""
+
+            for tid, q, a in rows:
+                req = _one_line(q.get("summary_q"))
+                if not req:
+                    req = " ".join((q.get("content") or "").split())[:200]
+                    if q.get("content"):
+                        missing += 1
+                if not req:
+                    continue
+                n += 1
+                lines.append(f"- **R{tid}** {req}")
+                outcome = _one_line(a.get("summary_a"))
+                if outcome:
+                    lines.append(f"  - outcome: {outcome}")
+            rest = arg.split(None, 1)[1].strip() if len(arg.split(None, 1)) > 1 else ""
+            target = rest or f"{label}-requirements.md"
+            Path(target).write_text("\n".join(lines) + "\n", encoding="utf-8")
+            note = f" ({missing} unsummarized — /resummarize improves them)" if missing else ""
+            pub({"type": "sys", "text": f"exported {n} requirements to {target}{note}"})
     elif cmd == "/export":
         import json as _json
         lines = []
