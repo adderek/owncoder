@@ -714,11 +714,14 @@ async def run_turn(
                     and failover_count < max(1, int(fcfg.max_retries))):
                 from agent.core import model_routing
                 new_client = model_routing.failover_to_local(config)
+                if new_client is None:
+                    # Already on a local endpoint — try another live local entry.
+                    new_client = model_routing.failover_to_alternative(config)
                 if new_client is not None:
                     client = new_client
                     failover_count += 1
-                    _phase("failover", f"rate limited → local {config.llm.model}")
-                    logger.warning("failover: rate limit persists (%s) — retrying on local", e)
+                    _phase("failover", f"rate limited → {config.llm.model}")
+                    logger.warning("failover: rate limit persists (%s) — retrying on '%s'", e, config.llm.model)
                     continue
             raise
         except (APIConnectionError, APITimeoutError, InternalServerError) as e:
@@ -729,19 +732,22 @@ async def run_turn(
                 mark_rate_limited(config.llm.base_url, config.llm.model)
             except Exception:
                 logger.debug("mark failure cooldown failed (ignored)", exc_info=True)
-            # Remote endpoint unreachable / timed out / 5xx. If failover is on and
-            # we are on a remote endpoint, degrade to a local model and retry so
-            # the agent keeps working offline. Otherwise surface the error.
+            # Endpoint unreachable / timed out / 5xx. If failover is on, degrade
+            # a remote endpoint to a local model — or, when already local (e.g.
+            # a router whose preset fails to load), switch to another live local
+            # entry — and retry so the turn survives. Otherwise surface the error.
             fcfg = getattr(config, "failover", None)
             if (fcfg is not None and fcfg.enabled
                     and failover_count < max(1, int(fcfg.max_retries))):
                 from agent.core import model_routing
                 new_client = model_routing.failover_to_local(config)
+                if new_client is None:
+                    new_client = model_routing.failover_to_alternative(config)
                 if new_client is not None:
                     client = new_client
                     failover_count += 1
-                    _phase("failover", f"remote down → local {config.llm.model}")
-                    logger.warning("failover: remote error (%s) — retrying on local", e)
+                    _phase("failover", f"endpoint error → {config.llm.model}")
+                    logger.warning("failover: endpoint error (%s) — retrying on '%s'", e, config.llm.model)
                     continue
             raise
 

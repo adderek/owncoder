@@ -342,8 +342,20 @@ def _probe_ctx_force(
 
 # ── availability probe ────────────────────────────────────────────────────────
 
+def _load_failed(model_info: dict) -> bool:
+    """True when the server flags this model as unservable.
+
+    The llama.cpp router advertises every preset in /v1/models even when its
+    last load attempt crashed (missing weights file, OOM); such presets carry
+    status.failed=true. Requests to them always 500, so treat them as absent.
+    """
+    status = model_info.get("status")
+    return isinstance(status, dict) and bool(status.get("failed"))
+
+
 def list_endpoint_models(base_url: str, api_key: str = "", timeout: int = 3) -> set[str] | None:
-    """Return the set of model ids the endpoint advertises via /v1/models.
+    """Return the set of servable model ids the endpoint advertises via
+    /v1/models (presets whose load already failed are excluded).
 
     Returns None when the endpoint is unreachable (so callers can distinguish
     "offline endpoint" from "model genuinely missing").
@@ -359,7 +371,10 @@ def list_endpoint_models(base_url: str, api_key: str = "", timeout: int = 3) -> 
             data = json.loads(resp.read())
     except Exception:
         return None
-    return {m["id"] for m in data.get("data", []) if isinstance(m, dict) and "id" in m}
+    return {
+        m["id"] for m in data.get("data", [])
+        if isinstance(m, dict) and "id" in m and not _load_failed(m)
+    }
 
 
 # Per-endpoint /models cache for cheap repeated availability checks (the tier

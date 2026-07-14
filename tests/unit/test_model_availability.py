@@ -19,6 +19,31 @@ def test_list_endpoint_models_no_url():
     assert mp.list_endpoint_models("") is None
 
 
+def test_list_endpoint_models_excludes_failed_presets(monkeypatch):
+    # llama.cpp router advertises presets whose load crashed (missing weights)
+    # with status.failed=true — those must not count as available.
+    import io
+    import json as _json
+    import urllib.request
+
+    payload = _json.dumps({"data": [
+        {"id": "good-model", "status": {"value": "loaded"}},
+        {"id": "broken-model", "status": {"value": "unloaded", "exit_code": 1, "failed": True}},
+        {"id": "bare-model"},
+    ]}).encode()
+
+    class _Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=3: _Resp(payload))
+    ids = mp.list_endpoint_models("http://localhost:8081/v1")
+    assert ids == {"good-model", "bare-model"}
+
+
 def test_check_availability_offline_summarizer(monkeypatch):
     cfg = Config()
     cfg.llm.base_url = "http://localhost:8080/v1"

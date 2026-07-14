@@ -86,6 +86,44 @@ def failover_to_local(config: "Config"):
     return client
 
 
+def failover_to_alternative(config: "Config"):
+    """Rescue a turn whose *local* endpoint is failing — e.g. a router that
+    accepts the request but 500s because the preset's weights are missing.
+
+    Switches to another live local-tier entry (failover.local_entry first).
+    Stays within this module's invariant — never routes toward remote — so a
+    turn that privacy routing pinned to local can never leak through failover.
+
+    Returns a fresh client, or None if failover is disabled or no other live
+    local entry exists. Entries on failure cooldown (mark_rate_limited) are
+    skipped, so the entry that just failed is never picked again this window.
+    """
+    cfg = getattr(config, "failover", None)
+    if cfg is None or not cfg.enabled:
+        return None
+    from agent.config import entry_tier
+    from agent.config.model_probe import entry_available
+    from agent.core.model_control import is_disabled
+    entries = config.model_entries or {}
+    preferred = getattr(cfg, "local_entry", "") or ""
+    ordered = [preferred] if preferred in entries else []
+    ordered += [n for n in entries if n not in ordered]
+    active = (config.llm.base_url, config.llm.model)
+    for name in ordered:
+        e = entries[name]
+        if entry_tier(e) != "local" or is_disabled(config, name):
+            continue
+        if (e.base_url, e.model or config.llm.model) == active:
+            continue
+        if not entry_available(e):
+            continue
+        client = switch_to_entry(config, name)
+        if client is not None:
+            logger.warning("failover: local endpoint failing — switched to entry '%s'", name)
+            return client
+    return None
+
+
 # ── Per-turn privacy routing ──────────────────────────────────────────────────
 
 def _has_secret_text(text: str, config: "Config") -> bool:
