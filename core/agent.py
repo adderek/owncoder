@@ -15,6 +15,10 @@ from .turn import _post_turn_capture_and_summarize, run_turn
 from agent.ipc.controller import run_turn_ipc
 from agent.security.airgap import is_local_url
 
+# Minimum embedding cosine similarity for a saved note to be injected as
+# turn context when it has no meaningful token overlap with the query.
+_NOTES_MIN_SIMILARITY = 0.5
+
 if TYPE_CHECKING:
     from agent.config import Config
 
@@ -348,6 +352,31 @@ class Agent:
         # Remove any previous notes injection (find by marker, not index).
         self.messages = [m for m in self.messages if not m.get("_notes_marker")]
         self._notes_sys_idx = None
+
+        # Relevance floor. hybrid_search's combined_score is normalized within
+        # the result set (relative), so filter on absolute signals instead:
+        # embedding similarity, or ≥2 query tokens appearing in the note.
+        # Without this, a small store injects whatever it has (top_k fills up).
+        import re as _re
+        qtokens = {t.lower() for t in _re.findall(r"\w{3,}", query)}
+
+        def _relevant(h: dict) -> bool:
+            vs = h.get("vec_score")
+            if vs is not None and vs >= _NOTES_MIN_SIMILARITY:
+                return True
+            text = f"{h.get('title') or ''} {h.get('body') or ''}".lower()
+            return sum(1 for t in qtokens if t in text) >= 2
+
+        # Dedup by content — the store may hold the same note under several ids.
+        seen: set[tuple[str, str]] = set()
+        deduped = []
+        for h in hits:
+            key = ((h.get("title") or "").strip(), (h.get("body") or "").strip())
+            if key in seen or not _relevant(h):
+                continue
+            seen.add(key)
+            deduped.append(h)
+        hits = deduped
 
         if not hits:
             return

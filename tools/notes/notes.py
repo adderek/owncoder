@@ -97,6 +97,30 @@ def save_note(
     if not body.strip():
         return {"error": "`body` must be non-empty."}
 
+    # Same note re-saved (harvest re-runs, model repeating itself): touch the
+    # existing entry instead of inserting a duplicate; merge any new tags.
+    try:
+        existing = store.find_duplicate("note", title.strip(), body.strip())
+    except Exception:
+        existing = None
+    if existing is not None:
+        merged = None
+        if tags:
+            old = store.get(existing) or {}
+            old_tags = old.get("tags")
+            if isinstance(old_tags, str):
+                try:
+                    old_tags = json.loads(old_tags)
+                except Exception:
+                    old_tags = []
+            merged = list(dict.fromkeys((old_tags or []) + list(tags)))
+        try:
+            store.touch(existing, tags=merged)
+        except Exception:
+            logger.exception("save_note: touch on duplicate failed")
+        return {"saved": True, "id": existing, "title": title.strip(),
+                "deduplicated": True}
+
     embedding = None
     if _embedder is not None:
         try:

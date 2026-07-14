@@ -264,6 +264,12 @@ def save_session(session: Session, messages: list[dict]) -> None:
     if session.mode == "incognito":
         return
 
+    # Notes injections are transient context, re-injected fresh each turn.
+    # Persisting them is harmful: loads strip the "_"-prefixed marker, after
+    # which the note block is indistinguishable from a real user message and
+    # accumulates across resumes.
+    messages = [m for m in messages if not m.get("_notes_marker")]
+
     sdir = _get_session_dir()
 
     # Strip preamble; write sidecar; replace with placeholder in messages.

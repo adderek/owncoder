@@ -255,6 +255,12 @@ aside.open { width: 280px; }
              cursor: auto; }
 .cond-fq { color: var(--fg); white-space: pre-wrap; font-size: 13px;
            margin-bottom: 8px; }
+/* Agent question awaiting an answer — pinned above the input. */
+#askbox { max-width: 920px; margin: 0 auto 8px; padding: 9px 12px;
+          border: 1px solid var(--sig-border); background: var(--sig-bg);
+          border-radius: 8px; font-size: 13.5px; animation: fadein .18s ease-out; }
+#askbox .ask-kind { color: var(--warn); font-family: var(--mono); font-size: 12px; }
+#askbox .ask-text { color: var(--fg); }
 #log { flex: 1; overflow-y: auto; padding: 18px 16px; scroll-behavior: smooth; }
 .row { max-width: 920px; margin: 0 auto; position: relative;
        animation: fadein .18s ease-out; }
@@ -802,6 +808,9 @@ function handle(ev) {
     // final text arrives separately via `response`.
     endStream();
     metaRow('signal', '⚑ ' + ev.kind + (ev.payload ? ': ' + ev.payload : ''));
+  } else if (ev.type === 'ask') {
+    endStream();
+    showAsk(ev.kind, ev.text);
   } else if (ev.type === 'usage') {
     const bits = [ev.text, ev.tiers].filter(Boolean).join('  ·  ');
     const calls = ev.calls || [];
@@ -827,7 +836,10 @@ function handle(ev) {
       endTurn();
       resolveLoopGuard('stop');   // turn over — retire any pending prompt
     }
-    setBusy(ev.state === 'busy', ev.state === 'busy' ? 'working…' : ev.state);
+    if (ev.state !== 'busy' && document.getElementById('askbox'))
+      setBusy(false, 'waiting for your answer');
+    else
+      setBusy(ev.state === 'busy', ev.state === 'busy' ? 'working…' : ev.state);
   } else if (ev.type === 'switched') {
     clearPreview();
     resyncView().then(() => row('sys', null, '⇄ switched to session ' + ev.session));
@@ -1369,9 +1381,34 @@ async function init() {
   connect();
 }
 
+// Agent question (ask_user/blocked/…): the turn has ended and the agent
+// waits for an answer. Pin the question above the input; the next message
+// answers it (the server routes it as a fresh turn, never mid-turn inject).
+function showAsk(kind, text) {
+  clearAsk();
+  const box = document.createElement('div');
+  box.id = 'askbox';
+  box.innerHTML = '<span class="ask-kind">⚑ ' + esc(kind) + '</span> ' +
+                  '<span class="ask-text">' + esc(text) + '</span>';
+  const inputrow = document.getElementById('inputrow');
+  inputrow.parentElement.insertBefore(box, inputrow);
+  input.placeholder = 'Answer the agent\'s question… (Enter to send)';
+  setBusy(false, 'waiting for your answer');
+  input.focus();
+}
+
+function clearAsk() {
+  const old = document.getElementById('askbox');
+  if (old) old.remove();
+  if (input.placeholder.startsWith('Answer')) {
+    input.placeholder = 'Message… (Enter to send, Shift+Enter for newline, / for commands)';
+  }
+}
+
 async function send() {
   const text = input.value.trim();
   if (!text) return;
+  clearAsk();
   if (text === '/clear') {   // purely visual — handled client-side
     input.value = ''; input.style.height = 'auto';
     log.innerHTML = '';
@@ -1435,9 +1472,17 @@ class _HttpUI:
         self.busy = False
         self.chat_task: asyncio.Task | None = None
         self.loop_guard_fut: asyncio.Future | None = None
+        # Set when the agent ended its turn with ask_user/blocked/…: the next
+        # submitted text is the answer and must start a fresh turn, never be
+        # injected into whatever else may be running (background QA, delegate).
+        self.pending_ask: str | None = None
 
     def submit(self, text: str) -> bool:
         """Called from handler threads. Returns True if injected mid-turn."""
+        if self.pending_ask is not None:
+            self.pending_ask = None
+            self.loop.call_soon_threadsafe(self.prompt_queue.put_nowait, text)
+            return False
         if self.busy:
             self.server.inject(text)
             return True
@@ -2580,6 +2625,18 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
                     except Exception:
                         logger.exception("http ui: mid-turn save_session failed")
 
+            def _on_signal(sig) -> None:
+                kind = getattr(sig, "kind", "")
+                payload = str(getattr(sig, "payload", ""))[:500]
+                if kind in ("ask_user", "blocked", "request_feedback",
+                            "request_review"):
+                    # The turn ends after this signal; the next submitted text
+                    # is the user's answer (see _HttpUI.submit).
+                    ui.pending_ask = payload
+                    pub({"type": "ask", "kind": kind, "text": payload})
+                else:
+                    pub({"type": "signal", "kind": kind, "payload": payload})
+
             async def _on_loop_detected(summary: str, count: int) -> bool:
                 # Interactive over SSE: the browser shows continue / soft stop /
                 # hard kill buttons; no answer within the window = safe stop.
@@ -2621,9 +2678,7 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
                     {"type": "progress", "done": done, "limit": limit}),
                 on_user_message=_on_user_message,
                 on_loop_detected=_on_loop_detected,
-                on_signal=lambda sig, clean: pub(
-                    {"type": "signal", "kind": getattr(sig, "kind", ""),
-                     "payload": str(getattr(sig, "payload", ""))[:500]}),
+                on_signal=lambda sig, clean: _on_signal(sig),
                 source="http",
             ))
             ui.chat_task = chat_task

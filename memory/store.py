@@ -163,6 +163,39 @@ class MemoryStore:
         conn.commit()
         return eid
 
+    def find_duplicate(self, scope: str, title: str, body: str) -> str | None:
+        """Entry id of an existing entry with identical title+body, or None."""
+        row = self._conn().execute(
+            "SELECT id FROM entries WHERE scope=? AND title=? AND body=?",
+            (scope, title, body),
+        ).fetchone()
+        return row["id"] if row else None
+
+    def touch(self, entry_id: str, tags: list[str] | None = None) -> None:
+        """Bump updated_at; optionally replace tags (entries + FTS index)."""
+        conn = self._conn()
+        if tags is not None:
+            tags_json = json.dumps(tags, ensure_ascii=False)
+            row = conn.execute(
+                "SELECT rowid, body, title, tags FROM entries WHERE id=?", (entry_id,)
+            ).fetchone()
+            if row:
+                # entries_fts is external-content: delete+reinsert, as in add().
+                conn.execute("DELETE FROM entries_fts WHERE rowid=?", (row["rowid"],))
+                conn.execute(
+                    "INSERT INTO entries_fts(rowid,body,title,tags) VALUES(?,?,?,?)",
+                    (row["rowid"], row["body"], row["title"] or "", tags_json),
+                )
+            conn.execute(
+                "UPDATE entries SET tags=?, updated_at=? WHERE id=?",
+                (tags_json, time.time(), entry_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE entries SET updated_at=? WHERE id=?", (time.time(), entry_id)
+            )
+        conn.commit()
+
     def delete(self, entry_id: str) -> None:
         conn = self._conn()
         row = conn.execute(
@@ -349,6 +382,12 @@ class MemoryStore:
         for r in fts_results:
             all_entries.setdefault(r["id"], r)
 
+        # Absolute per-source signals for downstream relevance filtering:
+        # combined_score is min-max normalized within this result set, so it
+        # is relative only — someone always scores high, even on garbage.
+        vec_raw = {r["id"]: r["score"] for r in vec_results}
+        fts_ids = {r["id"] for r in fts_results}
+
         combined = []
         for eid, entry in all_entries.items():
             v = vec_norm.get(eid, 0.0)
@@ -356,7 +395,10 @@ class MemoryStore:
             combined.append((0.6 * v + 0.4 * b, entry))
 
         combined.sort(key=lambda x: x[0], reverse=True)
-        return [{"combined_score": s, **d} for s, d in combined[:top_k]]
+        return [{"combined_score": s,
+                 "vec_score": vec_raw.get(d["id"]),
+                 "fts_hit": d["id"] in fts_ids,
+                 **d} for s, d in combined[:top_k]]
 
     def increment_hit_count(self, entry_id: str) -> None:
         conn = self._conn()
