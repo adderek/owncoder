@@ -142,7 +142,9 @@ class ThemeConfig:
 
 @dataclass
 class UIConfig:
-    mode: str = "textual"
+    mode: str = "textual"  # "textual" | "simple" | "http"
+    http_host: str = "127.0.0.1"  # http mode bind address ("0.0.0.0" exposes on LAN)
+    http_port: int = 8180  # http mode port; walks forward up to +19 if taken
     q_summaries: bool = False
     syntax_highlight: bool = True
     show_token_count: bool = True

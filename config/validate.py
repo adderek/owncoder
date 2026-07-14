@@ -31,7 +31,7 @@ _ALLOWED: list[tuple[str, set[str]]] = [
     ("security.network", {"off", "on"}),                           # tools/shell/main.py
     ("security.sandbox_backend", {"auto", "bwrap", "firejail", "none"}),  # security/runner.py
     ("recovery.prompt_mode", {"ask", "auto_recover", "auto_skip"}),  # planning/recovery.py
-    ("ui.mode", {"textual", "simple"}),                            # cli/chat.py
+    ("ui.mode", {"textual", "simple", "http"}),                    # cli/chat.py
     ("ui.chat_wrap", {"wrap", "nowrap", "last used"}),             # ui/terminal.py
     ("ui.reasoning_fold", {"immediate", "end_of_round", "never"}),
     ("ui.qa_summary_mode", {"lazy", "background", "off"}),

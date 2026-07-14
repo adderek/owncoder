@@ -82,7 +82,7 @@ def main() -> None:
     chat_p.add_argument("--model", type=str, help="Override model name")
     chat_p.add_argument("--ctx", type=int, help="Override context window size")
     chat_p.add_argument("--session", type=str, help="Session name to load/save")
-    chat_p.add_argument("--ui", type=str, choices=["textual", "simple"],
+    chat_p.add_argument("--ui", type=str, choices=["textual", "simple", "http"],
                         help="UI mode (skips the prompt)")
     chat_p.add_argument("--incognito", action="store_true",
                         help="Don't persist this session or any notes it produces")

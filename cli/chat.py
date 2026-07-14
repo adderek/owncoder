@@ -62,6 +62,7 @@ def _bg_update_index(store, embedder, config, result: dict) -> None:
 _UI_MODES = {
     "1": ("textual", "Textual — full TUI, scrollable panes, token bar"),
     "2": ("simple",  "Simple  — flowing terminal, Rich markdown, /commands"),
+    "3": ("http",    "HTTP    — local web server, chat in your browser"),
 }
 
 
@@ -80,7 +81,7 @@ def _pick_ui_mode(current: str) -> str:
         console.print(f"  [cyan]{key}[/cyan]  {desc}{marker}")
     console.print(f"\n  [dim]Enter to keep current ({current}), or set in agent.toml to skip this prompt[/dim]")
     try:
-        choice = input("  Mode [1/2]: ").strip()
+        choice = input("  Mode [1/2/3]: ").strip()
     except (EOFError, KeyboardInterrupt):
         return current
     chosen = _UI_MODES.get(choice, (current,))[0]

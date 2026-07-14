@@ -31,6 +31,7 @@ class UIServerProtocol(Protocol):
         on_context_size=None,
         on_user_message=None,
         on_signal=None,
+        source: str = "terminal",
     ) -> str:
         """Send a user message; stream events via callbacks; return full response.
 

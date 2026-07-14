@@ -111,11 +111,12 @@ def build_app_css(t) -> str:
     }}
     CompletionBar {{
         height: auto;
-        max-height: 8;
+        max-height: 30;
         display: none;
         background: {t.panel_bg_dark};
         color: {t.text_dim};
         padding: 0 1;
+        overflow-y: auto;
     }}
     CompletionBar.visible {{
         display: block;

@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 CAPABILITIES = ("display", "choices", "chat")
 SEND_TIMEOUT_S = 10
-RELAY_QUEUE_MAX = 100
+RELAY_QUEUE_MAX = 1000
 RELAY_BACKOFF_MAX_S = 60
 # Cap inbound frames from a hostile/compromised relay. Must hold the largest
 # legitimate frame: a chunked `voice` audio frame is base64 → JSON → e2e-encrypt

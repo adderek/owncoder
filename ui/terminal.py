@@ -887,7 +887,11 @@ def run_ui(agent: "Agent", session=None):
     except Exception:
         logger.exception("notify: relay availability check failed")
     server = build_ui_server(agent)
-    if server.get_ui_config()["mode"] == "textual":
+    mode = server.get_ui_config()["mode"]
+    if mode == "http":
+        from agent.ui.http_loop import http_loop
+        return asyncio.run(http_loop(agent, session=session, server=server))
+    if mode == "textual":
         try:
             app = _build_textual_app(agent, session=session, server=server)
             app.run()

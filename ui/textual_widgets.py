@@ -1737,37 +1737,50 @@ def build_widget_classes(t) -> SimpleNamespace:
     class HintBar(Static):
         """Contextual hints shown during history navigation."""
 
-    class CompletionBar(Static):
-        """Inline completion list shown while the user types a /command."""
+    class CompletionBar(RichLog):
+        """Inline completion list shown while the user types a /command.
 
-        MAX_VISIBLE = 6
+        RichLog scroll view: shows the full match list (CSS max-height caps
+        the height) and keeps the selected row in view.
+        """
+
+        def __init__(self, renderable="", **kwargs):
+            # Accept (and ignore) the positional renderable so compose() can
+            # construct it like the Static-based widgets alongside it.
+            kwargs.setdefault("auto_scroll", False)
+            super().__init__(**kwargs)
 
         def set_completions(
             self,
             matches: "list[tuple[str, str, bool]]",
             selected_idx: int,
         ) -> None:
+            self.clear()
             if not matches:
-                self.update("")
                 self.remove_class("visible")
                 return
-            lines = []
-            for i, (cmd, desc, _) in enumerate(matches[: self.MAX_VISIBLE]):
+            for i, (cmd, desc, _) in enumerate(matches):
                 marker = "▸" if i == selected_idx else " "
                 if i == selected_idx:
                     cmd_part = f"[bold {t.cmd_color}]{cmd}[/bold {t.cmd_color}]"
                 else:
                     cmd_part = f"[{t.cmd_color}]{cmd}[/{t.cmd_color}]"
                 desc_esc = desc.replace("[", "\\[")  # backslash illegal inside f-string expr on py<3.12
-                lines.append(
+                self.write(
                     f" {marker} {cmd_part:<20} [{t.text_dim}]{desc_esc}[/{t.text_dim}]"
                 )
-            if len(matches) > self.MAX_VISIBLE:
-                lines.append(
-                    f"[{t.text_dim}]   … {len(matches) - self.MAX_VISIBLE} more[/{t.text_dim}]"
-                )
-            self.update("\n".join(lines))
             self.add_class("visible")
+            self.call_after_refresh(self._scroll_selected_into_view, selected_idx)
+
+        def _scroll_selected_into_view(self, selected_idx: int) -> None:
+            viewport = self.scrollable_content_region.height
+            if viewport <= 0:
+                return
+            top = int(self.scroll_offset.y)
+            if selected_idx < top:
+                self.scroll_to(y=selected_idx, animate=False)
+            elif selected_idx >= top + viewport:
+                self.scroll_to(y=selected_idx - viewport + 1, animate=False)
 
     # ── prompt input ──────────────────────────────────────────────────────────
 

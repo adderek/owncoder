@@ -45,6 +45,7 @@ class RelayLink:
         self._e2e = e2e
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=RELAY_QUEUE_MAX)
         self._task: asyncio.Task | None = None
+        self._dropped = 0
 
     # ── outbound ────────────────────────────────────────────────────────────
 
@@ -88,7 +89,14 @@ class RelayLink:
             except asyncio.QueueFull:
                 try:
                     self._queue.get_nowait()
-                    logger.warning("relay_link %s: queue full — dropped oldest frame", self._name)
+                    self._dropped += 1
+                    # Once the queue is full every subsequent frame drops one —
+                    # log periodically, not per frame (a dead link would
+                    # otherwise spam a warning per token chunk).
+                    if self._dropped == 1 or self._dropped % 100 == 0:
+                        logger.warning(
+                            "relay_link %s: queue full — dropped %d frames so far "
+                            "(link down or too slow?)", self._name, self._dropped)
                 except asyncio.QueueEmpty:
                     pass
 

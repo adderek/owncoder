@@ -33,17 +33,51 @@ SendFrame = Callable[[str], None]
 
 
 class RemoteBridge:
+    # Coalesce per-token stream events into chunks before framing: one frame
+    # per token floods the relay queue (drops + "queue full" warnings) for no
+    # rendering benefit on the remote side.
+    STREAM_FLUSH_CHARS = 64
+
     def __init__(self, inner: Any, send_frame: SendFrame) -> None:
         self._inner = inner
         self._send = send_frame
+        self._buf_kind: str | None = None  # "token" | "reasoning"
+        self._buf: list[str] = []
+        self._buf_len = 0
 
-    def _emit(self, event: Any) -> None:
+    def _send_now(self, event: Any) -> None:
         try:
             self._send(encode_event(event))
         except Exception:
             # A broken sink must never crash the turn; the local stream goes on.
             import logging
             logging.getLogger(__name__).exception("remote bridge: send_frame failed")
+
+    def _flush_stream(self) -> None:
+        if not self._buf:
+            self._buf_kind = None
+            return
+        text = "".join(self._buf)
+        kind = self._buf_kind
+        self._buf = []
+        self._buf_len = 0
+        self._buf_kind = None
+        self._send_now(TokenEvent(text) if kind == "token" else ReasoningEvent(text))
+
+    def _buffer_stream(self, kind: str, tok: str) -> None:
+        if self._buf_kind is not None and self._buf_kind != kind:
+            self._flush_stream()
+        self._buf_kind = kind
+        self._buf.append(tok)
+        self._buf_len += len(tok)
+        if self._buf_len >= self.STREAM_FLUSH_CHARS:
+            self._flush_stream()
+
+    def _emit(self, event: Any) -> None:
+        # Any non-stream event flushes buffered tokens first so frame order
+        # matches what the model actually produced.
+        self._flush_stream()
+        self._send_now(event)
 
     async def chat(
         self,
@@ -60,14 +94,15 @@ class RemoteBridge:
         on_context_size=None,
         on_user_message=None,
         on_signal=None,
+        source: str = "remote",
     ) -> str:
         def pub_token(tok: str) -> None:
-            self._emit(TokenEvent(tok))
+            self._buffer_stream("token", tok)
             if on_token:
                 on_token(tok)
 
         def pub_reasoning(tok: str) -> None:
-            self._emit(ReasoningEvent(tok))
+            self._buffer_stream("reasoning", tok)
             if on_reasoning:
                 on_reasoning(tok)
 
@@ -124,7 +159,7 @@ class RemoteBridge:
             on_context_size=pub_context_size,
             on_user_message=on_user_message,
             on_signal=pub_signal,
-            source="remote",
+            source=source,
         )
         self._emit(TurnEndEvent(response))
         return response

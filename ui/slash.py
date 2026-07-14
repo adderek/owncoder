@@ -461,10 +461,11 @@ def _apply_goal(agent, arg: str) -> tuple[bool, str]:
 
 def _match_commands(prefix: str) -> list[tuple[str, str, bool]]:
     """Return (primary_name, description, takes_arg) for commands whose primary
-    name or any alias starts with *prefix* (case-insensitive)."""
+    name or any alias contains *prefix* (case-insensitive substring match).
+    When prefix is just "/" all commands are returned."""
     pl = prefix.lower()
     out = []
     for primary, aliases, desc, takes_arg in _SLASH_COMMANDS:
-        if primary.startswith(pl) or any(a.startswith(pl) for a in aliases):
+        if pl == "/" or pl in primary or any(pl in a for a in aliases):
             out.append((primary, desc, takes_arg))
     return out
