@@ -11,12 +11,21 @@ from pathlib import Path
 # ── Module-level configuration ───────────────────────────────────────────────
 
 _session_dir: Path | None = None
+_working_dir: Path | None = None
 
 
 def configure(working_dir: str, agent_dir: str = ".agent") -> None:
     """Set the session directory based on the project's working_dir and agent_dir."""
-    global _session_dir
+    global _session_dir, _working_dir
+    _working_dir = Path(working_dir).resolve()
     _session_dir = Path(working_dir) / agent_dir
+
+
+def get_working_dir() -> Path:
+    """Project root the session store was configured with."""
+    if _working_dir is not None:
+        return _working_dir
+    return Path(".").resolve()
 
 
 def _get_session_dir() -> Path:
@@ -46,6 +55,11 @@ class Session:
     user_outcome: str | None = None   # "good" | "bad" | "ok" — set by user
     agent_outcome: str | None = None  # "good" | "bad" | "ok" — set by agent
     hidden: bool = False  # hidden from session lists (still on disk, still loadable)
+
+    working_dir: str = ""  # project root this session belongs to
+    # Session-scoped extra path grants: [{"path", "mode", "origin"}] — the
+    # non-default entries of security.path_grants, restored on session switch.
+    path_grants: list[dict] = field(default_factory=list)
 
     # Path to the file this session was loaded from (not serialised)
     _file_path: Path | None = field(default=None, repr=False, compare=False)
@@ -164,6 +178,8 @@ def _session_from_data(data: dict, file_path: Path | None = None) -> Session:
         user_outcome=data.get("user_outcome"),
         agent_outcome=data.get("agent_outcome"),
         hidden=bool(data.get("hidden", False)),
+        working_dir=data.get("working_dir", ""),
+        path_grants=list(data.get("path_grants") or []),
     )
     s._file_path = file_path
     return s
@@ -189,6 +205,10 @@ def _session_to_data(session: Session, messages: list[dict]) -> dict:
         data["agent_outcome"] = session.agent_outcome
     if session.hidden:
         data["hidden"] = True
+    if session.working_dir:
+        data["working_dir"] = session.working_dir
+    if session.path_grants:
+        data["path_grants"] = session.path_grants
     return data
 
 
@@ -228,6 +248,7 @@ def new_session(
         classification=classification,
         created_at=ts,
         updated_at=ts,
+        working_dir=str(get_working_dir()),
     )
 
 

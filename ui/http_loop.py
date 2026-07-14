@@ -216,6 +216,24 @@ aside.open { width: 280px; }
 .sess-more { color: var(--dimmer); font-size: 11px; cursor: pointer; padding: 4px 8px; }
 .sess-more:hover { color: var(--fg); }
 .sess-item.previewed { border-left: 2px solid var(--warn); background: var(--panel2); }
+/* Access panel: per-session allowed paths (grants). */
+.grow { display: flex; gap: 6px; align-items: center; padding: 3px 6px;
+        border-radius: 5px; font-family: var(--mono); font-size: 11px; }
+.grow:hover { background: var(--panel2); }
+.grow.pending { border: 1px solid var(--sig-border); background: var(--sig-bg); }
+.grow .gmode { color: var(--dim); flex-shrink: 0; width: 2ch; }
+.grow .gmode.rw { color: var(--warn); }
+.grow .gpath { flex: 1; color: var(--fg); overflow: hidden; text-overflow: ellipsis;
+               white-space: nowrap; }
+.grow.pending .gpath { color: var(--warn); }
+.grow .gorigin { color: var(--dimmer); flex-shrink: 0; }
+.acc-add { display: flex; gap: 4px; margin-top: 6px; }
+.acc-add input { flex: 1; min-width: 0; background: var(--bg); color: var(--fg);
+                 border: 1px solid var(--border); border-radius: 5px;
+                 font-size: 11px; padding: 3px 6px; font-family: var(--mono); }
+.acc-add input:focus { outline: none; border-color: var(--accent); }
+.acc-add select { background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+                  border-radius: 5px; font-size: 11px; }
 /* Read-only history preview banner — pinned above the previewed transcript. */
 #previewbar { max-width: 920px; margin: 0 auto 14px; padding: 8px 12px;
               border: 1px solid var(--sig-border); background: var(--sig-bg);
@@ -361,8 +379,12 @@ details.usage .body { padding: 4px 0 2px 14px; white-space: pre; overflow-x: aut
 button { background: var(--accent); border: none; color: #fff; padding: 0 20px;
          border-radius: 8px; cursor: pointer; font-size: 14px; }
 button:hover { filter: brightness(1.15); }
-#stop { background: #7a5a20; display: none; }
-#kill { background: #7a3030; display: none; padding: 0 12px; }
+/* Interrupt controls stay visible at all times (QA rounds and delegated
+   turns must be stoppable even when this UI didn't start them); they are
+   merely disabled while nothing runs. */
+#stop { background: #7a5a20; }
+#kill { background: #7a3030; padding: 0 12px; }
+#stop.inert, #kill.inert { opacity: .4; }
 </style>
 </head>
 <body data-layout="center">
@@ -371,6 +393,7 @@ button:hover { filter: brightness(1.15); }
   <b>owncoder</b>
   <span class="chip" id="model" title="Click to manage models"></span>
   <span class="chip" id="session"></span>
+  <span class="chip btn" id="workdir" title="Project directory (session-scoped) — click to manage access"></span>
   <div id="statuswrap"><span id="dot"></span><span id="status">idle</span></div>
   <span class="chip btn" id="layout" title="Cycle chat width: centered / wide / full">center</span>
   <span class="chip btn" id="iostats" title="Session totals: prompt in / completion out. Click for per-model split">↑0 ↓0</span>
@@ -386,6 +409,14 @@ button:hover { filter: brightness(1.15); }
     <summary class="dhead">recent sessions</summary>
     <div id="sesslist" class="sess-list">—</div>
   </details>
+  <div class="dsec"><div class="dhead" id="d-access">Access — allowed paths ⟳</div>
+    <div id="accessbody">—</div>
+    <div class="acc-add">
+      <input id="accpath" placeholder="/path or relative to project">
+      <select id="accmode"><option value="ro">ro</option><option value="rw">rw</option></select>
+      <button class="sbtn" id="accadd">add</button>
+    </div>
+  </div>
   <div class="placeholder">Options, attachments and media will appear here.</div>
 </div></aside>
 <div id="center">
@@ -516,8 +547,11 @@ function assistantMd(text) {
 function setBusy(busy, label) {
   statusEl.textContent = label || (busy ? 'working…' : 'idle');
   dot.className = busy ? 'busy' : '';
-  document.getElementById('stop').style.display = busy ? '' : 'none';
-  document.getElementById('kill').style.display = busy ? '' : 'none';
+  // Stop/Kill stay enabled even when this UI thinks it's idle: background
+  // QA rounds / delegated turns run without a busy event here, and hard
+  // stop cancels background tasks server-side. Idle clicks are no-ops.
+  document.getElementById('stop').classList.toggle('inert', !busy);
+  document.getElementById('kill').classList.toggle('inert', !busy);
 }
 
 function endStream() {
@@ -691,7 +725,7 @@ function handle(ev) {
   // History preview is read-only: drop render events while it's open (header
   // chips still update); count them so the banner shows activity happened.
   if (previewing && ['tokens','stats','state','switched',
-                     'loopguard','loopguard_done'].indexOf(ev.type) < 0) {
+                     'loopguard','loopguard_done','grants_changed'].indexOf(ev.type) < 0) {
     missedLive++;
     const lv = document.querySelector('#previewbar .pb-live');
     if (lv) lv.textContent = '· ' + missedLive + ' live event' +
@@ -736,6 +770,13 @@ function handle(ev) {
   } else if (ev.type === 'sys') {
     if (ev.error) row('sys error', null, ev.text);
     else metaRow('sys', ev.text);
+  } else if (ev.type === 'grants_changed') {
+    if (ev.pending) {
+      row('sys', null, '⚑ agent requests access to a new path — open the ' +
+          'Sessions drawer (☰ left) to grant or reject');
+      toggleDrawer('left', 'lefttoggle', true);
+    }
+    loadGrants();
   } else if (ev.type === 'loopguard') {
     endStream();
     loopGuardPrompt(ev);
@@ -926,8 +967,63 @@ function openDetails(loader) {
   toggleDrawer('right', 'righttoggle', true);
   loader();
 }
-document.getElementById('lefttoggle').addEventListener('click', () =>
-  toggleDrawer('left', 'lefttoggle'));
+// Access panel: allowed paths (grants) of the active session. Pending rows
+// are agent requests awaiting a ✓/✗ decision.
+async function grantAction(payload) {
+  try {
+    const r = await (await fetch('/api/grants', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    })).json();
+    row('sys' + (r.ok ? '' : ' error'), null, r.msg || (r.ok ? 'ok' : 'failed'));
+  } catch (e) {
+    row('sys error', null, 'access change failed: ' + e);
+  }
+  loadGrants();
+}
+
+async function loadGrants() {
+  const el = document.getElementById('accessbody');
+  el.textContent = '…';
+  try {
+    const d = await (await fetch('/api/grants')).json();
+    el.innerHTML = (d.grants || []).map(g => {
+      const pend = g.state === 'pending';
+      return '<div class="grow' + (pend ? ' pending' : '') + '" title="' +
+        esc(g.path) + (pend ? ' — requested by the agent, no access yet' : '') + '">' +
+        '<span class="gmode' + (g.mode === 'rw' ? ' rw' : '') + '">' + esc(g.mode) + '</span>' +
+        '<span class="gpath">' + esc(g.path) + '</span>' +
+        (pend
+          ? '<button class="sbtn" data-ga="accept" data-p="' + esc(g.path) + '" title="Grant access">✓</button>' +
+            '<button class="sbtn" data-ga="reject" data-p="' + esc(g.path) + '" title="Reject request">✗</button>'
+          : (g.origin === 'default'
+             ? '<span class="gorigin" title="Project root — always granted">root</span>'
+             : '<button class="sbtn" data-ga="remove" data-p="' + esc(g.path) + '" title="Revoke access">✗</button>')) +
+        '</div>';
+    }).join('') || '<div class="grow">project root only</div>';
+    el.querySelectorAll('[data-ga]').forEach(b => b.addEventListener('click', () =>
+      grantAction({action: b.dataset.ga, path: b.dataset.p})));
+  } catch (e) { el.textContent = 'failed: ' + e; }
+}
+document.getElementById('accadd').addEventListener('click', () => {
+  const p = document.getElementById('accpath').value.trim();
+  if (!p) return;
+  document.getElementById('accpath').value = '';
+  grantAction({action: 'add', path: p,
+               mode: document.getElementById('accmode').value});
+});
+document.getElementById('accpath').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') document.getElementById('accadd').click();
+});
+document.getElementById('d-access').addEventListener('click', loadGrants);
+document.getElementById('workdir').addEventListener('click', () => {
+  toggleDrawer('left', 'lefttoggle', true);
+  loadGrants();
+});
+document.getElementById('lefttoggle').addEventListener('click', () => {
+  if (toggleDrawer('left', 'lefttoggle')) loadGrants();
+});
 document.getElementById('righttoggle').addEventListener('click', () => {
   if (toggleDrawer('right', 'righttoggle')) {
     loadModels(); loadStats(); loadModelCalls(); loadContext();
@@ -1011,6 +1107,7 @@ async function previewSession(id) {
     const bar = document.createElement('div');
     bar.id = 'previewbar';
     bar.innerHTML = '⏸ history: <b>' + esc(d.name || id) + '</b> (read-only) ' +
+      (d.workdir ? '<span class="pb-live">📁 ' + esc(d.workdir) + '</span>' : '') +
       '<span class="pb-live"></span>' +
       '<button class="sbtn" id="pb-switch" title="Make this the active session">⏵ resume</button>' +
       '<button class="sbtn" id="pb-back">← back to live</button>';
@@ -1115,10 +1212,14 @@ function applyState(s) {
     }).join('\n');
     document.getElementById('model').title = tip;
   }
+  const wd = s.workdir || '';
+  const wdel = document.getElementById('workdir');
+  wdel.textContent = '📁 ' + (wd.split('/').filter(Boolean).pop() || wd || '?');
+  wdel.title = 'project dir (session-scoped): ' + wd + ' — click to manage access';
   if (s.session) {
     document.getElementById('session').textContent = s.session;
     document.getElementById('sessinfo').textContent =
-      'current: ' + s.session + '\nmodel:   ' + s.model;
+      'current: ' + s.session + '\nmodel:   ' + s.model + '\ndir:     ' + wd;
   }
   handle({type: 'tokens', used: s.tokens, ctx: s.ctx_window});
   if (s.io) setIoChip(s.io.in, s.io.out);
@@ -1274,12 +1375,18 @@ class _HttpUI:
             raise ValueError(f"session '{sid}' not found")
         if self.session is not None:
             try:
+                self._sync_grants()
                 self.server.save_session(self.session)
             except Exception:
                 logger.exception("http ui: save before switch failed")
         self.server.set_messages(messages)
         self.server.set_session_id(session.id)
         self.session = session
+        try:
+            from agent.security import path_grants
+            path_grants.apply_session(getattr(session, "path_grants", None))
+        except Exception:
+            logger.exception("http ui: applying session grants failed")
         return session.id
 
     def loop_guard_choice(self, choice: str) -> bool:
@@ -1302,9 +1409,101 @@ class _HttpUI:
             def _cancel() -> None:
                 if self.chat_task is not None and not self.chat_task.done():
                     self.chat_task.cancel()
+                    return
+                # No chat task of our own — the work runs elsewhere (delegated
+                # turn, background QA round). Set the stop flag and cancel any
+                # background tasks so hard stop still has teeth.
+                self.server.stop_after_iteration()
+                cancel_bg = getattr(self.server, "cancel_background", None)
+                if cancel_bg is not None:
+                    try:
+                        n = cancel_bg()
+                        if n:
+                            self.bus.publish({
+                                "type": "sys",
+                                "text": f"⛔ cancelled {n} background task(s)"})
+                    except Exception:
+                        logger.exception("http ui: cancel_background failed")
             self.loop.call_soon_threadsafe(_cancel)
         else:
             self.loop.call_soon_threadsafe(self.server.stop_after_iteration)
+
+    def grants_info(self) -> dict:
+        """Allowed paths of the active session — backs the Access panel."""
+        from agent.security import path_grants
+        return {
+            "workdir": self.workdir(),
+            "grants": [
+                {"path": str(g.path), "mode": g.mode,
+                 "origin": g.origin, "state": g.state}
+                for g in path_grants.get_all()
+            ],
+        }
+
+    def grant_action(self, payload: dict) -> dict:
+        """Access edits from the browser: add / remove / accept / reject.
+        Results are snapshotted onto the session so they follow it."""
+        from pathlib import Path as _P
+        from agent.security import path_grants
+        action = str(payload.get("action") or "")
+        raw = str(payload.get("path") or "").strip()
+        if not raw:
+            return {"ok": False, "msg": "empty path"}
+
+        def _do() -> tuple[bool, str]:
+            if action == "add":
+                p = _P(raw).expanduser()
+                if not p.is_absolute():
+                    p = _P(self.workdir()) / p
+                p = p.resolve()
+                if not p.exists():
+                    return False, f"path does not exist: {p}"
+                mode = "rw" if payload.get("mode") == "rw" else "ro"
+                path_grants.add_grant(p, mode)
+                return True, f"granted {mode}: {p}"
+            p = _P(raw)
+            if action == "remove":
+                ok = path_grants.remove_grant(p)
+                return ok, "removed" if ok else "not found (or the default root grant)"
+            if action == "accept":
+                ok = path_grants.accept_grant(p)
+                return ok, "access granted" if ok else "no such pending request"
+            if action == "reject":
+                ok = path_grants.reject_grant(p)
+                return ok, "request rejected" if ok else "no such pending request"
+            return False, f"unknown action {action!r}"
+
+        try:
+            ok, msg = self._call_on_loop(_do)
+            if ok and self.session is not None:
+                def _persist() -> None:
+                    self._sync_grants()
+                    self.server.save_session(self.session)
+                self._call_on_loop(_persist)
+        except Exception as exc:
+            logger.exception("http ui: grant action failed")
+            return {"ok": False, "msg": f"failed: {exc}"}
+        return {"ok": bool(ok), "msg": msg}
+
+    def workdir(self) -> str:
+        """Project dir of the active session (falls back to the configured root)."""
+        if self.session is not None and getattr(self.session, "working_dir", ""):
+            return self.session.working_dir
+        from agent.memory.session import get_working_dir
+        return str(get_working_dir())
+
+    def _sync_grants(self) -> None:
+        """Snapshot the live path grants onto the session before it's saved."""
+        if self.session is None:
+            return
+        try:
+            from agent.security import path_grants
+            self.session.path_grants = path_grants.session_snapshot()
+            if not getattr(self.session, "working_dir", ""):
+                from agent.memory.session import get_working_dir
+                self.session.working_dir = str(get_working_dir())
+        except Exception:
+            logger.debug("http ui: grant sync failed", exc_info=True)
 
     def state(self) -> dict:
         info = self.server.get_llm_info()
@@ -1328,6 +1527,7 @@ class _HttpUI:
             "ctx_window": info["ctx_window"],
             "tokens": self.server.token_estimate(),
             "busy": self.busy,
+            "workdir": self.workdir(),
             "session": self.session.id if self.session else "",
             "messages": messages,
             "models": models,
@@ -1443,18 +1643,20 @@ class _HttpUI:
         if self.session is not None and sid == self.session.id:
             msgs = self.server.get_messages()
             name = getattr(self.session, "name", "") or sid
+            workdir = self.workdir()
         else:
-            from agent.memory.session import load_session
+            from agent.memory.session import get_working_dir, load_session
             session, msgs = load_session(sid)
             if session is None:
                 return {"error": f"session '{sid}' not found"}
             name = getattr(session, "name", "") or session.id
+            workdir = getattr(session, "working_dir", "") or str(get_working_dir())
         messages = [
             {"role": m.get("role"), "content": m.get("content") or ""}
             for m in msgs
             if m.get("role") in ("user", "assistant") and (m.get("content") or "").strip()
         ]
-        return {"id": sid, "name": name, "messages": messages}
+        return {"id": sid, "name": name, "workdir": workdir, "messages": messages}
 
     def session_action(self, payload: dict) -> dict:
         """Session list ops from the browser: rename / hide / autoname / switch."""
@@ -1592,6 +1794,8 @@ def _make_handler(ui: _HttpUI):
                 self._json(ui.history_info(sid))
             elif self.path == "/api/models":
                 self._json(ui.models_info())
+            elif self.path == "/api/grants":
+                self._json(ui.grants_info())
             elif self.path == "/api/events":
                 self._sse()
             else:
@@ -1654,6 +1858,8 @@ def _make_handler(ui: _HttpUI):
                 self._json(ui.model_action(payload))
             elif self.path == "/api/session":
                 self._json(ui.session_action(payload))
+            elif self.path == "/api/grants":
+                self._json(ui.grant_action(payload))
             else:
                 self._json({"error": "not found"}, 404)
 
@@ -1834,6 +2040,21 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
     if _set_ext is not None:
         _set_ext(ui.submit)
 
+    # Push grant changes (e.g. the agent requesting access to a new path)
+    # to every connected browser so the Access panel refreshes live.
+    def _grants_notify() -> None:
+        try:
+            from agent.security import path_grants
+            ui.bus.publish({"type": "grants_changed",
+                            "pending": path_grants.has_pending()})
+        except Exception:
+            logger.debug("http ui: grants notify failed", exc_info=True)
+    try:
+        from agent.security import path_grants as _pg
+        _pg.register_notify(_grants_notify)
+    except Exception:
+        _pg = None
+
     cfg = agent.config.ui
     host = getattr(cfg, "http_host", "127.0.0.1")
     port = int(getattr(cfg, "http_port", 8180))
@@ -1872,10 +2093,17 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
                 text = item
             if text.startswith("/"):
                 parts = text.split(None, 1)
+                # Long-running commands (compact, plan/QA runners) previously
+                # gave no busy indication and no way to interrupt from the UI.
+                ui.busy = True
+                pub({"type": "state", "state": "busy"})
                 try:
                     await _handle_slash(ui, parts[0].lower(), parts[1] if len(parts) > 1 else "")
                 except Exception as exc:
                     pub({"type": "sys", "error": True, "text": f"command failed: {exc}"})
+                finally:
+                    ui.busy = False
+                    pub({"type": "state", "state": "idle"})
                 continue
 
             ui.busy = True
@@ -1982,12 +2210,15 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
                 pub({"type": "state", "state": "idle"})
                 if ui.session is not None:
                     try:
+                        ui._sync_grants()
                         server.save_session(ui.session)
                     except Exception:
                         logger.exception("http ui: save_session failed")
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     finally:
+        if _pg is not None:
+            _pg.unregister_notify(_grants_notify)
         pub({"type": "sys", "text": "server shutting down"})
         httpd.shutdown()
         httpd.server_close()

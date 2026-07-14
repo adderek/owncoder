@@ -170,6 +170,38 @@ def get_all() -> list[PathGrant]:
     return list(_grants)
 
 
+def session_snapshot() -> list[dict]:
+    """Serializable non-default granted entries — stored on the Session so
+    grants follow the session across switches and restarts."""
+    return [
+        {"path": str(g.path), "mode": g.mode, "origin": g.origin}
+        for g in _grants
+        if g.state == "granted" and g.origin != "default"
+    ]
+
+
+def apply_session(records: list[dict] | None) -> None:
+    """Replace non-default grants with a session's stored records.
+
+    Pending requests are dropped (they belonged to the previous session's
+    turn). The global grants file is not rewritten — session-scoped grants
+    persist in the session record instead.
+    """
+    global _grants
+    _grants = [g for g in _grants if g.origin == "default"]
+    for r in records or []:
+        try:
+            g = PathGrant(path=Path(r["path"]).resolve(),
+                          mode="rw" if r.get("mode") == "rw" else "ro",
+                          origin=str(r.get("origin") or "user"),
+                          state="granted")
+            g.pin()
+            _grants.append(g)
+        except Exception:
+            logger.warning("path_grants: skipping bad session grant %r", r)
+    _notify()
+
+
 def has_pending() -> bool:
     return any(g.state == "pending" for g in _grants)
 
