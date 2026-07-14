@@ -195,7 +195,7 @@ aside.open { width: 280px; }
 .dfold > summary::before { content: "▸ "; color: var(--dimmer); }
 .dfold[open] > summary::before { content: "▾ "; }
 .sess-list { padding: 6px 0 0 4px; }
-.sess-item { padding: 5px 8px; border-radius: 6px; margin-bottom: 2px; cursor: default; }
+.sess-item { padding: 5px 8px; border-radius: 6px; margin-bottom: 2px; cursor: pointer; }
 .sess-item:hover { background: var(--panel2); }
 .sess-item.current { border-left: 2px solid var(--accent); background: var(--panel2); }
 .sess-item .sname { color: var(--fg); font-size: 12px; overflow: hidden;
@@ -212,6 +212,15 @@ aside.open { width: 280px; }
                    font-size: 12px; padding: 1px 4px; }
 .sess-more { color: var(--dimmer); font-size: 11px; cursor: pointer; padding: 4px 8px; }
 .sess-more:hover { color: var(--fg); }
+.sess-item.previewed { border-left: 2px solid var(--warn); background: var(--panel2); }
+/* Read-only history preview banner — pinned above the previewed transcript. */
+#previewbar { max-width: 920px; margin: 0 auto 14px; padding: 8px 12px;
+              border: 1px solid var(--sig-border); background: var(--sig-bg);
+              border-radius: 8px; font-size: 12.5px; color: var(--warn);
+              display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+#previewbar b { color: var(--fg); }
+#previewbar .pb-live { color: var(--dim); }
+#previewbar .sbtn { font-size: 11.5px; padding: 2px 9px; }
 #log { flex: 1; overflow-y: auto; padding: 18px 16px; scroll-behavior: smooth; }
 .row { max-width: 920px; margin: 0 auto; position: relative;
        animation: fadein .18s ease-out; }
@@ -623,6 +632,15 @@ function reasoning(text) {
 }
 
 function handle(ev) {
+  // History preview is read-only: drop render events while it's open (header
+  // chips still update); count them so the banner shows activity happened.
+  if (previewing && ['tokens','stats','state','switched'].indexOf(ev.type) < 0) {
+    missedLive++;
+    const lv = document.querySelector('#previewbar .pb-live');
+    if (lv) lv.textContent = '· ' + missedLive + ' live event' +
+      (missedLive > 1 ? 's' : '') + ' hidden';
+    return;
+  }
   if (ev.type === 'token') {
     thinkEl = null;
     if (!streamEl) {
@@ -692,6 +710,7 @@ function handle(ev) {
     }
     setBusy(ev.state === 'busy', ev.state === 'busy' ? 'working…' : ev.state);
   } else if (ev.type === 'switched') {
+    clearPreview();
     resyncView().then(() => row('sys', null, '⇄ switched to session ' + ev.session));
     if (document.getElementById('left').classList.contains('open')) loadSessions();
   } else if (ev.type === 'stats') {
@@ -899,6 +918,58 @@ async function sessionAction(payload) {
   loadSessions();
 }
 
+// Read-only history preview: click a session item to see its transcript in
+// the main pane without switching. Live events are hidden (counted in the
+// banner) until "back to live"; ⏵ resume actually switches the agent to it.
+let previewing = null;
+let missedLive = 0;
+
+function clearPreview() {
+  previewing = null;
+  missedLive = 0;
+  input.disabled = false;
+  document.getElementById('send').disabled = false;
+  input.placeholder = 'Message… (Enter to send, Shift+Enter for newline, / for commands)';
+}
+
+function exitPreview() {
+  clearPreview();
+  resyncView();
+  loadSessions();
+}
+
+async function previewSession(id) {
+  try {
+    const d = await (await fetch('/api/history?id=' + encodeURIComponent(id))).json();
+    if (d.error) { row('sys error', null, d.error); return; }
+    previewing = id;
+    missedLive = 0;
+    log.innerHTML = '';
+    turn = null; streamEl = null; thinkEl = null; pendingTools = {};
+    const bar = document.createElement('div');
+    bar.id = 'previewbar';
+    bar.innerHTML = '⏸ history: <b>' + esc(d.name || id) + '</b> (read-only) ' +
+      '<span class="pb-live"></span>' +
+      '<button class="sbtn" id="pb-switch" title="Make this the active session">⏵ resume</button>' +
+      '<button class="sbtn" id="pb-back">← back to live</button>';
+    log.appendChild(bar);
+    document.getElementById('pb-switch').addEventListener('click', () =>
+      sessionAction({action: 'switch', id}));
+    document.getElementById('pb-back').addEventListener('click', exitPreview);
+    for (const m of (d.messages || [])) {
+      if (m.role === 'user') row('msg user', null, m.content);
+      else if (m.content) assistantMd(m.content);
+    }
+    log.scrollTop = 0;
+    input.disabled = true;
+    document.getElementById('send').disabled = true;
+    input.placeholder = 'viewing history — "back to live" or ⏵ resume to chat';
+    loadSessions();   // re-render list so the previewed item is marked
+  } catch (e) {
+    row('sys error', null, 'history load failed: ' + e);
+  }
+}
+
 function startRename(item, id) {
   const nameEl = item.querySelector('.sname');
   const old = nameEl.textContent;
@@ -927,8 +998,9 @@ async function loadSessions() {
     el.innerHTML = shown.map(s => {
       const cur = s.id === d.current;
       const when = String(s.updated_at || '').replace('T', ' ').slice(0, 16);
-      return '<div class="sess-item' + (cur ? ' current' : '') + '" data-id="' +
-        esc(s.id) + '" title="' + esc(s.id) + '">' +
+      return '<div class="sess-item' + (cur ? ' current' : '') +
+        (s.id === previewing ? ' previewed' : '') + '" data-id="' +
+        esc(s.id) + '" title="' + esc(s.id) + ' — click to view history">' +
         '<div class="sname">' + esc(s.name || s.id) + '</div>' +
         '<div class="smeta">' + esc(when) + ' · ' + (s.messages || 0) + ' msgs' +
         (s.hidden ? ' · hidden' : '') + '</div>' +
@@ -955,6 +1027,13 @@ async function loadSessions() {
         sessionAction({action: 'autoname', id});
       }
       else if (act === 'hide') sessionAction({action: 'hide', id, hidden: !b.dataset.hidden});
+    }));
+    el.querySelectorAll('.sess-item').forEach(it => it.addEventListener('click', (ev) => {
+      if (ev.target.closest('.sbtn, input')) return;
+      const id = it.dataset.id;
+      if (id === previewing) { exitPreview(); return; }
+      if (id === d.current && !previewing) return;   // already looking at it
+      previewSession(id);
     }));
     const more = el.querySelector('.sess-more');
     if (more) more.addEventListener('click', () => { showHidden = !showHidden; loadSessions(); });
@@ -1045,6 +1124,7 @@ async function init() {
 }
 
 async function send() {
+  if (previewing) return;   // read-only history view
   const text = input.value.trim();
   if (!text) return;
   input.value = '';
@@ -1248,6 +1328,26 @@ class _HttpUI:
         return {"sessions": sessions,
                 "current": self.session.id if self.session else ""}
 
+    def history_info(self, sid: str) -> dict:
+        """Read-only message history of a saved session — backs the preview
+        pane opened by clicking a session in the left drawer. The current
+        session is served from memory so the preview matches the live log."""
+        if self.session is not None and sid == self.session.id:
+            msgs = self.server.get_messages()
+            name = getattr(self.session, "name", "") or sid
+        else:
+            from agent.memory.session import load_session
+            session, msgs = load_session(sid)
+            if session is None:
+                return {"error": f"session '{sid}' not found"}
+            name = getattr(session, "name", "") or session.id
+        messages = [
+            {"role": m.get("role"), "content": m.get("content") or ""}
+            for m in msgs
+            if m.get("role") in ("user", "assistant") and (m.get("content") or "").strip()
+        ]
+        return {"id": sid, "name": name, "messages": messages}
+
     def session_action(self, payload: dict) -> dict:
         """Session list ops from the browser: rename / hide / autoname / switch."""
         action = str(payload.get("action") or "")
@@ -1392,6 +1492,10 @@ def _make_handler(ui: _HttpUI):
                 self._json(ui.stats_info())
             elif self.path == "/api/sessions":
                 self._json(ui.sessions_info())
+            elif self.path.startswith("/api/history"):
+                from urllib.parse import parse_qs, urlparse
+                sid = (parse_qs(urlparse(self.path).query).get("id") or [""])[0]
+                self._json(ui.history_info(sid))
             elif self.path == "/api/models":
                 self._json(ui.models_info())
             elif self.path == "/api/events":
