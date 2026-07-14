@@ -117,6 +117,7 @@ body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; background: v
 #statuswrap { display: flex; align-items: center; gap: 6px; }
 #dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
 #dot.busy { background: var(--warn); animation: pulse 1.2s ease-in-out infinite; }
+#dot.down { background: var(--err); animation: pulse .8s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .35; } }
 #status { font-size: 12px; color: var(--dim); max-width: 340px; overflow: hidden;
           text-overflow: ellipsis; white-space: nowrap; }
@@ -139,6 +140,17 @@ aside.open { width: 280px; }
             overflow-x: auto; background: var(--bg); border: 1px solid var(--border);
             border-radius: 6px; padding: 6px 8px; max-height: 40vh; overflow-y: auto; }
 .placeholder { color: var(--dimmer); font-style: italic; line-height: 1.6; }
+.dfold { margin-bottom: 14px; }
+.dfold > summary { list-style: none; cursor: pointer; user-select: none; }
+.dfold > summary::before { content: "▸ "; color: var(--dimmer); }
+.dfold[open] > summary::before { content: "▾ "; }
+.sess-list { padding: 6px 0 0 4px; }
+.sess-item { padding: 5px 8px; border-radius: 6px; margin-bottom: 2px; cursor: default; }
+.sess-item:hover { background: var(--panel2); }
+.sess-item.current { border-left: 2px solid var(--accent); background: var(--panel2); }
+.sess-item .sname { color: var(--fg); font-size: 12px; overflow: hidden;
+                    text-overflow: ellipsis; white-space: nowrap; }
+.sess-item .smeta { color: var(--dimmer); font-size: 10.5px; font-family: var(--mono); }
 #log { flex: 1; overflow-y: auto; padding: 18px 16px; scroll-behavior: smooth; }
 .row { max-width: 920px; margin: 0 auto; position: relative;
        animation: fadein .18s ease-out; }
@@ -287,7 +299,11 @@ button:hover { filter: brightness(1.15); }
 <aside id="left"><div class="aside-inner">
   <div class="ptitle">Sessions</div>
   <div class="dsec"><pre id="sessinfo">—</pre></div>
-  <div class="placeholder">Session history, options, attachments and media will appear here.</div>
+  <details id="sessfold" class="dfold">
+    <summary class="dhead">recent sessions</summary>
+    <div id="sesslist" class="sess-list">—</div>
+  </details>
+  <div class="placeholder">Options, attachments and media will appear here.</div>
 </div></aside>
 <div id="center">
 <div id="log"></div>
@@ -730,15 +746,28 @@ document.getElementById('layout').addEventListener('click', () => {
 });
 try { setLayout(localStorage.getItem('oc-layout') || 'center'); } catch (e) {}
 
-function connect() {
-  const es = new EventSource('/api/events');
-  es.onmessage = (m) => handle(JSON.parse(m.data));
-  es.onerror = () => { es.close(); setTimeout(connect, 2000); };
+// Sessions list (left drawer) — loads lazily when the fold is opened.
+async function loadSessions() {
+  const el = document.getElementById('sesslist');
+  el.textContent = '…';
+  try {
+    const d = await (await fetch('/api/sessions')).json();
+    if (!d.sessions || !d.sessions.length) { el.textContent = 'none saved'; return; }
+    el.innerHTML = d.sessions.map(s => {
+      const cur = s.id === d.current;
+      const when = String(s.updated_at || '').replace('T', ' ').slice(0, 16);
+      return '<div class="sess-item' + (cur ? ' current' : '') + '" title="' +
+        esc(s.id) + '"><div class="sname">' + esc(s.name || s.id) + '</div>' +
+        '<div class="smeta">' + esc(when) + ' · ' + (s.messages || 0) +
+        ' msgs</div></div>';
+    }).join('');
+  } catch (e) { el.textContent = 'failed: ' + e; }
 }
+document.getElementById('sessfold').addEventListener('toggle', (e) => {
+  if (e.target.open) loadSessions();
+});
 
-async function init() {
-  const r = await fetch('/api/state');
-  const s = await r.json();
+function applyState(s) {
   document.getElementById('model').textContent = s.model;
   if (s.models && s.models.llm) {
     // Hover the model chip for the full role table (llm/emb/sum + availability).
@@ -763,6 +792,50 @@ async function init() {
   }
   busyFlag = s.busy;
   setBusy(s.busy);
+  stateLoaded = true;
+}
+
+// SSE with reconnect: when the server goes away (restart, network blip) show
+// a red status, retry with backoff, and on reconnect re-sync the whole view
+// from /api/state (events missed while down cannot be replayed).
+let everConnected = false;
+let stateLoaded = false;
+let reconnDelay = 1000;
+function connect() {
+  const es = new EventSource('/api/events');
+  es.onopen = async () => {
+    const wasDown = everConnected;
+    everConnected = true;
+    reconnDelay = 1000;
+    if (!wasDown && stateLoaded) return;
+    try {
+      const s = await (await fetch('/api/state')).json();
+      log.innerHTML = '';
+      turn = null; streamEl = null; thinkEl = null; pendingTools = {};
+      applyState(s);
+      if (wasDown) row('sys', null, '↻ reconnected — history restored from server');
+    } catch (e) {
+      row('sys error', null, 'reconnected but state fetch failed: ' + e);
+    }
+  };
+  es.onmessage = (m) => handle(JSON.parse(m.data));
+  es.onerror = () => {
+    es.close();
+    statusEl.textContent = 'disconnected — retrying…';
+    dot.className = 'down';
+    reconnDelay = Math.min(reconnDelay * 1.6, 15000);
+    setTimeout(connect, reconnDelay);
+  };
+}
+
+async function init() {
+  try {
+    const s = await (await fetch('/api/state')).json();
+    applyState(s);
+  } catch (e) {
+    statusEl.textContent = 'server unreachable — retrying…';
+    dot.className = 'down';
+  }
   connect();
 }
 
@@ -771,13 +844,18 @@ async function send() {
   if (!text) return;
   input.value = '';
   input.style.height = 'auto';
-  const r = await fetch('/api/chat', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({text}),
-  });
-  const res = await r.json();
-  if (res.injected) row('sys', null, '↑ injected mid-turn: ' + text);
+  try {
+    const r = await fetch('/api/chat', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text}),
+    });
+    const res = await r.json();
+    if (res.injected) row('sys', null, '↑ injected mid-turn: ' + text);
+  } catch (e) {
+    input.value = text;   // don't lose the draft
+    row('sys error', null, 'send failed (server unreachable?): ' + e);
+  }
 }
 
 document.getElementById('send').onclick = send;
@@ -893,6 +971,23 @@ class _HttpUI:
             logger.exception("http ui: modelcalls info failed")
             return {"text": "model call metrics unavailable"}
 
+    def sessions_info(self) -> dict:
+        """Recent saved sessions — backs the left-drawer session list."""
+        try:
+            from agent.memory.session import list_sessions
+            sessions = [
+                {"id": s.get("id", ""),
+                 "name": s.get("short_name") or s.get("name") or s.get("id", ""),
+                 "updated_at": s.get("updated_at") or "",
+                 "messages": s.get("message_count", 0)}
+                for s in list_sessions(limit=30)
+            ]
+        except Exception:
+            logger.debug("http ui: list_sessions failed", exc_info=True)
+            sessions = []
+        return {"sessions": sessions,
+                "current": self.session.id if self.session else ""}
+
     def stats_info(self) -> dict:
         """Session stats — totals, per-model token split, output breakdown."""
         out: dict = {"stats": {}, "models": [], "output": [], "messages": 0}
@@ -945,6 +1040,8 @@ def _make_handler(ui: _HttpUI):
                 self._json(ui.modelcalls_info())
             elif self.path == "/api/stats":
                 self._json(ui.stats_info())
+            elif self.path == "/api/sessions":
+                self._json(ui.sessions_info())
             elif self.path == "/api/events":
                 self._sse()
             else:
