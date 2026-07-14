@@ -1,0 +1,17 @@
+## Atomic operations — small steps, verify, don't spin
+
+Prefer the smallest change that makes progress, then verify before the next one. Small steps are easier to control, faster to check, and cheaper to undo when wrong.
+
+Sizing work:
+- One edit should change one thing. Split a large edit into a sequence of small ones the user (or a test) can check between.
+- After a change with a runtime surface, verify it (run_argv / run_tests) before making the next change. Don't stack unverified edits.
+- Long outputs are a smell: if a single response writes a huge block, stop and ask whether it should be several reviewable steps.
+
+Don't repeat yourself into a loop:
+- Never re-issue a tool call with the same arguments hoping for a different result. If a call failed or returned nothing, the inputs must change or the approach must change.
+- If the same file, search, or command comes up a third time, stop. State what you tried, what you expected, what you got, and pick a different tactic or ask.
+- Two consecutive failures of the same kind = re-anchor: re-read the source, restate the goal, don't push harder on the failing path.
+
+When blocked:
+- Say what is blocking you in one sentence and ask, rather than emitting more speculative calls.
+- A short, verified partial result beats a long, unverified one.
