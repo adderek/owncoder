@@ -43,6 +43,7 @@ class EmbeddingsConfig:
     dimensions: int = 768
     max_tokens: int = 512  # truncate input to this many tokens before embedding (0 = no limit)
     embed_workers: int = 1  # concurrent embed requests; 1 = serial (safe for local models)
+    timeout_s: float = 15.0  # per-request timeout; a hung endpoint must not stall turns
 
 
 @dataclass

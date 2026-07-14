@@ -740,10 +740,14 @@ class Agent:
             if self._facts_store is not None:
                 self._facts_store.set_original_request(user_input)
             # Compute embedding once; reuse across both injection helpers.
+            # Off the event loop: the embed call is sync network I/O and a
+            # slow endpoint would otherwise freeze the whole UI (SSE, stop,
+            # queued prompts) until it returns.
             precomputed_embedding = None
             if self.embedder is not None:
                 try:
-                    precomputed_embedding = self.embedder.embed_one(user_input[:2000])
+                    precomputed_embedding = await asyncio.to_thread(
+                        self.embedder.embed_one, user_input[:2000])
                 except Exception:
                     pass
             self._inject_similar_sessions(user_input, embedding=precomputed_embedding)

@@ -19,7 +19,14 @@ class Embedder:
     def __init__(self, cfg: "EmbeddingsConfig") -> None:
         from openai import OpenAI
         self._cfg = cfg
-        self._client = OpenAI(base_url=cfg.base_url, api_key="local")
+        # Explicit timeout + single retry: the SDK defaults (600s, 2 retries)
+        # let one hung endpoint freeze callers for minutes.
+        self._client = OpenAI(
+            base_url=cfg.base_url,
+            api_key="local",
+            timeout=getattr(cfg, "timeout_s", 15.0) or 15.0,
+            max_retries=1,
+        )
         # Approximate char limit derived from token limit (4 chars ≈ 1 token).
         self._max_chars = cfg.max_tokens * 4 if cfg.max_tokens > 0 else 0
         self.call_count: int = 0
