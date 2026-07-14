@@ -30,14 +30,21 @@ _round: Counter = Counter()
 # Counter keyed by (role, model, tier).
 _round_detail: list[dict] = []
 _session_detail: Counter = Counter()
+# Session-wide token totals keyed by (role, model, tier) → [in, out]. Only
+# call sites that know their usage report tokens (the main agent loop does);
+# others contribute call counts alone.
+_session_tokens: dict = {}
 _round_started: float = time.monotonic()
 
 
-def record(tier: str | None, role: str = "", model: str = "") -> None:
+def record(tier: str | None, role: str = "", model: str = "",
+           in_tokens: int = 0, out_tokens: int = 0) -> None:
     """Record one LLM call against *tier* (empty/None → ``local``).
 
     *role* names the dispatching subsystem ("main", "summarizer", …) and
     *model* the model/entry identifier; both default to "?" when unknown.
+    *in_tokens*/*out_tokens* attribute prompt/completion tokens to the
+    (role, model, tier) bucket when the caller knows its usage.
     """
     t = tier or "local"
     _session[t] += 1
@@ -47,6 +54,10 @@ def record(tier: str | None, role: str = "", model: str = "") -> None:
     _round_detail.append({"role": r, "model": m, "tier": t,
                           "t": time.monotonic() - _round_started})
     _session_detail[(r, m, t)] += 1
+    if in_tokens or out_tokens:
+        tot = _session_tokens.setdefault((r, m, t), [0, 0])
+        tot[0] += int(in_tokens or 0)
+        tot[1] += int(out_tokens or 0)
 
 
 def record_entry(entry, role: str = "") -> None:
@@ -111,6 +122,18 @@ def session_counts() -> dict:
     return dict(_session)
 
 
+def session_token_rows() -> list[dict]:
+    """Per-(role, model, tier) session rows with calls and token totals,
+    heaviest first: [{"role","model","tier","calls","in","out"}, …]."""
+    rows = []
+    for (r, m, t), n in _session_detail.items():
+        tin, tout = _session_tokens.get((r, m, t), (0, 0))
+        rows.append({"role": r, "model": m, "tier": t,
+                     "calls": n, "in": tin, "out": tout})
+    rows.sort(key=lambda x: (-(x["in"] + x["out"]), -x["calls"], x["role"]))
+    return rows
+
+
 def _ordered(counts: dict) -> list[str]:
     extra = [t for t in counts if t not in TIERS]
     return [t for t in TIERS if counts.get(t)] + [t for t in extra if counts.get(t)]
@@ -158,6 +181,7 @@ def run_modelcalls_command(arg: str = "") -> str:
     if a == "reset":
         _session.clear()
         _session_detail.clear()
+        _session_tokens.clear()
         return "model-call counters reset."
     line = format_line(session_counts(), label="model calls this session")
     if not line:
@@ -165,5 +189,14 @@ def run_modelcalls_command(arg: str = "") -> str:
     if a == "detail":
         lines = format_detail(_session_detail)
         if lines:
-            line += "\n" + "\n".join(lines)
+            # Append token totals where a bucket reported usage.
+            toks = {(r["role"], r["model"], r["tier"]): (r["in"], r["out"])
+                    for r in session_token_rows() if r["in"] or r["out"]}
+            keyed = sorted(_session_detail.items(), key=lambda kv: (-kv[1], kv[0]))
+            out = []
+            for text, (key, _n) in zip(lines, keyed):
+                if key in toks:
+                    text += f"  ↑{toks[key][0]:,} ↓{toks[key][1]:,}"
+                out.append(text)
+            line += "\n" + "\n".join(out)
     return line

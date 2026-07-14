@@ -599,6 +599,8 @@ class Agent:
                 self._model_tier, role="main",
                 model=getattr(self, "_model_entry_name", "")
                 or getattr(self.config.llm, "model", ""),
+                in_tokens=u.get("input_tokens", 0),
+                out_tokens=u.get("output_tokens", 0),
             )
         except Exception:
             logger.debug("model_calls.record failed", exc_info=True)

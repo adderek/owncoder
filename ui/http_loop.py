@@ -279,6 +279,7 @@ button:hover { filter: brightness(1.15); }
   <span class="chip" id="session"></span>
   <div id="statuswrap"><span id="dot"></span><span id="status">idle</span></div>
   <span class="chip btn" id="layout" title="Cycle chat width: centered / wide / full">center</span>
+  <span class="chip btn" id="iostats" title="Session totals: prompt in / completion out. Click for per-model split">↑0 ↓0</span>
   <div id="tokenwrap" title="Click for context buffer breakdown"><div id="tokenbar"><div id="tokenfill"></div></div><span id="tokens"></span></div>
   <button class="icon" id="righttoggle" title="Details panel">☰</button>
 </div>
@@ -299,6 +300,7 @@ button:hover { filter: brightness(1.15); }
 </div>
 <aside id="right"><div class="aside-inner">
   <div class="ptitle">Details</div>
+  <div class="dsec"><div class="dhead" id="d-stats">Session stats ⟳</div><pre id="statsbody">—</pre></div>
   <div class="dsec"><div class="dhead" id="d-mc">LLM calls this session ⟳</div><pre id="mcbody">—</pre></div>
   <div class="dsec"><div class="dhead" id="d-ctx">Context buffer ⟳</div><pre id="ctxbody">—</pre></div>
 </div></aside>
@@ -610,6 +612,10 @@ function handle(ev) {
       endTurn();
     }
     setBusy(ev.state === 'busy', ev.state === 'busy' ? 'working…' : ev.state);
+  } else if (ev.type === 'stats') {
+    setIoChip(ev.in, ev.out);
+    // refresh the drawer section if it's visible
+    if (document.getElementById('right').classList.contains('open')) loadStats();
   } else if (ev.type === 'tokens') {
     document.getElementById('tokens').textContent =
       ev.used.toLocaleString() + ' / ' + ev.ctx.toLocaleString();
@@ -636,6 +642,48 @@ async function loadModelCalls() {
   try { el.textContent = (await (await fetch('/api/modelcalls')).json()).text; }
   catch (e) { el.textContent = 'failed: ' + e; }
 }
+function fmtK(n) {
+  n = n || 0;
+  if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + 'k';
+  return String(n);
+}
+
+function setIoChip(inTok, outTok) {
+  document.getElementById('iostats').textContent =
+    '↑' + fmtK(inTok) + ' ↓' + fmtK(outTok);
+}
+
+async function loadStats() {
+  const el = document.getElementById('statsbody');
+  el.textContent = '…';
+  try {
+    const d = await (await fetch('/api/stats')).json();
+    const s = d.stats || {};
+    let out = 'in:  ' + (s.input_tokens || 0).toLocaleString() + ' tok\n' +
+              'out: ' + (s.output_tokens || 0).toLocaleString() + ' tok\n' +
+              'LLM calls: ' + (s.calls || 0) + '   messages: ' + (d.messages || 0);
+    if (s.in_tps) out += '\nin-tok/s:  ' + s.in_tps.toFixed(1);
+    if (s.out_tps) out += '\nout-tok/s: ' + s.out_tps.toFixed(1);
+    setIoChip(s.input_tokens, s.output_tokens);
+    const rows = d.models || [];
+    if (rows.length) {
+      out += '\n\nper model (calls, ↑in, ↓out):\n';
+      const w = Math.max(...rows.map(r => (r.role + ' ' + r.model).length));
+      out += rows.map(r =>
+        (r.role + ' ' + r.model).padEnd(w) + '  [' + r.tier + ']  ×' + r.calls +
+        ((r.in || r.out) ? '  ↑' + fmtK(r.in) + ' ↓' + fmtK(r.out) : '')
+      ).join('\n');
+    }
+    const ob = (d.output || []).filter(r => r.tokens);
+    if (ob.length) {
+      out += '\n\noutput breakdown:\n' +
+        ob.map(r => r.label.padEnd(10) + fmtK(r.tokens)).join('\n');
+    }
+    el.textContent = out;
+  } catch (e) { el.textContent = 'failed: ' + e; }
+}
+
 async function loadContext() {
   const el = document.getElementById('ctxbody');
   el.textContent = '…';
@@ -659,10 +707,12 @@ function openDetails(loader) {
 document.getElementById('lefttoggle').addEventListener('click', () =>
   toggleDrawer('left', 'lefttoggle'));
 document.getElementById('righttoggle').addEventListener('click', () => {
-  if (toggleDrawer('right', 'righttoggle')) { loadModelCalls(); loadContext(); }
+  if (toggleDrawer('right', 'righttoggle')) { loadStats(); loadModelCalls(); loadContext(); }
 });
 document.getElementById('model').addEventListener('click', () => openDetails(loadModelCalls));
 document.getElementById('tokenwrap').addEventListener('click', () => openDetails(loadContext));
+document.getElementById('iostats').addEventListener('click', () => openDetails(loadStats));
+document.getElementById('d-stats').addEventListener('click', loadStats);
 document.getElementById('d-mc').addEventListener('click', loadModelCalls);
 document.getElementById('d-ctx').addEventListener('click', loadContext);
 
@@ -706,6 +756,7 @@ async function init() {
       'current: ' + s.session + '\nmodel:   ' + s.model;
   }
   handle({type: 'tokens', used: s.tokens, ctx: s.ctx_window});
+  if (s.io) setIoChip(s.io.in, s.io.out);
   for (const m of s.messages) {
     if (m.role === 'user') row('msg user', null, m.content);
     else if (m.role === 'assistant' && m.content) assistantMd(m.content);
@@ -796,6 +847,11 @@ class _HttpUI:
             models = self.server.get_model_configs()
         except Exception:
             logger.debug("http ui: get_model_configs failed", exc_info=True)
+        stats = {}
+        try:
+            stats = self.server.stats()
+        except Exception:
+            logger.debug("http ui: stats failed", exc_info=True)
         return {
             "model": info["model"],
             "ctx_window": info["ctx_window"],
@@ -804,6 +860,9 @@ class _HttpUI:
             "session": self.session.id if self.session else "",
             "messages": messages,
             "models": models,
+            "io": {"in": stats.get("input_tokens", 0),
+                   "out": stats.get("output_tokens", 0),
+                   "calls": stats.get("calls", 0)},
         }
 
     def context_info(self) -> dict:
@@ -834,6 +893,28 @@ class _HttpUI:
             logger.exception("http ui: modelcalls info failed")
             return {"text": "model call metrics unavailable"}
 
+    def stats_info(self) -> dict:
+        """Session stats — totals, per-model token split, output breakdown."""
+        out: dict = {"stats": {}, "models": [], "output": [], "messages": 0}
+        try:
+            out["stats"] = self.server.stats()
+        except Exception:
+            logger.debug("http ui: stats failed", exc_info=True)
+        try:
+            from agent.metrics.model_calls import session_token_rows
+            out["models"] = session_token_rows()
+        except Exception:
+            logger.debug("http ui: session_token_rows failed", exc_info=True)
+        try:
+            out["output"] = self.server.output_breakdown()
+        except Exception:
+            logger.debug("http ui: output_breakdown failed", exc_info=True)
+        try:
+            out["messages"] = self.server.message_count()
+        except Exception:
+            pass
+        return out
+
 
 def _make_handler(ui: _HttpUI):
     class Handler(BaseHTTPRequestHandler):
@@ -862,6 +943,8 @@ def _make_handler(ui: _HttpUI):
                 self._json(ui.context_info())
             elif self.path == "/api/modelcalls":
                 self._json(ui.modelcalls_info())
+            elif self.path == "/api/stats":
+                self._json(ui.stats_info())
             elif self.path == "/api/events":
                 self._sse()
             else:
@@ -1150,6 +1233,13 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
                 ui.busy = False
                 pub({"type": "tokens", "used": server.token_estimate(),
                      "ctx": server.get_llm_info()["ctx_window"]})
+                try:
+                    s = server.stats()
+                    pub({"type": "stats", "in": s.get("input_tokens", 0),
+                         "out": s.get("output_tokens", 0),
+                         "calls": s.get("calls", 0)})
+                except Exception:
+                    logger.debug("http ui: stats event failed", exc_info=True)
                 pub({"type": "state", "state": "idle"})
                 if session is not None:
                     try:
