@@ -198,10 +198,16 @@ aside.open { width: 280px; }
 .dfold > summary { list-style: none; cursor: pointer; user-select: none; }
 .dfold > summary::before { content: "▸ "; color: var(--dimmer); }
 .dfold[open] > summary::before { content: "▾ "; }
+.dhead-refresh { float: right; cursor: pointer; color: var(--dimmer); }
+.dhead-refresh:hover { color: var(--fg); }
 .sess-list { padding: 6px 0 0 4px; }
 .sess-item { padding: 5px 8px; border-radius: 6px; margin-bottom: 2px; cursor: pointer; }
 .sess-item:hover { background: var(--panel2); }
 .sess-item.current { border-left: 2px solid var(--accent); background: var(--panel2); }
+.sess-item.working { animation: sess-pulse 1s ease-in-out infinite;
+                     box-shadow: 0 0 0 1px var(--accent) inset; }
+@keyframes sess-pulse { 0%,100% { box-shadow: 0 0 0 1px transparent inset; }
+                        50% { box-shadow: 0 0 0 2px var(--accent) inset; } }
 .sess-item .sname { color: var(--fg); font-size: 12px; overflow: hidden;
                     text-overflow: ellipsis; white-space: nowrap; }
 .sess-item .smeta { color: var(--dimmer); font-size: 10.5px; font-family: var(--mono); }
@@ -411,7 +417,7 @@ button:hover { filter: brightness(1.15); }
   <button class="icon" id="lefttoggle" title="Sessions panel (coming features)">☰</button>
   <b>owncoder</b>
   <span class="chip" id="model" title="Click to manage models"></span>
-  <span class="chip" id="session"></span>
+  <span class="chip btn" id="session" title="Current session — click for the sessions panel"></span>
   <span class="chip btn" id="workdir" title="Project directory (session-scoped) — click to manage access"></span>
   <div id="statuswrap"><span id="dot"></span><span id="status">idle</span></div>
   <span class="chip btn" id="layout" title="Cycle chat width: centered / wide / full">center</span>
@@ -430,14 +436,15 @@ button:hover { filter: brightness(1.15); }
     <summary class="dhead">recent sessions</summary>
     <div id="sesslist" class="sess-list">—</div>
   </details>
-  <div class="dsec"><div class="dhead" id="d-access">Access — allowed paths ⟳</div>
+  <details id="accessfold" class="dfold">
+    <summary class="dhead">access — allowed paths <span id="d-access" class="dhead-refresh" title="Refresh">⟳</span></summary>
     <div id="accessbody">—</div>
     <div class="acc-add">
       <input id="accpath" placeholder="/path or relative to project">
       <select id="accmode"><option value="ro">ro</option><option value="rw">rw</option></select>
       <button class="sbtn" id="accadd">add</button>
     </div>
-  </div>
+  </details>
   <div class="placeholder">Options, attachments and media will appear here.</div>
 </div></aside>
 <div id="center">
@@ -794,9 +801,11 @@ function handle(ev) {
     else metaRow('sys', ev.text);
   } else if (ev.type === 'grants_changed') {
     if (ev.pending) {
-      row('sys', null, '⚑ agent requests access to a new path — open the ' +
-          'Sessions drawer (☰ left) to grant or reject');
+      row('sys', null, '⚑ agent requests access to a new path — grant or ' +
+          'reject in the Access section (opened at left)');
       toggleDrawer('left', 'lefttoggle', true);
+      const fold = document.getElementById('accessfold');
+      if (fold) fold.open = true;   // surface the request; toggle → loadGrants
     }
     loadGrants();
   } else if (ev.type === 'loopguard') {
@@ -886,6 +895,19 @@ function fmtK(n) {
 function setIoChip(inTok, outTok) {
   document.getElementById('iostats').textContent =
     '↑' + fmtK(inTok) + ' ↓' + fmtK(outTok);
+}
+
+// Session chip: show the human name (fall back to a short id), keep the full
+// id in the tooltip, and reflect the name in the window title. The id stays
+// reachable via the tooltip and the sessions panel, so it no longer eats the
+// header width with a long timestamp id.
+function setSessionChip(id, name) {
+  const label = name || (id ? id.slice(0, 8) + '…' : '—');
+  const chip = document.getElementById('session');
+  chip.textContent = label;
+  chip.title = 'session: ' + id + (name ? '\nname: ' + name : '') +
+               '\nclick for the sessions panel';
+  document.title = 'owncoder' + (name || id ? ' — ' + (name || id) : '');
 }
 
 // Models management: switch the active entry, enable/disable entries for the
@@ -1044,13 +1066,27 @@ document.getElementById('accadd').addEventListener('click', () => {
 document.getElementById('accpath').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') document.getElementById('accadd').click();
 });
-document.getElementById('d-access').addEventListener('click', loadGrants);
+// ⟳ lives inside the <summary>; refresh without toggling the fold open/shut.
+document.getElementById('d-access').addEventListener('click', (e) => {
+  e.preventDefault(); e.stopPropagation(); loadGrants();
+});
+document.getElementById('accessfold').addEventListener('toggle', (e) => {
+  if (e.target.open) loadGrants();
+});
 document.getElementById('workdir').addEventListener('click', () => {
   toggleDrawer('left', 'lefttoggle', true);
-  loadGrants();
+  const fold = document.getElementById('accessfold');
+  if (fold && !fold.open) fold.open = true;   // fires toggle → loadGrants
+  else loadGrants();
 });
 document.getElementById('lefttoggle').addEventListener('click', () => {
-  if (toggleDrawer('left', 'lefttoggle')) loadGrants();
+  toggleDrawer('left', 'lefttoggle');
+});
+document.getElementById('session').addEventListener('click', () => {
+  toggleDrawer('left', 'lefttoggle', true);
+  const fold = document.getElementById('sessfold');
+  if (fold && !fold.open) fold.open = true;   // fires toggle → loadSessions
+  else loadSessions();
 });
 document.getElementById('righttoggle').addEventListener('click', () => {
   if (toggleDrawer('right', 'righttoggle')) {
@@ -1281,6 +1317,10 @@ async function loadSessions() {
   try {
     const d = await (await fetch('/api/sessions')).json();
     const all = d.sessions || [];
+    // Keep the header chip / window title in sync with the current session's
+    // name after a rename or LLM auto-name (which only reload this list).
+    const curSess = all.find(s => s.id === d.current);
+    if (curSess) setSessionChip(curSess.id, curSess.name);
     const shown = all.filter(s => showHidden || !s.hidden);
     const hiddenN = all.length - all.filter(s => !s.hidden).length;
     if (!shown.length && !hiddenN) { el.textContent = 'none saved'; return; }
@@ -1312,7 +1352,9 @@ async function loadSessions() {
       if (act === 'switch') sessionAction({action: 'switch', id});
       else if (act === 'rename') startRename(item, id);
       else if (act === 'autoname') {
-        b.textContent = '…';
+        b.textContent = '⏳';
+        b.disabled = true;
+        item.classList.add('working');   // pulsing border until the list reloads
         sessionAction({action: 'autoname', id});
       }
       else if (act === 'hide') sessionAction({action: 'hide', id, hidden: !b.dataset.hidden});
@@ -1349,9 +1391,11 @@ function applyState(s) {
   wdel.textContent = '📁 ' + (wd.split('/').filter(Boolean).pop() || wd || '?');
   wdel.title = 'project dir (session-scoped): ' + wd + ' — click to manage access';
   if (s.session) {
-    document.getElementById('session').textContent = s.session;
+    setSessionChip(s.session, s.session_name);
     document.getElementById('sessinfo').textContent =
-      'current: ' + s.session + '\nmodel:   ' + s.model + '\ndir:     ' + wd;
+      'current: ' + s.session +
+      (s.session_name ? '\nname:    ' + s.session_name : '') +
+      '\nmodel:   ' + s.model + '\ndir:     ' + wd;
   }
   handle({type: 'tokens', used: s.tokens, ctx: s.ctx_window});
   if (s.io) setIoChip(s.io.in, s.io.out);
@@ -1769,6 +1813,9 @@ class _HttpUI:
             "busy": self.busy,
             "workdir": self.workdir(),
             "session": self.session.id if self.session else "",
+            "session_name": (
+                (self.session.name or self.session.short_name or "")
+                if self.session else ""),
             "messages": messages,
             "models": models,
             "io": {"in": stats.get("input_tokens", 0),
