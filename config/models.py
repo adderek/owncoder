@@ -926,6 +926,51 @@ class SchedulerConfig:
     enabled: bool = True
     tick_seconds: float = 60.0       # in-process ticker period
     min_quiet_seconds: float = 30.0  # defer jobs until this long after the last turn
+    watch_enabled: bool = True       # poll event watches (kind == "watch")
+    watch_tick_seconds: float = 15.0  # watch poll period (faster than timed jobs)
+
+
+@dataclass
+class HookConfig:
+    """One shell hook fired around tool calls — core/hooks.py.
+
+    event: "pre_tool" (before the tool runs) | "post_tool" (after it returns).
+    tools: tool-name globs this hook applies to (["*"] = all). e.g.
+      ["edit_file", "replace_symbol"].
+    command: shell command. Receives context in env: HOOK_EVENT, TOOL_NAME,
+      TOOL_ARGS (JSON), TOOL_PATH (args.path if present), and for post_tool
+      TOOL_RESULT (JSON, truncated). Runs in the project directory.
+    block: pre_tool only — a non-zero exit denies the tool call and the hook's
+      stdout/stderr is returned to the model as the error. Ignored for post_tool
+      (post hooks are advisory; their output surfaces as a note).
+    timeout_s: kill the hook after this long (non-zero exit → block if set).
+    """
+    event: str = "post_tool"
+    tools: list = field(default_factory=lambda: ["*"])
+    command: str = ""
+    block: bool = False
+    timeout_s: float = 30.0
+    name: str = ""
+
+
+@dataclass
+class HooksConfig:
+    """User-defined shell hooks around tool execution. Off unless entries exist.
+
+    Configure with array-of-tables, e.g.:
+      [[hooks.entries]]
+      event = "post_tool"
+      tools = ["edit_file", "replace_symbol"]
+      command = "ruff check --fix $TOOL_PATH"
+
+      [[hooks.entries]]
+      event = "pre_tool"
+      tools = ["edit_file"]
+      command = "test -z \"$(git check-ignore \"$TOOL_PATH\")\""
+      block = true
+    """
+    enabled: bool = True
+    entries: list = field(default_factory=list)  # list[HookConfig]
 
 
 @dataclass
@@ -972,6 +1017,7 @@ class Config:
     failover: FailoverConfig = field(default_factory=FailoverConfig)
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
+    hooks: HooksConfig = field(default_factory=HooksConfig)
     credpool: CredPoolConfig = field(default_factory=CredPoolConfig)
     # Runtime (non-persisted) flag: True while the active session pins every LLM
     # call to a LOCAL endpoint (private session mode). Set by

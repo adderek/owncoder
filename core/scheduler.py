@@ -65,10 +65,13 @@ class Job:
     name: str = ""
     prompt: str = ""
     spec: str = ""            # original schedule text, reparsed to advance cron
-    kind: str = "at"          # "cron" | "every" | "at" | "idle"
+    kind: str = "at"          # "cron" | "every" | "at" | "idle" | "watch"
     interval: float = 0.0     # seconds, kind == "every"
-    next_run: float = 0.0     # epoch seconds; 0 for kind == "idle"
+    next_run: float = 0.0     # epoch seconds; 0 for kind == "idle"/"watch"
     one_shot: bool = False    # disable after first run
+    watch_type: str = ""      # kind == "watch": file | url | cmd | pid
+    watch_target: str = ""    # path / url / shell command / pid
+    watch_state: str = ""     # last observed signal (mtime/hash/edge); "" = no baseline
     enabled: bool = True
     created_at: float = 0.0
     last_run: float = 0.0     # epoch seconds of last claim
@@ -325,6 +328,96 @@ def add_job(config: "Config", spec: str, prompt: str, name: str = "") -> Job:
     return job
 
 
+_WATCH_TYPES = ("file", "url", "cmd", "pid")
+
+
+def add_watch(config: "Config", watch_type: str, target: str, prompt: str,
+              name: str = "", one_shot: bool = False) -> Job:
+    """Persist an event watch. Raises ValueError on bad input.
+
+    watch_type: file (path mtime change) | url (body hash change) |
+                cmd (shell exit becomes 0) | pid (process exits).
+    """
+    prompt = prompt.strip()
+    if not prompt:
+        raise ValueError("empty prompt — the watch needs something to do")
+    watch_type = watch_type.strip().lower()
+    if watch_type not in _WATCH_TYPES:
+        raise ValueError(f"watch type must be one of {', '.join(_WATCH_TYPES)}")
+    if not target.strip():
+        raise ValueError("empty watch target")
+    name = re.sub(r"[^a-zA-Z0-9_-]+", "-", name.strip()).strip("-")[:40]
+    job = Job(
+        id=secrets.token_hex(3),
+        name=name,
+        prompt=prompt,
+        spec=f"watch {watch_type}:{target.strip()}",
+        kind="watch",
+        watch_type=watch_type,
+        watch_target=target.strip(),
+        one_shot=one_shot or watch_type == "pid",  # a dead pid won't come back
+        created_at=time.time(),
+    )
+    with _locked_jobs(config) as store:
+        if name and _find(store.jobs, name) is not None:
+            raise ValueError(f"a job named {name!r} already exists")
+        store.jobs.append(job)
+        store.dirty = True
+    return job
+
+
+def _watch_signal(job: Job) -> str:
+    """Current observable signal for a watch. Empty string = indeterminate."""
+    t, target = job.watch_type, job.watch_target
+    try:
+        if t == "file":
+            import os
+            st = os.stat(target)
+            return f"{st.st_mtime_ns}:{st.st_size}"
+        if t == "pid":
+            import os
+            try:
+                os.kill(int(target), 0)
+                return "alive"
+            except (ProcessLookupError, ValueError):
+                return "dead"
+            except PermissionError:
+                return "alive"  # exists, not ours to signal
+        if t == "cmd":
+            import subprocess
+            rc = subprocess.run(target, shell=True, capture_output=True,
+                                timeout=30).returncode
+            return "met" if rc == 0 else "unmet"
+        if t == "url":
+            import hashlib
+            import urllib.request
+            with urllib.request.urlopen(target, timeout=20) as resp:
+                body = resp.read()
+            return hashlib.sha256(body).hexdigest()
+    except Exception as exc:
+        logger.debug("watch %s signal failed: %s", job.id, exc)
+        return ""
+    return ""
+
+
+def _watch_should_fire(watch_type: str, prev: str, cur: str) -> bool:
+    """Decide whether a signal transition triggers the watch.
+
+    file/url: fire on any change once a baseline exists.
+    cmd:      fire on the edge into success (unmet/none → met).
+    pid:      fire on the edge into death (alive/none → dead).
+    """
+    if not cur:
+        return False
+    if watch_type in ("file", "url"):
+        return prev != "" and cur != prev
+    if watch_type == "cmd":
+        return cur == "met" and prev != "met"
+    if watch_type == "pid":
+        return cur == "dead" and prev != "dead"
+    return False
+
+
 def remove_job(config: "Config", id_or_name: str) -> bool:
     with _locked_jobs(config) as store:
         job = _find(store.jobs, id_or_name)
@@ -538,6 +631,56 @@ def run_due_jobs(config: "Config",
     return asyncio.run(run_due_jobs_async(config, kinds, on_progress))
 
 
+def has_watches(config: "Config") -> bool:
+    return any(j.kind == "watch" and j.enabled for j in list_jobs(config))
+
+
+def claim_fired_watches(config: "Config") -> list[Job]:
+    """Poll every enabled watch, persist new signals, and claim those whose
+    signal transition should fire. Returns copies to execute."""
+    fired: list[Job] = []
+    with _locked_jobs(config) as store:
+        for job in store.jobs:
+            if job.kind != "watch" or not job.enabled:
+                continue
+            cur = _watch_signal(job)
+            if cur == "":
+                continue  # indeterminate (target missing / net error) — retry next tick
+            prev = job.watch_state
+            if _watch_should_fire(job.watch_type, prev, cur):
+                job.last_run = time.time()
+                job.last_status = "running"
+                job.watch_state = cur
+                if job.one_shot:
+                    job.enabled = False
+                store.dirty = True
+                fired.append(Job(**asdict(job)))
+            elif cur != prev:
+                job.watch_state = cur   # advance baseline without firing
+                store.dirty = True
+    return fired
+
+
+async def run_watches_async(config: "Config",
+                            on_progress: Callable[[str], None] | None = None) -> int:
+    """Poll watches; execute the prompt of each that fired. Returns count fired."""
+    fired = claim_fired_watches(config)
+    for job in fired:
+        label = job.name or job.id
+        if on_progress:
+            on_progress(f"watch: '{label}' fired ({job.spec})")
+        await execute_job(config, job)
+        if on_progress:
+            on_progress(f"watch: '{label}' done")
+    return len(fired)
+
+
+def run_watches(config: "Config",
+                on_progress: Callable[[str], None] | None = None) -> int:
+    """Sync wrapper — owns its event loop; safe from a plain thread."""
+    return asyncio.run(run_watches_async(config, on_progress))
+
+
 # ── In-process ticker ────────────────────────────────────────────────────────
 
 
@@ -552,22 +695,45 @@ def start_ticker(config: "Config", agent: "Agent | None" = None) -> threading.Ev
     tick = max(5.0, float(getattr(config.scheduler, "tick_seconds", 60)))
     quiet = float(getattr(config.scheduler, "min_quiet_seconds", 30))
 
+    def _busy() -> bool:
+        """True while the interactive agent should not be competed with."""
+        if agent is None:
+            return False
+        if getattr(agent, "_turn_busy", False):
+            return True
+        last = getattr(agent, "_last_turn_time", 0.0)
+        return bool(last and (time.monotonic() - last) < quiet)
+
     def _loop() -> None:
         while not stop.wait(tick):
             try:
                 if not has_due_jobs(config, ("cron", "every", "at")):
                     continue
-                if agent is not None:
-                    if getattr(agent, "_turn_busy", False):
-                        continue
-                    last = getattr(agent, "_last_turn_time", 0.0)
-                    if last and (time.monotonic() - last) < quiet:
-                        continue
+                if _busy():
+                    continue
                 run_due_jobs(config)
             except Exception:
                 logger.warning("scheduler: ticker sweep failed", exc_info=True)
 
     threading.Thread(target=_loop, daemon=True, name="scheduler-ticker").start()
+
+    # Watches poll on a faster cadence than timed jobs. Detection is deferred
+    # while the agent is busy (same as timed jobs), so a transition is caught on
+    # the next free tick rather than racing the user for the local model.
+    if getattr(config.scheduler, "watch_enabled", True):
+        wtick = max(5.0, float(getattr(config.scheduler, "watch_tick_seconds", 15)))
+
+        def _watch_loop() -> None:
+            while not stop.wait(wtick):
+                try:
+                    if not has_watches(config) or _busy():
+                        continue
+                    run_watches(config)
+                except Exception:
+                    logger.warning("scheduler: watch sweep failed", exc_info=True)
+
+        threading.Thread(target=_watch_loop, daemon=True,
+                         name="scheduler-watcher").start()
     return stop
 
 
@@ -608,7 +774,7 @@ def run_schedule_command(config: "Config", arg: str) -> str:
     rest = parts[1].strip() if len(parts) > 1 else ""
 
     if sub in ("", "list", "ls"):
-        jobs = list_jobs(config)
+        jobs = [j for j in list_jobs(config) if j.kind != "watch"]
         if not jobs:
             return ("No scheduled jobs.\n"
                     "Add one: /schedule add <spec> :: <prompt> [:: <name>]\n"
@@ -681,3 +847,70 @@ def run_schedule_command(config: "Config", arg: str) -> str:
 
     return ("Unknown subcommand. Use: list | add <spec> :: <prompt> [:: <name>] | "
             "rm <id|name> | on/off <id|name> | runs | run")
+
+
+_WATCH_USAGE = (
+    "Usage: /watch add <type> <target> :: <prompt> [:: <name>]\n"
+    "  types: file <path> | url <url> | cmd <shell> | pid <pid>\n"
+    "  file/url fire on change; cmd fires when it starts exiting 0;\n"
+    "  pid fires when the process dies (one-shot).\n"
+    "  e.g. /watch add file ./build.log :: summarize the new build errors\n"
+    "       /watch add cmd 'test -f /tmp/done' :: the job finished, verify output :: done\n"
+    "Also: /watch [list] | rm <id|name> | on/off <id|name>"
+)
+
+
+def run_watch_command(config: "Config", arg: str) -> str:
+    """Text handler for /watch, shared by all UIs. Watches live in the same job
+    store as scheduled jobs (kind == 'watch')."""
+    parts = arg.strip().split(None, 1)
+    sub = parts[0].lower() if parts else "list"
+    rest = parts[1].strip() if len(parts) > 1 else ""
+
+    if sub in ("", "list", "ls"):
+        watches = [j for j in list_jobs(config) if j.kind == "watch"]
+        if not watches:
+            return "No watches.\n" + _WATCH_USAGE
+        lines = [f"Watches ({len(watches)}):"]
+        for j in watches:
+            state = "on " if j.enabled else "OFF"
+            base = j.watch_state or "(no baseline yet)"
+            lines.append(
+                f"  {j.id} {state} {j.name or '-':<14} {j.watch_type}:{j.watch_target}"
+                + (f"  last: {j.last_status} {_fmt_ts(j.last_run)}" if j.last_run else ""))
+            lines.append(f"      → {j.prompt[:90]}   [{base[:24]}]")
+        return "\n".join(lines)
+
+    if sub == "add":
+        wparts = rest.split(None, 1)
+        if len(wparts) < 2:
+            return _WATCH_USAGE
+        wtype = wparts[0].lower()
+        tail = wparts[1]
+        pieces = [p.strip() for p in tail.split("::")]
+        if len(pieces) < 2 or not pieces[0] or not pieces[1]:
+            return _WATCH_USAGE
+        target, prompt = pieces[0], pieces[1]
+        name = pieces[2] if len(pieces) > 2 else ""
+        try:
+            job = add_watch(config, wtype, target, prompt, name=name)
+        except ValueError as exc:
+            return f"Cannot add watch: {exc}\n{_WATCH_USAGE}"
+        return (f"Watching {job.watch_type}:{job.watch_target} "
+                f"(id {job.id}{', ' + job.name if job.name else ''}). "
+                f"Fires the prompt in a fresh session; result is delivered on your next turn.")
+
+    if sub in ("rm", "delete", "del", "cancel"):
+        if not rest:
+            return "Usage: /watch rm <id|name>"
+        return f"Removed watch {rest}." if remove_job(config, rest) else f"No watch '{rest}'."
+
+    if sub in ("on", "enable"):
+        return (f"Watch {rest} enabled." if rest and set_enabled(config, rest, True)
+                else f"No watch '{rest}'." if rest else "Usage: /watch on <id|name>")
+
+    if sub in ("off", "disable"):
+        return (f"Watch {rest} disabled." if rest and set_enabled(config, rest, False)
+                else f"No watch '{rest}'." if rest else "Usage: /watch off <id|name>")
+
+    return "Unknown subcommand.\n" + _WATCH_USAGE

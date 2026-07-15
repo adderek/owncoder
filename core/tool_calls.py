@@ -402,6 +402,18 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
                 }, config=config)
                 args = {k: v for k, v in args.items() if k in allowed}
 
+    # Pre-tool hooks: a blocking hook (non-zero exit) denies the call before
+    # the tool runs. User-authored shell from [[hooks.entries]].
+    try:
+        from agent.core import hooks as _hooks
+        _allow, _hmsg = await _hooks.run_pre_tool(config, name, args)
+    except Exception:
+        logger.debug("pre_tool hook run failed (ignored)", exc_info=True)
+        _allow, _hmsg = True, ""
+    if not _allow:
+        rules.record_tool_usage(name, False)
+        return json.dumps({"error": _hmsg, "tool": name, "blocked_by_hook": True})
+
     try:
         loop = asyncio.get_running_loop()
         # Async tools (e.g. spawn_agents, ask_internet) are registered as
@@ -435,6 +447,18 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
         serialised, _inj = guard_tool_output(name, serialised, config)
         if _inj:
             logger.warning("injection guard: %s flagged %s", name, _inj)
+
+        # Post-tool hooks (advisory): e.g. lint/format after an edit. Non-zero
+        # exits surface to the model as a trailing note so it can react (fix a
+        # lint error it just introduced). Failures never fail the tool call.
+        try:
+            from agent.core import hooks as _hooks
+            _notes = await _hooks.run_post_tool(config, name, args, serialised)
+        except Exception:
+            logger.debug("post_tool hook run failed (ignored)", exc_info=True)
+            _notes = []
+        if _notes:
+            serialised = serialised + "\n\n[hook notes]\n" + "\n".join(_notes)
 
         logger.debug("execute_tool: %s  result_len=%d", name, len(serialised))
 

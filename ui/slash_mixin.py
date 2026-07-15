@@ -265,6 +265,10 @@ class SlashHandlerMixin:
             from agent.core.scheduler import run_schedule_command
             self._write_sys(_escape(run_schedule_command(self._server._agent.config, arg)))
 
+        elif cmd == "/watch":
+            from agent.core.scheduler import run_watch_command
+            self._write_sys(_escape(run_watch_command(self._server._agent.config, arg)))
+
         elif cmd == "/mcp":
             from agent.mcp import run_mcp_command
             self._write_sys(_escape(run_mcp_command(self._server._agent.config, arg)))

@@ -51,6 +51,7 @@ def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
   [{c}]/commands[/{c}] ([{c}]/cmds[/{c}])       list project ':name' prompt-template commands
   [{c}]/checkpoint [new|rollback <id>][/{c}]  restore point across all files
   [{c}]/schedule[/{c}] [add <spec> :: <prompt> [:: <name>] | rm | on/off | runs | run]  cron-like scheduled jobs (alias [{c}]/sched[/{c}])
+  [{c}]/watch[/{c}] [add <file|url|cmd|pid> <target> :: <prompt> [:: <name>] | rm | on/off]  event-triggered prompts
   [{c}]/credpool[/{c}] [list | add <service> <domain> <username> <password> | remove <service>]  authenticated internet accounts (alias [{c}]/creds[/{c}])
   [{c}]/mcp[/{c}]                MCP server status + tools
   [{c}]/speech[/{c}]             speech-to-text input status
@@ -364,6 +365,10 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
             elif cmd in ("/schedule", "/sched"):
                 from agent.core.scheduler import run_schedule_command
                 console.print(run_schedule_command(agent.config, arg))
+
+            elif cmd == "/watch":
+                from agent.core.scheduler import run_watch_command
+                console.print(run_watch_command(agent.config, arg))
 
             elif cmd == "/mcp":
                 from agent.mcp import run_mcp_command

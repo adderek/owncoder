@@ -249,6 +249,7 @@ def _merge(config: Config, data: dict) -> None:
         ("failover", config.failover),
         ("privacy", config.privacy),
         ("scheduler", config.scheduler),
+        ("hooks", config.hooks),
         ("credpool", config.credpool),
         ("tool_discovery", config.tool_discovery),
         ("summarization", config.summarization),
@@ -268,9 +269,9 @@ _KNOWN_SECTIONS = {
     "verify", "tests", "confidence_guard", "compile_prompts", "token_limits",
     "tool_compaction", "security", "planning", "recovery", "parallel",
     "explore", "web_search", "concurrency", "kb", "aei", "notify", "mcp",
-    "speech", "auto_tier", "failover", "privacy", "scheduler", "credpool",
-    "tool_discovery", "summarization", "output_store", "turn_signals",
-    "ui_server", "models",
+    "speech", "auto_tier", "failover", "privacy", "scheduler", "hooks",
+    "credpool", "tool_discovery", "summarization", "output_store",
+    "turn_signals", "ui_server", "models",
 }
 
 
@@ -320,6 +321,14 @@ def _coerce_mcp_servers(config: Config) -> None:
     from agent.config.models import MCPServerConfig
     config.mcp.servers = _coerce_dataclass_list(
         config.mcp.servers, MCPServerConfig, "mcp.servers"
+    )
+
+
+def _coerce_hooks(config: Config) -> None:
+    """Convert hooks.entries dicts (TOML [[hooks.entries]] / YAML list) to HookConfig."""
+    from agent.config.models import HookConfig
+    config.hooks.entries = _coerce_dataclass_list(
+        config.hooks.entries, HookConfig, "hooks.entries"
     )
 
 
@@ -533,6 +542,7 @@ def load_config(extra_path: Path | list[Path] | None = None) -> Config:
     _coerce_notify_channels(config)
     _coerce_mcp_servers(config)
     _coerce_test_suites(config)
+    _coerce_hooks(config)
     from .validate import validate_config, report_issues
     report_issues(validate_config(config))
     return config

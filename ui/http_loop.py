@@ -2300,6 +2300,7 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
              "  /commands project cmds     /mcp MCP server status\n"
              "  /undo [file] restore snapshot   /checkpoint list|new|rollback\n"
              "  /plan …  /plans            /schedule jobs   /notify channels\n"
+             "  /watch event triggers      /bg background jobs\n"
              "  /idea /ideas               /recoveries      /resummarize [--force]\n"
              "  /security scan|report|…    /credpool list|status|…\n"
              "terminal-only: /a /q /sparse /wrap /round-summary /speech /exec /apply /analyze-asm /quit\n"
@@ -2480,6 +2481,13 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
         else:
             from agent.core.scheduler import run_schedule_command
             pub({"type": "sys", "text": run_schedule_command(cfg, arg)})
+    elif cmd == "/watch":
+        cfg = _agent_config(server)
+        if cfg is None:
+            pub({"type": "sys", "error": True, "text": _NEEDS_LOCAL})
+        else:
+            from agent.core.scheduler import run_watch_command
+            pub({"type": "sys", "text": run_watch_command(cfg, arg)})
     elif cmd == "/mcp":
         cfg = _agent_config(server)
         if cfg is None:
