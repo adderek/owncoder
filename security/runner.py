@@ -325,8 +325,14 @@ def run(
     network: bool = False,
     timeout: int | None = None,
     stdin: bytes | str | None = None,
+    on_spawn=None,
 ) -> RunResult:
-    """Run *argv* (list, not shell string) inside the configured sandbox."""
+    """Run *argv* (list, not shell string) inside the configured sandbox.
+
+    on_spawn(proc): optional callback invoked with the live Popen right after
+    launch — lets a background caller capture the process so it can terminate
+    the whole group (os.killpg(proc.pid, …)) before the wall timeout.
+    """
     if not argv:
         raise ValueError("argv must be non-empty")
     pol = policy.get()
@@ -387,6 +393,11 @@ def run(
         if seccomp_fd is not None:
             os.close(seccomp_fd)
             seccomp_fd = None
+        if on_spawn is not None:
+            try:
+                on_spawn(proc)
+            except Exception:
+                pass
         try:
             out_b, err_b = proc.communicate(input=stdin_bytes, timeout=wall)
             rc = proc.returncode

@@ -132,8 +132,12 @@ async def test_rate_limit_exhausted_raises_without_failover(monkeypatch):
 
     client = _ScriptedClient([_rate_limit_error(), _rate_limit_error()])
     messages = [{"role": "system", "content": "x"}, {"role": "user", "content": "go"}]
-    with pytest.raises(RateLimitError):
+    # No self-hosted model to degrade to → surfaced as a recoverable
+    # NoUsableModelError (retry / enable a model), wrapping the original 429.
+    from agent.core.turn import NoUsableModelError
+    with pytest.raises(NoUsableModelError) as ei:
         await run_turn(messages, cfg, client)
+    assert isinstance(ei.value.cause, RateLimitError)
 
 
 # ── error-streak guard ──────────────────────────────────────────────────────

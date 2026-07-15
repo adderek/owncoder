@@ -31,15 +31,39 @@ def is_remote_endpoint(config: "Config") -> bool:
 
 
 def resolve_local_entry(config: "Config", preferred: str = "") -> Optional[str]:
-    """Name of a local-tier model entry to route to, or None if none configured."""
+    """Name of a self-hosted model entry to degrade to, or None if none is live.
+
+    Prefers a loopback ("local") endpoint, then a LAN ("remote", private-IP)
+    endpoint — both are the operator's own hardware, so degrading to either
+    never sends data to a third-party cloud. When the turn is pinned local-only
+    (``config.runtime_local_only`` — private session mode) LAN entries are
+    excluded so a private turn cannot leave the loopback interface.
+
+    Availability is probed: a configured-but-down box (the exact case that made
+    the crash surface) is skipped instead of being switched to blindly.
+    """
     from agent.core.model_control import is_disabled
+    # loader.entry_tier classifies by *location* (local=loopback / remote=LAN /
+    # cloud), which is what a degrade needs — not the cost tier that
+    # agent.config.entry_tier returns (a LAN box is "free" there, not "remote").
+    from agent.config.loader import entry_tier
+    from agent.config.model_probe import entry_available
     entries = config.model_entries or {}
-    if preferred and preferred in entries and not is_disabled(config, preferred):
+    local_only = bool(getattr(config, "runtime_local_only", False))
+    allowed_tiers = ("local",) if local_only else ("local", "remote")
+
+    def _usable(name: str, e) -> bool:
+        return (entry_tier(e) in allowed_tiers
+                and not is_disabled(config, name)
+                and entry_available(e))
+
+    if preferred and preferred in entries and _usable(preferred, entries[preferred]):
         return preferred
-    from agent.config import entry_tier
-    for name, e in entries.items():
-        if entry_tier(e) == "local" and not is_disabled(config, name):
-            return name
+    # Two passes so a live loopback endpoint always wins over a live LAN one.
+    for want in allowed_tiers:
+        for name, e in entries.items():
+            if entry_tier(e) == want and not is_disabled(config, name) and entry_available(e):
+                return name
     return None
 
 
@@ -101,17 +125,19 @@ def failover_to_alternative(config: "Config"):
     cfg = getattr(config, "failover", None)
     if cfg is None or not cfg.enabled:
         return None
-    from agent.config import entry_tier
+    from agent.config.loader import entry_tier  # location tier (local/remote/cloud)
     from agent.config.model_probe import entry_available
     from agent.core.model_control import is_disabled
     entries = config.model_entries or {}
+    local_only = bool(getattr(config, "runtime_local_only", False))
+    allowed_tiers = ("local",) if local_only else ("local", "remote")
     preferred = getattr(cfg, "local_entry", "") or ""
     ordered = [preferred] if preferred in entries else []
     ordered += [n for n in entries if n not in ordered]
     active = (config.llm.base_url, config.llm.model)
     for name in ordered:
         e = entries[name]
-        if entry_tier(e) != "local" or is_disabled(config, name):
+        if entry_tier(e) not in allowed_tiers or is_disabled(config, name):
             continue
         if (e.base_url, e.model or config.llm.model) == active:
             continue

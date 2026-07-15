@@ -158,11 +158,18 @@ body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; background: v
 #center { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 aside { width: 0; overflow: hidden; background: var(--panel); flex-shrink: 0;
         transition: width .22s ease; }
-aside.open { width: 280px; }
+aside.open { width: var(--w, 280px); }
+aside.resizing { transition: none; }   /* no lag while dragging */
 #left.open { border-right: 1px solid var(--border); }
 #right.open { border-left: 1px solid var(--border); }
-.aside-inner { width: 280px; height: 100%; overflow-y: auto; padding: 12px 14px;
-               font-size: 12px; color: var(--dim); }
+.aside-inner { width: 100%; height: 100%; overflow-y: auto; padding: 12px 14px;
+               font-size: 12px; color: var(--dim); box-sizing: border-box; }
+/* Drag handles between a drawer and the chat column; shown only when the
+   adjacent drawer is open. Dragging below 10px folds the drawer. */
+.resizer { width: 5px; flex-shrink: 0; cursor: col-resize; background: transparent;
+           transition: background .15s; }
+.resizer:hover, .resizer.active { background: var(--accent); }
+.resizer.hidden { display: none; }
 .aside-inner .ptitle { color: var(--fg); font-weight: bold; margin-bottom: 8px; font-size: 13px; }
 .dsec { margin-bottom: 14px; }
 .dhead { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .6px;
@@ -267,6 +274,13 @@ aside.open { width: 280px; }
           border-radius: 8px; font-size: 13.5px; animation: fadein .18s ease-out; }
 #askbox .ask-kind { color: var(--warn); font-family: var(--mono); font-size: 12px; }
 #askbox .ask-text { color: var(--fg); }
+/* Turn-failed retry bar — pinned above the input like the ask box. */
+#retrybox { max-width: 920px; margin: 0 auto 8px; padding: 9px 12px;
+            border: 1px solid var(--err); border-radius: 8px;
+            background: var(--sig-bg); font-size: 13px; display: flex;
+            align-items: center; gap: 10px; animation: fadein .18s ease-out; }
+#retrybox .retry-msg { color: var(--err); flex: 1; overflow: hidden;
+                       text-overflow: ellipsis; white-space: nowrap; }
 #log { flex: 1; overflow-y: auto; padding: 18px 16px; scroll-behavior: smooth; }
 .row { max-width: 920px; margin: 0 auto; position: relative;
        animation: fadein .18s ease-out; }
@@ -447,6 +461,7 @@ button:hover { filter: brightness(1.15); }
   </details>
   <div class="placeholder">Options, attachments and media will appear here.</div>
 </div></aside>
+<div class="resizer hidden" id="resize-left" title="Drag to resize; drag past the edge to close"></div>
 <div id="center">
 <div id="log"></div>
 <div id="inputrow"><div class="row">
@@ -456,6 +471,7 @@ button:hover { filter: brightness(1.15); }
   <button id="kill" title="Hard stop: abort the turn immediately (may leave the last exchange incomplete)">Kill</button>
 </div></div>
 </div>
+<div class="resizer hidden" id="resize-right" title="Drag to resize; drag past the edge to close"></div>
 <aside id="right"><div class="aside-inner">
   <div class="ptitle">Details</div>
   <div class="dsec"><div class="dhead" id="d-models">Models ⟳</div><div id="modelsbody">—</div></div>
@@ -799,6 +815,8 @@ function handle(ev) {
   } else if (ev.type === 'sys') {
     if (ev.error) row('sys error', null, ev.text);
     else metaRow('sys', ev.text);
+  } else if (ev.type === 'retryable') {
+    showRetry(ev.text, ev.reason);
   } else if (ev.type === 'grants_changed') {
     if (ev.pending) {
       row('sys', null, '⚑ agent requests access to a new path — grant or ' +
@@ -877,8 +895,57 @@ function toggleDrawer(id, btnId, force) {
   const open = force === undefined ? !el.classList.contains('open') : force;
   el.classList.toggle('open', open);
   document.getElementById(btnId).classList.toggle('active', open);
+  const rz = document.getElementById(id === 'left' ? 'resize-left' : 'resize-right');
+  if (rz) rz.classList.toggle('hidden', !open);
   return open;
 }
+
+// Draggable drawer width, persisted per side. Dragging the handle past the
+// chat edge (width < 10px) folds the drawer, same as its toggle button.
+function initResizer(side) {
+  const aside = document.getElementById(side);
+  const rz = document.getElementById('resize-' + side);
+  const btn = side === 'left' ? 'lefttoggle' : 'righttoggle';
+  const key = 'oc-drawer-' + side;
+  try {
+    const saved = parseInt(localStorage.getItem(key) || '', 10);
+    if (saved >= 120) aside.style.setProperty('--w', saved + 'px');
+  } catch (e) {}
+  let startX = 0, startW = 0;
+  function onMove(ev) {
+    const dx = ev.clientX - startX;
+    let w = startW + (side === 'left' ? dx : -dx);
+    w = Math.min(700, w);
+    if (w < 10) {                       // dragged past the edge → fold
+      endDrag();
+      toggleDrawer(side, btn, false);
+      return;
+    }
+    aside.style.setProperty('--w', Math.max(120, w) + 'px');
+  }
+  function endDrag() {
+    aside.classList.remove('resizing');
+    rz.classList.remove('active');
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', endDrag);
+    document.body.style.userSelect = '';
+    const cur = parseInt(getComputedStyle(aside).width, 10);
+    if (cur >= 120) { try { localStorage.setItem(key, cur); } catch (e) {} }
+  }
+  rz.addEventListener('pointerdown', (ev) => {
+    if (!aside.classList.contains('open')) return;
+    ev.preventDefault();
+    startX = ev.clientX;
+    startW = parseInt(getComputedStyle(aside).width, 10) || 280;
+    aside.classList.add('resizing');
+    rz.classList.add('active');
+    document.body.style.userSelect = 'none';
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', endDrag);
+  });
+}
+initResizer('left');
+initResizer('right');
 async function loadModelCalls() {
   const el = document.getElementById('mcbody');
   el.textContent = '…';
@@ -1484,10 +1551,45 @@ function clearAsk() {
   }
 }
 
+// A turn failed (e.g. the LLM was unreachable / rate-limited). The failed
+// user message was rolled back server-side, so re-sending the same text is a
+// clean retry. Pin a one-click Retry bar above the input.
+function clearRetry() {
+  const old = document.getElementById('retrybox');
+  if (old) old.remove();
+}
+function showRetry(text, reason) {
+  clearRetry();
+  const box = document.createElement('div');
+  box.id = 'retrybox';
+  box.innerHTML =
+    '<span class="retry-msg">⚠ turn failed' +
+    (reason ? ': ' + esc(reason) : '') + '</span>' +
+    '<button class="sbtn" id="retry-go" title="Re-run the same message">↻ Retry</button>' +
+    '<button class="sbtn" id="retry-dismiss" title="Dismiss">✕</button>';
+  const inputrow = document.getElementById('inputrow');
+  inputrow.parentElement.insertBefore(box, inputrow);
+  document.getElementById('retry-go').addEventListener('click', () => {
+    clearRetry();
+    resend(text);
+  });
+  document.getElementById('retry-dismiss').addEventListener('click', clearRetry);
+}
+async function resend(text) {
+  row('sys', null, '↻ retrying: ' + text.slice(0, 80));
+  try {
+    await fetch('/api/chat', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text}),
+    });
+  } catch (e) { row('sys error', null, 'retry failed to send: ' + e); }
+}
+
 async function send() {
   const text = input.value.trim();
   if (!text) return;
   clearAsk();
+  clearRetry();
   if (text === '/clear') {   // purely visual — handled client-side
     input.value = ''; input.style.height = 'auto';
     log.innerHTML = '';
@@ -2909,27 +3011,53 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
                 if ui.prompt_loop.active:
                     ui.prompt_loop.stop()
                     pub({"type": "sys", "text": "↻ loop stopped (turn failed)."})
-                # One-line summary + crash file, mirroring the terminal UI's
-                # _handle_exception, instead of dumping the traceback inline.
-                path = None
-                try:
-                    from agent.core.crash_report import write_crash_report
-                    cfg = getattr(getattr(server, "_agent", None), "config", None)
-                    if cfg is None:
-                        inner = getattr(server, "_inner", None)
-                        cfg = getattr(getattr(inner, "_agent", None), "config", None)
-                    if cfg is not None:
-                        path = write_crash_report(exc, cfg, context="http ui chat turn")
-                except Exception:
-                    path = None
-                if path is not None:
-                    logger.error("http ui: chat turn failed: %s: %s — full report: %s",
-                                 type(exc).__name__, exc, path)
-                    pub({"type": "sys", "error": True,
-                         "text": f"error: {type(exc).__name__}: {exc} — full report: {path}"})
+                # "No usable model" is an expected operational state (all endpoints
+                # down / rate-limited, nothing self-hosted to fall back to), not a
+                # crash. Surface it plainly with the models the user could enable,
+                # skip the crash report, and offer a one-click retry.
+                from agent.core.turn import NoUsableModelError
+                if isinstance(exc, NoUsableModelError):
+                    logger.warning("http ui: no usable model — %s", exc)
+                    pub({"type": "sys", "error": True, "text": f"⚠ {exc}"})
+                    cands = list(getattr(exc, "candidates", []) or [])
+                    if cands:
+                        pub({"type": "sys",
+                             "text": "these models are disabled — enable one with "
+                                     "/model <name> (or the ⚙ models panel), then retry: "
+                                     + ", ".join(cands)})
+                    if not is_loop_turn:
+                        pub({"type": "retryable", "text": text,
+                             "reason": "no usable model — retry after enabling one or "
+                                       "bringing a local/LAN model back up"})
                 else:
-                    logger.exception("http ui: chat turn failed")
-                    pub({"type": "sys", "error": True, "text": f"error: {exc}"})
+                    # One-line summary + crash file, mirroring the terminal UI's
+                    # _handle_exception, instead of dumping the traceback inline.
+                    path = None
+                    try:
+                        from agent.core.crash_report import write_crash_report
+                        cfg = getattr(getattr(server, "_agent", None), "config", None)
+                        if cfg is None:
+                            inner = getattr(server, "_inner", None)
+                            cfg = getattr(getattr(inner, "_agent", None), "config", None)
+                        if cfg is not None:
+                            path = write_crash_report(exc, cfg, context="http ui chat turn")
+                    except Exception:
+                        path = None
+                    if path is not None:
+                        logger.error("http ui: chat turn failed: %s: %s — full report: %s",
+                                     type(exc).__name__, exc, path)
+                        pub({"type": "sys", "error": True,
+                             "text": f"error: {type(exc).__name__}: {exc} — full report: {path}"})
+                    else:
+                        logger.exception("http ui: chat turn failed")
+                        pub({"type": "sys", "error": True, "text": f"error: {exc}"})
+                    # The failed turn's user message was rolled back in Agent.chat,
+                    # so re-submitting the same text is a clean retry (useful when a
+                    # remote LLM was down / rate-limited). Offer it as a one-click
+                    # button unless this was a /loop iteration.
+                    if not is_loop_turn:
+                        pub({"type": "retryable", "text": text,
+                             "reason": f"{type(exc).__name__}: {str(exc)[:120]}"})
             finally:
                 ui.chat_task = None
                 ui.busy = False

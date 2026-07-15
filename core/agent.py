@@ -765,6 +765,42 @@ class Agent:
                                 pass
                 except Exception:
                     logger.debug("sched result delivery failed", exc_info=True)
+
+            # Deliver background shell jobs (run_argv_bg) that finished since the
+            # last turn, so the model sees build/test results without polling.
+            try:
+                from agent.tools.shell.main import drain_bg_finished
+                _bg = drain_bg_finished()
+                if _bg:
+                    _blines = []
+                    for b in _bg:
+                        cmd = " ".join(b.get("argv") or [])[:80]
+                        res = b.get("result") or {}
+                        rc = res.get("returncode")
+                        tail = ""
+                        if isinstance(res, dict):
+                            _err = (res.get("stderr") or "").strip() or (res.get("stdout") or "").strip()
+                            if res.get("error"):
+                                _err = res["error"]
+                            if _err:
+                                tail = " — " + _err[-300:]
+                        _blines.append(
+                            f"- job {b['job_id']} ({b['status']}"
+                            + (f", exit {rc}" if rc is not None else "")
+                            + f"): {cmd}{tail}")
+                    self.messages.append({
+                        "role": "system",
+                        "content": "[background shell jobs finished since last turn "
+                                   "— full output via bg_output(job_id)]\n"
+                                   + "\n".join(_blines),
+                    })
+                    if on_phase is not None:
+                        try:
+                            on_phase("bg_results", f"{len(_bg)} background job(s) delivered")
+                        except Exception:
+                            pass
+            except Exception:
+                logger.debug("bg shell delivery failed", exc_info=True)
             self.messages.append({"role": "user", "content": user_input})
             if self._facts_store is not None:
                 self._facts_store.set_original_request(user_input)

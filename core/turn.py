@@ -256,6 +256,70 @@ def _run_verify_command(command: str, cwd: str, timeout_s: int) -> tuple[int, st
         return 1, f"[verify] command timed out after {timeout_s}s\n{out}{err}"
 
 
+class NoUsableModelError(Exception):
+    """No model could serve the turn: the active endpoint failed (rate-limit /
+    outage) and self-hosted failover found nothing live to degrade to.
+
+    Carries the original endpoint error (``cause``) and the names of configured
+    entries the user could enable to recover (``candidates``), so the UI can
+    offer a retry + an enable-a-model choice instead of crash-reporting it. This
+    is an expected operational state, not a bug — UIs should surface it, not
+    write a crash report.
+    """
+    def __init__(self, cause: BaseException, candidates: list[str]):
+        self.cause = cause
+        self.candidates = candidates
+        hint = (f" — enable one to continue: {', '.join(candidates)}"
+                if candidates else "")
+        super().__init__(
+            "no enabled model is reachable (active endpoint failed and no live "
+            f"local/LAN model to fall back to){hint}")
+
+
+def _no_usable_model_error(config, cause: BaseException) -> "NoUsableModelError":
+    """Build a NoUsableModelError listing disabled entries the user could enable."""
+    from agent.core.model_control import is_disabled
+    entries = config.model_entries or {}
+    candidates = [n for n in entries if is_disabled(config, n)]
+    return NoUsableModelError(cause, candidates)
+
+
+def _retry_after_seconds(e: Exception) -> float:
+    """Extract a Retry-After header (seconds) from a RateLimitError, or 0."""
+    try:
+        resp = getattr(e, "response", None)
+        if resp is not None:
+            return float(resp.headers.get("retry-after") or 0)
+    except Exception:
+        pass
+    return 0.0
+
+
+# OpenRouter and other aggregators return 429 both for transient burst limits
+# (retry in seconds) and for daily free-tier exhaustion ("X free requests per
+# day"), which won't clear for hours. The message text distinguishes them.
+_DAILY_LIMIT_MARKERS = (
+    "per day", "per-day", "daily", "free-models-per-day",
+    "quota", "exceeded your", "requests per day", "tokens per day",
+)
+
+
+def _is_daily_quota_429(e: Exception, retry_after: float) -> bool:
+    """True when a 429 looks like a daily/quota exhaustion rather than a burst
+    limit — either the body says so, or Retry-After is longer than any sane
+    burst cooldown (> 5 min)."""
+    if retry_after > 300:
+        return True
+    blob = str(getattr(e, "message", "") or e).lower()
+    try:
+        body = getattr(e, "body", None)
+        if isinstance(body, dict):
+            blob += " " + str(body.get("error", body)).lower()
+    except Exception:
+        pass
+    return any(m in blob for m in _DAILY_LIMIT_MARKERS)
+
+
 def _normalize_api_messages(messages: list[dict]) -> list[dict]:
     """Strip internal keys and apply model-quirk fixups to produce API-ready messages.
 
@@ -680,21 +744,26 @@ async def run_turn(
             # once exhausted, degrade to the local model like a remote outage.
             # Put this (endpoint, model) on cooldown so tier ladders and
             # escalation stop picking it while it rejects requests.
+            retry_after = _retry_after_seconds(e)
+            daily = _is_daily_quota_429(e, retry_after)
             try:
                 from agent.config.model_probe import mark_rate_limited
-                mark_rate_limited(config.llm.base_url, config.llm.model)
+                # A per-day free-tier exhaustion won't clear in minutes — cool the
+                # endpoint down until its reset (Retry-After) or 6h, so tier
+                # ladders/escalation stop hammering a model that's out for the day.
+                cooldown = max(retry_after, 21600.0) if daily else 300.0
+                mark_rate_limited(config.llm.base_url, config.llm.model, cooldown_s=cooldown)
             except Exception:
                 logger.debug("mark_rate_limited failed (ignored)", exc_info=True)
             max_rl = max(0, int(getattr(config.llm, "rate_limit_retries", 3)))
-            if rate_limit_count < max_rl:
+            if daily:
+                # Backing off seconds is pointless against a daily cap — go
+                # straight to failover (or surface if none available).
+                logger.warning("daily free-tier limit hit (429) on %s/%s — skipping "
+                               "backoff, failing over", config.llm.base_url, config.llm.model)
+                _phase("rate_limit", "429 daily limit — failing over")
+            elif rate_limit_count < max_rl:
                 rate_limit_count += 1
-                retry_after = 0.0
-                try:
-                    resp = getattr(e, "response", None)
-                    if resp is not None:
-                        retry_after = float(resp.headers.get("retry-after") or 0)
-                except Exception:
-                    retry_after = 0.0
                 delay = min(120.0, max(retry_after, 5.0 * (2 ** (rate_limit_count - 1))))
                 logger.warning("rate limited (429) — waiting %.0fs, retry %d/%d", delay, rate_limit_count, max_rl)
                 _phase("rate_limit", f"429 — wait {delay:.0f}s ({rate_limit_count}/{max_rl})")
@@ -723,7 +792,9 @@ async def run_turn(
                     _phase("failover", f"rate limited → {config.llm.model}")
                     logger.warning("failover: rate limit persists (%s) — retrying on '%s'", e, config.llm.model)
                     continue
-            raise
+            # Nothing self-hosted to degrade to: surface a recoverable "no model"
+            # state (retry / enable an online model) instead of crashing.
+            raise _no_usable_model_error(config, e) from e
         except (APIConnectionError, APITimeoutError, InternalServerError, APIError) as e:
             # Plain APIError covers server errors delivered inside a 200 SSE
             # stream body (openai raises the base class there, not
@@ -753,7 +824,7 @@ async def run_turn(
                     _phase("failover", f"endpoint error → {config.llm.model}")
                     logger.warning("failover: endpoint error (%s) — retrying on '%s'", e, config.llm.model)
                     continue
-            raise
+            raise _no_usable_model_error(config, e) from e
 
         finish_reason = getattr(choice, "finish_reason", None)
         if finish_reason == "length" and on_truncation is not None:

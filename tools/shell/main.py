@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 import os
 import shlex
+import signal
 import subprocess
+import threading
 import time
 from typing import TYPE_CHECKING
 
@@ -12,6 +15,8 @@ from agent.security import runner as _runner, policy as _sec_policy, audit as _a
 
 if TYPE_CHECKING:
     from agent.config import Config
+
+logger = logging.getLogger(__name__)
 
 _config = None
 _transcript: list[dict] = []
@@ -283,11 +288,15 @@ def get_transcript() -> list[dict]:
         },
     },
 )
-def run_argv(argv: list[str], cwd: str | None = None, timeout: int | None = None, network: bool = False) -> dict:
+def _precheck_argv(argv: list[str], network: bool, timeout: int | None,
+                   *, cap_timeout: bool = True) -> tuple[dict | None, int]:
+    """Shared validation for run_argv / run_argv_bg. Returns (error|None,
+    effective_timeout). cap_timeout=False skips the max_timeout ceiling so a
+    background job can run long."""
     if _config and not _config.tools.allow_shell:
         raise ToolDisabledError("Shell commands are disabled (tools.allow_shell = false)")
     if not argv:
-        return {"error": "argv must be non-empty"}
+        return {"error": "argv must be non-empty"}, 0
 
     danger = _check_dangerous(shlex.join(argv))
     if danger:
@@ -295,44 +304,49 @@ def run_argv(argv: list[str], cwd: str | None = None, timeout: int | None = None
             "error": f"Destructive command '{danger}' requires explicit confirmation before running.",
             "argv": argv,
             "requires_confirm": True,
-        }
+        }, 0
 
     if network and _config is not None and _config.security.network != "on":
         return {
             "error": (
-                "run_argv: network=true blocked — security.network is not 'on'. "
+                "network=true blocked — security.network is not 'on'. "
                 "Use web_search/web_fetch for internet access, or set "
                 "security.network='on' in agent.toml."
             ),
             "argv": argv,
-        }
+        }, 0
     rules = get_rules()
-    # Re-use existing rule checks against the joined representation.
     joined = " ".join(shlex.quote(a) for a in argv)
     ok, msg = rules.check_command(joined)
     if not ok:
-        return {"error": msg, "argv": argv}
+        return {"error": msg, "argv": argv}, 0
     ro_ok, ro_msg = rules.check_shell_writes_readonly(joined)
     if not ro_ok:
-        return {"error": ro_msg, "argv": argv}
+        return {"error": ro_msg, "argv": argv}, 0
     net_ok, net_msg = rules.check_network_command(joined)
     if not net_ok and network:
-        return {"error": net_msg, "argv": argv}
+        return {"error": net_msg, "argv": argv}, 0
     need_confirm, confirm_reason = rules.check_command_confirm(joined)
     if need_confirm:
-        return {"error": confirm_reason, "argv": argv, "requires_confirm": True}
+        return {"error": confirm_reason, "argv": argv, "requires_confirm": True}, 0
     if rules.config.dry_run:
-        return {"dry_run": True, "argv": argv, "would_execute": True}
-    # Enforce argv allowlist if configured.
+        return {"dry_run": True, "argv": argv, "would_execute": True}, 0
     if _sec_policy.is_configured():
         allow = _sec_policy.get().cfg.argv_allow
         if allow and os.path.basename(argv[0]) not in allow:
-            return {"error": f"argv[0] {argv[0]!r} not in security.argv_allow", "argv": argv}
+            return {"error": f"argv[0] {argv[0]!r} not in security.argv_allow", "argv": argv}, 0
     eff_timeout = timeout or (_config.tools.shell_timeout if _config else 30)
-    if rules.config.max_timeout > 0:
+    if cap_timeout and rules.config.max_timeout > 0:
         eff_timeout = min(eff_timeout, rules.config.max_timeout)
     if not _sec_policy.is_configured():
-        return {"error": "security harness not initialized"}
+        return {"error": "security harness not initialized"}, 0
+    return None, eff_timeout
+
+
+def run_argv(argv: list[str], cwd: str | None = None, timeout: int | None = None, network: bool = False) -> dict:
+    err, eff_timeout = _precheck_argv(argv, network, timeout)
+    if err is not None:
+        return err
     try:
         r = _runner.run(list(argv), cwd=cwd, network=network, timeout=eff_timeout)
     except _runner.SandboxUnavailable as e:
@@ -356,3 +370,202 @@ def run_argv(argv: list[str], cwd: str | None = None, timeout: int | None = None
         result["error"] = f"Command timed out after {eff_timeout}s"
     _transcript.append(result)
     return result
+
+
+# ── Background shell jobs ─────────────────────────────────────────────────────
+# run_argv_bg launches a command detached so the agent's turn is not blocked by
+# a long build/test; the result is retrievable via bg_output and is also
+# delivered as a note on the next turn (drain_bg_finished, called by Agent.chat).
+
+_bg_lock = threading.Lock()
+_bg_jobs: dict[int, dict] = {}
+_bg_seq = 0
+
+
+def _bg_run(job_id: int, argv: list[str], cwd: str | None,
+            network: bool, timeout: int, reg: int | None = None) -> None:
+    """Worker thread: run the command, capture the process for kill, store result."""
+    def _capture(proc) -> None:
+        # Sandbox startup (seccomp filter build) can take a second or two, so a
+        # kill requested before the process exists must be honoured on spawn.
+        kill_now = False
+        with _bg_lock:
+            j = _bg_jobs.get(job_id)
+            if j is not None:
+                j["proc"] = proc
+                kill_now = j.get("kill_requested", False)
+        if kill_now:
+            _terminate(proc)
+
+    try:
+        r = _runner.run(list(argv), cwd=cwd, network=network,
+                        timeout=timeout, on_spawn=_capture)
+        stdout, so_tr = _truncate_stream(r.stdout)
+        stderr, se_tr = _truncate_stream(r.stderr)
+        res = {
+            "returncode": r.returncode,
+            "stdout": stdout,
+            "stderr": stderr,
+            "duration_ms": r.duration_ms,
+            "truncated": bool(so_tr or se_tr),
+            "timed_out": r.timed_out,
+        }
+        status = "timeout" if r.timed_out else ("ok" if r.returncode == 0 else "failed")
+    except _runner.SandboxUnavailable as e:
+        res, status = {"error": str(e)}, "error"
+    except Exception as e:  # never let a worker thread die silently
+        logger.exception("run_argv_bg worker failed")
+        res, status = {"error": str(e)}, "error"
+
+    with _bg_lock:
+        j = _bg_jobs.get(job_id)
+        if j is not None:
+            j.update(status=status, result=res, finished=time.time(), proc=None)
+            j.pop("_bg_reg", None)
+    # Always unregister the registry entry — even if the job dict was cleared
+    # out from under us (tests, session reset) — so it never leaks as a live
+    # "killable" background job.
+    try:
+        if reg is not None:
+            from agent.core import background
+            background.unregister(reg)
+    except Exception:
+        pass
+
+
+def _terminate(proc) -> None:
+    """SIGKILL the whole process group (bwrap --die-with-parent kills the
+    sandbox tree); fall back to a direct kill."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def _bg_kill(job_id: int) -> None:
+    with _bg_lock:
+        j = _bg_jobs.get(job_id)
+        if j is None:
+            return
+        j["kill_requested"] = True   # honoured on spawn if not yet started
+        proc = j.get("proc")
+    if proc is not None:
+        _terminate(proc)
+
+
+@register(
+    "run_argv_bg",
+    {
+        "description": (
+            "Run a command in the BACKGROUND (detached) and return immediately "
+            "with a job_id — use for long builds/tests/servers so your turn is "
+            "not blocked. Poll it with bg_output(job_id); the result is also "
+            "delivered as a note on your next turn when it finishes. Same argv "
+            "form and sandbox as run_argv."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "argv": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Argument vector, e.g. ['pytest','-q']. Pipes/redirects: ['sh','-c','cmd']",
+                },
+                "cwd": {"type": "string", "description": "Working directory (default: project root)"},
+                "timeout": {"type": "integer", "description": "Hard kill after N seconds (default: 3600)"},
+                "network": {"type": "boolean", "description": "Allow network egress (default: false)"},
+            },
+            "required": ["argv"],
+        },
+    },
+)
+def run_argv_bg(argv: list[str], cwd: str | None = None,
+                timeout: int | None = None, network: bool = False) -> dict:
+    # Background jobs may run long: skip the interactive max_timeout ceiling,
+    # default to 1h, but still honour an explicit timeout argument.
+    err, _ = _precheck_argv(argv, network, timeout or 3600, cap_timeout=False)
+    if err is not None:
+        return err
+    eff_timeout = int(timeout or 3600)
+
+    global _bg_seq
+    with _bg_lock:
+        _bg_seq += 1
+        job_id = _bg_seq
+        _bg_jobs[job_id] = {
+            "id": job_id, "argv": list(argv), "status": "running",
+            "started": time.time(), "finished": 0.0, "result": None,
+            "proc": None, "delivered": False,
+        }
+    reg = None
+    try:
+        from agent.core import background
+        reg = background.register_external(
+            f"shell:{shlex.join(argv)[:60]}", "shell-bg", cancel=lambda: _bg_kill(job_id))
+        with _bg_lock:
+            _bg_jobs[job_id]["_bg_reg"] = reg
+    except Exception:
+        pass
+
+    threading.Thread(
+        target=_bg_run, args=(job_id, list(argv), cwd, network, eff_timeout, reg),
+        daemon=True, name=f"shell-bg-{job_id}",
+    ).start()
+    return {"job_id": job_id, "status": "started",
+            "note": f"Running in background. Poll with bg_output(job_id={job_id}); "
+                    "the result is also delivered on your next turn."}
+
+
+@register(
+    "bg_output",
+    {
+        "description": (
+            "Read a background shell job started by run_argv_bg: its status "
+            "(running/ok/failed/timeout/error) and, once finished, its "
+            "returncode and output. Omit job_id to list all background jobs."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "job_id": {"type": "integer", "description": "The id returned by run_argv_bg. Omit to list all."},
+            },
+        },
+    },
+)
+def bg_output(job_id: int | None = None) -> dict:
+    with _bg_lock:
+        if job_id is None:
+            return {"jobs": [
+                {"job_id": j["id"], "status": j["status"],
+                 "argv": j["argv"],
+                 "age_s": round(time.time() - j["started"], 1)}
+                for j in _bg_jobs.values()
+            ]}
+        j = _bg_jobs.get(job_id)
+        if j is None:
+            return {"error": f"no background job {job_id}"}
+        out = {"job_id": job_id, "status": j["status"], "argv": j["argv"]}
+        if j["status"] == "running":
+            out["age_s"] = round(time.time() - j["started"], 1)
+        else:
+            out["result"] = j["result"]
+            out["duration_s"] = round(j["finished"] - j["started"], 1)
+    return out
+
+
+def drain_bg_finished() -> list[dict]:
+    """Return finished-but-undelivered background jobs, marking them delivered.
+    Called by Agent.chat pre-turn to fold results into the conversation."""
+    out = []
+    with _bg_lock:
+        for j in _bg_jobs.values():
+            if j["status"] != "running" and not j["delivered"]:
+                j["delivered"] = True
+                out.append({
+                    "job_id": j["id"], "status": j["status"],
+                    "argv": j["argv"], "result": j["result"],
+                })
+    return out
