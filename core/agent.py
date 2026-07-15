@@ -839,6 +839,8 @@ class Agent:
             )
             self._pending_bg_tasks.add(task)
             task.add_done_callback(self._pending_bg_tasks.discard)
+            from agent.core import background
+            background.register_task(task, f"qa-summary turn {turn_id}", "post-turn")
 
         idle_sec = self.config.token_limits.idle_compaction_seconds
         if idle_sec > 0:
@@ -849,6 +851,9 @@ class Agent:
             )
             self._pending_bg_tasks.add(self._idle_compact_task)
             self._idle_compact_task.add_done_callback(self._pending_bg_tasks.discard)
+            from agent.core import background
+            background.register_task(
+                self._idle_compact_task, f"idle-compact in {int(idle_sec)}s", "idle")
 
         return response
 

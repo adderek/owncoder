@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 # (primary_name, aliases, short_description, takes_arg)
 _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/a", [], "switch to A (agent answers) tab", False),
+    ("/bg", ["/background"], "background jobs: list | kill <id> | kill all", True),
     (
         "/analyze-asm",
         ["/asm"],
@@ -462,6 +463,31 @@ def _apply_goal(agent, arg: str) -> tuple[bool, str]:
     max_i = getattr(agent.config.llm, "goal_max_iterations", 200)
     kind = "shell check" if v.startswith("$") else "LLM-evaluated"
     return True, f"Goal set ({kind}): {v}\nAgent will run until goal is achieved (hard ceiling: {max_i} iterations)."
+
+
+def _apply_bg(arg: str) -> tuple[bool, str]:
+    """Handle /bg [kill <id>|kill all]. Returns (ok, message)."""
+    from agent.core import background
+    v = arg.strip().lower()
+    if v.startswith("kill"):
+        target = v[4:].strip()
+        if target in ("all", "*"):
+            n = background.cancel_all()
+            return True, f"cancelled {n} background job(s)."
+        if target.isdigit():
+            ok = background.cancel(int(target))
+            return ok, (f"job {target} cancelled." if ok
+                        else f"job {target} not found or not killable.")
+        return False, "Usage: /bg [kill <id> | kill all]"
+    jobs = background.jobs()
+    if not jobs:
+        return True, "no background jobs running."
+    lines = ["background jobs:"]
+    for j in jobs:
+        mark = "" if j["killable"] else "  (not killable)"
+        lines.append(f"  [{j['id']}] {j['kind']:<10} {j['label']}  {j['age']:.0f}s{mark}")
+    lines.append("kill with: /bg kill <id>  |  /bg kill all")
+    return True, "\n".join(lines)
 
 
 def _match_commands(prefix: str) -> list[tuple[str, str, bool]]:

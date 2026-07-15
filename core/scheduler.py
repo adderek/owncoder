@@ -442,27 +442,33 @@ async def execute_job(config: "Config", job: Job) -> str:
     from agent.data_provider import LocalDataProvider
     from agent.memory.session import new_session, save_session
 
-    agent = Agent(config, data_provider=LocalDataProvider(config=config))
-    session = new_session(
-        short_name=f"sched-{job.name or job.id}",
-        description=f"scheduled run of {job.spec!r}",
-        tags=["scheduled"],
-    )
-    agent.session = session
-    session_id = session.id
+    from agent.core import background
+    bg_id = background.register_external(
+        f"sched:{job.name or job.id} ({job.spec})", "scheduler")
     try:
-        reply = await agent.chat(job.prompt, source="scheduler")
-        status = "ok"
-    except Exception as exc:
-        logger.warning("scheduler: job %s (%s) failed: %s", job.id, job.name, exc)
-        reply = ""
-        status = f"error: {exc}"[:200]
-    try:
-        # Give post-turn background work (QA summary etc.) a moment, then save.
-        await agent.wait_background(timeout=30)
-        save_session(session, agent.messages)
-    except Exception:
-        logger.debug("scheduler: session save failed", exc_info=True)
+        agent = Agent(config, data_provider=LocalDataProvider(config=config))
+        session = new_session(
+            short_name=f"sched-{job.name or job.id}",
+            description=f"scheduled run of {job.spec!r}",
+            tags=["scheduled"],
+        )
+        agent.session = session
+        session_id = session.id
+        try:
+            reply = await agent.chat(job.prompt, source="scheduler")
+            status = "ok"
+        except Exception as exc:
+            logger.warning("scheduler: job %s (%s) failed: %s", job.id, job.name, exc)
+            reply = ""
+            status = f"error: {exc}"[:200]
+        try:
+            # Give post-turn background work (QA summary etc.) a moment, then save.
+            await agent.wait_background(timeout=30)
+            save_session(session, agent.messages)
+        except Exception:
+            logger.debug("scheduler: session save failed", exc_info=True)
+    finally:
+        background.unregister(bg_id)
     record_result(config, job.id, status, session_id=session_id, result=reply)
     return reply
 

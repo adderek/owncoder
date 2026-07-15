@@ -247,6 +247,21 @@ class LocalUIServer:
     def cancel_background(self, session_id: str = "") -> int:
         return self._agent.cancel_background()
 
+    def answer_ask(self, text: str, session_id: str = "") -> bool:
+        """Deliver a local UI answer to a turn blocked in notify ask
+        (remote_answers). True = consumed in place; the turn continues.
+        Must run on the asyncio loop thread (resolves an asyncio.Future)."""
+        return self._notify.answer_latest(text, source="ui")
+
+    def background_info(self, session_id: str = "") -> list[dict]:
+        """Live labeled background jobs (post-turn QA, idle compact, sched…)."""
+        from agent.core import background
+        return background.jobs()
+
+    def kill_background(self, job_id: int, session_id: str = "") -> bool:
+        from agent.core import background
+        return background.cancel(job_id)
+
     async def wait_background(self, session_id: str = "", timeout: float | None = None) -> int:
         return await self._agent.wait_background(timeout=timeout)
 

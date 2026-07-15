@@ -417,6 +417,7 @@ button:hover { filter: brightness(1.15); }
   <span class="chip btn" id="layout" title="Cycle chat width: centered / wide / full">center</span>
   <span class="chip btn" id="condchip" title="Condensed Q/A view — one line per turn, click rows to expand">≣ Q/A</span>
   <span class="chip btn" id="iostats" title="Session totals: prompt in / completion out. Click for per-model split">↑0 ↓0</span>
+  <span class="chip btn" id="bgchip" title="Background jobs running — click to review / kill" style="display:none">⚙0</span>
   <div id="tokenwrap" title="Click for context buffer breakdown"><div id="tokenbar"><div id="tokenfill"></div></div><span id="tokens"></span></div>
   <button class="icon" id="themetoggle" title="Toggle dark/light theme">◐</button>
   <button class="icon" id="righttoggle" title="Details panel">☰</button>
@@ -454,6 +455,7 @@ button:hover { filter: brightness(1.15); }
   <div class="dsec"><div class="dhead" id="d-stats">Session stats ⟳</div><pre id="statsbody">—</pre></div>
   <div class="dsec"><div class="dhead" id="d-mc">LLM calls this session ⟳</div><pre id="mcbody">—</pre></div>
   <div class="dsec"><div class="dhead" id="d-ctx">Context buffer ⟳</div><pre id="ctxbody">—</pre></div>
+  <div class="dsec"><div class="dhead" id="d-bg">Background jobs ⟳</div><div id="bgbody">—</div></div>
 </div></aside>
 </div>
 <script>
@@ -1052,12 +1054,45 @@ document.getElementById('lefttoggle').addEventListener('click', () => {
 });
 document.getElementById('righttoggle').addEventListener('click', () => {
   if (toggleDrawer('right', 'righttoggle')) {
-    loadModels(); loadStats(); loadModelCalls(); loadContext();
+    loadModels(); loadStats(); loadModelCalls(); loadContext(); loadBg();
   }
 });
 document.getElementById('model').addEventListener('click', () => openDetails(loadModels));
 document.getElementById('tokenwrap').addEventListener('click', () => openDetails(loadContext));
 document.getElementById('iostats').addEventListener('click', () => openDetails(loadStats));
+// Background jobs: header chip (⚙N, hidden when idle) polled every 5s;
+// details-panel section lists jobs with per-job kill.
+async function loadBg() {
+  const el = document.getElementById('bgbody');
+  try {
+    const d = await (await fetch('/api/background')).json();
+    const jobs = d.jobs || [];
+    const chip = document.getElementById('bgchip');
+    chip.textContent = '⚙' + jobs.length;
+    chip.style.display = jobs.length ? '' : 'none';
+    if (!document.getElementById('right').classList.contains('open')) return;
+    if (!jobs.length) { el.textContent = 'none running'; return; }
+    el.innerHTML = jobs.map(j =>
+      '<div class="grow"><span class="gpath">[' + j.id + '] ' + esc(j.kind) + ' · ' +
+      esc(j.label) + ' · ' + Math.round(j.age) + 's</span>' +
+      (j.killable
+        ? ' <button class="sbtn" data-bgkill="' + j.id + '" title="Cancel this job">✕</button>'
+        : ' <span title="Not cancellable">·</span>') +
+      '</div>').join('');
+    el.querySelectorAll('[data-bgkill]').forEach(b => b.addEventListener('click', async () => {
+      const r = await (await fetch('/api/background', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({id: +b.dataset.bgkill}),
+      })).json();
+      row('sys' + (r.ok ? '' : ' error'), null,
+          r.ok ? '⚙ background job ' + b.dataset.bgkill + ' cancelled' : (r.msg || 'kill failed'));
+      loadBg();
+    }));
+  } catch (e) { if (el) el.textContent = 'failed: ' + e; }
+}
+setInterval(loadBg, 5000);
+document.getElementById('bgchip').addEventListener('click', () => openDetails(loadBg));
+document.getElementById('d-bg').addEventListener('click', loadBg);
 document.getElementById('d-models').addEventListener('click', loadModels);
 document.getElementById('d-stats').addEventListener('click', loadStats);
 document.getElementById('d-mc').addEventListener('click', loadModelCalls);
@@ -1481,6 +1516,15 @@ class _HttpUI:
         """Called from handler threads. Returns True if injected mid-turn."""
         if self.pending_ask is not None:
             self.pending_ask = None
+            # A turn blocked in notify ask (remote_answers + on_timeout=wait)
+            # never ends on its own — the browser answer must resolve the
+            # broker future or the session deadlocks with busy stuck on.
+            if self._try_answer_ask(text):
+                # Consumed in place — the blocked turn resumes with this
+                # answer; show it as a normal user message.
+                self.bus.publish({"type": "user", "text": text})
+                self.bus.publish({"type": "state", "state": "busy"})
+                return False
             self.loop.call_soon_threadsafe(self.prompt_queue.put_nowait, text)
             return False
         if self.busy:
@@ -1488,6 +1532,30 @@ class _HttpUI:
             return True
         self.loop.call_soon_threadsafe(self.prompt_queue.put_nowait, text)
         return False
+
+    def _try_answer_ask(self, text: str) -> bool:
+        """Resolve a broker-pending question from a handler thread.
+
+        answer_ask touches an asyncio.Future, so it must run on the loop
+        thread; wait briefly for the verdict."""
+        answer_ask = getattr(self.server, "answer_ask", None)
+        if answer_ask is None:
+            return False
+        import concurrent.futures
+        done: concurrent.futures.Future = concurrent.futures.Future()
+
+        def _do() -> None:
+            try:
+                done.set_result(bool(answer_ask(text)))
+            except Exception as exc:
+                done.set_exception(exc)
+
+        self.loop.call_soon_threadsafe(_do)
+        try:
+            return done.result(timeout=5)
+        except Exception:
+            logger.exception("http ui: answer_ask bridge failed")
+            return False
 
     def submit_to(self, sid: str, text: str) -> str:
         """Prompt aimed at a specific session (from the history preview).
@@ -1997,6 +2065,11 @@ def _make_handler(ui: _HttpUI):
                 self._json(ui.models_info())
             elif self.path == "/api/grants":
                 self._json(ui.grants_info())
+            elif self.path == "/api/background":
+                try:
+                    self._json({"jobs": ui.server.background_info()})
+                except Exception as exc:
+                    self._json({"jobs": [], "error": str(exc)})
             elif self.path == "/api/events":
                 self._sse()
             else:
@@ -2057,6 +2130,14 @@ def _make_handler(ui: _HttpUI):
                     self._json({"ok": False, "msg": "no loop-guard prompt pending"})
             elif self.path == "/api/model":
                 self._json(ui.model_action(payload))
+            elif self.path == "/api/background":
+                jid = payload.get("id")
+                try:
+                    ok = bool(jid is not None and ui.server.kill_background(int(jid)))
+                except Exception:
+                    ok = False
+                self._json({"ok": ok} if ok else
+                           {"ok": False, "msg": f"job {jid} not found or not killable"})
             elif self.path == "/api/session":
                 self._json(ui.session_action(payload))
             elif self.path == "/api/grants":
@@ -2152,7 +2233,7 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
              "  /stats session LLM stats   /context context breakdown\n"
              "  /modelcalls calls by tier  /output think/tool/reply split\n"
              "  /perf LLM vs tool time     /who agents on this worktree\n"
-             "  /goal show/set goal\n"
+             "  /goal show/set goal        /bg list|kill background jobs\n"
              "workspace:\n"
              "  /tools list tools          /skills list|show|rm skills\n"
              "  /commands project cmds     /mcp MCP server status\n"
@@ -2199,6 +2280,10 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
             server.set_goal(None if arg.strip().lower() in ("off", "none", "clear") else arg)
         goal = server.get_goal()
         pub({"type": "sys", "text": f"goal: {goal}" if goal else "no goal set"})
+    elif cmd in ("/bg", "/background"):
+        from agent.ui.slash import _apply_bg
+        ok, msg = _apply_bg(arg)
+        pub({"type": "sys", "error": not ok, "text": msg})
     elif cmd == "/stats":
         s = server.stats()
         text = "\n".join(f"{k}: {v}" for k, v in s.items()) or "no stats yet"

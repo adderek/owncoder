@@ -161,6 +161,19 @@ class NotifyBroker:
             source=str(data.get("from", "") or "user"),
         ))
 
+    def answer_latest(self, text: str, source: str = "ui") -> bool:
+        """Resolve the newest pending free-text question with a local UI answer.
+
+        Lets an interactive UI answer a turn that is blocked awaiting a remote
+        answer (remote_answers + on_timeout='wait'), instead of deadlocking:
+        whoever answers first — UI or remote — wins."""
+        for qid in reversed(list(self._pending)):
+            question, _fut = self._pending.get(qid, (None, None))
+            if question is not None and question.free_text:
+                return self.submit_answer(Answer(
+                    question_id=qid, text=text, source=source))
+        return False
+
     def submit_answer(self, answer: Answer) -> bool:
         """Validate and deliver an answer. Returns False if rejected."""
         entry = self._pending.get(answer.question_id)
