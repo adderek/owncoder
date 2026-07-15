@@ -1511,6 +1511,10 @@ class _HttpUI:
         # submitted text is the answer and must start a fresh turn, never be
         # injected into whatever else may be running (background QA, delegate).
         self.pending_ask: str | None = None
+        # /loop state: repeat one prompt in this session until stopped.
+        from agent.core.prompt_loop import PromptLoop
+        self.prompt_loop = PromptLoop()
+        self.loop_requeue_task: asyncio.Task | None = None
 
     def submit(self, text: str) -> bool:
         """Called from handler threads. Returns True if injected mid-turn."""
@@ -1572,8 +1576,16 @@ class _HttpUI:
             self.prompt_queue.put_nowait, {"sid": sid, "text": text})
         return status
 
+    def _stop_prompt_loop(self) -> None:
+        """A /loop is session-bound — retire it when the session changes."""
+        self.prompt_loop.stop()
+        if self.loop_requeue_task is not None:
+            self.loop_requeue_task.cancel()
+            self.loop_requeue_task = None
+
     def switch_session(self, sid: str) -> str:
         """Swap the active session. Must run on the asyncio loop thread."""
+        self._stop_prompt_loop()
         session, messages = self.server.load_session(sid)
         if session is None:
             raise ValueError(f"session '{sid}' not found")
@@ -1596,6 +1608,7 @@ class _HttpUI:
     def start_new_session(self) -> str:
         """Save the current session and start a fresh one. Must run on the
         asyncio loop thread."""
+        self._stop_prompt_loop()
         from agent.memory.session import new_session
         mode = "standard"
         if self.session is not None:
@@ -2234,6 +2247,7 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
              "  /modelcalls calls by tier  /output think/tool/reply split\n"
              "  /perf LLM vs tool time     /who agents on this worktree\n"
              "  /goal show/set goal        /bg list|kill background jobs\n"
+             "  /loop [30s|5m] [xN] <prompt> repeat prompt in-session; /loop stop\n"
              "workspace:\n"
              "  /tools list tools          /skills list|show|rm skills\n"
              "  /commands project cmds     /mcp MCP server status\n"
@@ -2284,6 +2298,33 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
         from agent.ui.slash import _apply_bg
         ok, msg = _apply_bg(arg)
         pub({"type": "sys", "error": not ok, "text": msg})
+    elif cmd == "/loop":
+        from agent.core.prompt_loop import parse_loop_args
+        action, params = parse_loop_args(arg)
+        if action == "status":
+            pub({"type": "sys", "text": ui.prompt_loop.status_line()})
+        elif action == "stop":
+            was = ui.prompt_loop.active
+            ui.prompt_loop.stop()
+            if ui.loop_requeue_task is not None:
+                ui.loop_requeue_task.cancel()
+                ui.loop_requeue_task = None
+            pub({"type": "sys",
+                 "text": f"loop stopped after {ui.prompt_loop.done} iteration(s)."
+                         if was else "no loop running."})
+        elif action == "error":
+            pub({"type": "sys", "error": True, "text": params["msg"]})
+        else:
+            if ui.loop_requeue_task is not None:
+                ui.loop_requeue_task.cancel()
+                ui.loop_requeue_task = None
+            ui.prompt_loop.start(params["prompt"], params["interval"], params["limit"])
+            iv = f"every {int(params['interval'])}s" if params["interval"] else "back-to-back"
+            lim = f", max {params['limit']}" if params["limit"] else ""
+            pub({"type": "sys",
+                 "text": f"loop started ({iv}{lim}): {params['prompt'][:120]}\n"
+                         f"stop with /loop stop"})
+            ui.prompt_queue.put_nowait({"loop": True, "text": params["prompt"]})
     elif cmd == "/stats":
         s = server.stats()
         text = "\n".join(f"{k}: {v}" for k, v in s.items()) or "no stats yet"
@@ -2668,6 +2709,14 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
     try:
         while True:
             item = await ui.prompt_queue.get()
+            is_loop_turn = False
+            if isinstance(item, dict) and item.get("loop"):
+                # /loop iteration. Skip stale ones (loop stopped meanwhile).
+                if not ui.prompt_loop.active:
+                    continue
+                is_loop_turn = True
+                text = str(item.get("text") or "")
+                item = text
             if isinstance(item, dict):
                 # Cross-session prompt from the history preview: switch first,
                 # then run the text as a normal turn in that session.
@@ -2773,12 +2822,38 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
                 response = await chat_task
                 pub({"type": "response", "text": response})
                 _publish_usage(server, pub)
+                if is_loop_turn:
+                    if ui.prompt_loop.record_iteration():
+                        delay = ui.prompt_loop.interval
+
+                        async def _requeue(d=delay) -> None:
+                            if d:
+                                await asyncio.sleep(d)
+                            if ui.prompt_loop.active:
+                                ui.prompt_queue.put_nowait(
+                                    {"loop": True, "text": ui.prompt_loop.prompt})
+
+                        ui.loop_requeue_task = asyncio.ensure_future(_requeue())
+                        nxt = (f"next in {int(delay)}s" if delay else "next immediately")
+                        pub({"type": "sys",
+                             "text": f"↻ loop iteration {ui.prompt_loop.done} done — {nxt}"
+                                     + (f" ({ui.prompt_loop.done}/{ui.prompt_loop.limit})"
+                                        if ui.prompt_loop.limit else "")})
+                    elif ui.prompt_loop.limit and ui.prompt_loop.done >= ui.prompt_loop.limit:
+                        pub({"type": "sys",
+                             "text": f"↻ loop finished: {ui.prompt_loop.done} iteration(s)."})
             except asyncio.CancelledError:
                 if not chat_task.cancelled():
                     raise  # our own coroutine was cancelled (shutdown) — propagate
                 pub({"type": "sys", "error": True,
                      "text": "⛔ hard stop — turn aborted; last exchange may be incomplete"})
+                if ui.prompt_loop.active:
+                    ui.prompt_loop.stop()
+                    pub({"type": "sys", "text": "↻ loop stopped (turn aborted)."})
             except Exception as exc:
+                if ui.prompt_loop.active:
+                    ui.prompt_loop.stop()
+                    pub({"type": "sys", "text": "↻ loop stopped (turn failed)."})
                 # One-line summary + crash file, mirroring the terminal UI's
                 # _handle_exception, instead of dumping the traceback inline.
                 path = None

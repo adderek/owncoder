@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/a", [], "switch to A (agent answers) tab", False),
     ("/bg", ["/background"], "background jobs: list | kill <id> | kill all", True),
+    ("/loop", [], "repeat prompt in this session: [<30s|5m|1h>] [xN] <prompt> | stop", True),
     (
         "/analyze-asm",
         ["/asm"],

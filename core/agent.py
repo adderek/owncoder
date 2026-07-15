@@ -736,6 +736,35 @@ class Agent:
         pre_turn_len = len(self.messages)
         _is_continue = user_input.strip().lower() in ("continue", "/continue", "/c")
         if not _is_continue:
+            # Deliver results of scheduled runs that finished since the last
+            # turn — they land in detached sched-<name> sessions, so without
+            # this the interactive conversation never learns their outcome.
+            if source != "scheduler":
+                try:
+                    from agent.core import scheduler
+                    _runs = scheduler.unseen_results(self.config)
+                    if _runs:
+                        _lines = []
+                        for r in _runs:
+                            line = f"- {r.get('name') or r.get('job')}: {r.get('status')}"
+                            if r.get("result"):
+                                line += f" — {r['result']}"
+                            if r.get("session"):
+                                line += f"  [session {r['session']}]"
+                            _lines.append(line)
+                        self.messages.append({
+                            "role": "system",
+                            "content": "[scheduled jobs finished since last turn]\n"
+                                       + "\n".join(_lines),
+                        })
+                        if on_phase is not None:
+                            try:
+                                on_phase("sched_results",
+                                         f"{len(_runs)} scheduled run(s) delivered")
+                            except Exception:
+                                pass
+                except Exception:
+                    logger.debug("sched result delivery failed", exc_info=True)
             self.messages.append({"role": "user", "content": user_input})
             if self._facts_store is not None:
                 self._facts_store.set_original_request(user_input)

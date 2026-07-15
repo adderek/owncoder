@@ -141,6 +141,36 @@ class SlashHandlerMixin:
             for line in msg.splitlines():
                 self._write_sys(f"[{color}]{line}[/{color}]")
 
+        elif cmd == "/loop":
+            from agent.core.prompt_loop import parse_loop_args, PromptLoop
+            if not hasattr(self, "_prompt_loop"):
+                self._prompt_loop = PromptLoop()
+            action, params = parse_loop_args(arg)
+            if action == "status":
+                self._write_sys(f"[{t.text_dim}]{self._prompt_loop.status_line()}[/{t.text_dim}]")
+            elif action == "stop":
+                was = self._prompt_loop.active
+                self._prompt_loop.stop()
+                timer = getattr(self, "_loop_timer", None)
+                if timer is not None:
+                    timer.stop()
+                    self._loop_timer = None
+                self._write_sys(
+                    f"[{t.success}]loop stopped after {self._prompt_loop.done} "
+                    f"iteration(s).[/{t.success}]" if was
+                    else f"[{t.warning}]no loop running.[/{t.warning}]")
+            elif action == "error":
+                self._write_sys(f"[{t.warning}]{params['msg']}[/{t.warning}]")
+            else:
+                self._prompt_loop.start(params["prompt"], params["interval"], params["limit"])
+                iv = (f"every {int(params['interval'])}s" if params["interval"]
+                      else "back-to-back")
+                lim = f", max {params['limit']}" if params["limit"] else ""
+                self._write_sys(
+                    f"[{t.success}]loop started ({iv}{lim}): "
+                    f"{params['prompt'][:100]} — /loop stop to end[/{t.success}]")
+                self._begin_chat(params["prompt"])
+
         elif cmd == "/goal":
             from agent.ui.slash import _apply_goal
             ok, msg = _apply_goal(self._server._agent, arg)

@@ -419,6 +419,49 @@ def record_result(config: "Config", job_id: str, status: str,
         logger.debug("scheduler: runs log append failed", exc_info=True)
 
 
+def unseen_results(config: "Config", limit: int = 10) -> list[dict]:
+    """Run records appended since the last call (delivery cursor in runs.seen).
+
+    Backs result delivery into the interactive session: the agent injects
+    these as context on the next turn instead of letting them rot in
+    sched-<name> sessions. First call initializes the cursor to 'now' so
+    historical runs are not dumped wholesale."""
+    path = _schedule_dir(config) / "runs.jsonl"
+    cur = _schedule_dir(config) / "runs.seen"
+    if not path.exists():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return []
+    if not cur.exists():
+        try:
+            cur.write_text(str(len(lines)), encoding="utf-8")
+        except Exception:
+            pass
+        return []
+    try:
+        seen = int(cur.read_text(encoding="utf-8").strip() or 0)
+    except Exception:
+        seen = 0
+    if seen > len(lines):   # runs.jsonl truncated/rotated
+        seen = 0
+    new = lines[seen:]
+    if not new:
+        return []
+    try:
+        cur.write_text(str(len(lines)), encoding="utf-8")
+    except Exception:
+        pass
+    out: list[dict] = []
+    for line in new:
+        try:
+            out.append(json.loads(line))
+        except Exception:
+            continue
+    return out[-limit:]
+
+
 def recent_runs(config: "Config", limit: int = 20) -> list[dict]:
     path = _schedule_dir(config) / "runs.jsonl"
     if not path.exists():

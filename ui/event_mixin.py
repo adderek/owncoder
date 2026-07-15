@@ -444,8 +444,40 @@ class EventHandlerMixin:
             except Exception:
                 pass
             self._append_qa_turn(getattr(self, "_current_user_text", ""), response or "")
+            self._continue_prompt_loop()
+        else:
+            # Aborted/failed turn kills an active /loop.
+            p_loop = getattr(self, "_prompt_loop", None)
+            if p_loop is not None and p_loop.active:
+                p_loop.stop()
+                self._write_sys("↻ loop stopped (turn aborted or failed).")
         self._refresh_token_bar()
         self.call_later(self._refresh_git)
+
+    def _continue_prompt_loop(self) -> None:
+        """After a successful /loop turn: count it and schedule the next one."""
+        p_loop = getattr(self, "_prompt_loop", None)
+        if p_loop is None or not p_loop.active:
+            return
+        if not p_loop.record_iteration():
+            self._write_sys(f"↻ loop finished: {p_loop.done} iteration(s).")
+            return
+        note = (f"↻ loop iteration {p_loop.done} done — next in "
+                f"{int(p_loop.interval)}s" if p_loop.interval
+                else f"↻ loop iteration {p_loop.done} done — next immediately")
+        if p_loop.limit:
+            note += f" ({p_loop.done}/{p_loop.limit})"
+        self._write_sys(note)
+
+        def _fire() -> None:
+            self._loop_timer = None
+            if p_loop.active and not getattr(self, "_agent_running", False):
+                self._begin_chat(p_loop.prompt)
+
+        if p_loop.interval:
+            self._loop_timer = self.set_timer(p_loop.interval, _fire)
+        else:
+            self.call_later(_fire)
 
     def on_tabbed_content_tab_activated(self, event) -> None:
         self._save_ui_state()

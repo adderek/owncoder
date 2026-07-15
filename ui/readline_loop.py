@@ -72,6 +72,7 @@ def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
   [{c}]/unlimited[/{c}] ([{c}]/nomax[/{c}])  toggle unlimited iterations (no iter cap)
   [{c}]/goal [text | $cmd | clear][/{c}]  set completion goal; agent runs until achieved
   [{c}]/bg [kill <id>|kill all][/{c}]  list/kill background jobs (QA summary, compaction, sched)
+  [{c}]/loop [30s|5m] [xN] <prompt>[/{c}]  repeat prompt in this session until /loop stop
                        Ctrl+C while running: stop after current iteration (Ctrl+C again = cancel)
 
 [dim]Ctrl+D or Ctrl+Q to quit[/dim]
@@ -127,22 +128,34 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
         f"[{t.text_dim}]/help /compact /tokens /reset /tools /exec /apply /save /sessions  ·  Ctrl+D to quit[/{t.text_dim}]\n"
     )
 
+    from agent.core.prompt_loop import PromptLoop
+    p_loop = PromptLoop()
+    loop_feed: str | None = None   # next /loop iteration's prompt
+
     while True:
-        try:
-            user_input = input(f"{prompt_esc}>\033[0m ").strip()
-        except (EOFError, KeyboardInterrupt):
-            pending = server.pending_background_count()
-            if pending:
-                console.print(
-                    f"\n[{t.warning}]Finishing {pending} summary task(s)… "
-                    f"Ctrl+C again to force exit.[/{t.warning}]"
-                )
-                try:
-                    await server.wait_background(timeout=30.0)
-                except KeyboardInterrupt:
-                    server.cancel_background()
-            console.print(f"[{t.text_dim}]Bye.[/{t.text_dim}]")
-            break
+        if loop_feed is not None:
+            user_input = loop_feed
+            loop_feed = None
+            console.print(
+                f"[{t.text_dim}]↻ loop iteration {p_loop.done + 1}: "
+                f"{user_input[:80]}[/{t.text_dim}]"
+            )
+        else:
+            try:
+                user_input = input(f"{prompt_esc}>\033[0m ").strip()
+            except (EOFError, KeyboardInterrupt):
+                pending = server.pending_background_count()
+                if pending:
+                    console.print(
+                        f"\n[{t.warning}]Finishing {pending} summary task(s)… "
+                        f"Ctrl+C again to force exit.[/{t.warning}]"
+                    )
+                    try:
+                        await server.wait_background(timeout=30.0)
+                    except KeyboardInterrupt:
+                        server.cancel_background()
+                console.print(f"[{t.text_dim}]Bye.[/{t.text_dim}]")
+                break
 
         if not user_input:
             continue
@@ -586,6 +599,30 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                 for line in msg.splitlines():
                     console.print(f"[{'green' if ok else 'yellow'}]{line}[/]")
 
+            elif cmd == "/loop":
+                from agent.core.prompt_loop import parse_loop_args
+                action, params = parse_loop_args(arg)
+                if action == "status":
+                    console.print(f"[{t.text_dim}]{p_loop.status_line()}[/{t.text_dim}]")
+                elif action == "stop":
+                    was = p_loop.active
+                    p_loop.stop()
+                    loop_feed = None
+                    console.print(
+                        f"[green]loop stopped after {p_loop.done} iteration(s).[/green]"
+                        if was else "[yellow]no loop running.[/yellow]")
+                elif action == "error":
+                    console.print(f"[yellow]{params['msg']}[/yellow]")
+                else:
+                    p_loop.start(params["prompt"], params["interval"], params["limit"])
+                    iv = (f"every {int(params['interval'])}s" if params["interval"]
+                          else "back-to-back")
+                    lim = f", max {params['limit']}" if params["limit"] else ""
+                    console.print(
+                        f"[green]loop started ({iv}{lim}). Ctrl+C during wait or "
+                        f"/loop stop to end.[/green]")
+                    loop_feed = p_loop.prompt
+
             elif cmd == "/goal":
                 from agent.ui.slash import _apply_goal
                 ok, msg = _apply_goal(server._agent, arg)
@@ -788,6 +825,9 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                 from agent.ui import term_folds
                 term_folds.fold_end(_open_fold, summary=f"error: {e}", status="error")
                 _open_fold = None
+            if p_loop.active:
+                p_loop.stop()
+                console.print(f"[{t.warning}]↻ loop stopped (turn failed).[/{t.warning}]")
             continue
         finally:
             _spinner_stop.set()
@@ -852,5 +892,25 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
             from agent.ui import term_folds
             term_folds.fold_end(_open_fold, summary=_mc or "done", status="success")
             _open_fold = None
+
+        # /loop continuation: count the iteration, wait the interval
+        # (Ctrl+C = stop loop, not the app), then feed the prompt again.
+        if p_loop.active:
+            if p_loop.record_iteration():
+                if p_loop.interval:
+                    console.print(
+                        f"[{t.text_dim}]↻ next loop iteration in "
+                        f"{int(p_loop.interval)}s — Ctrl+C stops the loop[/{t.text_dim}]")
+                    try:
+                        await asyncio.sleep(p_loop.interval)
+                    except (KeyboardInterrupt, asyncio.CancelledError):
+                        p_loop.stop()
+                        console.print(
+                            f"[green]loop stopped after {p_loop.done} iteration(s).[/green]")
+                if p_loop.active:
+                    loop_feed = p_loop.prompt
+            else:
+                console.print(
+                    f"[green]↻ loop finished: {p_loop.done} iteration(s).[/green]")
 
     return session
