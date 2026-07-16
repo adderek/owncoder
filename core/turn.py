@@ -782,7 +782,11 @@ async def run_turn(
             if (fcfg is not None and fcfg.enabled
                     and failover_count < max(1, int(fcfg.max_retries))):
                 from agent.core import model_routing
-                new_client = model_routing.failover_to_local(config)
+                # Cloud→cloud first: another mode-allowed cloud entry (e.g. a
+                # different free provider) beats degrading to a local model.
+                new_client = model_routing.failover_to_peer(config)
+                if new_client is None:
+                    new_client = model_routing.failover_to_local(config)
                 if new_client is None:
                     # Already on a local endpoint — try another live local entry.
                     new_client = model_routing.failover_to_alternative(config)
@@ -815,7 +819,9 @@ async def run_turn(
             if (fcfg is not None and fcfg.enabled
                     and failover_count < max(1, int(fcfg.max_retries))):
                 from agent.core import model_routing
-                new_client = model_routing.failover_to_local(config)
+                new_client = model_routing.failover_to_peer(config)
+                if new_client is None:
+                    new_client = model_routing.failover_to_local(config)
                 if new_client is None:
                     new_client = model_routing.failover_to_alternative(config)
                 if new_client is not None:

@@ -150,6 +150,77 @@ def failover_to_alternative(config: "Config"):
     return None
 
 
+def failover_to_peer(config: "Config"):
+    """Rescue a failing *cloud* endpoint by switching to another live cloud
+    entry allowed under the current model-mode — e.g. free provider A hits its
+    daily 429 cap, so the turn continues on free provider B instead of
+    immediately degrading to local.
+
+    Preserves this module's privacy invariant: only runs when the active
+    endpoint is already remote (the payload was already leaving the machine)
+    and never when the turn is pinned local (``runtime_local_only``), so it can
+    never route a local-pinned turn toward a cloud.
+
+    Candidate order: same cost tier as the active entry first, then the other
+    mode-allowed cloud tiers. Skips disabled entries and (base_url, model)
+    pairs on rate-limit/failure cooldown (mark_rate_limited), so the entry
+    that just failed is never re-picked within its cooldown window.
+
+    Returns a fresh client, or None if failover is disabled or no live peer
+    exists (callers then degrade to local as before).
+    """
+    cfg = getattr(config, "failover", None)
+    if cfg is None or not cfg.enabled:
+        return None
+    if not is_remote_endpoint(config):
+        return None
+    if bool(getattr(config, "runtime_local_only", False)):
+        return None
+    from agent.config.registry import MODE_TIERS, entry_tier
+    from agent.config.loader import entry_tier as location_tier
+    from agent.config.model_probe import entry_available
+    from agent.core.model_control import is_disabled
+    entries = config.model_entries or {}
+    mode = getattr(getattr(config, "agent", None), "model_mode", "") or "any"
+    allowed = MODE_TIERS.get(mode, MODE_TIERS["any"]) - {"local"}
+    if not allowed:
+        return None
+    active = (config.llm.base_url, config.llm.model)
+    active_entry = next(
+        (e for e in entries.values()
+         if (e.base_url, e.model or config.llm.model) == active),
+        None,
+    )
+    # A LAN ("remote" location) endpoint is the operator's own hardware; its
+    # payload never reached a third-party cloud, so peer failover must not
+    # push it to one. Only genuine cloud endpoints may fail over cloud→cloud.
+    if active_entry is None or location_tier(active_entry) != "cloud":
+        return None
+    active_tier = entry_tier(active_entry)
+
+    def _candidates():
+        # Same tier as the failing entry first — a free-tier turn stays free.
+        if active_tier in allowed:
+            yield from ((n, e) for n, e in entries.items()
+                        if entry_tier(e) == active_tier)
+        yield from ((n, e) for n, e in entries.items()
+                    if entry_tier(e) in allowed and entry_tier(e) != active_tier)
+
+    for name, e in _candidates():
+        if is_disabled(config, name):
+            continue
+        if (e.base_url, e.model or config.llm.model) == active:
+            continue
+        if not entry_available(e):
+            continue
+        client = switch_to_entry(config, name)
+        if client is not None:
+            logger.warning("failover: cloud endpoint failing — switched to peer entry '%s' (%s)",
+                           name, entry_tier(e))
+            return client
+    return None
+
+
 # ── Per-turn privacy routing ──────────────────────────────────────────────────
 
 def _has_secret_text(text: str, config: "Config") -> bool:

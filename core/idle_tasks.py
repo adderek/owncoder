@@ -131,8 +131,44 @@ async def _action_backfill(agent: "Agent") -> bool:
     return False
 
 
+async def _action_grade_notes(agent: "Agent") -> bool:
+    """Grade the notes injected on the last turn: did the answer use them?
+
+    Feeds inject_count/used_count in the notes MemoryStore so the relevance
+    filter can demote notes that are injected often but never useful.
+    """
+    pending = getattr(agent, "_pending_note_grade", None)
+    if not pending:
+        return False
+    agent._pending_note_grade = None  # consume even on failure — grade once
+    config = getattr(agent, "config", None)
+    if config is None:
+        return False
+    answer = next(
+        (m.get("content") for m in reversed(agent.messages or [])
+         if m.get("role") == "assistant" and isinstance(m.get("content"), str)
+         and m.get("content").strip()),
+        "",
+    )
+    if not answer:
+        return False
+    from agent.memory.note_grader import grade_notes
+    from agent.tools.notes.notes import _get_store as _notes_store
+    store = _notes_store()
+    if store is None:
+        return False
+    used_ids = await grade_notes(pending.get("query", ""), pending.get("notes", []),
+                                 answer, config)
+    if used_ids:
+        store.bump_counter(used_ids, "used_count")
+    logger.debug("idle_tasks: graded %d/%d injected notes as used",
+                 len(used_ids), len(pending.get("notes", [])))
+    return True
+
+
 def register_builtins() -> None:
     """Register the built-in idle actions. Safe to call multiple times."""
+    register_idle_action("grade-notes", _action_grade_notes)
     register_idle_action("name-current", _action_name_current)
     register_idle_action("backfill", _action_backfill)
 

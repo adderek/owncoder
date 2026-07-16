@@ -379,10 +379,13 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                 console.print(run_speech_command(agent.config, arg))
 
             elif cmd in ("/perf", "/timing"):
-                from agent.metrics.turn_metrics import run_perf_command
-                _sl = getattr(agent, "_side_log", None)
-                _dir = getattr(_sl, "session_dir", None) if _sl is not None else None
-                console.print(run_perf_command(_dir))
+                from agent.metrics.turn_metrics import run_perf_command, run_perf_all_command
+                if arg.strip().lower() == "all":
+                    console.print(run_perf_all_command())
+                else:
+                    _sl = getattr(agent, "_side_log", None)
+                    _dir = getattr(_sl, "session_dir", None) if _sl is not None else None
+                    console.print(run_perf_command(_dir))
 
             elif cmd in ("/modelcalls", "/mc"):
                 from agent.metrics.model_calls import run_modelcalls_command

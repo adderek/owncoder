@@ -48,6 +48,21 @@ def needs_meta(session: "Session") -> bool:
     return not (name and desc and tags and classification)
 
 
+def _content_text(content) -> str:
+    """Extract plain text from a message content field (str or content-parts list)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for p in content:
+            if isinstance(p, dict) and p.get("type") == "text":
+                parts.append(str(p.get("text") or ""))
+            elif isinstance(p, str):
+                parts.append(p)
+        return "\n".join(parts)
+    return ""
+
+
 def _format_transcript(messages: list[dict]) -> str:
     """Flatten user/assistant turns into a compact transcript string."""
     lines: list[str] = []
@@ -55,12 +70,12 @@ def _format_transcript(messages: list[dict]) -> str:
         role = m.get("role")
         if role not in ("user", "assistant"):
             continue
-        content = m.get("content")
-        if not isinstance(content, str) or not content.strip():
+        content = _content_text(m.get("content")).strip()
+        if not content:
             continue
-        if content.strip().startswith("{system}"):
+        if content.startswith("{system}"):
             continue
-        lines.append(f"{role}: {content.strip()[:1000]}")
+        lines.append(f"{role}: {content[:1000]}")
     return "\n".join(lines)
 
 
@@ -145,25 +160,41 @@ def _coerce_meta(raw: str) -> dict | None:
     }
 
 
-async def generate_session_meta(
+async def generate_session_meta_ex(
     session: "Session", messages: list[dict], config: "Config"
-) -> dict | None:
-    """Return generated metadata dict for *session*, or None on failure/skip.
+) -> "tuple[dict | None, str]":
+    """Return (metadata dict, "") on success or (None, reason) on failure/skip.
 
-    Never raises — logs and returns None on any error.
+    Never raises — logs and returns a human-readable failure reason instead.
     """
     try:
         convo = [m for m in (messages or []) if m.get("role") in ("user", "assistant")]
         if len(convo) < _MIN_MESSAGES:
-            return None
+            return None, f"too few messages ({len(convo)} < {_MIN_MESSAGES})"
         transcript = _format_transcript(messages)
         if not transcript.strip():
-            return None
-        raw = await _call_llm(config, transcript)
-        return _coerce_meta(raw)
-    except Exception:
-        logger.debug("generate_session_meta failed", exc_info=True)
-        return None
+            return None, "empty transcript (no textual user/assistant content)"
+        try:
+            raw = await _call_llm(config, transcript)
+        except Exception as e:
+            logger.warning("session namer: LLM call failed: %s", e)
+            return None, f"namer model call failed: {e}"
+        meta = _coerce_meta(raw)
+        if meta is None:
+            logger.warning("session namer: unparsable model reply: %.200s", raw)
+            return None, "model reply not parsable as metadata JSON"
+        return meta, ""
+    except Exception as e:
+        logger.warning("generate_session_meta failed: %s", e, exc_info=True)
+        return None, f"internal error: {e}"
+
+
+async def generate_session_meta(
+    session: "Session", messages: list[dict], config: "Config"
+) -> dict | None:
+    """Return generated metadata dict for *session*, or None on failure/skip."""
+    meta, _reason = await generate_session_meta_ex(session, messages, config)
+    return meta
 
 
 def apply_meta(session: "Session", meta: dict, *, overwrite: bool = False) -> bool:

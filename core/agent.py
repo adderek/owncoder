@@ -99,6 +99,7 @@ class Agent:
         self._side_log = None
         self._turn_id: int = 0
         self._notes_sys_idx: int | None = None  # kept for compat; notes removal now uses marker
+        self._pending_note_grade: dict | None = None  # last injection awaiting usefulness grading
         self._session_id: str | None = None
         self._session_mode: str = "standard"  # "standard" | "incognito" | "private"
         self._similar_sessions_injected: bool = False
@@ -361,9 +362,17 @@ class Agent:
         qtokens = {t.lower() for t in _re.findall(r"\w{3,}", query)}
 
         def _relevant(h: dict) -> bool:
+            # Usefulness feedback: a note injected many times but never graded
+            # useful is noise — demote it (require strong vector similarity).
+            injected = h.get("inject_count") or 0
+            used = h.get("used_count") or 0
+            wasteful = injected >= 5 and used / injected < 0.1
             vs = h.get("vec_score")
-            if vs is not None and vs >= _NOTES_MIN_SIMILARITY:
+            if vs is not None and vs >= (_NOTES_MIN_SIMILARITY + 0.15 if wasteful
+                                         else _NOTES_MIN_SIMILARITY):
                 return True
+            if wasteful:
+                return False
             text = f"{h.get('title') or ''} {h.get('body') or ''}".lower()
             return sum(1 for t in qtokens if t in text) >= 2
 
@@ -380,6 +389,39 @@ class Agent:
 
         if not hits:
             return
+
+        # Scale the injection to free context: a nearly-full (or small) window
+        # gets fewer/shorter notes; skip entirely when there is no headroom.
+        ctx = int(getattr(self.config.llm, "ctx_window", 0) or 0)
+        if ctx:
+            from agent.memory.compactor import _count_tokens_approx
+            free = max(0, ctx - _count_tokens_approx(self.messages))
+            if free < 1500:
+                return
+            # Notes may take ~2% of free context, clamped to 200–1200 tokens.
+            budget_chars = max(200, min(1200, int(free * 0.02))) * 4
+            kept, used = [], 0
+            for h in hits:
+                cost = len(h.get("title") or "") + len(h.get("body") or "") + 20
+                if kept and used + cost > budget_chars:
+                    break
+                kept.append(h)
+                used += cost
+            hits = kept
+
+        # Record the injection and leave a pending grading job for the idle
+        # queue: after the turn, a background model judges which injected notes
+        # the answer actually used (feeds inject_count/used_count above).
+        try:
+            ids = [h["id"] for h in hits if h.get("id")]
+            store.bump_counter(ids, "inject_count")
+            self._pending_note_grade = {
+                "query": query,
+                "notes": [{"id": h.get("id"), "title": h.get("title") or "",
+                           "body": (h.get("body") or "")[:500]} for h in hits],
+            }
+        except Exception:
+            logger.debug("notes: injection bookkeeping failed", exc_info=True)
 
         # Frame as inert background — weak models otherwise answer a note
         # instead of the user's actual message.

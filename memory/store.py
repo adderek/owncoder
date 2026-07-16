@@ -79,6 +79,14 @@ class MemoryStore:
             self._conn().commit()
         except Exception:
             pass
+        # Usefulness feedback (notes injection grading): how often an entry was
+        # injected into context vs how often a grader judged it actually useful.
+        for col in ("inject_count", "used_count"):
+            try:
+                self._conn().execute(f"ALTER TABLE entries ADD COLUMN {col} INTEGER DEFAULT 0")
+                self._conn().commit()
+            except Exception:
+                pass
 
     # ── vec table ───────────────────────────────────────────────────────────
 
@@ -399,6 +407,17 @@ class MemoryStore:
                  "vec_score": vec_raw.get(d["id"]),
                  "fts_hit": d["id"] in fts_ids,
                  **d} for s, d in combined[:top_k]]
+
+    def bump_counter(self, entry_ids: list[str], column: str) -> None:
+        """Increment a usage counter (inject_count / used_count) for entries."""
+        if column not in ("inject_count", "used_count", "hit_count") or not entry_ids:
+            return
+        conn = self._conn()
+        conn.executemany(
+            f"UPDATE entries SET {column} = COALESCE({column}, 0) + 1 WHERE id = ?",
+            [(i,) for i in entry_ids],
+        )
+        conn.commit()
 
     def increment_hit_count(self, entry_id: str) -> None:
         conn = self._conn()

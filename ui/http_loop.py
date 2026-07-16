@@ -423,7 +423,8 @@ button:hover { filter: brightness(1.15); }
    merely disabled while nothing runs. */
 #stop { background: #7a5a20; }
 #kill { background: #7a3030; padding: 0 12px; }
-#stop.inert, #kill.inert { opacity: .4; }
+#continue { background: #2f6b3a; padding: 0 12px; }
+#stop.inert, #kill.inert, #continue.inert { opacity: .4; pointer-events: none; }
 </style>
 </head>
 <body data-layout="center">
@@ -467,6 +468,7 @@ button:hover { filter: brightness(1.15); }
 <div id="inputrow"><div class="row">
   <textarea id="input" rows="1" placeholder="Message… (Enter to send, Shift+Enter for newline, / for commands)"></textarea>
   <button id="send">Send</button>
+  <button id="continue" class="inert" title="Nudge the agent to keep going (sends 'continue')">▶ Continue</button>
   <button id="stop" title="Soft stop: finish current iteration, then stop">Stop</button>
   <button id="kill" title="Hard stop: abort the turn immediately (may leave the last exchange incomplete)">Kill</button>
 </div></div>
@@ -597,6 +599,10 @@ function setBusy(busy, label) {
   // stop cancels background tasks server-side. Idle clicks are no-ops.
   document.getElementById('stop').classList.toggle('inert', !busy);
   document.getElementById('kill').classList.toggle('inert', !busy);
+  // Continue is the inverse: only useful when the turn ended (possibly
+  // prematurely — model stalled mid-task) and there is history to resume.
+  document.getElementById('continue').classList.toggle(
+    'inert', busy || !log.childElementCount);
 }
 
 function endStream() {
@@ -1618,6 +1624,13 @@ async function send() {
 }
 
 document.getElementById('send').onclick = send;
+document.getElementById('continue').onclick = () => {
+  if (busyFlag) return;
+  fetch('/api/chat', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({text: 'continue'}),
+  }).catch(e => row('sys error', null, 'continue failed to send: ' + e));
+};
 function stopTurn(mode) {
   fetch('/api/stop', {
     method: 'POST',
@@ -2531,11 +2544,14 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
             lines.append(f"  {'total':<10} {total:>7,}")
             pub({"type": "sys", "text": "\n".join(lines)})
     elif cmd in ("/perf", "/timing"):
-        from agent.metrics.turn_metrics import run_perf_command
-        agent_ = getattr(server, "_agent", None)
-        side_log = getattr(agent_, "_side_log", None) if agent_ is not None else None
-        pub({"type": "sys",
-             "text": run_perf_command(getattr(side_log, "session_dir", None))})
+        from agent.metrics.turn_metrics import run_perf_command, run_perf_all_command
+        if arg.strip().lower() == "all":
+            pub({"type": "sys", "text": run_perf_all_command()})
+        else:
+            agent_ = getattr(server, "_agent", None)
+            side_log = getattr(agent_, "_side_log", None) if agent_ is not None else None
+            pub({"type": "sys",
+                 "text": run_perf_command(getattr(side_log, "session_dir", None))})
     elif cmd in ("/who", "/agents"):
         cfg = _agent_config(server)
         if cfg is None:

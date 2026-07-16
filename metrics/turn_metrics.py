@@ -64,6 +64,85 @@ def summarize(session_dir: str | Path) -> dict:
     }
 
 
+# Data-source classes for retrieval-cost analysis: which way of finding
+# information the agent actually leans on (and what it costs in wall-time).
+_SOURCE_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("grep/text",   ("grep", "ripgrep", "search_text")),
+    ("index/RAG",   ("index", "semantic", "rag", "search_code", "graph")),
+    ("memory",      ("recall", "notes", "kb")),
+    ("web",         ("web_search", "web_fetch", "ask_internet")),
+    ("filesystem",  ("read_file", "list_dir", "explore", "files", "file_stats")),
+)
+
+
+def source_class(tool_name: str) -> str | None:
+    """Map a tool name to a data-source class, or None for non-retrieval tools."""
+    n = (tool_name or "").lower()
+    for cls, keys in _SOURCE_KEYWORDS:
+        if any(k in n for k in keys):
+            return cls
+    return None
+
+
+def summarize_all(sessions_base: str | Path) -> dict:
+    """Aggregate tool side-logs across ALL stored sessions.
+
+    Returns per-tool and per-source-class totals; used to spot which data
+    sources dominate (candidates for lazy runs / cost saving) and which are
+    dead weight.
+    """
+    base = Path(sessions_base)
+    per_tool: dict[str, dict] = {}
+    per_source: dict[str, dict] = {}
+    n_sessions = 0
+    if not base.exists():
+        return {"sessions": 0, "per_tool": per_tool, "per_source": per_source}
+    for f in base.rglob("tool_calls.jsonl"):
+        rows = _read_jsonl(f)
+        if not rows:
+            continue
+        n_sessions += 1
+        for r in rows:
+            name = r.get("tool", "?")
+            rec = per_tool.setdefault(name, {"calls": 0, "ms": 0.0, "errors": 0})
+            rec["calls"] += 1
+            rec["ms"] += r.get("duration_ms") or 0.0
+            if not r.get("ok", True):
+                rec["errors"] += 1
+            cls = source_class(name)
+            if cls:
+                src = per_source.setdefault(cls, {"calls": 0, "ms": 0.0, "errors": 0})
+                src["calls"] += 1
+                src["ms"] += r.get("duration_ms") or 0.0
+                if not r.get("ok", True):
+                    src["errors"] += 1
+    return {"sessions": n_sessions, "per_tool": per_tool, "per_source": per_source}
+
+
+def run_perf_all_command() -> str:
+    """Render a cross-session data-source usage report (``/perf all``)."""
+    from agent.memory.session import _get_session_dir
+    s = summarize_all(_get_session_dir())
+    if not s["per_tool"]:
+        return "perf all: no tool side-logs found across sessions."
+    lines = [f"Data-source usage across {s['sessions']} session(s):"]
+    if s["per_source"]:
+        total_calls = sum(r["calls"] for r in s["per_source"].values())
+        lines.append("  retrieval sources (share of retrieval calls):")
+        for cls, rec in sorted(s["per_source"].items(), key=lambda kv: kv[1]["calls"], reverse=True):
+            pct = 100.0 * rec["calls"] / total_calls if total_calls else 0.0
+            err = f"  {rec['errors']} err" if rec["errors"] else ""
+            lines.append(f"    {cls:<12} {pct:5.1f}%  x{rec['calls']:<6} {rec['ms']:>9.0f}ms{err}")
+        lines.append("  (a source with high share + high ms is a lazy-run candidate;")
+        lines.append("   a source with ~0% share may be wasted setup cost)")
+    ranked = sorted(s["per_tool"].items(), key=lambda kv: kv[1]["calls"], reverse=True)
+    lines.append("  top tools (by calls):")
+    for name, rec in ranked[:12]:
+        err = f"  {rec['errors']} err" if rec["errors"] else ""
+        lines.append(f"    {name:<22} x{rec['calls']:<6} {rec['ms']:>9.0f}ms{err}")
+    return "\n".join(lines)
+
+
 def run_perf_command(session_dir: str | Path | None) -> str:
     """Render a plain-text performance summary for the current session."""
     if not session_dir:

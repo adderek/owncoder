@@ -551,13 +551,13 @@ class LocalUIServer:
         Overwrites existing metadata (explicit user action, unlike the idle
         auto-namer which only fills blanks)."""
         from agent.memory.session import load_session, save_session
-        from agent.memory.session_namer import generate_session_meta, apply_meta
+        from agent.memory.session_namer import generate_session_meta_ex, apply_meta
         session, messages = load_session(id_or_name)
         if session is None:
             return False, f"session '{id_or_name}' not found"
-        meta = await generate_session_meta(session, messages, self._agent.config)
+        meta, reason = await generate_session_meta_ex(session, messages, self._agent.config)
         if not meta:
-            return False, "auto-name failed (model returned no usable metadata)"
+            return False, f"auto-name failed ({reason})"
         apply_meta(session, meta, overwrite=True)
         save_session(session, messages)
         return True, f"auto-named: '{session.name}'"

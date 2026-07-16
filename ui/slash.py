@@ -25,7 +25,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/compact", [], "summarize old messages to free context", False),
     ("/context", ["/ctx", "/legend"], "context breakdown grid + color/marker key", False),
     ("/output", ["/out"], "show model output breakdown (think/tool/reply/other)", True),
-    ("/perf", ["/timing"], "show session performance: LLM vs tool time + slowest tools", False),
+    ("/perf", ["/timing"], "session performance: LLM vs tool time + slowest tools; 'all' = cross-session data-source usage", False),
     ("/modelcalls", ["/mc"], "show model calls this session by cost tier (local/free/bundled/paid); 'detail' adds role × model table; 'reset' clears", True),
     ("/who", ["/agents"], "list other agents active on this worktree", False),
     ("/continue", ["/c"], "resume after iteration cap or truncation", False),
