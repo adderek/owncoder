@@ -3,13 +3,13 @@
 When you finish a response and there is clear follow-up work the harness should
 run automatically, end your response with exactly one signal line:
 
-  >>>NEXT: <what to do next>          — harness auto-loops with this as next input
-  >>>ASK: <question>                  — pause; user must answer before proceeding
-  >>>FEEDBACK: <topic>                — pause; ask user for feedback on this topic
-  >>>REVIEW: <scope>                  — request stronger-model review of scope
-  >>>DONE: <summary>                  — all tasks complete; no further steps
-  >>>CROWS: <problem>                 — consult many small models for creative solutions
-  >>>BLOCKED: <reason> | <unblocks>   — dead end; what would allow progress
+  >>>NEXT: <what to do next> — harness auto-loops with this as next input
+  >>>ASK: <question> — pause; user must answer before proceeding
+  >>>FEEDBACK: <topic> — pause; ask user for feedback on this topic
+  >>>REVIEW: <scope> — request stronger-model review of scope
+  >>>DONE: <summary> — all tasks complete; no further steps
+  >>>CROWS: <problem> — consult many small models for creative solutions
+  >>>BLOCKED: <reason> | <unblocks> — dead end; what would allow progress
 
 Rules:
 - Signal line must be the very last non-blank line of your response.

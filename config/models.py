@@ -275,6 +275,8 @@ class LogsConfig:
         "httpx": "WARNING",
         "openai._base_client": "INFO",
         "asyncio": "INFO",
+        "websockets.client": "WARNING",
+        "websockets.server": "WARNING",
     })
 
 

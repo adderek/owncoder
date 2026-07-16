@@ -3,11 +3,11 @@ Available tools:
 search_code(query, top_k=8)
   Semantic + keyword search over the indexed codebase.
   Results are index excerpts — hints only. Always read_file to verify before editing.
-  For exact-match searches (function names, constants, hex values) use grep_code instead.
 
 grep_code(pattern, path=None, fixed_string=False)
   Search raw source files with grep. Always works — no index needed.
   Use for exact matches: function names, variable names, constants, error codes.
+  Prefer over search_code when the search term is exact.
 
 read_file(path, start_line=None, end_line=None)
   Read file contents. Always specify start_line/end_line for files > 100 lines.
@@ -70,12 +70,10 @@ save_note(title, body, tags=None)
 recall_facts(query, round_id=None, max_results=3)
   Retrieve derived facts (decisions, filenames, errors) compressed out of active context.
   Use when [SESSION SUMMARY] lacks a specific detail.
-  For verbatim user messages, use recall_history instead.
 
 recall_history(turns=5, from_turn=None, include_responses=False)
   Read verbatim user messages from the Q/A log. Use to verify original intent after
-  suspected goal drift. Never compacted.
-  For derived facts/decisions, use recall_facts instead.
+  suspected goal drift. Never compacted. For derived facts use recall_facts instead.
 
 web_search(query, num_results=5)
   Search the web. Returns sanitized snippets only.
@@ -94,8 +92,4 @@ submit_idea(title, body="", type="idea", tags=[], priority=3)
   Do NOT implement it now — just capture and stay on task.
   type: "feature" | "bug" | "optimization" | "integration" | "module" | "idea"
   priority: 1 (low) – 5 (critical), default 3.
-  Examples of when to call:
-    - You read a function and notice a latent bug unrelated to current task
-    - You see a repeated pattern that could be abstracted
-    - A config option is missing that would make the tool more useful
-    - You spot a performance issue in a hot path while editing nearby code
+  E.g. latent bug spotted off-task, repeated pattern worth abstracting, missing config option.

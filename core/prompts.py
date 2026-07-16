@@ -121,17 +121,52 @@ _TTS_MARKERS_FALLBACK = (
 )
 
 
+# Status lines in the system prompt that change per day / per index tick. Excluded
+# from the preamble hash so routine churn doesn't mint a new preamble id (and a new
+# full dump) every day or indexing step.
+_PREAMBLE_VOLATILE_PREFIXES = (
+    "Current date:", "Git branch:", "Index:", "WARNING: Index is only", "Graph:", "KB:",
+)
+
+
+def _preamble_dump_dir(config: "Config") -> Path | None:
+    try:
+        return Path(config.tools.working_dir) / config.tools.agent_dir / "preambles"
+    except Exception:
+        return None
+
+
 def _log_llm_request(messages: list, tools, config: "Config") -> None:
     if not getattr(config, "logs", None) or not getattr(config.logs, "dedupe_preamble", True):
         return
     system_parts = [m.get("content", "") for m in messages if m.get("role") == "system"]
-    preamble_src = json.dumps({"system": system_parts, "tools": tools or []}, sort_keys=True, default=str)
-    h = hashlib.sha256(preamble_src.encode("utf-8", errors="replace")).hexdigest()[:10]
+    stable_parts = [
+        "\n".join(l for l in p.split("\n") if not l.lstrip().startswith(_PREAMBLE_VOLATILE_PREFIXES))
+        for p in system_parts
+    ]
+    stable_src = json.dumps({"system": stable_parts, "tools": tools or []}, sort_keys=True, default=str)
+    h = hashlib.sha256(stable_src.encode("utf-8", errors="replace")).hexdigest()[:10]
     dynamic = [m for m in messages if m.get("role") != "system"]
     if h not in _PREAMBLE_CACHE:
         _PREAMBLE_CACHE.add(h)
-        logger.info("llm.preamble id=%s bytes=%d (logged once; future calls reference id only)", h, len(preamble_src))
-        logger.debug("llm.preamble id=%s content=%s", h, preamble_src)
+        # Full preamble goes to its own file (once per unique content, across restarts);
+        # agent.log only ever carries the short reference line.
+        dump_dir = _preamble_dump_dir(config)
+        dump_note = ""
+        if dump_dir is not None:
+            try:
+                dump_dir.mkdir(parents=True, exist_ok=True)
+                dump_path = dump_dir / f"{h}.json"
+                if not dump_path.exists():
+                    full = json.dumps(
+                        {"system": system_parts, "tools": tools or []},
+                        sort_keys=True, default=str, indent=1, ensure_ascii=False,
+                    )
+                    dump_path.write_text(full, encoding="utf-8")
+                dump_note = f" dump={dump_path}"
+            except Exception:
+                logger.debug("llm.preamble dump failed (ignored)", exc_info=True)
+        logger.info("llm.preamble id=%s%s", h, dump_note)
     last_roles = ",".join(m.get("role", "?") for m in dynamic[-5:])
     logger.info("llm.request preamble=%s msgs=%d tail_roles=[%s]", h, len(dynamic), last_roles)
 
