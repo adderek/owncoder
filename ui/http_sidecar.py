@@ -22,7 +22,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING
 
-from agent.ui.http_loop import _EventBus, _STATIC_DIR, _args_full, _args_preview, _bind_server
+from agent.ui.http_loop import _EventBus, _args_full, _args_preview, _bind_server
 
 if TYPE_CHECKING:
     from agent.ui_server import UIServerProtocol
@@ -35,6 +35,12 @@ _SIDECAR_PAGE = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>owncoder — sidecar</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg">
+<link rel="apple-touch-icon" href="/icon.svg">
+<meta name="theme-color" content="#16161c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <style>
 :root { color-scheme: dark light; }
 body { margin: 0; font: 14px/1.4 -apple-system, system-ui, sans-serif; background: #16161c; color: #e4e4ea; }
@@ -164,8 +170,26 @@ boot();
 </html>
 """
 
+_ICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">'
+    '<rect width="192" height="192" rx="36" fill="#16161c"/>'
+    '<text x="96" y="128" font-size="104" text-anchor="middle" '
+    'font-family="-apple-system,system-ui,sans-serif">🤖</text></svg>'
+).encode()
+
+_MANIFEST = json.dumps({
+    "name": "owncoder sidecar",
+    "short_name": "owncoder",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#16161c",
+    "theme_color": "#16161c",
+    "icons": [{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}],
+}).encode()
+
 _STATIC_ASSETS = {
-    "/static/app.css": ("text/css; charset=utf-8", (_STATIC_DIR / "app.css").read_bytes()),
+    "/icon.svg": ("image/svg+xml", _ICON_SVG),
+    "/manifest.webmanifest": ("application/manifest+json", _MANIFEST),
 }
 
 

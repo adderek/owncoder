@@ -85,6 +85,40 @@ def test_diff_info_accepts_plain_relative_path(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# _HttpUI.upload_file — attachment save + sanitization
+# ---------------------------------------------------------------------------
+
+def test_upload_file_sanitizes_name_and_saves_content(tmp_path):
+    import base64
+
+    ui = _make_http_ui()
+    ui.workdir = lambda: str(tmp_path)
+    data = base64.b64encode(b"payload bytes").decode()
+    result = ui.upload_file("../../etc/evil name.png", data)
+    assert result["ok"] is True
+    assert ".." not in result["path"]
+    saved = tmp_path / result["path"]
+    assert saved.exists()
+    assert saved.read_bytes() == b"payload bytes"
+    assert saved.parent == tmp_path / ".agent" / "uploads"
+
+
+def test_upload_file_rejects_oversize():
+    import base64
+
+    ui = _make_http_ui()
+    big = base64.b64encode(b"x" * (21 * 1024 * 1024)).decode()
+    result = ui.upload_file("big.bin", big)
+    assert result["ok"] is False
+
+
+def test_upload_file_rejects_bad_base64():
+    ui = _make_http_ui()
+    result = ui.upload_file("f.txt", "not-base64!!")
+    assert result["ok"] is False
+
+
+# ---------------------------------------------------------------------------
 # _SidecarServer.chat — event fanout + busy tracking
 # ---------------------------------------------------------------------------
 

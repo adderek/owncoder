@@ -143,13 +143,15 @@ _PAGE = r"""<!DOCTYPE html>
       <button class="sbtn" id="accadd">add</button>
     </div>
   </details>
-  <div class="placeholder">Options, attachments and media will appear here.</div>
+  <div class="placeholder">Attach files with the 📎 button by the message box.</div>
 </div></aside>
 <div class="resizer hidden" id="resize-left" title="Drag to resize; drag past the edge to close"></div>
 <div id="center">
 <div id="log"></div>
 <button id="jumpdown" class="hidden" title="Jump to latest">↓ new output</button>
 <div id="inputrow"><div class="row">
+  <input type="file" id="attachfile" multiple style="display:none">
+  <button class="icon" id="attach" title="Attach a file — saved under .agent/uploads, a reference is inserted into your message">📎</button>
   <textarea id="input" rows="1" placeholder="Message… (Enter to send, Shift+Enter for newline, / for commands)"></textarea>
   <button id="send">Send</button>
   <button id="continue" class="inert" title="Nudge the agent to keep going (sends 'continue')">▶ Continue</button>
@@ -649,6 +651,43 @@ class _HttpUI:
         except Exception as exc:
             return {"path": path, "diff": "", "error": str(exc)}
 
+    # Attachments land on disk under this dir (relative to the session's
+    # workdir) rather than going inline to the LLM — the turn engine's
+    # message content is plain strings (no multimodal path), so a saved file
+    # plus a text reference the user can send lets the agent's existing
+    # file-reading tools pick it up, same as any other project file.
+    _UPLOAD_DIR = ".agent/uploads"
+    _UPLOAD_MAX_BYTES = 20 * 1024 * 1024
+
+    def upload_file(self, filename: str, data_b64: str) -> dict:
+        import base64
+        import re
+        import uuid
+        from pathlib import Path as _P
+
+        name = _P((filename or "file").strip()).name  # strip any directory components
+        name = re.sub(r"[^A-Za-z0-9._-]", "_", name) or "file"
+        if len(data_b64 or "") > self._UPLOAD_MAX_BYTES * 4 // 3 + 8:
+            return {"ok": False, "msg": "file too large (20MB cap)"}
+        try:
+            raw = base64.b64decode(data_b64 or "", validate=True)
+        except Exception:
+            return {"ok": False, "msg": "bad base64 data"}
+        if len(raw) > self._UPLOAD_MAX_BYTES:
+            return {"ok": False, "msg": "file too large (20MB cap)"}
+        dest_dir = _P(self.workdir()) / self._UPLOAD_DIR
+        try:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            stem, dot, ext = name.partition(".")
+            unique = f"{stem}-{uuid.uuid4().hex[:8]}{dot}{ext}"
+            dest = dest_dir / unique
+            dest.write_bytes(raw)
+        except Exception as exc:
+            logger.exception("http ui: upload failed")
+            return {"ok": False, "msg": f"save failed: {exc}"}
+        rel = f"{self._UPLOAD_DIR}/{unique}"
+        return {"ok": True, "path": rel, "bytes": len(raw)}
+
     def session_action(self, payload: dict) -> dict:
         """Session list ops from the browser: new / rename / hide / autoname / switch."""
         action = str(payload.get("action") or "")
@@ -886,6 +925,10 @@ def _make_handler(ui: _HttpUI):
                            {"ok": False, "msg": f"job {jid} not found or not killable"})
             elif self.path == "/api/session":
                 self._json(ui.session_action(payload))
+            elif self.path == "/api/upload":
+                fname = str(payload.get("filename") or "")
+                data = str(payload.get("data") or "")
+                self._json(ui.upload_file(fname, data))
             elif self.path == "/api/grants":
                 self._json(ui.grant_action(payload))
             else:

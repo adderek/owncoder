@@ -1228,6 +1228,41 @@ async function send() {
 }
 
 document.getElementById('send').onclick = send;
+
+// Attachments: uploaded to .agent/uploads (not sent inline to the model —
+// there's no multimodal path), then a text reference is inserted into the
+// draft so the agent's normal file-reading tools can pick it up.
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(',')[1] || '');
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(file);
+  });
+}
+async function uploadOne(file) {
+  const data = await fileToBase64(file);
+  const r = await (await fetch('/api/upload', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({filename: file.name, data}),
+  })).json();
+  if (!r.ok) { row('sys error', null, 'upload failed: ' + (r.msg || 'unknown error')); return; }
+  const sep = input.value && !input.value.endsWith('\n') ? '\n' : '';
+  input.value += sep + '[attached: ' + r.path + ']';
+  input.dispatchEvent(new Event('input'));
+  row('sys', null, '📎 uploaded ' + file.name + ' → ' + r.path);
+}
+document.getElementById('attach').onclick = () => document.getElementById('attachfile').click();
+document.getElementById('attachfile').addEventListener('change', async (e) => {
+  const files = Array.from(e.target.files || []);
+  e.target.value = '';   // allow re-selecting the same file later
+  for (const f of files) {
+    try { await uploadOne(f); } catch (err) { row('sys error', null, 'upload failed: ' + err); }
+  }
+  input.focus();
+});
+
 document.getElementById('continue').onclick = () => {
   if (busyFlag) return;
   fetch('/api/chat', {
