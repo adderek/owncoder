@@ -994,9 +994,11 @@ async function loadSessions() {
     // name after a rename or LLM auto-name (which only reload this list).
     const curSess = all.find(s => s.id === d.current);
     if (curSess) setSessionChip(curSess.id, curSess.name);
-    const shown = all.filter(s => showHidden || !s.hidden);
+    const q = (document.getElementById('sessfilter').value || '').trim().toLowerCase();
+    const shown = all.filter(s => (showHidden || !s.hidden) &&
+      (!q || (s.name || s.id || '').toLowerCase().includes(q)));
     const hiddenN = all.length - all.filter(s => !s.hidden).length;
-    if (!shown.length && !hiddenN) { el.textContent = 'none saved'; return; }
+    if (!shown.length) { el.textContent = q ? 'no sessions match “' + q + '”' : 'none saved'; return; }
     el.innerHTML = shown.map(s => {
       const cur = s.id === d.current;
       const when = String(s.updated_at || '').replace('T', ' ').slice(0, 16);
@@ -1046,6 +1048,8 @@ async function loadSessions() {
 document.getElementById('sessfold').addEventListener('toggle', (e) => {
   if (e.target.open) loadSessions();
 });
+document.getElementById('sessfilter').addEventListener('input', () => loadSessions());
+document.getElementById('sessfilter').addEventListener('click', (e) => e.stopPropagation());
 
 function applyState(s) {
   document.getElementById('model').textContent = s.model;

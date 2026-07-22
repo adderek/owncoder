@@ -69,7 +69,32 @@ body { margin: 0; font: 14px/1.4 -apple-system, system-ui, sans-serif; backgroun
 <script>
 const log = document.getElementById('log');
 function esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+
+// Minimal markdown (fences, inline code, bold/italic, links, lists) — a
+// deliberately smaller copy of app.js's renderMd; the sidecar stays a
+// companion view, not a second full frontend, so this isn't shared/imported.
+function renderMd(raw) {
+  const fences = [];
+  raw = raw.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+    fences.push('<pre><code>' + esc(code) + '</code></pre>');
+    return '\x00F' + (fences.length - 1) + '\x00';
+  });
+  let h = esc(raw);
+  h = h.replace(/`([^`\n]+)`/g, (_, c) => '<code>' + c + '</code>');
+  h = h.replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>');
+  h = h.replace(/(^|\s)\*([^*\n]+)\*(?=\s|$|[.,;:!?])/g, '$1<i>$2</i>');
+  h = h.replace(/\[([^\]\n]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  h = h.replace(/(^|\n)((?:[-*] .*(?:\n|$))+)/g, (m, pre, block) => {
+    const items = block.trim().split('\n').map(l => '<li>' + l.replace(/^[-*] /, '') + '</li>');
+    return pre + '<ul>' + items.join('') + '</ul>\n';
+  });
+  h = h.replace(/\n/g, '<br>');
+  h = h.replace(/\x00F(\d+)\x00/g, (_, i) => fences[+i]);
+  return h;
+}
+
 function row(cls, text) { const d = document.createElement('div'); d.className = 'row ' + cls; d.textContent = text; log.appendChild(d); d.scrollIntoView({block: 'end'}); return d; }
+function mdRow(cls, raw) { const d = document.createElement('div'); d.className = 'row ' + cls; d.dataset.raw = raw; d.innerHTML = renderMd(raw); log.appendChild(d); d.scrollIntoView({block: 'end'}); return d; }
 let streamEl = null;
 async function boot() {
   const s = await (await fetch('/api/state')).json();
@@ -78,7 +103,7 @@ async function boot() {
   document.getElementById('tok').textContent = (s.tokens || 0).toLocaleString() + '/' + (s.ctx_window || 0).toLocaleString();
   document.getElementById('dot').className = s.busy ? 'busy' : '';
   log.innerHTML = '';
-  for (const m of s.messages) row(m.role === 'user' ? 'user' : 'assistant', m.content);
+  for (const m of s.messages) m.role === 'user' ? row('user', m.content) : mdRow('assistant', m.content);
   connect();
 }
 function connect() {
@@ -87,11 +112,12 @@ function connect() {
     let ev; try { ev = JSON.parse(e.data); } catch { return; }
     if (ev.type === 'user') { streamEl = null; row('user', ev.text); }
     else if (ev.type === 'token') {
-      if (!streamEl) streamEl = row('assistant', '');
-      streamEl.textContent += ev.text;
+      if (!streamEl) streamEl = mdRow('assistant', '');
+      streamEl.dataset.raw += ev.text;
+      streamEl.innerHTML = renderMd(streamEl.dataset.raw);
       streamEl.scrollIntoView({block: 'end'});
     }
-    else if (ev.type === 'response') { streamEl = null; }
+    else if (ev.type === 'response') { streamEl = null; notifyDone(); }
     else if (ev.type === 'tool_call') row('tool', '⚙ ' + ev.name + (ev.args ? '  ' + ev.args : ''));
     else if (ev.type === 'tool_result') row('tool', (ev.ok ? '✓ ' : '✗ ') + ev.name);
     else if (ev.type === 'sys') row('sys', ev.text);
@@ -99,6 +125,26 @@ function connect() {
     else if (ev.type === 'tokens') document.getElementById('tok').textContent = ev.used.toLocaleString() + '/' + ev.ctx.toLocaleString();
   };
   es.onerror = () => setTimeout(connect, 2000);
+}
+
+// Turn-done ping: flip the tab title/favicon and fire a Notification when
+// the tab isn't focused, so a phone/second monitor doesn't need to be
+// watched continuously. Permission is asked for lazily, on first turn.
+const ORIG_TITLE = document.title;
+let notifyPermAsked = false;
+function notifyDone() {
+  if (!document.hidden) return;
+  document.title = '✅ ' + ORIG_TITLE;
+  const flipBack = () => { document.title = ORIG_TITLE; document.removeEventListener('visibilitychange', flipBack); };
+  document.addEventListener('visibilitychange', flipBack);
+  if (!('Notification' in window)) return;
+  if (Notification.permission === 'default' && !notifyPermAsked) {
+    notifyPermAsked = true;
+    Notification.requestPermission();
+  }
+  if (Notification.permission === 'granted') {
+    try { new Notification('owncoder', {body: 'turn finished', tag: 'owncoder-turn'}); } catch {}
+  }
 }
 async function send() {
   const inp = document.getElementById('in');

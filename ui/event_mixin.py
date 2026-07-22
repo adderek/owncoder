@@ -352,6 +352,15 @@ class EventHandlerMixin:
                 extras.append(f"think {s['reasoning_tokens']:,}")
             if s.get("tool_tokens"):
                 extras.append(f"tool {s['tool_tokens']:,}")
+            try:
+                cfg = getattr(getattr(self._server, "_agent", None), "config", None)
+                if cfg is not None:
+                    from agent.metrics.model_calls import session_cost_usd
+                    cost = session_cost_usd(cfg)
+                    if cost > 0:
+                        extras.append(f"${cost:.3f}" if cost < 1 else f"${cost:.2f}")
+            except Exception:
+                logger.debug("textual ui: cost estimate failed", exc_info=True)
             token_line += f"\n[{t.text_dim}]{'  '.join(extras)}[/{t.text_dim}]"
         self.query_one("#context-panel", self._wt.ContextPanel).set_context(
             f"{tools_line}\n{token_line}" if tools_line else token_line

@@ -131,6 +131,7 @@ _PAGE = r"""<!DOCTYPE html>
   <div class="dsec"><pre id="sessinfo">—</pre></div>
   <details id="sessfold" class="dfold">
     <summary class="dhead">recent sessions</summary>
+    <input id="sessfilter" placeholder="filter by name…" class="sess-filter">
     <div id="sesslist" class="sess-list">—</div>
   </details>
   <details id="accessfold" class="dfold">
@@ -904,7 +905,7 @@ def _bind_server(handler, host: str, port: int) -> ThreadingHTTPServer:
     raise last_exc  # type: ignore[misc]
 
 
-def _publish_usage(server, pub) -> None:
+def _publish_usage(server, pub, cost_before: float = 0.0) -> None:
     """Post-turn usage summary — same numbers the terminal UI prints."""
     try:
         s = server.stats()
@@ -919,6 +920,15 @@ def _publish_usage(server, pub) -> None:
                 parts.append(f"think {s['reasoning_tokens']}")
             if s.get("tool_tokens"):
                 parts.append(f"tool {s['tool_tokens']}")
+            try:
+                cfg = _agent_config(server)
+                if cfg is not None:
+                    from agent.metrics.model_calls import session_cost_usd
+                    delta = session_cost_usd(cfg) - cost_before
+                    if delta > 0:
+                        parts.append(f"Δ${delta:.3f}" if delta < 1 else f"Δ${delta:.2f}")
+            except Exception:
+                logger.debug("http ui: turn cost delta failed", exc_info=True)
         tiers = ""
         detail: list[dict] = []
         try:
@@ -1539,6 +1549,10 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
                     ui.request_stop("hard")
                 return False
 
+            # Snapshot cost before the turn so the post-turn usage line can
+            # show this turn's delta, not just the cumulative session total.
+            cost_before = ui._cost_usd()
+
             # Run the turn as a task so /api/stop mode=hard can cancel it
             # outright (e.g. when the model deadloops).
             chat_task = asyncio.ensure_future(server.chat(
@@ -1564,7 +1578,7 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
             try:
                 response = await chat_task
                 pub({"type": "response", "text": response})
-                _publish_usage(server, pub)
+                _publish_usage(server, pub, cost_before)
                 if is_loop_turn:
                     if ui.prompt_loop.record_iteration():
                         delay = ui.prompt_loop.interval

@@ -103,6 +103,9 @@ aside.resizing { transition: none; }   /* no lag while dragging */
 .dfold[open] > summary::before { content: "▾ "; }
 .dhead-refresh { float: right; cursor: pointer; color: var(--dimmer); }
 .dhead-refresh:hover { color: var(--fg); }
+.sess-filter { width: 100%; box-sizing: border-box; margin-top: 6px; padding: 5px 8px;
+               font: inherit; font-size: 12.5px; border-radius: 6px; border: 1px solid var(--border);
+               background: var(--panel2); color: var(--fg); }
 .sess-list { padding: 6px 0 0 4px; }
 .sess-item { padding: 5px 8px; border-radius: 6px; margin-bottom: 2px; cursor: pointer; }
 .sess-item:hover { background: var(--panel2); }
