@@ -121,7 +121,7 @@ _PAGE = r"""<!DOCTYPE html>
   <span class="chip btn" id="iostats" title="Session totals: prompt in / completion out / est. USD cost (paid-tier only). Click for per-model split">↑0 ↓0</span>
   <span class="chip btn" id="bgchip" title="Background jobs running — click to review / kill" style="display:none">⚙0</span>
   <div id="tokenwrap" title="Click for context buffer breakdown"><div id="tokenbar"><div id="tokenfill"></div></div><span id="tokens"></span></div>
-  <button class="icon" id="themetoggle" title="Toggle dark/light theme" aria-label="Toggle dark/light theme">◐</button>
+  <button class="icon" id="themetoggle" title="Theme: dark (click to cycle)" aria-label="Cycle theme">◐</button>
   <button class="icon" id="righttoggle" title="Details panel" aria-label="Toggle details panel">☰</button>
 </div>
 <div id="main">

@@ -44,7 +44,8 @@ function renderMd(raw) {
   });
   const fences = [];
   raw = raw.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
-    fences.push('<pre><code>' + esc(code) + '</code></pre>');
+    fences.push('<div class="code-block"><button class="codecopy" type="button" ' +
+      'title="Copy code">⧉</button><pre><code>' + esc(code) + '</code></pre></div>');
     return '\x00F' + (fences.length - 1) + '\x00';
   });
   let h = esc(raw);
@@ -98,26 +99,43 @@ function row(cls, html, text) {
   return d;
 }
 
-log.addEventListener('click', (e) => {
-  const b = e.target.closest('.copy');
-  if (!b) return;
-  const msg = b.parentElement.querySelector('.msg');
+function copyText(text, btn) {
   const done = () => {
-    b.textContent = '✓';
-    setTimeout(() => { b.textContent = '⧉'; }, 900);
+    const orig = btn.textContent;
+    btn.textContent = '✓';
+    setTimeout(() => { btn.textContent = orig === '✓' ? '⧉' : orig; }, 900);
   };
   if (navigator.clipboard && window.isSecureContext) {
-    navigator.clipboard.writeText(msg.innerText).then(done);
+    navigator.clipboard.writeText(text).then(done);
   } else {
     // http:// over LAN is not a secure context — fall back to execCommand.
     const ta = document.createElement('textarea');
-    ta.value = msg.innerText;
+    ta.value = text;
     ta.style.position = 'fixed'; ta.style.opacity = '0';
     document.body.appendChild(ta);
     ta.select();
     try { document.execCommand('copy'); done(); } catch (e) {}
     ta.remove();
   }
+}
+
+log.addEventListener('click', (e) => {
+  const cb = e.target.closest('.codecopy');
+  if (cb) {
+    const pre = cb.parentElement.querySelector('pre');
+    if (pre) copyText(pre.innerText, cb);
+    return;
+  }
+  const db = e.target.closest('.diffcopy');
+  if (db) {
+    const box = db.nextElementSibling;
+    if (box) copyText(box.innerText, db);
+    return;
+  }
+  const b = e.target.closest('.copy');
+  if (!b) return;
+  const msg = b.parentElement.querySelector('.msg');
+  copyText(msg.innerText, b);
 });
 
 function assistantMd(text) {
@@ -779,14 +797,20 @@ document.getElementById('layout').addEventListener('click', () => {
 });
 try { setLayout(localStorage.getItem('oc-layout') || 'center'); } catch (e) {}
 
-// Dark/light theme, persisted locally. Dark is the default.
+// Theme cycling, persisted locally. Dark is the default.
+const THEMES = ['dark', 'light', 'solarized-dark', 'solarized-light'];
+const THEME_ICON = {dark: '◐', light: '☀', 'solarized-dark': '🌘', 'solarized-light': '🌕'};
 function setTheme(t) {
-  document.body.dataset.theme = t;
-  document.getElementById('themetoggle').textContent = t === 'light' ? '☀' : '◐';
+  if (!THEMES.includes(t)) t = 'dark';
+  document.body.dataset.theme = t;   // no CSS rule for "dark" — falls through to :root defaults
+  document.getElementById('themetoggle').textContent = THEME_ICON[t];
+  document.getElementById('themetoggle').title = 'Theme: ' + t + ' (click to cycle)';
   try { localStorage.setItem('oc-theme', t); } catch (e) {}
 }
-document.getElementById('themetoggle').addEventListener('click', () =>
-  setTheme(document.body.dataset.theme === 'light' ? 'dark' : 'light'));
+document.getElementById('themetoggle').addEventListener('click', () => {
+  const cur = localStorage.getItem('oc-theme') || 'dark';
+  setTheme(THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length]);
+});
 try {
   const saved = localStorage.getItem('oc-theme');
   const systemLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
@@ -886,6 +910,10 @@ async function toggleDiff(container, file) {
   const key = 'diff-' + btoa(unescape(encodeURIComponent(file))).replace(/[^a-zA-Z0-9]/g, '');
   let box = container.querySelector('.' + key);
   if (box) { box.style.display = box.style.display === 'none' ? '' : 'none'; return; }
+  const copyBtn = document.createElement('button');
+  copyBtn.className = 'diffcopy sbtn'; copyBtn.type = 'button'; copyBtn.title = 'Copy diff';
+  copyBtn.textContent = '⧉';
+  container.appendChild(copyBtn);
   box = document.createElement('div');
   box.className = 'diff-box ' + key;
   box.textContent = 'loading diff…';
