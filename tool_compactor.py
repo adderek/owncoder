@@ -59,8 +59,8 @@ def _get_client(config: "Config", main_client: "AsyncOpenAI") -> "AsyncOpenAI":
         return main_client
     key = (tc.base_url, tc.api_key or config.llm.api_key)
     if key not in _client_cache:
-        from openai import AsyncOpenAI
-        _client_cache[key] = AsyncOpenAI(base_url=key[0], api_key=key[1] or "local")
+        from agent.core.llm_client import make_llm_client
+        _client_cache[key] = make_llm_client(config, base_url=key[0], api_key=key[1] or "local")
     return _client_cache[key]
 
 

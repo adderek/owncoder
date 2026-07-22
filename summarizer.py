@@ -126,11 +126,11 @@ async def _call_llm_one_line(
     content: str,
 ) -> str:
     """Stream a one-line summary using the summarizer model (falls back to default LLM)."""
-    from openai import AsyncOpenAI
     from agent.config import make_registry
+    from agent.core.llm_client import make_llm_client
     from agent.core.model_status import _inc as _ms_inc, _dec as _ms_dec, gpu_slot as _gpu_slot, provider_label
     entry, used_gpu = _pick_summarizer_entry(config, content)
-    client = AsyncOpenAI(base_url=entry.base_url, api_key=entry.api_key)
+    client = make_llm_client(config, base_url=entry.base_url, api_key=entry.api_key)
     try:
         from agent.metrics import model_calls
         model_calls.record_entry(entry, role="summarizer")

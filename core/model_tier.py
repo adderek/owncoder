@@ -198,8 +198,8 @@ def apply_entry(agent, config: "Config", entry_name: str) -> bool:
     config.model_roles["default"] = entry_name
 
     if endpoint_changed:
-        from openai import AsyncOpenAI
-        agent._client = AsyncOpenAI(base_url=e.base_url, api_key=e.api_key)
+        from agent.core.llm_client import make_llm_client
+        agent._client = make_llm_client(config, base_url=e.base_url, api_key=e.api_key)
     return True
 
 
@@ -282,8 +282,8 @@ def escalate_mid_turn(config: "Config", reason: str = "confidence"):
     if e.model:
         config.llm.model = e.model
     config.llm.ctx_window = e.ctx_window
-    from openai import AsyncOpenAI
-    return AsyncOpenAI(base_url=e.base_url, api_key=e.api_key)
+    from agent.core.llm_client import make_llm_client
+    return make_llm_client(config, base_url=e.base_url, api_key=e.api_key)
 
 
 _EFFORT_LEVELS = ("quick", "smart", "deep")

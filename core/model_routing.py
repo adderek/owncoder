@@ -83,8 +83,8 @@ def switch_to_entry(config: "Config", entry_name: str):
     config.llm.ctx_window = e.ctx_window
     config.llm.max_output_tokens = e.max_output_tokens
     config.llm.temperature = e.temperature
-    from openai import AsyncOpenAI
-    return AsyncOpenAI(base_url=e.base_url, api_key=e.api_key)
+    from agent.core.llm_client import make_llm_client
+    return make_llm_client(config, base_url=e.base_url, api_key=e.api_key)
 
 
 # ── Remote → local failover ───────────────────────────────────────────────────

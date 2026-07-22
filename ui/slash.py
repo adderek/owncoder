@@ -260,8 +260,6 @@ _ROLE_ALIASES: dict[str, str] = {
 
 def _apply_model(agent, arg: str) -> tuple[bool, str]:
     """Handle /model [role=]<entry-name>.  Returns (ok, message)."""
-    from openai import AsyncOpenAI
-
     cfg = agent.config
     entries = cfg.model_entries
 
@@ -319,10 +317,8 @@ def _apply_model(agent, arg: str) -> tuple[bool, str]:
         cfg.llm.max_output_tokens = entry.max_output_tokens
         cfg.llm.temperature = entry.temperature
         # Recreate the OpenAI client with new endpoint/key
-        agent._client = AsyncOpenAI(
-            base_url=entry.base_url,
-            api_key=entry.api_key,
-        )
+        from agent.core.llm_client import make_llm_client
+        agent._client = make_llm_client(cfg, base_url=entry.base_url, api_key=entry.api_key)
         msg = (
             f"switched default → [bold]{entry_name}[/bold]  "
             f"model={cfg.llm.model}  url={cfg.llm.base_url}"

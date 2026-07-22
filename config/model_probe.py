@@ -89,6 +89,20 @@ def refresh_ctx_windows(config: "Config", timeout: int = 3) -> dict[str, int]:
 
 # ── endpoint probing ──────────────────────────────────────────────────────────
 
+def _model_list(data) -> list:
+    """Extract the model list from a /models response.
+
+    Most OpenAI-compatible servers return {"data": [...]}, but some providers
+    (e.g. Zhipu, certain proxies) return a bare JSON list.
+    """
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        inner = data.get("data", [])
+        return inner if isinstance(inner, list) else []
+    return []
+
+
 def _probe_endpoint(
     base_url: str,
     api_key: str,
@@ -106,7 +120,7 @@ def _probe_endpoint(
         return  # unreachable or unknown format — skip silently
 
     server_models: dict[str, dict] = {
-        m["id"]: m for m in data.get("data", []) if isinstance(m, dict)
+        m["id"]: m for m in _model_list(data) if isinstance(m, dict) and "id" in m
     }
     is_ollama = _looks_like_ollama(base_url)
 
@@ -255,7 +269,7 @@ def _probe_ctx_single(base_url: str, api_key: str, model: str, timeout: int) -> 
         return None
 
     server_models: dict[str, dict] = {
-        m["id"]: m for m in data.get("data", []) if isinstance(m, dict)
+        m["id"]: m for m in _model_list(data) if isinstance(m, dict) and "id" in m
     }
     server_info = server_models.get(model) or {}
     if not server_info:
@@ -301,7 +315,7 @@ def _probe_ctx_force(
         return {}
 
     server_models: dict[str, dict] = {
-        m["id"]: m for m in data.get("data", []) if isinstance(m, dict)
+        m["id"]: m for m in _model_list(data) if isinstance(m, dict) and "id" in m
     }
     is_ollama = _looks_like_ollama(base_url)
     updated: dict[str, int] = {}
@@ -372,7 +386,7 @@ def list_endpoint_models(base_url: str, api_key: str = "", timeout: int = 3) -> 
     except Exception:
         return None
     return {
-        m["id"] for m in data.get("data", [])
+        m["id"] for m in _model_list(data)
         if isinstance(m, dict) and "id" in m and not _load_failed(m)
     }
 

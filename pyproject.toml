@@ -68,3 +68,6 @@ tmp_path_retention_count = 50
 [tool.setuptools.packages.find]
 where = [".."]
 include = ["agent*"]
+
+[tool.setuptools.package-data]
+"agent.ui" = ["static/*.css", "static/*.js"]

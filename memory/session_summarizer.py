@@ -106,13 +106,13 @@ def _fmt_a(entries: list) -> str:
 
 
 async def _call_llm(config: "Config", system: str, user_content: str) -> str:
-    from openai import AsyncOpenAI
     from agent.config import make_registry
     from agent.core.model_status import _inc as _ms_inc, _dec as _ms_dec
     from agent.core.streaming import _clean_output
 
     entry = make_registry(config).background
-    client = AsyncOpenAI(base_url=entry.base_url, api_key=entry.api_key)
+    from agent.core.llm_client import make_llm_client
+    client = make_llm_client(config, base_url=entry.base_url, api_key=entry.api_key)
     try:
         from agent.metrics import model_calls
         model_calls.record_entry(entry, role="qa-summary")
