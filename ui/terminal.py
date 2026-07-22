@@ -887,10 +887,26 @@ def run_ui(agent: "Agent", session=None):
     except Exception:
         logger.exception("notify: relay availability check failed")
     server = build_ui_server(agent)
-    mode = server.get_ui_config()["mode"]
+    ui_cfg = server.get_ui_config()
+    mode = ui_cfg["mode"]
     if mode == "http":
         from agent.ui.http_loop import http_loop
         return asyncio.run(http_loop(agent, session=session, server=server))
+
+    if mode in ("textual", "simple") and getattr(agent.config.ui, "http_sidecar", False):
+        from agent.ui.http_sidecar import start_http_sidecar
+        try:
+            server, httpd = start_http_sidecar(
+                server,
+                getattr(agent.config.ui, "http_host", "127.0.0.1"),
+                int(getattr(agent.config.ui, "http_port", 8180)),
+            )
+            shown_host = "127.0.0.1" if httpd.server_address[0] in ("0.0.0.0", "") else httpd.server_address[0]
+            print(f"HTTP sidecar running: http://{shown_host}:{httpd.server_address[1]}/ "
+                  f"(companion view — {mode} stays in control here)")
+        except Exception:
+            logger.exception("http sidecar: failed to start; continuing without it")
+
     if mode == "textual":
         try:
             app = _build_textual_app(agent, session=session, server=server)

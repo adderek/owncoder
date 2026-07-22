@@ -164,6 +164,16 @@ aside.resizing { transition: none; }   /* no lag while dragging */
              cursor: auto; }
 .cond-fq { color: var(--fg); white-space: pre-wrap; font-size: 13px;
            margin-bottom: 8px; }
+.cond-files { margin-top: 8px; font-size: 12px; color: var(--dim); }
+.diffbtn { font-family: var(--mono); font-size: 11.5px; }
+.diff-box { margin-top: 6px; padding: 8px; background: var(--panel2);
+            border: 1px solid var(--border); border-radius: 6px;
+            font-family: var(--mono); font-size: 12px; overflow-x: auto;
+            max-height: 360px; overflow-y: auto; }
+.diff-add { color: var(--ok); white-space: pre; }
+.diff-del { color: var(--err); white-space: pre; }
+.diff-hunk { color: var(--warn); white-space: pre; }
+.diff-ctx { color: var(--dim); white-space: pre; }
 /* Agent question awaiting an answer — pinned above the input. */
 #askbox { max-width: 920px; margin: 0 auto 8px; padding: 9px 12px;
           border: 1px solid var(--sig-border); background: var(--sig-bg);

@@ -192,6 +192,8 @@ def cmd_chat(args, config):
         config.ui.mode = args.ui
     elif not os.environ.get("AGENT_UI_MODE"):
         config.ui.mode = _pick_ui_mode(config.ui.mode)
+    if getattr(args, "http_sidecar", False):
+        config.ui.http_sidecar = True
 
     if _is_first_run():
         console.print(

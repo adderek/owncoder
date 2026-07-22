@@ -415,7 +415,7 @@ function handle(ev) {
     resyncView().then(() => row('sys', null, '⇄ switched to session ' + ev.session));
     if (document.getElementById('left').classList.contains('open')) loadSessions();
   } else if (ev.type === 'stats') {
-    setIoChip(ev.in, ev.out);
+    setIoChip(ev.in, ev.out, ev.cost_usd);
     // refresh the drawer section if it's visible
     if (document.getElementById('right').classList.contains('open')) loadStats();
   } else if (ev.type === 'tokens') {
@@ -516,9 +516,14 @@ function fmtK(n) {
   return String(n);
 }
 
-function setIoChip(inTok, outTok) {
+function fmtUsd(n) {
+  if (!n) return '';
+  return n < 0.01 ? ' · <$0.01' : ' · $' + n.toFixed(n < 1 ? 3 : 2);
+}
+
+function setIoChip(inTok, outTok, costUsd) {
   document.getElementById('iostats').textContent =
-    '↑' + fmtK(inTok) + ' ↓' + fmtK(outTok);
+    '↑' + fmtK(inTok) + ' ↓' + fmtK(outTok) + fmtUsd(costUsd);
 }
 
 // Session chip: show the human name (fall back to a short id), keep the full
@@ -602,7 +607,9 @@ async function loadStats() {
               'LLM calls: ' + (s.calls || 0) + '   messages: ' + (d.messages || 0);
     if (s.in_tps) out += '\nin-tok/s:  ' + s.in_tps.toFixed(1);
     if (s.out_tps) out += '\nout-tok/s: ' + s.out_tps.toFixed(1);
-    setIoChip(s.input_tokens, s.output_tokens);
+    if (d.cost_usd) out += '\nest. cost: $' + d.cost_usd.toFixed(d.cost_usd < 1 ? 3 : 2)
+      + ' (paid-tier calls only)';
+    setIoChip(s.input_tokens, s.output_tokens, d.cost_usd);
     const rows = d.models || [];
     if (rows.length) {
       out += '\n\nper model (calls, ↑in, ↓out):\n';
@@ -865,6 +872,31 @@ function firstLine(s) {
   return (i < 0 ? s : s.slice(0, i)).slice(0, 160);
 }
 
+function renderDiff(text) {
+  return esc(text).split('\n').map(line => {
+    let cls = 'diff-ctx';
+    if (line.startsWith('+') && !line.startsWith('+++')) cls = 'diff-add';
+    else if (line.startsWith('-') && !line.startsWith('---')) cls = 'diff-del';
+    else if (line.startsWith('@@')) cls = 'diff-hunk';
+    return '<div class="' + cls + '">' + (line || ' ') + '</div>';
+  }).join('');
+}
+
+async function toggleDiff(container, file) {
+  const key = 'diff-' + btoa(unescape(encodeURIComponent(file))).replace(/[^a-zA-Z0-9]/g, '');
+  let box = container.querySelector('.' + key);
+  if (box) { box.style.display = box.style.display === 'none' ? '' : 'none'; return; }
+  box = document.createElement('div');
+  box.className = 'diff-box ' + key;
+  box.textContent = 'loading diff…';
+  container.appendChild(box);
+  try {
+    const d = await (await fetch('/api/diff?file=' + encodeURIComponent(file))).json();
+    box.innerHTML = d.error ? esc(d.error)
+      : (d.diff && d.diff.trim() ? renderDiff(d.diff) : '<i>no diff (file unchanged or untracked)</i>');
+  } catch (e) { box.textContent = 'diff failed: ' + e; }
+}
+
 async function condensedView(id) {
   try {
     const d = await (await fetch('/api/qa?id=' + encodeURIComponent(id || ''))).json();
@@ -903,9 +935,22 @@ async function condensedView(id) {
         if (ev.target.closest('.cond-full')) return;   // selecting text inside
         const f = el.querySelector('.cond-full');
         if (f.style.display === 'none') {
-          if (!f.innerHTML)
+          if (!f.innerHTML) {
             f.innerHTML = '<div class="cond-fq">' + esc(t.q) + '</div>' +
                           '<div class="md">' + renderMd(t.a || '') + '</div>';
+            if (t.files && t.files.length) {
+              const fw = document.createElement('div');
+              fw.className = 'cond-files';
+              fw.innerHTML = 'files: ' + t.files.map(p =>
+                '<button class="sbtn diffbtn" data-file="' + esc(p) + '">' + esc(p) + '</button>'
+              ).join(' ');
+              f.appendChild(fw);
+              fw.querySelectorAll('.diffbtn').forEach(b => b.addEventListener('click', (e2) => {
+                e2.stopPropagation();
+                toggleDiff(fw, b.dataset.file);
+              }));
+            }
+          }
           f.style.display = '';
         } else f.style.display = 'none';
       });
@@ -1205,10 +1250,39 @@ input.addEventListener('input', () => {
 // Esc closes whichever side drawer is open — mirrors the backdrop-tap close
 // on mobile, useful on desktop too without reaching for the mouse.
 document.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape') return;
-  if (document.getElementById('left').classList.contains('open'))
-    toggleDrawer('left', 'lefttoggle', false);
-  if (document.getElementById('right').classList.contains('open'))
-    toggleDrawer('right', 'righttoggle', false);
+  if (e.key === 'Escape') {
+    if (document.getElementById('left').classList.contains('open'))
+      toggleDrawer('left', 'lefttoggle', false);
+    if (document.getElementById('right').classList.contains('open'))
+      toggleDrawer('right', 'righttoggle', false);
+    return;
+  }
+  // Session quick-switch: Alt+Up/Down cycles sessions without opening the
+  // drawer; Ctrl/Cmd+B toggles it open (mirrors common sidebar-toggle muscle
+  // memory). Skipped while typing in an editable field other than the toggle
+  // itself, so it never eats a keystroke meant for the message box.
+  const typing = document.activeElement &&
+    (document.activeElement.tagName === 'TEXTAREA' || document.activeElement.tagName === 'INPUT');
+  if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+    e.preventDefault();
+    cycleSession(e.key === 'ArrowUp' ? -1 : 1);
+    return;
+  }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b' && !typing) {
+    e.preventDefault();
+    toggleDrawer('left', 'lefttoggle');
+  }
 });
+
+// Switch to the previous/next non-hidden session in /api/sessions order.
+async function cycleSession(dir) {
+  try {
+    const d = await (await fetch('/api/sessions')).json();
+    const shown = (d.sessions || []).filter(s => !s.hidden);
+    if (shown.length < 2) return;
+    const idx = shown.findIndex(s => s.id === d.current);
+    const next = shown[(idx < 0 ? 0 : idx + dir + shown.length) % shown.length];
+    sessionAction({action: 'switch', id: next.id});
+  } catch (e) { row('sys error', null, 'session cycle failed: ' + e); }
+}
 init();

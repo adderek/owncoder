@@ -110,7 +110,7 @@ _PAGE = r"""<!DOCTYPE html>
 </head>
 <body data-layout="center">
 <div id="header">
-  <button class="icon" id="lefttoggle" title="Sessions panel (coming features)" aria-label="Toggle sessions panel">☰</button>
+  <button class="icon" id="lefttoggle" title="Sessions panel — Ctrl+B toggles, Alt+↑/↓ switches session" aria-label="Toggle sessions panel">☰</button>
   <b>owncoder</b>
   <span class="chip" id="model" title="Click to manage models"></span>
   <span class="chip btn" id="session" title="Current session — click for the sessions panel"></span>
@@ -118,7 +118,7 @@ _PAGE = r"""<!DOCTYPE html>
   <div id="statuswrap"><span id="dot"></span><span id="status">idle</span></div>
   <span class="chip btn" id="layout" title="Cycle chat width: centered / wide / full">center</span>
   <span class="chip btn" id="condchip" title="Condensed Q/A view — one line per turn, click rows to expand">≣ Q/A</span>
-  <span class="chip btn" id="iostats" title="Session totals: prompt in / completion out. Click for per-model split">↑0 ↓0</span>
+  <span class="chip btn" id="iostats" title="Session totals: prompt in / completion out / est. USD cost (paid-tier only). Click for per-model split">↑0 ↓0</span>
   <span class="chip btn" id="bgchip" title="Background jobs running — click to review / kill" style="display:none">⚙0</span>
   <div id="tokenwrap" title="Click for context buffer breakdown"><div id="tokenbar"><div id="tokenfill"></div></div><span id="tokens"></span></div>
   <button class="icon" id="themetoggle" title="Toggle dark/light theme" aria-label="Toggle dark/light theme">◐</button>
@@ -459,8 +459,19 @@ class _HttpUI:
             "models": models,
             "io": {"in": stats.get("input_tokens", 0),
                    "out": stats.get("output_tokens", 0),
-                   "calls": stats.get("calls", 0)},
+                   "calls": stats.get("calls", 0),
+                   "cost_usd": self._cost_usd()},
         }
+
+    def _cost_usd(self) -> float:
+        try:
+            cfg = _agent_config(self.server)
+            if cfg is None:
+                return 0.0
+            from agent.metrics.model_calls import session_cost_usd
+            return session_cost_usd(cfg)
+        except Exception:
+            return 0.0
 
     def context_info(self) -> dict:
         """Context/buffer usage detail — backs the token-bar click panel."""
@@ -615,6 +626,28 @@ class _HttpUI:
             })
         return {"id": sid, "name": name, "turns": turns}
 
+    def diff_info(self, file_path: str) -> dict:
+        """`git diff` (working tree, falling back to staged) for one file —
+        backs the click-to-expand diff view on a turn's modified-files list."""
+        import subprocess
+        path = (file_path or "").strip().lstrip("/")
+        if not path or ".." in path.split("/"):
+            return {"path": file_path, "diff": "", "error": "invalid path"}
+        cwd = self.workdir()
+        try:
+            result = subprocess.run(
+                ["git", "diff", "--", path], capture_output=True, text=True,
+                timeout=5, cwd=cwd or None)
+            out = result.stdout if result.returncode == 0 else ""
+            if not out.strip():
+                result = subprocess.run(
+                    ["git", "diff", "--cached", "--", path], capture_output=True,
+                    text=True, timeout=5, cwd=cwd or None)
+                out = result.stdout if result.returncode == 0 else ""
+            return {"path": path, "diff": out}
+        except Exception as exc:
+            return {"path": path, "diff": "", "error": str(exc)}
+
     def session_action(self, payload: dict) -> dict:
         """Session list ops from the browser: new / rename / hide / autoname / switch."""
         action = str(payload.get("action") or "")
@@ -700,7 +733,7 @@ class _HttpUI:
 
     def stats_info(self) -> dict:
         """Session stats — totals, per-model token split, output breakdown."""
-        out: dict = {"stats": {}, "models": [], "output": [], "messages": 0}
+        out: dict = {"stats": {}, "models": [], "output": [], "messages": 0, "cost_usd": 0.0}
         try:
             out["stats"] = self.server.stats()
         except Exception:
@@ -708,6 +741,7 @@ class _HttpUI:
         try:
             from agent.metrics.model_calls import session_token_rows
             out["models"] = session_token_rows()
+            out["cost_usd"] = self._cost_usd()
         except Exception:
             logger.debug("http ui: session_token_rows failed", exc_info=True)
         try:
@@ -768,6 +802,10 @@ def _make_handler(ui: _HttpUI):
                 from urllib.parse import parse_qs, urlparse
                 sid = (parse_qs(urlparse(self.path).query).get("id") or [""])[0]
                 self._json(ui.qa_info(sid))
+            elif self.path.startswith("/api/diff"):
+                from urllib.parse import parse_qs, urlparse
+                fp = (parse_qs(urlparse(self.path).query).get("file") or [""])[0]
+                self._json(ui.diff_info(fp))
             elif self.path == "/api/models":
                 self._json(ui.models_info())
             elif self.path == "/api/grants":
@@ -1615,7 +1653,8 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
                     s = server.stats()
                     pub({"type": "stats", "in": s.get("input_tokens", 0),
                          "out": s.get("output_tokens", 0),
-                         "calls": s.get("calls", 0)})
+                         "calls": s.get("calls", 0),
+                         "cost_usd": ui._cost_usd()})
                 except Exception:
                     logger.debug("http ui: stats event failed", exc_info=True)
                 pub({"type": "state", "state": "idle"})

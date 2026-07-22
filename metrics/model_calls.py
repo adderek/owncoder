@@ -134,6 +134,21 @@ def session_token_rows() -> list[dict]:
     return rows
 
 
+def session_cost_usd(config) -> float:
+    """Estimated USD spend this session from `session_token_rows()` × each
+    row's model entry pricing (`cost_in_per_1k`/`cost_out_per_1k`). Local/free
+    models default to 0.0 cost, so this only totals actual paid-tier spend."""
+    entries = getattr(config, "model_entries", None) or {}
+    total = 0.0
+    for row in session_token_rows():
+        entry = entries.get(row["model"])
+        if entry is None:
+            continue
+        total += row["in"] / 1000.0 * getattr(entry, "cost_in_per_1k", 0.0)
+        total += row["out"] / 1000.0 * getattr(entry, "cost_out_per_1k", 0.0)
+    return total
+
+
 def _ordered(counts: dict) -> list[str]:
     extra = [t for t in counts if t not in TIERS]
     return [t for t in TIERS if counts.get(t)] + [t for t in extra if counts.get(t)]

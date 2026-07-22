@@ -146,6 +146,7 @@ class UIConfig:
     mode: str = "textual"  # "textual" | "simple" | "http"
     http_host: str = "127.0.0.1"  # http mode bind address ("0.0.0.0" exposes on LAN)
     http_port: int = 8180  # http mode port; walks forward up to +19 if taken
+    http_sidecar: bool = False  # run a companion browser view alongside textual/simple mode (see ui/http_sidecar.py)
     q_summaries: bool = False
     syntax_highlight: bool = True
     show_token_count: bool = True

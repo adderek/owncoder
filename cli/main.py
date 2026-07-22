@@ -84,6 +84,10 @@ def main() -> None:
     chat_p.add_argument("--session", type=str, help="Session name to load/save")
     chat_p.add_argument("--ui", type=str, choices=["textual", "simple", "http"],
                         help="UI mode (skips the prompt)")
+    chat_p.add_argument("--http-sidecar", action="store_true",
+                        help="With --ui textual/simple: also run a companion "
+                             "browser view (read-mostly mirror + chat input) "
+                             "alongside it — see agent/ui/http_sidecar.py")
     chat_p.add_argument("--incognito", action="store_true",
                         help="Don't persist this session or any notes it produces")
     chat_p.add_argument("--private", action="store_true",
