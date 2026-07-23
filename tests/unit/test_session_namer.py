@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 import types
 
 import pytest
@@ -40,12 +39,15 @@ def _make_fake_client(reply):
 @pytest.fixture
 def _fake_llm(monkeypatch):
     def _install(reply):
-        fake_openai = types.ModuleType("openai")
-        fake_openai.AsyncOpenAI = _make_fake_client(reply)
-        monkeypatch.setitem(sys.modules, "openai", fake_openai)
         entry = types.SimpleNamespace(base_url="http://x/v1", api_key="local", model="m")
         reg = types.SimpleNamespace(default=entry, summarizer=entry, background=entry, role=lambda *_a, **_k: entry)
         monkeypatch.setattr("agent.config.make_registry", lambda cfg: reg)
+        # _call_llm now routes through core.llm_retry.call_role_with_failover,
+        # which builds its client via make_llm_client rather than a bare
+        # AsyncOpenAI() — patch that factory instead of faking the openai
+        # module, which would also break the real RateLimitError/… imports it uses.
+        monkeypatch.setattr("agent.core.llm_client.make_llm_client",
+                            lambda cfg, base_url="", api_key="": _make_fake_client(reply)())
     return _install
 
 
@@ -98,14 +100,11 @@ def test_generate_skips_short_conversation(_fake_llm):
 
 
 def test_generate_never_raises(monkeypatch):
-    class _Boom:
-        def __init__(self, *a, **k):
-            raise RuntimeError("down")
-    fake_openai = types.ModuleType("openai")
-    fake_openai.AsyncOpenAI = _Boom
-    monkeypatch.setitem(sys.modules, "openai", fake_openai)
+    def _boom(cfg, base_url="", api_key=""):
+        raise RuntimeError("down")
     entry = types.SimpleNamespace(base_url="http://x/v1", api_key="local", model="m")
     monkeypatch.setattr("agent.config.make_registry", lambda cfg: types.SimpleNamespace(summarizer=entry, role=lambda *_a, **_k: entry))
+    monkeypatch.setattr("agent.core.llm_client.make_llm_client", _boom)
     s = sess.Session(id="x")
     msgs = [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]
     assert asyncio.run(namer.generate_session_meta(s, msgs, object())) is None

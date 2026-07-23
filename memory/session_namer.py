@@ -80,37 +80,34 @@ def _format_transcript(messages: list[dict]) -> str:
 
 
 async def _call_llm(config: "Config", user_content: str) -> str:
-    from agent.config import make_registry
-
     try:
         from agent.core.model_status import _inc as _ms_inc, _dec as _ms_dec
     except Exception:  # pragma: no cover - fallback when status unavailable
         def _ms_inc(*_a, **_k) -> None: ...
         def _ms_dec(*_a, **_k) -> None: ...
 
-    entry = make_registry(config).role("namer")
-    from agent.core.llm_client import make_llm_client
-    client = make_llm_client(config, base_url=entry.base_url, api_key=entry.api_key)
+    from agent.core.llm_retry import call_role_with_failover
+    # Best-effort status label: the primary "namer" entry, even though
+    # failover may end up serving the call from a different one.
     try:
-        from agent.metrics import model_calls
-        model_calls.record_entry(entry, role="session-namer")
+        from agent.config import make_registry
+        _label_model = make_registry(config).role("namer").model
     except Exception:
-        pass
-    _ms_inc("name", None, entry.model)
+        _label_model = None
+    _ms_inc("name", None, _label_model)
     try:
-        resp = await client.chat.completions.create(
-            model=entry.model,
+        resp, _name, _entry = await call_role_with_failover(
+            config, "namer",
             messages=[
                 {"role": "system", "content": _SYSTEM},
                 {"role": "user", "content": user_content[:_MAX_INPUT_CHARS]},
             ],
-            max_tokens=_MAX_OUTPUT_TOKENS,
-            temperature=0.2,
+            max_tokens=_MAX_OUTPUT_TOKENS, temperature=0.2,
+            metrics_role="session-namer",
         )
         return (resp.choices[0].message.content or "").strip()
     finally:
-        _ms_dec("name", None, entry.model)
-        await client.close()
+        _ms_dec("name", None, _label_model)
 
 
 def _coerce_meta(raw: str) -> dict | None:
