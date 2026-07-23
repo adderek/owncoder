@@ -1,0 +1,7 @@
+id: fix-exception-type
+prompt: "parse_int() in parser.py is supposed to return None for text that isn't a valid integer, but it catches the wrong exception type so invalid input crashes instead. Fix it."
+fixture: fix-exception-type
+timeout_s: 300
+checks:
+  - type: command
+    run: "python -m pytest test_parser.py -q"

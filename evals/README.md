@@ -132,3 +132,13 @@ files with the same schema instead.
 | `add-cli-flag` | add an argparse flag with the expected side effect |
 | `answer-question` | read code and answer a question about it in a file |
 | `multi-file-edit` | change a constant consistently across three files |
+| `fix-off-by-one` | fix a loop bound bug that drops the last element |
+| `fix-mutable-default` | fix a shared-mutable-default-argument bug |
+| `fix-exception-type` | catch the correct exception type instead of a wrong one |
+| `add-input-validation` | add raise-on-invalid-input logic verified by tests |
+| `extract-duplicate-logic` | extract a shared helper out of two near-duplicate functions |
+| `add-quiet-flag` | add an argparse flag that suppresses specific output |
+| `fix-recursion-base-case` | fix a recursive function that never recurses |
+| `fix-dict-key-typo` | fix a typo'd dict key lookup |
+| `add-context-manager` | add `__enter__`/`__exit__` to an existing resource class |
+| `fix-string-format-bug` | fix a `%`-formatting call missing an argument |

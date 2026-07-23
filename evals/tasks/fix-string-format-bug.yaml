@@ -1,0 +1,7 @@
+id: fix-string-format-bug
+prompt: "format_greeting() in greeting.py raises a TypeError because it's missing an argument in its %-formatting tuple. Fix it so both name and count are substituted correctly."
+fixture: fix-string-format-bug
+timeout_s: 300
+checks:
+  - type: command
+    run: "python -m pytest test_greeting.py -q"

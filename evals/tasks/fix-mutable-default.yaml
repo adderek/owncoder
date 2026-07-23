@@ -1,0 +1,7 @@
+id: fix-mutable-default
+prompt: "add_item() in basket.py has a classic Python bug: its default `items=[]` argument is shared across calls, so unrelated calls leak state into each other. Fix it so each call starts fresh unless a list is explicitly passed."
+fixture: fix-mutable-default
+timeout_s: 300
+checks:
+  - type: command
+    run: "python -m pytest test_basket.py -q"

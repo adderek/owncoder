@@ -1,0 +1,11 @@
+id: add-quiet-flag
+prompt: "Add a --quiet flag to report.py. When passed, suppress the 'generating report for ...' line but still print 'done'. Without the flag, behavior must stay exactly as-is."
+fixture: add-quiet-flag
+timeout_s: 300
+checks:
+  - type: command
+    run: "! python report.py --quiet | grep -q generating"
+  - type: command
+    run: "python report.py --quiet | grep -q done"
+  - type: command
+    run: "python report.py --name Ann | grep -q 'generating report for Ann'"

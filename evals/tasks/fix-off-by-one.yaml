@@ -1,0 +1,7 @@
+id: fix-off-by-one
+prompt: "running_totals() in stats.py silently drops the last element of the input list. Find the off-by-one bug and fix it so the running-totals test passes."
+fixture: fix-off-by-one
+timeout_s: 300
+checks:
+  - type: command
+    run: "python -m pytest test_stats.py -q"

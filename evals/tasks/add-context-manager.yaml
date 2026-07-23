@@ -1,0 +1,7 @@
+id: add-context-manager
+prompt: "Resource in resource.py has acquire()/release() methods but no __enter__/__exit__, so it can't be used in a `with` block. Add them so entering the block calls acquire() and exiting (even on an exception) calls release()."
+fixture: add-context-manager
+timeout_s: 300
+checks:
+  - type: command
+    run: "python -m pytest test_resource.py -q"

@@ -1,0 +1,7 @@
+id: extract-duplicate-logic
+prompt: "total_with_tax_us and total_with_tax_ca in orders.py duplicate the subtotal/rounding logic and only differ in the tax rate. Extract a shared total_with_tax(price, quantity, rate) helper, have both functions call it, and keep their existing behavior identical."
+fixture: extract-duplicate-logic
+timeout_s: 300
+checks:
+  - type: command
+    run: "python -m pytest test_orders.py -q"

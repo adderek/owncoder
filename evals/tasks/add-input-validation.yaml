@@ -1,0 +1,7 @@
+id: add-input-validation
+prompt: "Add validation to withdraw() in account.py: raise ValueError if amount is negative, or if amount exceeds balance."
+fixture: add-input-validation
+timeout_s: 300
+checks:
+  - type: command
+    run: "python -m pytest test_account.py -q"

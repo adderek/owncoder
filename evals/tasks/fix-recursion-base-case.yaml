@@ -1,0 +1,7 @@
+id: fix-recursion-base-case
+prompt: "count_nodes() in tree.py is supposed to recursively count all nodes in a tree but always returns 1 for any tree because it never recurses into children. Fix it."
+fixture: fix-recursion-base-case
+timeout_s: 300
+checks:
+  - type: command
+    run: "python -m pytest test_tree.py -q"
