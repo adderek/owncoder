@@ -53,8 +53,14 @@ def _do_compile(name: str, original: str, config: "Config") -> str:
     """
     from openai import OpenAI
     from agent._tokens import count_tokens_approx
+    from agent.core.llm_client import build_client_timeout
 
-    client = OpenAI(base_url=config.llm.base_url, api_key=config.llm.api_key)
+    # Same hardening as make_llm_client (core/llm_client.py) for the async
+    # path: a bare OpenAI() inherits the SDK's 600s timeout and 2 silent
+    # retries, which turns a wedged endpoint into a long hang on this
+    # background thread instead of failing fast.
+    client = OpenAI(base_url=config.llm.base_url, api_key=config.llm.api_key,
+                    timeout=build_client_timeout(config), max_retries=0)
     instruction = _COMPILE_INSTRUCTION.replace("{original}", original)
     orig_tok_estimate = max(256, len(original) // 3)
     floor = getattr(getattr(config, "token_limits", None), "prompt_compile_min", 2048)

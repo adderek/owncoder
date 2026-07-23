@@ -121,13 +121,18 @@ def test_cache_key_differs_per_api_base(cfg):
 def _run_arm(name: str, text: str, cfg, arm: str, oks: list[bool]) -> None:
     """Drive `oks` tool-call outcomes through one A/B arm of `name`.
 
-    Forces the arm by pinning holdout to 0 (compiled) or 1 (original), then
-    clears the per-session arm cache so load() re-picks for this batch.
+    load()'s arm pick is probabilistic (random.random() < holdout_ratio) and
+    holdout_ratio is clamped to <= 0.9 by _holdout_ratio(), so setting it to
+    1.0 does NOT force "original" deterministically — ~10% of the time
+    load() still picks "compiled", silently corrupting orig_calls for that
+    run (this was an intermittent test flake: min_samples never met on the
+    starved arm, so evaluate() skipped the entry). Force the arm directly
+    on _active_arm after load() instead of depending on the random pick.
     """
-    cfg.compile_prompts.holdout_ratio = 1.0 if arm == "original" else 0.0
     pc._s._active_arm.clear()
     pc._s._active.clear()
-    pc.load(name, text, cfg)            # assigns the arm for this "session"
+    pc.load(name, text, cfg)            # ensures the entry exists / sets _active[name]
+    pc._s._active_arm[name] = arm       # force this batch onto the requested arm
     for ok in oks:
         pc.record_call(ok, cfg)
 
