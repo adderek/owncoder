@@ -17,3 +17,5 @@ checks:
     text: "procces"
   - type: command
     run: "python -m pytest test_rename.py -q"
+judge:
+  type: edit

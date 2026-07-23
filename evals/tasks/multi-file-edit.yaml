@@ -12,3 +12,5 @@ checks:
   - type: file_contains
     path: module_y.py
     text: "PAGE_SIZE = 25"
+judge:
+  type: edit

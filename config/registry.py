@@ -33,6 +33,7 @@ ROLE_FALLBACKS: dict[str, tuple[str, ...]] = {
     "verify":      ("default",),
     "evolve":      ("default",),
     "commit":      ("summarizer", "default"),
+    "judge":       ("verify", "default"),
 }
 
 # Roles whose unpinned default is the free-cloud-offloading background picker.

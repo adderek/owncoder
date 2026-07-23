@@ -9,3 +9,5 @@ checks:
     run: "python report.py --quiet | grep -q done"
   - type: command
     run: "python report.py --name Ann | grep -q 'generating report for Ann'"
+judge:
+  type: edit

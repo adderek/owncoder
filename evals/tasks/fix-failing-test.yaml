@@ -8,3 +8,5 @@ checks:
   - type: file_contains
     path: calc.py
     text: "return a + b"
+judge:
+  type: fix

@@ -7,3 +7,5 @@ checks:
     run: "python greet.py --verbose | grep -q 'verbose on'"
   - type: command
     run: "python greet.py --name Ann | grep -q 'hello Ann'"
+judge:
+  type: edit

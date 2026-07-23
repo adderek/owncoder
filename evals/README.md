@@ -67,6 +67,55 @@ task, using a "fake agent" that just writes the expected answer directly:
 The runner exits `0` if every requested task passed, `1` otherwise, so it can
 be used as a CI gate.
 
+## Judged scoring (LLM-as-judge)
+
+Mechanical checks decide pass/fail. `--judge` adds a secondary 0-10 quality
+score per task, judging dimensions checks can't see: minimal diff, style
+match, no drive-by changes.
+
+```
+.venv/bin/python evals/run.py --judge --json /tmp/results.json
+```
+
+How it works (see `evals/judge.py`):
+
+- After the checks run, the workspace is diffed against its pristine fixture
+  (`diff -ruN`, `.agent`/`__pycache__` excluded).
+- The judge model sees ONLY the task prompt and that diff — never the
+  candidate agent's own output — so a candidate can't talk its way to a
+  higher score.
+- The call goes through `call_role_with_failover(config, "judge", …)`: it is
+  failover-safe, honors air-gap mode, and is pinnable to your strongest
+  model via `[model_roles] judge = "<entry>"` (falls back verify → default).
+- Mechanical guards run before/after the LLM and can't be argued with:
+  - empty diff → score 0, no LLM call;
+  - `judge.forbid_paths` glob hit → score 0, no LLM call;
+  - diff longer than `judge.max_diff_lines` (default 400) → score clamped
+    to 4 no matter what the judge said.
+- A judge failure (endpoint down, unparseable reply) is reported per-task as
+  `judge.error` and never affects mechanical pass/fail or the exit code.
+
+Per-task judge config in the task YAML (all optional):
+
+```yaml
+judge:
+  type: fix            # rubric: fix | edit | locate (default fix)
+  max_diff_lines: 400   # mechanical length-penalty threshold
+  forbid_paths:         # globs the diff must not touch (checked mechanically)
+    - "test_*.py"
+```
+
+## Regression gating against a baseline
+
+```
+.venv/bin/python evals/run.py --judge --json /tmp/new.json --baseline /tmp/old.json
+```
+
+With `--baseline`, the exit code reflects regressions instead of raw
+pass/fail: a task that flipped mechanical pass→fail, or whose judged score
+dropped by more than 2 points, fails the run (`1`). New tasks, removed
+tasks, and improvements are not regressions.
+
 ## How a task works
 
 For each task the runner:

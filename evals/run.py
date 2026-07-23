@@ -46,6 +46,7 @@ class TaskResult:
     checks: list = field(default_factory=list)
     workspace: str | None = None
     message: str = ""
+    judge: dict | None = None
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -179,8 +180,34 @@ def run_check(check: dict, workspace: Path) -> dict[str, Any]:
         return {"type": ctype, "passed": False, "detail": str(exc)}
 
 
+def _judge_module():
+    """Import evals/judge.py whether run.py was launched as a script or a
+    module."""
+    try:
+        from evals import judge as judge_mod  # type: ignore
+    except ImportError:
+        if str(EVALS_DIR) not in sys.path:
+            sys.path.insert(0, str(EVALS_DIR))
+        import judge as judge_mod  # type: ignore
+    return judge_mod
+
+
+def _judge_workspace(task: dict, fixture_dir: Path, workspace: Path,
+                     judge_config) -> dict:
+    """Diff the workspace against its fixture and score it. Never raises —
+    a judge failure is reported in the returned dict, not fatal."""
+    judge_mod = _judge_module()
+    try:
+        diff = judge_mod.compute_diff(fixture_dir, workspace)
+    except Exception as exc:  # noqa: BLE001
+        return {"score": None, "error": f"diff failed: {exc}"}
+    import asyncio
+    return asyncio.run(judge_mod.judge_task(judge_config, task, diff))
+
+
 def run_task(task: dict, agent_cmd_template: str, keep: bool,
-             fixtures_dir: Path = FIXTURES_DIR) -> TaskResult:
+             fixtures_dir: Path = FIXTURES_DIR,
+             judge_config=None) -> TaskResult:
     task_id = task.get("id", "<unknown>")
     fixture_name = task.get("fixture", "")
     fixture_dir = fixtures_dir / fixture_name
@@ -229,6 +256,10 @@ def run_task(task: dict, agent_cmd_template: str, keep: bool,
     passed = (not timed_out) and all(c["passed"] for c in check_results)
     status = "pass" if passed else "fail"
 
+    judge_result: dict | None = None
+    if judge_config is not None and not timed_out:
+        judge_result = _judge_workspace(task, fixture_dir, workspace, judge_config)
+
     workspace_path: str | None = None
     if keep:
         workspace_path = str(workspace)
@@ -243,11 +274,16 @@ def run_task(task: dict, agent_cmd_template: str, keep: bool,
         timed_out=timed_out,
         checks=check_results,
         workspace=workspace_path,
+        judge=judge_result,
     )
 
 
 def print_summary(results: list[TaskResult]) -> None:
-    header = f"{'TASK':<20} {'RESULT':<7} {'TIME':>8}  FAILED CHECKS"
+    judged_any = any(r.judge is not None for r in results)
+    header = f"{'TASK':<24} {'RESULT':<7} {'TIME':>8}"
+    if judged_any:
+        header += f" {'JUDGE':>6}"
+    header += "  FAILED CHECKS"
     print(header)
     print("-" * len(header))
     for r in results:
@@ -257,14 +293,30 @@ def print_summary(results: list[TaskResult]) -> None:
         else:
             failed = [c["type"] for c in r.checks if not c["passed"]]
             detail = ", ".join(failed) if failed else "-"
-        print(f"{r.id:<20} {r.status:<7} {time_str:>8}  {detail}")
+        line = f"{r.id:<24} {r.status:<7} {time_str:>8}"
+        if judged_any:
+            if r.judge is None:
+                jstr = "-"
+            elif r.judge.get("score") is None:
+                jstr = "ERR"
+            else:
+                jstr = str(r.judge["score"])
+            line += f" {jstr:>6}"
+        print(f"{line}  {detail}")
     print()
     for r in results:
         if r.workspace:
             print(f"kept workspace for {r.id}: {r.workspace}")
+        if r.judge and r.judge.get("error"):
+            print(f"judge error for {r.id}: {r.judge['error']}")
     passed = sum(1 for r in results if r.status == "pass")
     total = len(results)
     print(f"\nScore: {passed}/{total} passed")
+    scores = [r.judge["score"] for r in results
+              if r.judge and r.judge.get("score") is not None]
+    if scores:
+        print(f"Judged: mean {sum(scores) / len(scores):.1f}/10 "
+              f"over {len(scores)} task(s)")
 
 
 def write_json(results: list[TaskResult], path: Path) -> None:
@@ -290,6 +342,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                          help="keep temp workspaces and print their paths")
     parser.add_argument("--json", dest="json_path", default=None,
                          help="write machine-readable results to PATH")
+    parser.add_argument("--judge", action="store_true",
+                         help="score each task's diff 0-10 with the LLM judge "
+                              "(role 'judge'; requires an agent config). "
+                              "Mechanical pass/fail stays primary.")
+    parser.add_argument("--baseline", default=None,
+                         help="previous --json results file to compare against; "
+                              "a mechanical pass->fail flip or a judged drop "
+                              ">2 points is a regression and fails the run")
     parser.add_argument("--tasks-dir", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--fixtures-dir", default=None, help=argparse.SUPPRESS)
     return parser.parse_args(argv)
@@ -317,16 +377,42 @@ def main(argv: list[str] | None = None) -> int:
 
     agent_cmd_template = args.agent_cmd or default_agent_cmd(REPO_ROOT)
 
+    judge_config = None
+    if args.judge:
+        try:
+            judge_config = _judge_module().load_agent_config()
+        except Exception as exc:  # noqa: BLE001
+            print(f"--judge: failed to load agent config: {exc}", file=sys.stderr)
+            return 1
+
     results: list[TaskResult] = [
         TaskResult(id=tid, status="error", message=err) for tid, err in load_errors
     ]
     for task in tasks:
-        results.append(run_task(task, agent_cmd_template, args.keep, fixtures_dir))
+        results.append(run_task(task, agent_cmd_template, args.keep,
+                                fixtures_dir, judge_config=judge_config))
 
     print_summary(results)
 
     if args.json_path:
         write_json(results, Path(args.json_path))
+
+    regressions: list[str] = []
+    if args.baseline:
+        baseline_path = Path(args.baseline)
+        if not baseline_path.is_file():
+            print(f"--baseline: no such file: {baseline_path}", file=sys.stderr)
+            return 1
+        baseline = json.loads(baseline_path.read_text())
+        current = {"results": [r.as_dict() for r in results]}
+        regressions = _judge_module().compare_to_baseline(current, baseline)
+        if regressions:
+            print("\nRegressions vs baseline:")
+            for reg in regressions:
+                print(f"  {reg}")
+        else:
+            print("\nNo regressions vs baseline.")
+        return 1 if regressions else 0
 
     all_passed = all(r.status == "pass" for r in results)
     return 0 if all_passed else 1

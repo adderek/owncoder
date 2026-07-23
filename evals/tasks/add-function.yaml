@@ -7,3 +7,5 @@ checks:
     run: "python -m pytest test_utils.py -q"
   - type: file_exists
     path: utils.py
+judge:
+  type: edit
