@@ -79,39 +79,32 @@ def _quarantine_material(config) -> str:
 
 
 async def _distill(config, material: str) -> list[dict]:
-    from openai import AsyncOpenAI
     from agent.config import make_registry
     from agent.security import airgap
 
-    try:
-        entry = make_registry(config).role("evolve")
-    except Exception as e:  # noqa: BLE001
-        return [{"_error": f"distill unavailable: {e}"}]
-    # Distill must be offline-safe: if air-gap is on, the LOCAL endpoint is fine.
-    if airgap.is_enabled(config) and not airgap.is_local_url(entry.base_url):
-        return [{"_error": "air-gap: distill endpoint is non-local"}]
+    # Distill must be offline-safe: if air-gap is on, the LOCAL endpoint is fine
+    # — and failover must never hand it a cloud candidate either.
+    airgapped = airgap.is_enabled(config)
+    if airgapped:
+        try:
+            entry = make_registry(config).role("evolve")
+        except Exception as e:  # noqa: BLE001
+            return [{"_error": f"distill unavailable: {e}"}]
+        if not airgap.is_local_url(entry.base_url):
+            return [{"_error": "air-gap: distill endpoint is non-local"}]
 
-    client = AsyncOpenAI(base_url=entry.base_url, api_key=entry.api_key)
+    from agent.core.llm_retry import call_role_with_failover
     try:
-        from agent.metrics import model_calls
-        model_calls.record_entry(entry, role="security-evolve")
-    except Exception:
-        pass
-    try:
-        resp = await client.chat.completions.create(
-            model=entry.model,
+        resp, _name, _entry = await call_role_with_failover(
+            config, "evolve",
             messages=[{"role": "system", "content": _SYSTEM},
                       {"role": "user", "content": material[:_MAX_MATERIAL_CHARS]}],
             max_tokens=1400, temperature=0.1,   # COLD judgment
+            metrics_role="security-evolve", local_only=airgapped,
         )
         raw = (resp.choices[0].message.content or "") if resp.choices else ""
     except Exception as e:  # noqa: BLE001
         return [{"_error": f"distill call failed: {e}"}]
-    finally:
-        try:
-            await client.close()
-        except Exception:  # noqa: BLE001
-            pass
 
     from agent.security.review import _parse
     out = []

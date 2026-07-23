@@ -452,6 +452,42 @@ def is_rate_limited(base_url: str, model: str) -> bool:
     return True
 
 
+def retry_after_seconds(e: Exception) -> float:
+    """Extract a Retry-After header (seconds) from a RateLimitError, or 0."""
+    try:
+        resp = getattr(e, "response", None)
+        if resp is not None:
+            return float(resp.headers.get("retry-after") or 0)
+    except Exception:
+        pass
+    return 0.0
+
+
+# OpenRouter and other aggregators return 429 both for transient burst limits
+# (retry in seconds) and for daily free-tier exhaustion ("X free requests per
+# day"), which won't clear for hours. The message text distinguishes them.
+_DAILY_LIMIT_MARKERS = (
+    "per day", "per-day", "daily", "free-models-per-day",
+    "quota", "exceeded your", "requests per day", "tokens per day",
+)
+
+
+def is_daily_quota_429(e: Exception, retry_after: float) -> bool:
+    """True when a 429 looks like a daily/quota exhaustion rather than a burst
+    limit — either the body says so, or Retry-After is longer than any sane
+    burst cooldown (> 5 min)."""
+    if retry_after > 300:
+        return True
+    blob = str(getattr(e, "message", "") or e).lower()
+    try:
+        body = getattr(e, "body", None)
+        if isinstance(body, dict):
+            blob += " " + str(body.get("error", body)).lower()
+    except Exception:
+        pass
+    return any(m in blob for m in _DAILY_LIMIT_MARKERS)
+
+
 def model_in_server(model: str, server_ids: set[str]) -> bool:
     """Fuzzy-match a configured model name against live server ids.
 

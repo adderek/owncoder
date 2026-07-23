@@ -43,9 +43,6 @@ async def triage(config: "Config", res: "ScanResult") -> str:
     if not res.findings:
         return "No findings to triage."
 
-    from openai import AsyncOpenAI
-    from agent.config import make_registry
-
     items = []
     for i, f in enumerate(res.findings[:_MAX_FINDINGS]):
         loc = f"{f.path}:{f.line}" if f.line else f.path
@@ -61,32 +58,17 @@ async def triage(config: "Config", res: "ScanResult") -> str:
     )
 
     try:
-        entry = make_registry(config).role("triage")
-        client = AsyncOpenAI(base_url=entry.base_url, api_key=entry.api_key)
-        try:
-            from agent.metrics import model_calls
-            model_calls.record_entry(entry, role="security-triage")
-        except Exception:
-            pass
-    except Exception as e:  # noqa: BLE001
-        return f"(triage unavailable: {e})"
-
-    try:
-        resp = await client.chat.completions.create(
-            model=entry.model,
+        from agent.core.llm_retry import call_role_with_failover
+        resp, _name, _entry = await call_role_with_failover(
+            config, "triage",
             messages=[{"role": "system", "content": _SYSTEM},
                       {"role": "user", "content": user}],
-            max_tokens=_MAX_OUTPUT_TOKENS,
-            temperature=0.2,
+            max_tokens=_MAX_OUTPUT_TOKENS, temperature=0.2,
+            metrics_role="security-triage",
         )
         out = (resp.choices[0].message.content or "").strip() if resp.choices else ""
     except Exception as e:  # noqa: BLE001
         return f"(triage call failed: {e})"
-    finally:
-        try:
-            await client.close()
-        except Exception:  # noqa: BLE001
-            pass
 
     return out or "(triage returned empty)"
 

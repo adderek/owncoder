@@ -485,12 +485,22 @@ class LocalUIServer:
         except Exception:
             logger.debug("models_overview: matrix failed", exc_info=True)
         active = model_roles.get("default", "")
+        from agent.core.model_status import get_model_counts, get_endpoint_counts, get_workers
+        running = get_model_counts()
+        calls_by_model: dict = {}
+        try:
+            from agent.metrics.model_calls import session_token_rows
+            for row in session_token_rows():
+                calls_by_model[row["model"]] = calls_by_model.get(row["model"], 0) + row["calls"]
+        except Exception:
+            logger.debug("models_overview: session_token_rows failed", exc_info=True)
         rows = []
         for name in sorted(entries):
             e = entries[name]
+            model = getattr(e, "model", "") or ""
             rows.append({
                 "name": name,
-                "model": getattr(e, "model", "") or "",
+                "model": model,
                 "base_url": getattr(e, "base_url", "") or "",
                 "tier": entry_tier(e),
                 "status": entry_status(cfg, name, e) or "on",
@@ -501,6 +511,8 @@ class LocalUIServer:
                 "local": bool(getattr(e, "local", False)),
                 "embeddings": bool(getattr(e, "dimensions", 0)),
                 "active": name == active,
+                "running": running.get(model, 0),
+                "calls": calls_by_model.get(model, 0),
             })
         try:
             from agent.core.model_mode import _ORDER as modes
@@ -513,6 +525,8 @@ class LocalUIServer:
             "active_url": cfg.llm.base_url or "",
             "roles": roles,
             "entries": rows,
+            "endpoints": get_endpoint_counts(),
+            "workers": len(get_workers()),
         }
 
     def set_model_entry_enabled(self, name: str, enabled: bool,

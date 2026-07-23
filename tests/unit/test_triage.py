@@ -48,14 +48,15 @@ class _FakeClient:
 
 @pytest.fixture
 def _fake_llm(monkeypatch):
-    # Fake openai.AsyncOpenAI
-    fake_openai = types.ModuleType("openai")
-    fake_openai.AsyncOpenAI = _FakeClient
-    monkeypatch.setitem(sys.modules, "openai", fake_openai)
     # Fake make_registry().default
     entry = types.SimpleNamespace(base_url="http://localhost:8080/v1", api_key="local", model="m")
     reg = types.SimpleNamespace(default=entry, summarizer=entry, role=lambda *_a, **_k: entry)
     monkeypatch.setattr("agent.config.make_registry", lambda cfg: reg)
+    # call_role_with_failover builds its client via make_llm_client (not a
+    # bare AsyncOpenAI()) — patch that factory instead of faking the openai
+    # module, which would also break the real RateLimitError/… imports it uses.
+    monkeypatch.setattr("agent.core.llm_client.make_llm_client",
+                        lambda cfg, base_url="", api_key="": _FakeClient())
     return entry
 
 
@@ -72,15 +73,12 @@ def test_triage_annotates_findings(tmp_path, _fake_llm):
 def test_triage_never_raises_on_client_error(tmp_path, monkeypatch):
     res = _make_result(tmp_path)
 
-    class _Boom:
-        def __init__(self, *a, **k):
-            raise RuntimeError("no endpoint")
+    def _boom(cfg, base_url="", api_key=""):
+        raise RuntimeError("no endpoint")
 
-    fake_openai = types.ModuleType("openai")
-    fake_openai.AsyncOpenAI = _Boom
-    monkeypatch.setitem(sys.modules, "openai", fake_openai)
     entry = types.SimpleNamespace(base_url="x", api_key="x", model="m")
     monkeypatch.setattr("agent.config.make_registry",
                         lambda cfg: types.SimpleNamespace(default=entry, role=lambda *_a, **_k: entry))
+    monkeypatch.setattr("agent.core.llm_client.make_llm_client", _boom)
     out = triage.run_triage(object(), res)
-    assert "triage unavailable" in out
+    assert "triage call failed" in out

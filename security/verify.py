@@ -80,14 +80,16 @@ def _strip_fences(code: str) -> str:
 
 
 async def _generate(config, finding: "secaudit.Finding", target: str) -> str:
-    from openai import AsyncOpenAI
     from agent.config import make_registry
     from agent.security import airgap
 
-    entry = make_registry(config).role("verify")
-    if airgap.is_enabled(config) and not airgap.is_local_url(entry.base_url):
-        return "# air-gap: refused — LLM endpoint is non-local"
+    airgapped = airgap.is_enabled(config)
+    if airgapped:
+        entry = make_registry(config).role("verify")
+        if not airgap.is_local_url(entry.base_url):
+            return "# air-gap: refused — LLM endpoint is non-local"
 
+    from agent.core.llm_retry import call_role_with_failover
     excerpt = _excerpt(target, finding.path, finding.line)
     user = (
         f"Project root: {target}\n"
@@ -97,26 +99,17 @@ async def _generate(config, finding: "secaudit.Finding", target: str) -> str:
         f"Source excerpt:\n```\n{excerpt}\n```\n\n"
         "Write the regression test now."
     )
-    client = AsyncOpenAI(base_url=entry.base_url, api_key=entry.api_key)
     try:
-        from agent.metrics import model_calls
-        model_calls.record_entry(entry, role="security-verify")
-    except Exception:
-        pass
-    try:
-        resp = await client.chat.completions.create(
-            model=entry.model,
+        resp, _name, _entry = await call_role_with_failover(
+            config, "verify",
             messages=[{"role": "system", "content": _SYSTEM},
                       {"role": "user", "content": user}],
-            max_tokens=_MAX_OUTPUT_TOKENS,
-            temperature=0.1,
+            max_tokens=_MAX_OUTPUT_TOKENS, temperature=0.1,
+            metrics_role="security-verify", local_only=airgapped,
         )
-        out = (resp.choices[0].message.content or "") if resp.choices else ""
-    finally:
-        try:
-            await client.close()
-        except Exception:  # noqa: BLE001
-            pass
+    except Exception as e:  # noqa: BLE001
+        return f"# verify generation failed: {e}"
+    out = (resp.choices[0].message.content or "") if resp.choices else ""
     return _strip_fences(out)
 
 
@@ -161,7 +154,7 @@ def verify_finding(config, target: str, index: int) -> str:
     f = res.findings[index]
 
     code = _generate_sync(config, f, target)
-    if not code or code.startswith("# air-gap"):
+    if not code or code.startswith("# air-gap") or code.startswith("# verify generation failed"):
         return code or "(PoC generation returned empty)"
 
     d = poc_dir(config)

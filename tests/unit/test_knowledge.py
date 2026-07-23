@@ -1,7 +1,6 @@
 """Tests for the security knowledge base + self-evolution distiller."""
 from __future__ import annotations
 
-import sys
 import types
 
 from agent.security import knowledge, evolve
@@ -65,12 +64,14 @@ class _DistillClient:
 
 
 def _patch_llm(monkeypatch):
-    fake = types.ModuleType("openai")
-    fake.AsyncOpenAI = _DistillClient
-    monkeypatch.setitem(sys.modules, "openai", fake)
     entry = types.SimpleNamespace(base_url="http://localhost:8081/v1", api_key="local", model="m")
     monkeypatch.setattr("agent.config.make_registry",
                         lambda c: types.SimpleNamespace(default=entry, role=lambda *_a, **_k: entry))
+    # call_role_with_failover builds its client via make_llm_client (not a
+    # bare AsyncOpenAI()) — patch that factory instead of faking the openai
+    # module, which would also break the real RateLimitError/… imports it uses.
+    monkeypatch.setattr("agent.core.llm_client.make_llm_client",
+                        lambda cfg, base_url="", api_key="": _DistillClient())
 
 
 def test_evolve_from_quarantine_cold_gate(tmp_path, monkeypatch):

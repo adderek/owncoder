@@ -573,9 +573,9 @@ async function modelAction(payload) {
   loadModels();
 }
 
-async function loadModels() {
+async function loadModels(silent) {
   const el = document.getElementById('modelsbody');
-  el.textContent = '…';
+  if (!silent) el.textContent = '…';
   try {
     const d = await (await fetch('/api/models')).json();
     let h = '<div class="modeline">mode <select id="modesel">' +
@@ -588,23 +588,43 @@ async function loadModels() {
           (r.pinned ? '📌 ' : '&nbsp;&nbsp; ') + esc(r.role) + ' → ' + esc(r.entry) +
           ' [' + esc(r.tier) + ']</div>').join('') + '</div>';
     }
+    const eps = d.endpoints || {};
+    if (Object.keys(eps).length) {
+      h += '<div class="mendpoints">running now: ' +
+        Object.entries(eps).map(([label, n]) =>
+          '<span class="mep">' + esc(label) + ':' + n + '</span>').join('') +
+        (d.workers ? '<span class="mep">agents:' + d.workers + '</span>' : '') +
+        '</div>';
+    }
     h += '<div class="mrolesec">entries — use switches default, on/off is session-scoped</div>';
     for (const e of (d.entries || [])) {
       const off = e.status === 'off';
-      h += '<div class="mrow ' + esc(e.status) + (e.active ? ' active' : '') + '"' +
+      const running = e.running || 0;
+      h += '<div class="mrow ' + esc(e.status) + (e.active ? ' active' : '') +
+        (running ? ' busy' : '') + '"' +
         ' title="' + esc(e.model + '\n' + e.base_url +
           (e.tags.length ? '\ntags: ' + e.tags.join(', ') : '')) + '">' +
         '<span class="mst"></span>' +
         '<span class="mname">' + (e.active ? '▸ ' : '') + esc(e.name) + '</span>' +
         '<span class="mtier">[' + esc(e.tier) + ']</span>' +
         '<span class="mid">' + esc(e.model) + '</span>' +
+        '<span class="mrun" title="requests in flight"><span class="mrun-dot"></span>' +
+          (running > 1 ? running : '') + '</span>' +
+        (e.calls ? '<span class="mcalls" title="completed calls this session">×' + e.calls + '</span>' : '') +
         (e.embeddings ? '<span class="mtier">emb</span>' :
           '<button class="mbtn" data-use="' + esc(e.name) + '">use</button>') +
         '<button class="mbtn" data-toggle="' + esc(e.name) + '" data-en="' +
           (off ? '1' : '') + '">' + (off ? 'enable' : 'disable') + '</button>' +
         '</div>';
     }
+    // Skip the DOM write entirely when nothing changed — a poll landing on an
+    // unchanged panel is the common case, and rewriting innerHTML every 2s
+    // was what caused the blink + scroll-to-top even when idle.
+    if (h === el.dataset.lastHtml) return;
+    el.dataset.lastHtml = h;
+    const scrollTop = el.scrollTop;
     el.innerHTML = h;
+    el.scrollTop = scrollTop;
     el.querySelectorAll('[data-use]').forEach(b => b.addEventListener('click', () =>
       modelAction({action: 'use', entry: b.dataset.use})));
     el.querySelectorAll('[data-toggle]').forEach(b => b.addEventListener('click', () =>
@@ -776,6 +796,11 @@ async function loadBg() {
   } catch (e) { if (el) el.textContent = 'failed: ' + e; }
 }
 setInterval(loadBg, 5000);
+// Live model activity (running/completed counts) only matters while the
+// Details drawer is open — no point polling into a hidden panel.
+setInterval(() => {
+  if (document.getElementById('right').classList.contains('open')) loadModels(true);
+}, 2000);
 document.getElementById('bgchip').addEventListener('click', () => openDetails(loadBg));
 document.getElementById('d-bg').addEventListener('click', loadBg);
 document.getElementById('d-models').addEventListener('click', loadModels);

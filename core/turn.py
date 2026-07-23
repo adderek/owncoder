@@ -284,40 +284,13 @@ def _no_usable_model_error(config, cause: BaseException) -> "NoUsableModelError"
     return NoUsableModelError(cause, candidates)
 
 
-def _retry_after_seconds(e: Exception) -> float:
-    """Extract a Retry-After header (seconds) from a RateLimitError, or 0."""
-    try:
-        resp = getattr(e, "response", None)
-        if resp is not None:
-            return float(resp.headers.get("retry-after") or 0)
-    except Exception:
-        pass
-    return 0.0
-
-
-# OpenRouter and other aggregators return 429 both for transient burst limits
-# (retry in seconds) and for daily free-tier exhaustion ("X free requests per
-# day"), which won't clear for hours. The message text distinguishes them.
-_DAILY_LIMIT_MARKERS = (
-    "per day", "per-day", "daily", "free-models-per-day",
-    "quota", "exceeded your", "requests per day", "tokens per day",
+# Rate-limit classification lives in config.model_probe (shared with the
+# background-task failover helper in core.llm_retry); re-exported here under
+# their historical names since this module's callers and tests use them.
+from agent.config.model_probe import (
+    retry_after_seconds as _retry_after_seconds,
+    is_daily_quota_429 as _is_daily_quota_429,
 )
-
-
-def _is_daily_quota_429(e: Exception, retry_after: float) -> bool:
-    """True when a 429 looks like a daily/quota exhaustion rather than a burst
-    limit — either the body says so, or Retry-After is longer than any sane
-    burst cooldown (> 5 min)."""
-    if retry_after > 300:
-        return True
-    blob = str(getattr(e, "message", "") or e).lower()
-    try:
-        body = getattr(e, "body", None)
-        if isinstance(body, dict):
-            blob += " " + str(body.get("error", body)).lower()
-    except Exception:
-        pass
-    return any(m in blob for m in _DAILY_LIMIT_MARKERS)
 
 
 def _normalize_api_messages(messages: list[dict]) -> list[dict]:
@@ -336,19 +309,17 @@ def _normalize_api_messages(messages: list[dict]) -> list[dict]:
 
     api_messages = [_to_api_msg(m) for m in messages]
     api_messages = _merge_consecutive_assistants(api_messages)
-    # Merge consecutive leading system messages into one — some models (e.g.
+    # Merge ALL system messages into a single leading one — some models (e.g.
     # Qwen3.6 with --jinja) raise a Jinja exception if any system message has
     # loop.first=False, meaning only the very first message may be a system msg.
-    leading_sys = []
-    rest: list[dict] = []
-    for _m in api_messages:
-        if not rest and _m.get("role") == "system":
-            leading_sys.append(_m)
-        else:
-            rest.append(_m)
-    if len(leading_sys) > 1:
-        merged_content = "\n\n".join(m["content"] for m in leading_sys if m.get("content"))
-        api_messages = [{**leading_sys[0], "content": merged_content}] + rest
+    # System msgs can end up mid-conversation (e.g. scheduled/bg-job status
+    # notes appended by agent.py between turns), not just as a leading run, so
+    # this must scan the whole list rather than only the leading prefix.
+    sys_msgs = [m for m in api_messages if m.get("role") == "system"]
+    rest = [m for m in api_messages if m.get("role") != "system"]
+    if sys_msgs:
+        merged_content = "\n\n".join(m["content"] for m in sys_msgs if m.get("content"))
+        api_messages = [{**sys_msgs[0], "content": merged_content}] + rest
     # Trailing assistant without tool_calls = unintentional prefill; reject by
     # most APIs (and always incompatible with enable_thinking). Strip it.
     if api_messages and api_messages[-1].get("role") == "assistant" and not api_messages[-1].get("tool_calls"):
