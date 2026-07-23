@@ -54,6 +54,29 @@ _BLOCKED_NETS = [
 ]
 
 
+def _domain_matches(bound, host):
+    # True when host is the bound domain or a dot-boundary subdomain of it.
+    # Mirrors credpool._domain_matches exactly so credential headers follow a
+    # redirect only to hosts credpool itself would have gated the cookie to.
+    # No agent imports (runs inside the sandbox worker).
+    bound = (bound or "").lower().lstrip(".")
+    host = (host or "").lower()
+    if not bound or not host:
+        return False
+    return host == bound or host.endswith("." + bound)
+
+
+def _creds_for_hop(headers, cred_domain, next_host):
+    # Return headers to carry to the next redirect hop. When credential headers
+    # were bound to cred_domain (via credpool) and the hop leaves that domain,
+    # drop Cookie/Authorization so an open-redirect can't exfiltrate them.
+    # No cred_domain (empty) = no credpool injection; leave headers untouched.
+    if not cred_domain or _domain_matches(cred_domain, next_host):
+        return headers
+    return {k: v for k, v in headers.items()
+            if k.lower() not in ("cookie", "authorization")}
+
+
 def _is_ip_safe(ip_str):
     try:
         addr = ipaddress.ip_address(ip_str)
@@ -136,6 +159,12 @@ def main():
     current_url = url
     current_pinned_ip = pinned_ip
     redirect_count = 0
+    # Domain the credential headers (Cookie/Authorization) are bound to, as
+    # gated by credpool before the fetch. Empty when no credential injection.
+    # The executor re-enforces this binding on every redirect hop — otherwise
+    # an open-redirect on the bound domain would ship the session cookie to an
+    # attacker-controlled host.
+    cred_domain = (req.get("cred_domain") or "").lower()
 
     while True:
         parsed = urlparse(current_url)
@@ -208,6 +237,12 @@ def main():
                 extra_headers = {k: v for k, v in extra_headers.items()
                                  if k.lower() not in ("content-length", "transfer-encoding")}
 
+            # Redirect off the credpool-bound domain: drop credential headers.
+            # A redirect to a host outside the bound domain (open-redirect or a
+            # hostile page) must NOT carry the cookie/authorization along.
+            next_host = (next_parsed.hostname or "").lower()
+            extra_headers = _creds_for_hop(extra_headers, cred_domain, next_host)
+
             current_url = next_url
             current_pinned_ip = next_ip
             redirect_count += 1
@@ -276,6 +311,7 @@ def fetch(
     max_redirects: int = 3,
     max_bytes: int | None = None,
     user_agent: str | None = None,
+    cred_domain: str | None = None,
 ) -> dict:
     """Execute a sandboxed HTTP request.
 
@@ -308,6 +344,7 @@ def fetch(
         "max_redirects": max_redirects,
         "max_bytes": max_bytes,
         "user_agent": user_agent or ws_cfg.user_agent,
+        "cred_domain": cred_domain or "",
     }
 
     script_path = _script_path or _write_fetcher_script()

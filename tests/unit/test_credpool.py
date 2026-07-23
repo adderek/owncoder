@@ -70,20 +70,21 @@ def test_select_by_domain(cfg):
 def test_headers_domain_gated(cfg):
     credpool.add_account(cfg, "hn", "news.ycombinator.com", "alice", "pw")
     credpool._update(cfg, "hn", cookies={"session": "TOKEN123"})
-    # Bound domain → cookie attached.
-    headers, ua = credpool.headers_for(cfg, "https://news.ycombinator.com/")
+    # Bound domain → cookie attached, bound domain returned for redirect gating.
+    headers, ua, domain = credpool.headers_for(cfg, "https://news.ycombinator.com/")
     assert "TOKEN123" in headers.get("Cookie", "")
     assert ua  # stable UA present
+    assert domain == "news.ycombinator.com"
     # Attacker domain → NOTHING (blocks cross-domain exfiltration).
-    headers2, ua2 = credpool.headers_for(cfg, "https://attacker.com/steal")
-    assert headers2 == {} and ua2 is None
+    headers2, ua2, domain2 = credpool.headers_for(cfg, "https://attacker.com/steal")
+    assert headers2 == {} and ua2 is None and domain2 is None
 
 
 def test_disabled_returns_nothing(cfg):
     cfg.credpool.enabled = False
     credpool.add_account(cfg, "hn", "news.ycombinator.com", "alice", "pw")
     credpool._update(cfg, "hn", cookies={"session": "T"})
-    assert credpool.headers_for(cfg, "https://news.ycombinator.com/") == ({}, None)
+    assert credpool.headers_for(cfg, "https://news.ycombinator.com/") == ({}, None, None)
 
 
 def test_capture_cookies(cfg):
@@ -92,7 +93,7 @@ def test_capture_cookies(cfg):
         cfg, "https://news.ycombinator.com/login",
         {"set-cookie": "user=alice; Path=/; HttpOnly"},
     )
-    headers, _ = credpool.headers_for(cfg, "https://news.ycombinator.com/")
+    headers, _, _ = credpool.headers_for(cfg, "https://news.ycombinator.com/")
     assert "user=alice" in headers.get("Cookie", "")
 
 

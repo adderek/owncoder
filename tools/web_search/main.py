@@ -748,14 +748,17 @@ def web_fetch(url: str) -> dict:
     # to another host gets nothing) and is NEVER placed in a tool argument or
     # result the LLM can read. See agent/security/credpool.py.
     from agent.security import credpool
-    cred_headers, cred_ua = credpool.headers_for(_config, gated.url)
+    cred_headers, cred_ua, cred_domain = credpool.headers_for(_config, gated.url)
 
-    # Layer 2: Sandboxed HTTP (pinned_ip prevents DNS rebind TOCTOU)
+    # Layer 2: Sandboxed HTTP (pinned_ip prevents DNS rebind TOCTOU).
+    # cred_domain re-gates the credential headers on every redirect hop so an
+    # open-redirect off the bound domain cannot leak the session cookie.
     http_result = http_executor.fetch(
         gated.url,
         pinned_ip=gated.pinned_ip,
         headers=cred_headers or None,
         user_agent=cred_ua,
+        cred_domain=cred_domain,
     )
     if http_result.get("error"):
         return {"url": url, "error": http_result["error"]}

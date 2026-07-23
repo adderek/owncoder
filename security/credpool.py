@@ -181,25 +181,28 @@ def select_account(config, url: str) -> dict | None:
     return candidates[0]
 
 
-def headers_for(config, url: str) -> tuple[dict, str | None]:
-    """Return (headers, user_agent) to attach for this URL, domain-gated.
+def headers_for(config, url: str) -> tuple[dict, str | None, str | None]:
+    """Return (headers, user_agent, bound_domain) to attach for this URL.
 
-    Returns ({}, None) when no bound account exists for the URL's domain — so a
-    page that redirects the fetch to an unbound host gets NO cookie (blocks the
-    cross-domain exfiltration attack). Marks the account used.
+    Domain-gated: returns ({}, None, None) when no bound account exists for the
+    URL's domain — so a page that redirects the fetch to an unbound host gets
+    NO cookie. ``bound_domain`` is the account's domain and MUST be passed to
+    the fetcher so it re-enforces the same gate on every redirect hop (an
+    open-redirect on the bound domain would otherwise leak the cookie
+    cross-host). Marks the account used.
     """
     if not getattr(getattr(config, "credpool", None), "enabled", False):
-        return {}, None
+        return {}, None, None
     acc = select_account(config, url)
     if acc is None:
-        return {}, None
+        return {}, None, None
     headers: dict = {}
     cookies = acc.get("cookies") or {}
     if cookies:
         headers["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
     ua = acc.get("user_agent") or None
     _touch(config, acc.get("service"), last_used=time.time())
-    return headers, ua
+    return headers, ua, acc.get("domain") or None
 
 
 def capture_cookies(config, url: str, response_headers: dict) -> None:

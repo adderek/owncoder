@@ -271,3 +271,60 @@ class TestPinnedIP:
             assert resp.get("error"), f"Expected block on loopback, got: {resp}"
         finally:
             server.shutdown()
+
+
+# ── Credential-header redirect gating (credpool cookie exfil) ────────────────
+#
+# Loopback redirects are always IP-blocked by the SSRF guard, so the hop can't
+# be exercised end-to-end against a local server. The credential-stripping
+# decision is a pure helper (_creds_for_hop) in the fetcher script; load the
+# script's namespace and test it directly.
+
+import types
+
+
+def _fetcher_ns():
+    from agent.tools.web_search import http_executor
+    script = http_executor._FETCHER_SCRIPT
+    head = script.split("def main")[0]
+    ns: dict = {}
+    exec(compile(head, "fetcher", "exec"), ns)
+    return ns
+
+
+class TestCredentialRedirectGating:
+    def setup_method(self):
+        self.ns = _fetcher_ns()
+
+    def test_domain_matches_semantics(self):
+        dm = self.ns["_domain_matches"]
+        assert dm("example.com", "example.com")
+        assert dm("example.com", "www.example.com")
+        assert not dm("example.com", "attacker.com")
+        assert not dm("example.com", "evilexample.com")  # no dot boundary
+        assert not dm("", "example.com")
+        assert not dm("example.com", "")
+
+    def test_cookie_preserved_on_bound_domain(self):
+        strip = self.ns["_creds_for_hop"]
+        h = {"Cookie": "session=SECRET", "Accept": "text/html"}
+        out = strip(h, "example.com", "www.example.com")
+        assert out["Cookie"] == "session=SECRET"
+
+    def test_cookie_stripped_off_bound_domain(self):
+        strip = self.ns["_creds_for_hop"]
+        h = {"Cookie": "session=SECRET", "Authorization": "Bearer X", "Accept": "text/html"}
+        out = strip(h, "example.com", "attacker.com")
+        assert "Cookie" not in out and "Authorization" not in out
+        assert out["Accept"] == "text/html"  # non-credential headers kept
+
+    def test_no_cred_domain_leaves_headers_untouched(self):
+        strip = self.ns["_creds_for_hop"]
+        h = {"Cookie": "session=SECRET"}
+        assert strip(h, "", "attacker.com") == h
+
+    def test_case_insensitive_header_names(self):
+        strip = self.ns["_creds_for_hop"]
+        h = {"cookie": "session=SECRET", "AUTHORIZATION": "Bearer X"}
+        out = strip(h, "example.com", "attacker.com")
+        assert out == {}
