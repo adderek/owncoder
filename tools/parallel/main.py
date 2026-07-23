@@ -124,7 +124,7 @@ async def _run_worker(
     excluded_tools: set[str],
     context: str = "",
 ) -> dict:
-    from openai import AsyncOpenAI
+    from agent.core.llm_client import make_llm_client
     from agent.core.turn import run_turn
     from agent.core.prompts import _build_system_prompt
     from agent.security.query_gate import make_worker_limiter
@@ -137,7 +137,11 @@ async def _run_worker(
     except ValueError as exc:
         return {"model": model_name, "output": None, "error": str(exc), "tokens": {}}
 
-    client = AsyncOpenAI(base_url=wcfg.llm.base_url, api_key=wcfg.llm.api_key)
+    # run_turn already does full rate-limit/failover handling internally
+    # (see core/turn.py) — it just needs a client with a real timeout ceiling
+    # and SDK retries off, not a bare AsyncOpenAI() that silently re-hits a
+    # rejecting endpoint for its own retry window before run_turn ever sees it.
+    client = make_llm_client(wcfg, base_url=wcfg.llm.base_url, api_key=wcfg.llm.api_key)
 
     store = data_provider.get_store() if data_provider else None
     indexed_count = store.stats()["chunks"] if store else 0

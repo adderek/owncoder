@@ -164,7 +164,7 @@ async def ask_internet(task: str) -> dict:
     if airgap.is_enabled(_config):
         return {"error": "ask_internet: refused under air-gap mode"}
 
-    from openai import AsyncOpenAI
+    from agent.core.llm_client import make_llm_client
     from agent.core.turn import run_turn
     from agent.security.query_gate import make_worker_limiter
     from agent.tools import get_schemas
@@ -173,7 +173,11 @@ async def ask_internet(task: str) -> dict:
     make_worker_limiter()
 
     cfg = _quarantine_config(_config)
-    client = AsyncOpenAI(base_url=cfg.llm.base_url, api_key=cfg.llm.api_key)
+    # run_turn already does full rate-limit/failover handling internally
+    # (see core/turn.py) — it just needs a client with a real timeout ceiling
+    # and SDK retries off, not a bare AsyncOpenAI() that silently re-hits a
+    # rejecting endpoint for its own retry window before run_turn ever sees it.
+    client = make_llm_client(cfg, base_url=cfg.llm.base_url, api_key=cfg.llm.api_key)
 
     all_names = {s["function"]["name"] for s in get_schemas()}
     excluded = all_names - _INTERNET_TOOLS  # subagent keeps ONLY internet tools
