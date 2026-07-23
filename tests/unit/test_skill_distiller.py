@@ -3,9 +3,12 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agent.config import Config
+from agent.config.models import ModelEntry
 from agent.memory import skill_distiller
 from agent.skills import SkillLoader
 
@@ -25,32 +28,26 @@ class _FactsStore:
 
 
 def _make_config(tmp_path, distill=True):
-    return SimpleNamespace(
-        agent=SimpleNamespace(distill_skills=distill),
-        tools=SimpleNamespace(working_dir=str(tmp_path), agent_dir=".agent"),
-        llm=SimpleNamespace(base_url="http://x/v1", api_key="local", model="m"),
-    )
+    c = Config()
+    c.agent.distill_skills = distill
+    c.tools.working_dir = str(tmp_path)
+    c.tools.agent_dir = ".agent"
+    c.model_entries = {"default": ModelEntry(base_url="http://x/v1", model="m")}
+    return c
 
 
 def _patch_llm(monkeypatch, payload: str):
-    """Patch openai.OpenAI so the client returns `payload` as content."""
+    """distill_session_skills now routes through core.llm_retry, which builds
+    its client via make_llm_client (async) rather than a bare openai.OpenAI()
+    — patch that factory instead."""
     msg = SimpleNamespace(content=payload)
     choice = SimpleNamespace(message=msg)
     resp = SimpleNamespace(choices=[choice])
-
-    class _Completions:
-        def create(self, **_):
-            return resp
-
-    class _Chat:
-        completions = _Completions()
-
-    class _Client:
-        def __init__(self, **_):
-            self.chat = _Chat()
-
-    import openai
-    monkeypatch.setattr(openai, "OpenAI", _Client)
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(return_value=resp)
+    client.close = AsyncMock()
+    monkeypatch.setattr("agent.core.llm_client.make_llm_client",
+                        lambda cfg, base_url="", api_key="": client)
 
 
 _LONG = "x" * 100  # exceeds the 80-char source threshold
@@ -151,10 +148,8 @@ def test_malformed_json_fenced(tmp_path, monkeypatch):
 def test_llm_error_returns_zero(tmp_path, monkeypatch):
     cfg = _make_config(tmp_path)
 
-    class _Boom:
-        def __init__(self, **_):
-            raise RuntimeError("no endpoint")
+    def _boom(c, base_url="", api_key=""):
+        raise RuntimeError("no endpoint")
 
-    import openai
-    monkeypatch.setattr(openai, "OpenAI", _Boom)
+    monkeypatch.setattr("agent.core.llm_client.make_llm_client", _boom)
     assert skill_distiller.distill_session_skills("s", cfg, _FactsStore(_Round(draft=_LONG))) == 0
