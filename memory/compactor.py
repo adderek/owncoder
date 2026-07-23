@@ -351,27 +351,17 @@ async def _check_goal_drift(
         f"current q_view: {q_view}"
     )
     try:
-        from agent.config import make_registry
-        entry = make_registry(config).role("compaction")
-        from openai import AsyncOpenAI as _OAI
-        sum_client = _OAI(base_url=entry.base_url, api_key=entry.api_key)
-        try:
-            try:
-                from agent.metrics import model_calls
-                model_calls.record_entry(entry, role="compaction")
-            except Exception:
-                pass
-            response = await sum_client.chat.completions.create(
-                model=entry.model,
-                messages=[
-                    {"role": "system", "content": _DRIFT_SYSTEM},
-                    {"role": "user", "content": prompt},
-                ],
-                max_tokens=300,
-                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-            )
-        finally:
-            await sum_client.close()
+        from agent.core.llm_retry import call_role_with_failover
+        response, _name, _entry = await call_role_with_failover(
+            config, "compaction",
+            messages=[
+                {"role": "system", "content": _DRIFT_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=300,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            metrics_role="compaction",
+        )
         raw = (response.choices[0].message.content or "").strip()
         m = _DRIFT_JSON_RE.search(raw)
         if not m:

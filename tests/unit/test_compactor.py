@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from agent.memory.compactor import (
+    _check_goal_drift,
     _count_tokens_approx,
     _parse_compaction_output,
     _parse_synthesis_output,
@@ -391,3 +392,31 @@ class TestCompactionRobustness:
             if m.get("role") == "tool":
                 prev = result[idx - 1] if idx > 0 else {}
                 assert prev.get("tool_calls"), f"orphan tool message at result[{idx}]"
+
+
+class TestCheckGoalDrift:
+    """_check_goal_drift is best-effort (returns None on any failure) and now
+    routes through core.llm_retry.call_role_with_failover instead of a bare,
+    single-attempt AsyncOpenAI() client."""
+
+    @pytest.mark.asyncio
+    async def test_returns_corrected_q_on_drift(self, cfg, monkeypatch):
+        from agent.config.models import ModelEntry
+        cfg.model_entries = {"default": ModelEntry(base_url="http://x/v1", model="m")}
+
+        reply = make_response(
+            content='{"drifted": true, "corrected_q": "fixed goal"}')
+        client = MagicMock()
+        client.chat.completions.create = AsyncMock(return_value=reply)
+        client.close = AsyncMock()
+        monkeypatch.setattr("agent.core.llm_client.make_llm_client",
+                            lambda c, base_url="", api_key="": client)
+
+        out = await _check_goal_drift("original goal", "current q", cfg, MagicMock())
+        assert out == "fixed goal"
+
+    @pytest.mark.asyncio
+    async def test_never_raises_when_no_model_configured(self, cfg):
+        cfg.model_entries = {}
+        out = await _check_goal_drift("original goal", "current q", cfg, MagicMock())
+        assert out is None
