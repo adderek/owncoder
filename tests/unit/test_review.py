@@ -1,7 +1,6 @@
 """Tests for LLM deep-read vulnerability audit (agent.security.review)."""
 from __future__ import annotations
 
-import sys
 import types
 
 from agent.security import review
@@ -60,10 +59,17 @@ class _FakeClient:
 def _patch_llm(monkeypatch, payload=None):
     if payload is not None:
         _FakeClient.payload = payload
-    fake = types.ModuleType("openai")
-    fake.AsyncOpenAI = _FakeClient
-    monkeypatch.setitem(sys.modules, "openai", fake)
-    entry = types.SimpleNamespace(base_url="http://localhost:8081/v1", api_key="local", model="m")
+    _patch_client(monkeypatch, _FakeClient)
+
+
+def _patch_client(monkeypatch, client_cls, base_url="http://localhost:8081/v1"):
+    """review.py now routes calls through core.llm_retry.call_role_with_failover,
+    which builds its client via make_llm_client (not a bare AsyncOpenAI()) —
+    patch that factory instead of faking the openai module, which would also
+    break the real RateLimitError/… imports it uses."""
+    monkeypatch.setattr("agent.core.llm_client.make_llm_client",
+                        lambda cfg, base_url="", api_key="": client_cls())
+    entry = types.SimpleNamespace(base_url=base_url, api_key="local", model="m")
     monkeypatch.setattr("agent.config.make_registry",
                         lambda c: types.SimpleNamespace(default=entry, role=lambda *_a, **_k: entry))
 
@@ -97,12 +103,7 @@ def test_airgap_refuses_remote(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     cfg.security.airgap = True
     (tmp_path / "x.c").write_text("int main(){}\n")
-    fake = types.ModuleType("openai")
-    fake.AsyncOpenAI = _FakeClient
-    monkeypatch.setitem(sys.modules, "openai", fake)
-    entry = types.SimpleNamespace(base_url="https://api.example.com", api_key="k", model="m")
-    monkeypatch.setattr("agent.config.make_registry",
-                        lambda c: types.SimpleNamespace(default=entry, role=lambda *_a, **_k: entry))
+    _patch_client(monkeypatch, _FakeClient, base_url="https://api.example.com")
     out = review.run_review_command(cfg, str(tmp_path))
     assert "air-gap" in out
 
@@ -298,12 +299,7 @@ class _RoutingClient:
 
 
 def test_self_critique_drops_false_positive(tmp_path, monkeypatch):
-    fake = types.ModuleType("openai")
-    fake.AsyncOpenAI = _RoutingClient
-    monkeypatch.setitem(sys.modules, "openai", fake)
-    entry = types.SimpleNamespace(base_url="http://localhost:8081/v1", api_key="local", model="m")
-    monkeypatch.setattr("agent.config.make_registry",
-                        lambda c: types.SimpleNamespace(default=entry, role=lambda *_a, **_k: entry))
+    _patch_client(monkeypatch, _RoutingClient)
     (tmp_path / "a.py").write_text("def run(x):\n    return eval(x)\n")
     out = review.run_review_command(_cfg(tmp_path), str(tmp_path))
     assert "dropped by self-critique" in out
@@ -354,12 +350,7 @@ class _EnsembleClient:
 
 
 def test_ensemble_confidence_by_agreement(tmp_path, monkeypatch):
-    fake = types.ModuleType("openai")
-    fake.AsyncOpenAI = _EnsembleClient
-    monkeypatch.setitem(sys.modules, "openai", fake)
-    entry = types.SimpleNamespace(base_url="http://localhost:8081/v1", api_key="local", model="m")
-    monkeypatch.setattr("agent.config.make_registry",
-                        lambda c: types.SimpleNamespace(default=entry, role=lambda *_a, **_k: entry))
+    _patch_client(monkeypatch, _EnsembleClient)
     (tmp_path / "a.c").write_text("\n".join(f"l{i}" for i in range(5)))
     out = review.run_review_command(_cfg(tmp_path), "ensemble .")
     # A agreed across both samples -> high; B/C one-off -> low.
@@ -389,12 +380,7 @@ def _hresp(content):
 
 
 def test_deep_mode_hot_explore_cold_judge(tmp_path, monkeypatch):
-    fake = types.ModuleType("openai")
-    fake.AsyncOpenAI = _HotClient
-    monkeypatch.setitem(sys.modules, "openai", fake)
-    entry = types.SimpleNamespace(base_url="http://localhost:8081/v1", api_key="local", model="m")
-    monkeypatch.setattr("agent.config.make_registry",
-                        lambda c: types.SimpleNamespace(default=entry, role=lambda *_a, **_k: entry))
+    _patch_client(monkeypatch, _HotClient)
     (tmp_path / "a.c").write_text("\n".join(f"l{i}" for i in range(5)))
     out = review.run_review_command(_cfg(tmp_path), "deep .")
     assert "deep: hot-explore" in out
@@ -419,12 +405,7 @@ def test_deep_inline_sample_count(tmp_path, monkeypatch):
         async def close(self):
             pass
 
-    fake = types.ModuleType("openai")
-    fake.AsyncOpenAI = _Counter
-    monkeypatch.setitem(sys.modules, "openai", fake)
-    entry = types.SimpleNamespace(base_url="http://localhost:8081/v1", api_key="local", model="m")
-    monkeypatch.setattr("agent.config.make_registry",
-                        lambda c: types.SimpleNamespace(default=entry, role=lambda *_a, **_k: entry))
+    _patch_client(monkeypatch, _Counter)
     (tmp_path / "a.c").write_text("int x;\n")           # one window
     out = review.run_review_command(_cfg(tmp_path), "deep 7 .")
     assert "hot-explore ×7" in out

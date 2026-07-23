@@ -173,29 +173,27 @@ def _context_block(chunk: list[str], base_line: int, rel: str, symbols: dict | N
             "issues in them):\n" + "\n".join(called) + "\n\n")
 
 
-async def _review_window(client, model, rel: str, base_line: int, chunk: list[str],
+async def _review_window(config, rel: str, base_line: int, chunk: list[str],
                          symbols: dict | None = None, samples: int = 1,
                          base_temp: float = 0.1, system: str = _SYSTEM,
-                         tier: str = "local") -> list[dict]:
+                         local_only: bool = False) -> list[dict]:
     numbered = "\n".join(f"{base_line + i}: {ln}" for i, ln in enumerate(chunk))
     ctx = _context_block(chunk, base_line, rel, symbols)
     user = (ctx + f"File: {rel} (lines {base_line}-{base_line + len(chunk) - 1})\n"
             f"```\n{numbered}\n```")
     # Multi-sample: each run at a (rising) temperature. The UNION of findings is
     # kept (max recall); _agree counts how many samples saw each one.
+    from agent.core.llm_retry import call_role_with_failover
     agg: dict = {}
     for s in range(max(1, samples)):
-        try:
-            from agent.metrics import model_calls
-            model_calls.record(tier, role="security-review", model=model)
-        except Exception:
-            pass
-        resp = await client.chat.completions.create(
-            model=model,
+        resp, _name, _entry = await call_role_with_failover(
+            config, "review",
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
             max_tokens=_MAX_OUTPUT_TOKENS,
             temperature=min(base_temp + 0.2 * s, 1.2),
+            metrics_role="security-review",
+            local_only=local_only,
         )
         raw = (resp.choices[0].message.content or "") if resp.choices else ""
         for it in _parse(raw):
@@ -401,14 +399,9 @@ def _dedupe_sort(findings: list[dict]) -> list[dict]:
     return uniq
 
 
-async def _self_critique(client, model, findings: list[dict], target: str, base,
-                         tier: str = "local") -> dict:
+async def _self_critique(config, findings: list[dict], target: str, base,
+                         local_only: bool = False) -> dict:
     """One LLM pass judging each finding keep/drop. Returns {index: verdict-dict}."""
-    try:
-        from agent.metrics import model_calls
-        model_calls.record(tier, role="security-critique", model=model)
-    except Exception:
-        pass
     items = []
     for i, it in enumerate(findings[:60]):
         src = ""
@@ -423,11 +416,14 @@ async def _self_critique(client, model, findings: list[dict], target: str, base,
         items.append({"i": i, "loc": f"{it['file']}:{it.get('line')}",
                       "class": it.get("class"), "claim": it.get("detail"), "src": src})
     user = "Findings to judge:\n```json\n" + json.dumps(items, indent=0) + "\n```"
-    resp = await client.chat.completions.create(
-        model=model,
+    from agent.core.llm_retry import call_role_with_failover
+    resp, _name, _entry = await call_role_with_failover(
+        config, "review",
         messages=[{"role": "system", "content": _CRITIQUE_SYSTEM},
                   {"role": "user", "content": user}],
         max_tokens=1200, temperature=0.1,
+        metrics_role="security-critique",
+        local_only=local_only,
     )
     raw = (resp.choices[0].message.content or "") if resp.choices else ""
     out = {}
@@ -447,7 +443,6 @@ async def review(config, target: str, *, incremental: bool = False, on_progress=
     import asyncio
     import time as _time
     from contextlib import asynccontextmanager
-    from openai import AsyncOpenAI
     from agent.config import make_registry
     from agent.security import airgap
 
@@ -472,7 +467,8 @@ async def review(config, target: str, *, incremental: bool = False, on_progress=
         entry = make_registry(config).role("review")
     except Exception as e:  # noqa: BLE001
         return f"(review unavailable: {e})"
-    if airgap.is_enabled(config) and not airgap.is_local_url(entry.base_url):
+    airgapped = airgap.is_enabled(config)
+    if airgapped and not airgap.is_local_url(entry.base_url):
         return "# air-gap: refused — LLM endpoint is non-local"
     try:
         from agent.core.model_status import provider_label as _plabel
@@ -536,9 +532,6 @@ async def review(config, target: str, *, incremental: bool = False, on_progress=
         base_temp = getattr(sec, "review_hot_temp", _HOT_TEMP)
     symbols = _collect_symbols(config, files, base) if _SYMBOL_CONTEXT else {}
 
-    client = AsyncOpenAI(base_url=entry.base_url, api_key=entry.api_key)
-    from agent.config.registry import entry_tier as _etier
-    _tier = _etier(entry)
     findings: list[dict] = []
     sem = asyncio.Semaphore(_CONCURRENCY)
     done = {"n": 0}
@@ -551,47 +544,42 @@ async def review(config, target: str, *, incremental: bool = False, on_progress=
             try:
                 async with _track("sec", _ep):
                     return await _review_window(
-                        client, entry.model, rel, bl, chunk, symbols,
-                        samples=samples, base_temp=base_temp, system=sys_prompt, tier=_tier)
+                        config, rel, bl, chunk, symbols,
+                        samples=samples, base_temp=base_temp, system=sys_prompt,
+                        local_only=airgapped)
             except Exception:  # noqa: BLE001 - one bad window must not abort the run
                 return []
 
     filtered: list[dict] = []
-    try:
-        results = await asyncio.gather(*[_do(t) for t in tasks])
-        for r in results:
-            findings += r
-        uniq = _dedupe_sort(findings)
-        if mode == "ensemble":
-            # Confidence from cross-sample agreement; a finding seen in every
-            # sample is high-confidence, a one-off is likely a hallucination.
-            for it in uniq:
-                ag, sm = it.get("_agree", 1), it.get("_samples", 1)
-                it["confidence"] = "high" if ag >= sm and sm > 1 else ("medium" if ag > 1 else "low")
-        # Cold-judge pass: a low-temperature model critiques the (hot, high-recall)
-        # findings to drop likely false positives. Kept findings get a confidence;
-        # dropped ones move to a separate section, not deleted.
-        if uniq and _SELF_CRITIQUE and judge:
-            _emit(f"self-critique pass over {len(uniq)} finding(s)…")
-            try:
-                async with _track("sec", _ep):
-                    verdicts = await _self_critique(client, entry.model, uniq, target, base, tier=_tier)
-                kept = []
-                for i, it in enumerate(uniq):
-                    v = verdicts.get(i, {})
-                    it["confidence"] = v.get("confidence", "unrated")
-                    if v.get("verdict") == "drop":
-                        it["dropped_reason"] = v.get("reason", "")[:200]
-                        filtered.append(it)
-                    else:
-                        kept.append(it)
-                uniq = kept
-            except Exception:  # noqa: BLE001 - critique optional, never abort
-                pass
-    finally:
+    results = await asyncio.gather(*[_do(t) for t in tasks])
+    for r in results:
+        findings += r
+    uniq = _dedupe_sort(findings)
+    if mode == "ensemble":
+        # Confidence from cross-sample agreement; a finding seen in every
+        # sample is high-confidence, a one-off is likely a hallucination.
+        for it in uniq:
+            ag, sm = it.get("_agree", 1), it.get("_samples", 1)
+            it["confidence"] = "high" if ag >= sm and sm > 1 else ("medium" if ag > 1 else "low")
+    # Cold-judge pass: a low-temperature model critiques the (hot, high-recall)
+    # findings to drop likely false positives. Kept findings get a confidence;
+    # dropped ones move to a separate section, not deleted.
+    if uniq and _SELF_CRITIQUE and judge:
+        _emit(f"self-critique pass over {len(uniq)} finding(s)…")
         try:
-            await client.close()
-        except Exception:  # noqa: BLE001
+            async with _track("sec", _ep):
+                verdicts = await _self_critique(config, uniq, target, base, local_only=airgapped)
+            kept = []
+            for i, it in enumerate(uniq):
+                v = verdicts.get(i, {})
+                it["confidence"] = v.get("confidence", "unrated")
+                if v.get("verdict") == "drop":
+                    it["dropped_reason"] = v.get("reason", "")[:200]
+                    filtered.append(it)
+                else:
+                    kept.append(it)
+            uniq = kept
+        except Exception:  # noqa: BLE001 - critique optional, never abort
             pass
 
     # Mark every attempted file reviewed (mtime now) so incremental skips it next time.
