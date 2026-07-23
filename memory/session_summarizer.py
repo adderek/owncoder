@@ -106,38 +106,41 @@ def _fmt_a(entries: list) -> str:
 
 
 async def _call_llm(config: "Config", system: str, user_content: str) -> str:
-    from agent.config import make_registry
     from agent.core.model_status import _inc as _ms_inc, _dec as _ms_dec
     from agent.core.streaming import _clean_output
+    from agent.core.llm_retry import open_stream_with_failover
 
-    entry = make_registry(config).background
-    from agent.core.llm_client import make_llm_client
-    client = make_llm_client(config, base_url=entry.base_url, api_key=entry.api_key)
+    # Best-effort status label: the primary "background" entry, even though
+    # failover may end up serving the call from a different one.
     try:
-        from agent.metrics import model_calls
-        model_calls.record_entry(entry, role="qa-summary")
+        from agent.config import make_registry
+        _label_model = make_registry(config).background.model
     except Exception:
-        pass
-    _ms_inc("sum", None, entry.model)
+        _label_model = None
+    _ms_inc("sum", None, _label_model)
     parts: list[str] = []
+    client = None
     try:
-        stream = await client.chat.completions.create(
-            model=entry.model,
+        stream, _name, _entry, client = await open_stream_with_failover(
+            config, "background",
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user_content[:_MAX_INPUT_CHARS]},
             ],
-            max_tokens=_MAX_OUTPUT_TOKENS,
-            temperature=0.3,
-            stream=True,
+            max_tokens=_MAX_OUTPUT_TOKENS, temperature=0.3,
+            metrics_role="qa-summary",
         )
         async for chunk in stream:
             delta = chunk.choices[0].delta if chunk.choices else None
             if delta and delta.content:
                 parts.append(delta.content)
     finally:
-        _ms_dec("sum", None, entry.model)
-        await client.close()
+        _ms_dec("sum", None, _label_model)
+        if client is not None:
+            try:
+                await client.close()
+            except Exception:
+                pass
 
     return _clean_output("".join(parts)).strip()
 

@@ -90,26 +90,25 @@ def role_candidates(config: "Config", role: str, max_candidates: int = 4,
     return ordered[:max_candidates]
 
 
-async def call_role_with_failover(
-    config: "Config",
-    role: str,
-    *,
-    messages: list,
-    max_tokens: int | None = None,
-    temperature: float | None = None,
-    extra_body: dict | None = None,
-    metrics_role: str = "",
-    max_candidates: int = 4,
-    local_only: bool = False,
-):
-    """One-shot ``chat.completions.create`` for *role*, trying candidate
-    entries in order until one succeeds. Returns ``(response, entry_name,
-    entry)``. Raises the last error once every candidate is exhausted.
+def _build_kwargs(messages, max_tokens, temperature, extra_body, stream) -> dict:
+    kwargs: dict = {"messages": messages}
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+    if extra_body is not None:
+        kwargs["extra_body"] = extra_body
+    if stream:
+        kwargs["stream"] = True
+    return kwargs
 
-    Each attempt uses ``core.llm_client.make_llm_client`` (fast connect/read
-    timeout, SDK retries off) rather than a bare ``AsyncOpenAI()`` — the SDK's
-    own default retries would otherwise silently re-hit a rejecting endpoint
-    for its full timeout window before this even sees the 429.
+
+async def _walk_candidates(config, role, kwargs, metrics_role, max_candidates, local_only):
+    """Shared candidate walk: yields (client, name, entry) that answered, or
+    raises the last error once every candidate is exhausted. On any per-
+    candidate failure the client for that attempt is closed and the entry is
+    cooldown-marked before moving on; on success the client is handed to the
+    caller, who owns closing it (needed alive for streaming callers).
     """
     from openai import (
         RateLimitError, APIConnectionError, APITimeoutError,
@@ -124,14 +123,6 @@ async def call_role_with_failover(
     if not candidates:
         raise RuntimeError(f"no usable model entry for role {role!r}")
 
-    kwargs: dict = {"messages": messages}
-    if max_tokens is not None:
-        kwargs["max_tokens"] = max_tokens
-    if temperature is not None:
-        kwargs["temperature"] = temperature
-    if extra_body is not None:
-        kwargs["extra_body"] = extra_body
-
     last_exc: Exception | None = None
     for name, entry in candidates:
         client = None
@@ -144,7 +135,7 @@ async def call_role_with_failover(
                 except Exception:
                     pass
             resp = await client.chat.completions.create(model=entry.model, **kwargs)
-            return resp, name, entry
+            return resp, name, entry, client
         except RateLimitError as e:
             retry_after = retry_after_seconds(e)
             daily = is_daily_quota_429(e, retry_after)
@@ -168,10 +159,71 @@ async def call_role_with_failover(
             logger.warning("llm_retry: %s failed on '%s' (%s: %s) — trying next candidate",
                             role, name, type(e).__name__, e)
             last_exc = e
-        finally:
-            if client is not None:
-                try:
-                    await client.close()
-                except Exception:
-                    pass
+        if client is not None:
+            try:
+                await client.close()
+            except Exception:
+                pass
     raise last_exc
+
+
+async def call_role_with_failover(
+    config: "Config",
+    role: str,
+    *,
+    messages: list,
+    max_tokens: int | None = None,
+    temperature: float | None = None,
+    extra_body: dict | None = None,
+    metrics_role: str = "",
+    max_candidates: int = 4,
+    local_only: bool = False,
+):
+    """One-shot ``chat.completions.create`` for *role*, trying candidate
+    entries in order until one succeeds. Returns ``(response, entry_name,
+    entry)``. Raises the last error once every candidate is exhausted.
+
+    Each attempt uses ``core.llm_client.make_llm_client`` (fast connect/read
+    timeout, SDK retries off) rather than a bare ``AsyncOpenAI()`` — the SDK's
+    own default retries would otherwise silently re-hit a rejecting endpoint
+    for its full timeout window before this even sees the 429.
+    """
+    kwargs = _build_kwargs(messages, max_tokens, temperature, extra_body, stream=False)
+    resp, name, entry, client = await _walk_candidates(
+        config, role, kwargs, metrics_role, max_candidates, local_only)
+    try:
+        return resp, name, entry
+    finally:
+        try:
+            await client.close()
+        except Exception:
+            pass
+
+
+async def open_stream_with_failover(
+    config: "Config",
+    role: str,
+    *,
+    messages: list,
+    max_tokens: int | None = None,
+    temperature: float | None = None,
+    extra_body: dict | None = None,
+    metrics_role: str = "",
+    max_candidates: int = 4,
+    local_only: bool = False,
+):
+    """Streaming counterpart of ``call_role_with_failover``.
+
+    A 429/connection error raised at ``create()`` establishment time (before
+    any chunk is read) fails over to the next candidate exactly like the
+    one-shot path. Once a stream is handed back, its own connection stays
+    open — the caller is responsible for consuming it and MUST close the
+    returned client when done (mid-stream drops are not this helper's
+    concern, same as the establishment-only guarantee documented for the
+    module).
+
+    Returns ``(stream, entry_name, entry, client)``.
+    """
+    kwargs = _build_kwargs(messages, max_tokens, temperature, extra_body, stream=True)
+    return await _walk_candidates(
+        config, role, kwargs, metrics_role, max_candidates, local_only)

@@ -120,3 +120,59 @@ async def test_call_role_with_failover_raises_when_all_candidates_fail(monkeypat
     with pytest.raises(RuntimeError, match="endpoint down"):
         await llm_retry.call_role_with_failover(
             cfg, "verify", messages=[{"role": "user", "content": "hi"}])
+
+
+@pytest.mark.asyncio
+async def test_open_stream_with_failover_switches_on_connection_error(monkeypatch):
+    from openai import APIConnectionError
+
+    entries = {
+        "a": ModelEntry(base_url="http://a", model="ma", tier="local"),
+        "b": ModelEntry(base_url="http://b", model="mb", tier="free"),
+    }
+    cfg = _cfg(entries, roles={"background": "a"})
+
+    class _Stream:
+        def __aiter__(self):
+            return self._gen()
+
+        async def _gen(self):
+            yield types.SimpleNamespace(
+                choices=[types.SimpleNamespace(
+                    delta=types.SimpleNamespace(content="ok"))])
+
+    class _Client:
+        def __init__(self, model):
+            self.model = model
+            self.closed = False
+            self.chat = types.SimpleNamespace(
+                completions=types.SimpleNamespace(create=self._create))
+
+        async def _create(self, *, model, stream, **k):
+            if model == "ma":
+                raise APIConnectionError(request=None)
+            return _Stream()
+
+        async def close(self):
+            self.closed = True
+
+    made = []
+
+    def _factory(c, base_url="", api_key=""):
+        client = _Client("ma" if base_url == "http://a" else "mb")
+        made.append(client)
+        return client
+
+    monkeypatch.setattr("agent.core.llm_client.make_llm_client", _factory)
+
+    stream, name, entry, client = await llm_retry.open_stream_with_failover(
+        cfg, "background", messages=[{"role": "user", "content": "hi"}])
+    assert name == "b"
+    tokens = [c.choices[0].delta.content async for c in stream]
+    assert tokens == ["ok"]
+    # The failed candidate's client was closed; the winning one stays open
+    # for the caller to consume, and is the caller's job to close.
+    assert made[0].closed is True
+    assert made[1].closed is False
+    await client.close()
+    assert client.closed is True
