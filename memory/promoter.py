@@ -41,6 +41,29 @@ Output {"notes": []} if nothing qualifies.
 """
 
 
+def _call_llm_sync(config: "Config", source_text: str):
+    """Run the promotion call on a dedicated thread+loop (this module's API is
+    sync, called from a teardown ``finally``), routed through
+    core.llm_retry.call_role_with_failover so a rate-limited or dead default
+    endpoint fails over instead of just losing the session's durable facts."""
+    import asyncio
+    import concurrent.futures
+    from agent.core.llm_retry import call_role_with_failover
+
+    async def _run():
+        return await call_role_with_failover(
+            config, "promoter",
+            messages=[
+                {"role": "system", "content": _PROMOTE_PROMPT},
+                {"role": "user", "content": source_text},
+            ],
+            max_tokens=800, metrics_role="memory-promoter",
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        return ex.submit(lambda: asyncio.run(_run())).result()
+
+
 def promote_session_to_notes(
     session_id: str,
     config: "Config",
@@ -65,21 +88,7 @@ def promote_session_to_notes(
         return 0
 
     try:
-        from openai import OpenAI
-        client = OpenAI(base_url=config.llm.base_url, api_key=config.llm.api_key)
-        try:
-            from agent.metrics import model_calls
-            model_calls.record_main(config, role="memory-promoter")
-        except Exception:
-            pass
-        response = client.chat.completions.create(
-            model=config.llm.model,
-            messages=[
-                {"role": "system", "content": _PROMOTE_PROMPT},
-                {"role": "user", "content": source_text[:6000]},
-            ],
-            max_tokens=800,
-        )
+        response, _name, _entry = _call_llm_sync(config, source_text[:6000])
         raw = (response.choices[0].message.content or "").strip()
     except Exception as e:
         logger.debug("promote_session_to_notes: LLM call failed: %s", e)
