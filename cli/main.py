@@ -97,6 +97,9 @@ def main() -> None:
     run_p = sub.add_parser("run", help="Run a single prompt non-interactively")
     run_p.add_argument("prompt", type=str, nargs="?", default=None,
                        help="Prompt to run (reads stdin if omitted)")
+    run_p.add_argument("--json", action="store_true",
+                       help="Print a JSON envelope instead of plain text; "
+                            "sets exit code 0=done, 1=error, 2=iteration/goal cap")
 
     # sessions
     sess_p = sub.add_parser("sessions", help="Manage sessions")
