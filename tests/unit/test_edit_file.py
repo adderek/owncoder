@@ -577,3 +577,65 @@ class TestAdjustReplacementIndent:
             "class Foo:\n    def bar(): pass", 0, orig, "class Foo:")
         assert adjusted is False
         assert out == "class Foo:\n    def bar(): pass"
+
+
+class TestPostCheckCmd:
+    """W1: optional post-edit check command, config-gated and default-off."""
+
+    def test_disabled_by_default_no_post_check_key(self, work):
+        (work / "f.py").write_text("alpha\nbeta\ngamma\n")
+        r = edit_file([{"path": "f.py", "anchor": "beta", "replacement": "BETA"}])
+        assert r.get("ok") is True
+        assert "post_check" not in r
+
+    def test_failing_check_surfaces_output_edit_still_applied(self, work):
+        get_rules().config.edit.post_check_cmd = "python3 -c \"import sys; print('bad thing'); sys.exit(1)\""
+        (work / "f.py").write_text("alpha\nbeta\ngamma\n")
+        r = edit_file([{"path": "f.py", "anchor": "beta", "replacement": "BETA"}])
+        assert r.get("ok") is True
+        assert (work / "f.py").read_text() == "alpha\nBETA\ngamma\n"
+        pc = r["post_check"]["f.py"]
+        assert pc["exit_code"] == 1
+        assert "bad thing" in pc["output"]
+
+    def test_passing_check_reports_zero_exit(self, work):
+        get_rules().config.edit.post_check_cmd = "python3 -c \"pass\""
+        (work / "f.py").write_text("alpha\nbeta\ngamma\n")
+        r = edit_file([{"path": "f.py", "anchor": "beta", "replacement": "BETA"}])
+        assert r["post_check"]["f.py"]["exit_code"] == 0
+
+    def test_file_substitution_receives_absolute_path(self, work):
+        get_rules().config.edit.post_check_cmd = "python3 -c \"import sys; print(sys.argv[1])\" {file}"
+        (work / "f.py").write_text("alpha\nbeta\ngamma\n")
+        r = edit_file([{"path": "f.py", "anchor": "beta", "replacement": "BETA"}])
+        out = r["post_check"]["f.py"]["output"]
+        assert out.endswith("f.py")
+        assert Path(out).is_absolute()
+
+    def test_timeout_reported_not_raised(self, work):
+        get_rules().config.edit.post_check_cmd = "python3 -c \"import time; time.sleep(5)\""
+        get_rules().config.edit.post_check_timeout = 0.2
+        (work / "f.py").write_text("alpha\nbeta\ngamma\n")
+        r = edit_file([{"path": "f.py", "anchor": "beta", "replacement": "BETA"}])
+        assert r.get("ok") is True
+        assert "timed out" in r["post_check"]["f.py"]["error"]
+
+    def test_only_edited_file_checked_not_whole_project(self, work):
+        checked = []
+
+        def _fake_run(cmd_template, fpath, timeout):
+            checked.append(str(fpath))
+            return {"exit_code": 0, "output": ""}
+
+        import agent.tools.edit_file.core as core_mod
+        orig = core_mod._run_post_check
+        core_mod._run_post_check = _fake_run
+        try:
+            get_rules().config.edit.post_check_cmd = "irrelevant"
+            (work / "a.py").write_text("alpha\nbeta\n")
+            (work / "b.py").write_text("other\n")
+            r = edit_file([{"path": "a.py", "anchor": "beta", "replacement": "BETA"}])
+        finally:
+            core_mod._run_post_check = orig
+        assert checked == [str((work / "a.py").resolve())] or len(checked) == 1
+        assert "b.py" not in "".join(checked)

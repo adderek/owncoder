@@ -1,10 +1,41 @@
 from __future__ import annotations
 
+import shlex
+import subprocess
 from pathlib import Path
 
 from agent.tools.rules import get_rules
 from .validator import _ValidatedChunk, _validate_chunk
 from .schema import _build_schema, _register_edit_file  # noqa: F401
+
+_POST_CHECK_OUTPUT_CAP = 2000
+
+
+def _run_post_check(cmd_template: str, fpath: Path, timeout: int) -> dict:
+    """Run the configured post-edit check for a single file.
+
+    Substitutes {file} with the absolute path, clips combined output to
+    _POST_CHECK_OUTPUT_CAP chars. Never raises — timeout/launch failure are
+    reported as part of the result, not propagated (a broken check command
+    must not fail the edit that already succeeded).
+    """
+    cmd = cmd_template.replace("{file}", str(fpath))
+    try:
+        args = shlex.split(cmd)
+    except ValueError as e:
+        return {"error": f"post_check_cmd parse error: {e}"}
+    try:
+        proc = subprocess.run(
+            args, capture_output=True, text=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return {"error": f"post_check timed out after {timeout}s"}
+    except OSError as e:
+        return {"error": f"post_check failed to launch: {e}"}
+    output = (proc.stdout or "") + (proc.stderr or "")
+    if len(output) > _POST_CHECK_OUTPUT_CAP:
+        output = output[:_POST_CHECK_OUTPUT_CAP] + "\n…[clipped]…"
+    return {"exit_code": proc.returncode, "output": output.strip()}
 
 
 def edit_file(
@@ -94,6 +125,7 @@ def edit_file(
         return {"error": "atomic_rollback", "errors": errors}
 
     applied: list[dict] = []
+    post_checks: dict[str, dict] = {}
     by_file2: dict[str, list[_ValidatedChunk]] = {}
     for v in validated:
         by_file2.setdefault(v.path, []).append(v)
@@ -119,6 +151,8 @@ def edit_file(
             continue
         fpath.write_text(content, encoding="utf-8")
         _log_edit("edit_file", path, "ok")
+        if ec.post_check_cmd:
+            post_checks[path] = _run_post_check(ec.post_check_cmd, fpath, ec.post_check_timeout)
 
     outcome = "ok" if not errors else "skip_partial"
     if errors:
@@ -130,4 +164,6 @@ def edit_file(
         result["outcome"] = "skip_partial"
     if rules.config.dry_run:
         result["dry_run"] = True
+    if post_checks:
+        result["post_check"] = post_checks
     return result

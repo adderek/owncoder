@@ -11,6 +11,8 @@ class EditConfig:
     max_file_fraction: float = 0.5
     line_delta_tolerance: int = 2
     on_chunk_fail: str = "abort"  # "abort" | "skip" | "model"
+    post_check_cmd: str = ""  # e.g. "ruff check --quiet {file}"; "" = disabled
+    post_check_timeout: int = 15  # seconds
 
 
 @dataclass

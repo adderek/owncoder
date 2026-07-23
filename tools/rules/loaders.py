@@ -102,6 +102,10 @@ def _load_config_file(path: Path) -> RulesConfig:
             "line_delta_tolerance", cfg.edit.line_delta_tolerance
         )
         cfg.edit.on_chunk_fail = edit.get("on_chunk_fail", cfg.edit.on_chunk_fail)
+        cfg.edit.post_check_cmd = edit.get("post_check_cmd", cfg.edit.post_check_cmd)
+        cfg.edit.post_check_timeout = edit.get(
+            "post_check_timeout", cfg.edit.post_check_timeout
+        )
 
     return cfg
 
