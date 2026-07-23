@@ -306,7 +306,55 @@ def _build_system_prompt(
         text = prompt_compiler.load("inline/tts_markers.txt", text, config)
         prompt = f"{prompt}\n\n{text}"
 
+    overlay = _tier_overlay(config)
+    if overlay:
+        overlay = prompt_compiler.load(f"overlays/{overlay[0]}", overlay[1], config)
+        prompt = f"{prompt}\n\n{overlay}"
+
     return prompt
+
+
+OVERLAYS_DIR = Path(__file__).parent.parent / "prompts" / "overlays"
+
+# Cost tier → overlay filename. Only "local" (weak models) has an overlay
+# today; other tiers fall through to no overlay.
+_TIER_OVERLAY_FILE = {"local": "tier_local.txt"}
+
+
+def _resolve_default_tier(config: "Config") -> str:
+    """Cost tier of the entry that will actually serve the main turn."""
+    try:
+        from agent.config import make_registry
+        from agent.config.registry import entry_tier
+        return entry_tier(make_registry(config).default)
+    except Exception:
+        return ""
+
+
+def _tier_overlay(config: "Config") -> tuple[str, str] | None:
+    """Return (filename, text) for the tier overlay to append, or None.
+
+    Gated by ``agent.tier_prompt_overlay`` ("off" | "auto" | "local"). The
+    text has comment lines stripped (like base_rules) so the file can carry
+    developer notes that never reach the model.
+    """
+    mode = (getattr(getattr(config, "agent", None), "tier_prompt_overlay", "off")
+            or "off").lower()
+    if mode == "off":
+        return None
+    if mode == "auto":
+        tier = _resolve_default_tier(config)
+    else:
+        tier = mode  # forced tier, e.g. "local"
+    fname = _TIER_OVERLAY_FILE.get(tier)
+    if not fname:
+        return None
+    path = OVERLAYS_DIR / fname
+    if not path.exists():
+        return None
+    lines = path.read_text(encoding="utf-8").splitlines()
+    text = "\n".join(l for l in lines if not l.startswith("#")).strip()
+    return (fname, text) if text else None
 
 
 def _build_call_kwargs(config: "Config") -> dict:

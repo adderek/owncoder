@@ -508,6 +508,16 @@ class AgentConfig:
     #                   [models]/`/model role=` pins (the user's matrix) are used
     #   "any"         — local + free + paid (idle work auto-offloads to free cloud)
     model_mode: str = "any"
+    # Per-tier system-prompt overlays (S5). When on, an extra prompt overlay is
+    # appended for the running model's cost tier — currently a weak-model
+    # ("local") overlay with shorter, more imperative tool-choice discipline.
+    # Default OFF: the overlay must be validated per-model against the eval
+    # judge (evals/run.py --judge --baseline) before being enabled, per
+    # docs/weak-model-prompt-design.md. Values: "off" | "auto" | "local".
+    #   off   — never append an overlay (current behavior)
+    #   auto  — append the overlay matching the default entry's tier
+    #   local — force the weak-model overlay regardless of tier (for testing)
+    tier_prompt_overlay: str = "off"
     max_iterations: int | None = None  # None/0 = unlimited
     goal: str | None = None
     goal_max_iterations: int = 200

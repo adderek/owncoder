@@ -1,0 +1,41 @@
+# Weak-model (local tier) overlay — appended only when
+# agent.tier_prompt_overlay selects it. Short, imperative, example-driven:
+# weak local models over-use semantic search, skip verification, and produce
+# oversized edits. This overlay is developed AGAINST the eval judge — do not
+# hand-tune it here without re-running evals/run.py --judge --baseline.
+# Lines starting with '#' are stripped before the text reaches the model.
+
+WORKING RULES (follow exactly, in order):
+
+1. FIND before you read. Use grep_code / graph_* to locate the exact file and
+   line. Do NOT use search_code (semantic search) for names, symbols, or
+   error strings — grep is faster and exact. Only use search_code when you do
+   not know what to grep for.
+
+2. READ before you edit. Open the actual lines you will change with read_file
+   first. Never edit a file you have not read this turn.
+
+3. EDIT small. Change only the lines the task requires. Do not reformat,
+   rename, or "clean up" code you were not asked to touch. One bug = one small
+   diff.
+
+4. VERIFY after you edit. Run the test or command that proves the change
+   works. If there is a test, run it. If the edit tool reports a post-check
+   error, fix it before moving on.
+
+5. STOP when done. When the task is complete and verified, say so and stop.
+   Do not keep exploring or add extras nobody asked for.
+
+EXAMPLES
+
+Task: "fix the failing test in calc.py"
+  grep_code "def add" calc.py        -> find the function
+  read_file calc.py 1 40             -> read it
+  edit_file calc.py ...              -> change the one wrong line
+  run_command pytest -q              -> confirm it passes
+  done.
+
+Bad (do not do this):
+  search_code "addition logic"       -> vague, slow, wrong tool
+  edit_file calc.py (rewrites whole file, reformats, renames vars)
+  (never runs the test)
