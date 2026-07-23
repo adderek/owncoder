@@ -46,7 +46,7 @@ def role_candidates(config: "Config", role: str, max_candidates: int = 4,
     from agent.config import make_registry
     from agent.config.registry import MODE_TIERS, entry_tier
     from agent.core.model_control import is_disabled
-    from agent.config.model_probe import is_rate_limited
+    from agent.config.model_probe import is_rate_limited, maybe_schedule_recovery_probe
 
     entries = getattr(config, "model_entries", None) or {}
     reg = make_registry(config)
@@ -86,7 +86,15 @@ def role_candidates(config: "Config", role: str, max_candidates: int = 4,
             continue
         seen.add(key)
         ordered.append((name, e))
-    ordered.sort(key=lambda pair: is_rate_limited(pair[1].base_url, pair[1].model or ""))
+    def _cooled_down(pair) -> bool:
+        limited = is_rate_limited(pair[1].base_url, pair[1].model or "")
+        if limited:
+            # W5: opportunistically re-probe in the background so a recovered
+            # endpoint doesn't sit unused for the rest of its cooldown window.
+            maybe_schedule_recovery_probe(config, pair[1])
+        return limited
+
+    ordered.sort(key=_cooled_down)
     return ordered[:max_candidates]
 
 

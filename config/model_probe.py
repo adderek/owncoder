@@ -452,6 +452,88 @@ def is_rate_limited(base_url: str, model: str) -> bool:
     return True
 
 
+# W5: recovery probing. A cooled-down endpoint is otherwise waited out blind —
+# it either stays unused until the cooldown deadline even if it recovered
+# early, or (once the deadline passes) the very next real caller pays the
+# cost of finding out it's still dead. A cheap background 1-token probe,
+# fired at most once per backoff interval per (base_url, model), lets
+# is_rate_limited() clear early on recovery and lets the cooldown extend
+# itself (with backoff) on a confirmed-still-dead endpoint instead of
+# expiring silently and handing a real request to a dead server.
+_PROBE_IN_FLIGHT: set[tuple[str, str]] = set()
+_PROBE_LAST_ATTEMPT: dict[tuple[str, str], float] = {}
+_PROBE_BACKOFF: dict[tuple[str, str], float] = {}
+_PROBE_MIN_INTERVAL_S = 30.0
+_PROBE_MAX_BACKOFF_S = 600.0
+
+
+def maybe_schedule_recovery_probe(config, entry) -> None:
+    """Fire a background 1-token probe for *entry* if it's on cooldown and due.
+
+    No-op (and never raises) when: entry isn't rate-limited, a probe for it is
+    already in flight, the backoff interval hasn't elapsed, no asyncio event
+    loop is running (sync callers), or air-gap forbids reaching a non-local
+    endpoint. Never blocks the caller — schedules a task and returns.
+    """
+    import time as _t
+    base_url = getattr(entry, "base_url", "") or ""
+    model = getattr(entry, "model", "") or ""
+    if not base_url or not is_rate_limited(base_url, model):
+        return
+    key = (base_url, model)
+    if key in _PROBE_IN_FLIGHT:
+        return
+    now = _t.monotonic()
+    interval = _PROBE_BACKOFF.get(key, _PROBE_MIN_INTERVAL_S)
+    if now - _PROBE_LAST_ATTEMPT.get(key, 0.0) < interval:
+        return
+    try:
+        from agent.security.airgap import is_enabled as _airgap_enabled, is_local_url
+        if _airgap_enabled(config) and not is_local_url(base_url):
+            return
+    except Exception:
+        pass
+    try:
+        import asyncio
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return  # no running loop — sync caller, nothing to schedule onto
+    _PROBE_LAST_ATTEMPT[key] = now
+    _PROBE_IN_FLIGHT.add(key)
+    loop.create_task(_run_recovery_probe(config, entry, key))
+
+
+async def _run_recovery_probe(config, entry, key: tuple[str, str]) -> None:
+    from agent.core.llm_client import make_llm_client
+    import asyncio
+    client = None
+    try:
+        client = make_llm_client(config, base_url=entry.base_url, api_key=entry.api_key)
+        await asyncio.wait_for(
+            client.chat.completions.create(
+                model=entry.model,
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=1,
+            ),
+            timeout=10,
+        )
+    except Exception:
+        _PROBE_BACKOFF[key] = min(
+            _PROBE_BACKOFF.get(key, _PROBE_MIN_INTERVAL_S) * 2, _PROBE_MAX_BACKOFF_S,
+        )
+        mark_rate_limited(key[0], key[1], cooldown_s=_PROBE_BACKOFF[key])
+    else:
+        _RL_COOLDOWN.pop(key, None)
+        _PROBE_BACKOFF.pop(key, None)
+    finally:
+        _PROBE_IN_FLIGHT.discard(key)
+        if client is not None:
+            try:
+                await client.close()
+            except Exception:
+                pass
+
+
 def retry_after_seconds(e: Exception) -> float:
     """Extract a Retry-After header (seconds) from a RateLimitError, or 0."""
     try:

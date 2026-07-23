@@ -279,3 +279,123 @@ def test_ollama_does_not_query_props():
     with patch("urllib.request.urlopen", side_effect=_mock_llamacpp(v1_response, None)):
         enrich_model_entries(cfg)
     assert entries["m"].ctx_window == 131072  # n_ctx_train fallback, no /props
+
+
+# ── W5: recovery probing ──────────────────────────────────────────────────────
+
+import asyncio
+import types
+
+from agent.config import model_probe as mp
+
+
+class _FakeProbeClient:
+    def __init__(self, raises=None):
+        self._raises = raises
+        self.closed = False
+        self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=self._create))
+
+    async def _create(self, *, model, messages, **k):
+        if self._raises:
+            raise self._raises
+        return object()
+
+    async def close(self):
+        self.closed = True
+
+
+class TestRecoveryProbe:
+    def setup_method(self):
+        mp._PROBE_IN_FLIGHT.clear()
+        mp._PROBE_LAST_ATTEMPT.clear()
+        mp._PROBE_BACKOFF.clear()
+        mp.clear_availability_cache()
+
+    def teardown_method(self):
+        mp._PROBE_IN_FLIGHT.clear()
+        mp._PROBE_LAST_ATTEMPT.clear()
+        mp._PROBE_BACKOFF.clear()
+        mp.clear_availability_cache()
+
+    def test_noop_when_not_rate_limited(self, monkeypatch):
+        entry = _entry(model="m", base_url="http://x/v1")
+
+        async def _main():
+            mp.maybe_schedule_recovery_probe(_FakeConfig({}), entry)
+            await asyncio.sleep(0)
+
+        asyncio.run(_main())
+        assert not mp._PROBE_IN_FLIGHT
+
+    def test_noop_without_running_loop(self):
+        entry = _entry(model="m", base_url="http://x/v1")
+        mp.mark_rate_limited("http://x/v1", "m", cooldown_s=60)
+        mp.maybe_schedule_recovery_probe(_FakeConfig({}), entry)  # no event loop running
+        assert not mp._PROBE_IN_FLIGHT
+
+    def test_success_clears_cooldown(self, monkeypatch):
+        entry = _entry(model="m", base_url="http://x/v1", api_key="k")
+        mp.mark_rate_limited("http://x/v1", "m", cooldown_s=60)
+        client = _FakeProbeClient()
+        monkeypatch.setattr("agent.core.llm_client.make_llm_client",
+                            lambda cfg, base_url="", api_key="": client)
+
+        async def _main():
+            mp.maybe_schedule_recovery_probe(_FakeConfig({}), entry)
+            await asyncio.sleep(0.05)
+
+        asyncio.run(_main())
+        assert not mp.is_rate_limited("http://x/v1", "m")
+        assert client.closed is True
+
+    def test_failure_backs_off_and_refreshes_cooldown(self, monkeypatch):
+        entry = _entry(model="m", base_url="http://x/v1", api_key="k")
+        mp.mark_rate_limited("http://x/v1", "m", cooldown_s=1)
+        client = _FakeProbeClient(raises=RuntimeError("still dead"))
+        monkeypatch.setattr("agent.core.llm_client.make_llm_client",
+                            lambda cfg, base_url="", api_key="": client)
+
+        async def _main():
+            mp.maybe_schedule_recovery_probe(_FakeConfig({}), entry)
+            await asyncio.sleep(0.05)
+
+        asyncio.run(_main())
+        assert mp.is_rate_limited("http://x/v1", "m")
+        assert mp._PROBE_BACKOFF[("http://x/v1", "m")] == mp._PROBE_MIN_INTERVAL_S * 2
+
+    def test_only_one_probe_in_flight_per_key(self, monkeypatch):
+        entry = _entry(model="m", base_url="http://x/v1", api_key="k")
+        mp.mark_rate_limited("http://x/v1", "m", cooldown_s=60)
+        calls = {"n": 0}
+
+        def _mk_client(cfg, base_url="", api_key=""):
+            calls["n"] += 1
+            return _FakeProbeClient()
+        monkeypatch.setattr("agent.core.llm_client.make_llm_client", _mk_client)
+
+        async def _main():
+            mp.maybe_schedule_recovery_probe(_FakeConfig({}), entry)
+            mp.maybe_schedule_recovery_probe(_FakeConfig({}), entry)  # dup while in flight
+            await asyncio.sleep(0.05)
+
+        asyncio.run(_main())
+        assert calls["n"] == 1
+
+    def test_airgap_blocks_remote_probe(self, monkeypatch):
+        entry = _entry(model="m", base_url="http://remote.example/v1", api_key="k")
+        mp.mark_rate_limited("http://remote.example/v1", "m", cooldown_s=60)
+        monkeypatch.setattr("agent.security.airgap.is_enabled", lambda cfg: True)
+        monkeypatch.setattr("agent.security.airgap.is_local_url", lambda url: False)
+        called = {"n": 0}
+
+        def _mk_client(cfg, base_url="", api_key=""):
+            called["n"] += 1
+            return _FakeProbeClient()
+        monkeypatch.setattr("agent.core.llm_client.make_llm_client", _mk_client)
+
+        async def _main():
+            mp.maybe_schedule_recovery_probe(_FakeConfig({}), entry)
+            await asyncio.sleep(0.05)
+
+        asyncio.run(_main())
+        assert called["n"] == 0
