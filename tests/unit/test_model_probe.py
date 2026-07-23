@@ -381,6 +381,29 @@ class TestRecoveryProbe:
         asyncio.run(_main())
         assert calls["n"] == 1
 
+    def test_task_holds_strong_ref_survives_gc(self, monkeypatch):
+        """asyncio.create_task only weak-refs the task — without our own
+        strong ref (_PROBE_TASKS) a GC pass between scheduling and the next
+        checkpoint can drop it before `finally` runs, permanently stranding
+        the key in _PROBE_IN_FLIGHT."""
+        import gc
+        entry = _entry(model="m", base_url="http://x/v1", api_key="k")
+        mp.mark_rate_limited("http://x/v1", "m", cooldown_s=60)
+        client = _FakeProbeClient()
+        monkeypatch.setattr("agent.core.llm_client.make_llm_client",
+                            lambda cfg, base_url="", api_key="": client)
+
+        async def _main():
+            mp.maybe_schedule_recovery_probe(_FakeConfig({}), entry)
+            assert mp._PROBE_TASKS, "scheduled task must be strongly referenced"
+            gc.collect()
+            await asyncio.sleep(0.05)
+
+        asyncio.run(_main())
+        assert not mp.is_rate_limited("http://x/v1", "m")
+        assert ("http://x/v1", "m") not in mp._PROBE_IN_FLIGHT
+        assert not mp._PROBE_TASKS  # done_callback cleaned it up
+
     def test_airgap_blocks_remote_probe(self, monkeypatch):
         entry = _entry(model="m", base_url="http://remote.example/v1", api_key="k")
         mp.mark_rate_limited("http://remote.example/v1", "m", cooldown_s=60)

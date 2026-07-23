@@ -465,6 +465,12 @@ _PROBE_LAST_ATTEMPT: dict[tuple[str, str], float] = {}
 _PROBE_BACKOFF: dict[tuple[str, str], float] = {}
 _PROBE_MIN_INTERVAL_S = 30.0
 _PROBE_MAX_BACKOFF_S = 600.0
+# asyncio only holds a *weak* ref to a task created via create_task — an
+# unreferenced task can be GC'd mid-flight, and if that happens before its
+# `finally` runs, the key never leaves _PROBE_IN_FLIGHT and recovery probing
+# silently disables itself for that endpoint for the rest of the process.
+# Keep a strong ref for the task's lifetime; done_callback drops it.
+_PROBE_TASKS: set = set()
 
 
 def maybe_schedule_recovery_probe(config, entry) -> None:
@@ -500,7 +506,9 @@ def maybe_schedule_recovery_probe(config, entry) -> None:
         return  # no running loop — sync caller, nothing to schedule onto
     _PROBE_LAST_ATTEMPT[key] = now
     _PROBE_IN_FLIGHT.add(key)
-    loop.create_task(_run_recovery_probe(config, entry, key))
+    task = loop.create_task(_run_recovery_probe(config, entry, key))
+    _PROBE_TASKS.add(task)
+    task.add_done_callback(_PROBE_TASKS.discard)
 
 
 async def _run_recovery_probe(config, entry, key: tuple[str, str]) -> None:
