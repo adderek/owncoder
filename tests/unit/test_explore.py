@@ -71,7 +71,10 @@ _FAKE_SCHEMAS = [
 
 @pytest.fixture
 def patched(monkeypatch):
-    """Patch get_schemas in both explore.main and core.turn, plus AsyncOpenAI."""
+    """Patch get_schemas in both explore.main and core.turn, plus the LLM client
+    factory (explore.main builds its client via make_llm_client, not a bare
+    AsyncOpenAI(), so run_turn's own rate-limit/failover handling gets a
+    client with a real timeout ceiling)."""
     import agent.core.turn as turn_mod
 
     monkeypatch.setattr(explore_main, "get_schemas", lambda: list(_FAKE_SCHEMAS))
@@ -80,7 +83,8 @@ def patched(monkeypatch):
     def _install_client(content="Answer: see foo.py:42", sleep=0.0):
         record = []
         client = _StubClient(content=content, record=record, sleep=sleep)
-        monkeypatch.setattr(explore_main, "AsyncOpenAI", lambda **kw: client)
+        monkeypatch.setattr("agent.core.llm_client.make_llm_client",
+                            lambda cfg, base_url="", api_key="": client)
         return client
 
     return _install_client

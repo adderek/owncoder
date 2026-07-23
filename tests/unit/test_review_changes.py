@@ -204,3 +204,40 @@ class TestReviewChangesTool:
             result = asyncio.run(review_changes(path=str(repo)))
         assert result["degraded"] is True
         assert "ConnectError" in result["summary"]
+
+    def test_retries_next_reviewer_after_failure(self, repo):
+        """First _pick_reviewer() pick fails (rate-limited) — the retry loop
+        re-calls _pick_reviewer() (which build_ladder() would now have
+        excluded the cooled-down entry from) and succeeds on the next live
+        candidate instead of degrading immediately."""
+        cfg = _make_config(repo)
+        setup(cfg)
+        (repo / "a.py").write_text("x = 2\n")
+        bad = MagicMock(base_url="http://bad:1/v1", model="m-bad")
+        good = MagicMock(base_url="http://good:1/v1", model="m-good")
+        parsed = {"summary": "ok", "findings": []}
+        with patch("agent.tools.review_changes.main._pick_reviewer",
+                   side_effect=[("bad", bad), ("good", good)]), \
+             patch("agent.tools.review_changes.main._static_findings",
+                   return_value=([], [])), \
+             patch("agent.tools.review_changes.main._llm_review",
+                   new=AsyncMock(side_effect=[(None, "RateLimitError: 429"),
+                                              (parsed, None)])):
+            result = asyncio.run(review_changes(path=str(repo)))
+        assert result["degraded"] is False
+        assert result["reviewed_by"] == "good"
+
+    def test_gives_up_after_three_failed_attempts(self, repo):
+        cfg = _make_config(repo)
+        setup(cfg)
+        (repo / "a.py").write_text("x = 2\n")
+        entry = MagicMock(base_url="http://bad:1/v1", model="m-bad")
+        with patch("agent.tools.review_changes.main._pick_reviewer",
+                   return_value=("bad", entry)), \
+             patch("agent.tools.review_changes.main._static_findings",
+                   return_value=([], [])), \
+             patch("agent.tools.review_changes.main._llm_review",
+                   new=AsyncMock(return_value=(None, "ConnectError: down"))) as m:
+            result = asyncio.run(review_changes(path=str(repo)))
+        assert result["degraded"] is True
+        assert m.await_count == 3

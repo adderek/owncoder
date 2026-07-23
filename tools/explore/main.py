@@ -19,8 +19,6 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
-from openai import AsyncOpenAI
-
 from agent.tools import register, get_schemas
 from agent.tools.parallel.main import (
     _READONLY_TOOLS,
@@ -119,7 +117,12 @@ async def run_explore(question: str, hints: str = "") -> dict:
     except Exception:
         pass
 
-    client = AsyncOpenAI(base_url=wcfg.llm.base_url, api_key=wcfg.llm.api_key)
+    # run_turn already does full rate-limit/failover handling internally
+    # (see core/turn.py) — it just needs a client with a real timeout ceiling
+    # and SDK retries off, not a bare AsyncOpenAI() that silently re-hits a
+    # rejecting endpoint for its own retry window before run_turn ever sees it.
+    from agent.core.llm_client import make_llm_client
+    client = make_llm_client(wcfg, base_url=wcfg.llm.base_url, api_key=wcfg.llm.api_key)
 
     from agent.core.turn import run_turn
 

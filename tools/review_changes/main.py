@@ -208,9 +208,16 @@ def _parse_review(text: str) -> dict | None:
 
 
 async def _llm_review(entry, diff: str, static: list[dict]) -> tuple[dict | None, str | None]:
-    """Return (parsed_report, error). One completion, low temperature."""
-    from openai import AsyncOpenAI
-    client = AsyncOpenAI(base_url=entry.base_url, api_key=entry.api_key or "local")
+    """Return (parsed_report, error). One completion, low temperature.
+
+    On a rate-limit/connection error, cooldown-marks *entry* (daily-quota
+    aware, same heuristic as core/turn.py) so the caller's next
+    _pick_reviewer() retry — build_ladder() excludes cooled-down entries via
+    entry_available() — naturally walks to the next-strongest candidate
+    instead of re-picking the one that just failed.
+    """
+    from agent.core.llm_client import make_llm_client
+    client = make_llm_client(_config, base_url=entry.base_url, api_key=entry.api_key or "local")
     static_block = ""
     if static:
         brief = [
@@ -229,7 +236,31 @@ async def _llm_review(entry, diff: str, static: list[dict]) -> tuple[dict | None
             ],
         )
     except Exception as e:
+        try:
+            from openai import (
+                RateLimitError, APIConnectionError, APITimeoutError,
+                InternalServerError, APIError,
+            )
+            from agent.config.model_probe import (
+                mark_rate_limited, retry_after_seconds, is_daily_quota_429,
+            )
+            if isinstance(e, RateLimitError):
+                retry_after = retry_after_seconds(e)
+                daily = is_daily_quota_429(e, retry_after)
+                cooldown = max(retry_after, 21600.0) if daily else 300.0
+                mark_rate_limited(entry.base_url, entry.model, cooldown_s=cooldown)
+            elif isinstance(e, (APIConnectionError, APITimeoutError, InternalServerError, APIError)):
+                mark_rate_limited(entry.base_url, entry.model)
+            # Other errors (e.g. BadRequestError) are not endpoint-availability
+            # problems — don't cooldown-mark, retrying elsewhere won't help.
+        except Exception:
+            pass
         return None, f"{type(e).__name__}: {e}"
+    finally:
+        try:
+            await client.close()
+        except Exception:
+            pass
     text = (resp.choices[0].message.content or "") if resp.choices else ""
     parsed = _parse_review(text)
     if parsed is None:
@@ -296,18 +327,28 @@ async def review_changes(staged: bool = False, path: str = "") -> dict[str, Any]
         report.update(degraded=True, summary="No config; static findings only.", findings=[])
         return report
 
-    picked = _pick_reviewer(_config)
-    if picked is None:
+    # Up to 3 attempts: on a rate-limit/connection failure, _llm_review cooldown-
+    # marks the entry, so the next _pick_reviewer() call — build_ladder()
+    # excludes cooled-down entries — naturally walks to the next-strongest
+    # live candidate instead of repeating the same failure.
+    entry_name = entry = parsed = err = None
+    for _attempt in range(3):
+        picked = _pick_reviewer(_config)
+        if picked is None:
+            break
+        entry_name, entry = picked
+        parsed, err = await _llm_review(entry, diff, static)
+        if parsed is not None:
+            break
+
+    if entry is None:
         report.update(
             degraded=True, findings=[],
             summary="No reviewer model reachable; static findings only.",
         )
         return report
-
-    entry_name, entry = picked
     self_review = (entry.base_url, entry.model or _config.llm.model) == \
                   (_config.llm.base_url, _config.llm.model)
-    parsed, err = await _llm_review(entry, diff, static)
     if parsed is None:
         report.update(
             degraded=True, findings=[],
