@@ -60,16 +60,8 @@ async def grade_notes(
     if not notes or not (answer or "").strip():
         return []
     try:
-        from agent.config import make_registry
+        from agent.core.llm_retry import call_role_with_failover
 
-        entry = make_registry(config).role("background")
-        from agent.core.llm_client import make_llm_client
-        client = make_llm_client(config, base_url=entry.base_url, api_key=entry.api_key)
-        try:
-            from agent.metrics import model_calls
-            model_calls.record_entry(entry, role="note-grader")
-        except Exception:
-            pass
         note_lines = "\n".join(
             f"- id={n['id']} | {n.get('title') or ''}: {(n.get('body') or '')[:300]}"
             for n in notes
@@ -78,17 +70,14 @@ async def grade_notes(
             f"User message:\n{query[:1500]}\n\nInjected notes:\n{note_lines}\n\n"
             f"Assistant answer:\n{(answer or '')[:3000]}"
         )
-        try:
-            resp = await client.chat.completions.create(
-                model=entry.model,
-                messages=[{"role": "system", "content": _SYSTEM},
-                          {"role": "user", "content": user}],
-                max_tokens=_MAX_OUTPUT_TOKENS,
-                temperature=0.0,
-            )
-            raw = (resp.choices[0].message.content or "").strip()
-        finally:
-            await client.close()
+        resp, _name, _entry = await call_role_with_failover(
+            config, "background",
+            messages=[{"role": "system", "content": _SYSTEM},
+                      {"role": "user", "content": user}],
+            max_tokens=_MAX_OUTPUT_TOKENS, temperature=0.0,
+            metrics_role="note-grader",
+        )
+        raw = (resp.choices[0].message.content or "").strip()
         m = _JSON_RE.search(raw)
         if not m:
             return _overlap_heuristic(notes, answer)
