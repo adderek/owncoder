@@ -58,6 +58,29 @@ Output {"rules": []} if nothing qualifies.
 """
 
 
+def _call_llm_sync(config: "Config", prompt_input: str):
+    """Run the reflection call on a dedicated thread+loop (this module's API
+    is sync, called from a teardown ``finally``), routed through
+    core.llm_retry.call_role_with_failover so a rate-limited or dead default
+    endpoint fails over instead of just dropping this session's rules."""
+    import asyncio
+    import concurrent.futures
+    from agent.core.llm_retry import call_role_with_failover
+
+    async def _run():
+        return await call_role_with_failover(
+            config, "reflector",
+            messages=[
+                {"role": "system", "content": _REFLECT_PROMPT},
+                {"role": "user", "content": prompt_input},
+            ],
+            max_tokens=600, metrics_role="reflector",
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        return ex.submit(lambda: asyncio.run(_run())).result()
+
+
 def reflect_session(
     session_id: str,
     config: "Config",
@@ -88,21 +111,7 @@ def reflect_session(
         prompt_input += f"\n\n[FAILURES THIS SESSION]\n{failure_summary}"
 
     try:
-        from openai import OpenAI
-        client = OpenAI(base_url=config.llm.base_url, api_key=config.llm.api_key)
-        try:
-            from agent.metrics import model_calls
-            model_calls.record_main(config, role="reflector")
-        except Exception:
-            pass
-        response = client.chat.completions.create(
-            model=config.llm.model,
-            messages=[
-                {"role": "system", "content": _REFLECT_PROMPT},
-                {"role": "user", "content": prompt_input},
-            ],
-            max_tokens=600,
-        )
+        response, _name, _entry = _call_llm_sync(config, prompt_input)
         raw = (response.choices[0].message.content or "").strip()
     except Exception as e:
         logger.debug("reflect_session: LLM call failed: %s", e)
