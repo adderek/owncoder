@@ -325,7 +325,6 @@ def cmd_commit(args, config):
     from rich.text import Text
     from rich.markup import escape as _markup_escape
     import time as _time
-    from openai import AsyncOpenAI
 
     state = {"tokens": 0, "buf": "", "start": _time.monotonic(), "phase": "starting",
              "raw_outputs": [], "fallback": False, "cand_idx": 0, "model_failures": []}
@@ -362,7 +361,8 @@ def cmd_commit(args, config):
     else:
         primary_base_url, primary_api_key = config.llm.base_url, config.llm.api_key
         primary_model = config.llm.model
-    primary_client = AsyncOpenAI(base_url=primary_base_url, api_key=primary_api_key)
+    from agent.core.llm_client import make_llm_client
+    primary_client = make_llm_client(config, base_url=primary_base_url, api_key=primary_api_key)
 
     if chunked:
         summ_label = f" · summarizer: {summ_entry.model}" if summ_entry else f" · summarizer: {primary_model}"
@@ -378,7 +378,7 @@ def cmd_commit(args, config):
         )
 
     if summ_entry:
-        summ_client = AsyncOpenAI(base_url=summ_entry.base_url, api_key=summ_entry.api_key)
+        summ_client = make_llm_client(config, base_url=summ_entry.base_url, api_key=summ_entry.api_key)
         summ_model = summ_entry.model
     else:
         summ_client = primary_client
@@ -421,7 +421,7 @@ def cmd_commit(args, config):
 
     def _cand_client(c: dict):
         if c["client"] is None:
-            c["client"] = AsyncOpenAI(base_url=c["base_url"], api_key=c["api_key"])
+            c["client"] = make_llm_client(config, base_url=c["base_url"], api_key=c["api_key"])
         return c["client"]
 
     async def _do_stream(client, model: str, messages: list[dict], max_tokens: int, entry_name: str) -> tuple[str, str, int, float]:
