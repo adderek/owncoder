@@ -120,16 +120,24 @@ async def _noop():
     yield
 
 
-async def _call_llm_one_line(
-    config: "Config",
-    system_prompt: str,
-    content: str,
-) -> str:
-    """Stream a one-line summary using the summarizer model (falls back to default LLM)."""
-    from agent.config import make_registry
+async def _consume_stream(stream) -> tuple[list[str], list[str]]:
+    content_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    async for chunk in stream:
+        delta = chunk.choices[0].delta if chunk.choices else None
+        if delta:
+            if delta.content:
+                content_parts.append(delta.content)
+            if getattr(delta, "reasoning_content", None):
+                reasoning_parts.append(delta.reasoning_content)
+    return content_parts, reasoning_parts
+
+
+async def _try_primary(config: "Config", entry, used_gpu: bool, messages: list) -> tuple[list[str], list[str]]:
+    """GPU-aware primary attempt — unchanged behavior/semaphore from before W7."""
     from agent.core.llm_client import make_llm_client
     from agent.core.model_status import _inc as _ms_inc, _dec as _ms_dec, gpu_slot as _gpu_slot, provider_label
-    entry, used_gpu = _pick_summarizer_entry(config, content)
+
     client = make_llm_client(config, base_url=entry.base_url, api_key=entry.api_key)
     try:
         from agent.metrics import model_calls
@@ -140,27 +148,54 @@ async def _call_llm_one_line(
     _role = "sum" if not used_gpu else "main"
     _ms_inc(_role, _ep)
     try:
-        content_parts: list[str] = []
-        reasoning_parts: list[str] = []
         async with _gpu_slot() if used_gpu else _noop():
             stream = await client.chat.completions.create(
-                model=entry.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": content[:4000]},
-                ],
-                stream=True,
+                model=entry.model, messages=messages, stream=True,
             )
-            async for chunk in stream:
-                delta = chunk.choices[0].delta if chunk.choices else None
-                if delta:
-                    if delta.content:
-                        content_parts.append(delta.content)
-                    if getattr(delta, "reasoning_content", None):
-                        reasoning_parts.append(delta.reasoning_content)
+            return await _consume_stream(stream)
     finally:
         _ms_dec(_role, _ep)
         await client.close()
+
+
+async def _try_fallback(config: "Config", messages: list) -> tuple[list[str], list[str]]:
+    """W7: role-based failover when the GPU-aware primary pick fails outright."""
+    from agent.core.llm_retry import open_stream_with_failover
+    from agent.core.model_status import _inc as _ms_inc, _dec as _ms_dec, provider_label
+    from agent.security.airgap import is_enabled as _airgap_enabled
+
+    stream, _name, entry, client = await open_stream_with_failover(
+        config, "background", messages=messages, metrics_role="summarizer",
+        local_only=_airgap_enabled(config),
+    )
+    _ep = provider_label(entry.base_url)
+    _ms_inc("sum", _ep)
+    try:
+        return await _consume_stream(stream)
+    finally:
+        _ms_dec("sum", _ep)
+        await client.close()
+
+
+async def _call_llm_one_line(
+    config: "Config",
+    system_prompt: str,
+    content: str,
+) -> str:
+    """Stream a one-line summary. Tries the GPU-aware summarizer pick first;
+    on any failure falls through to role-based failover (W7) instead of
+    giving up outright."""
+    entry, used_gpu = _pick_summarizer_entry(config, content)
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": content[:4000]},
+    ]
+    try:
+        content_parts, reasoning_parts = await _try_primary(config, entry, used_gpu, messages)
+    except Exception as e:
+        logger.info("summarizer: primary entry failed (%s: %s), falling back to failover",
+                    type(e).__name__, e)
+        content_parts, reasoning_parts = await _try_fallback(config, messages)
 
     from agent.core.streaming import _clean_output
 
