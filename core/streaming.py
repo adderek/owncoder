@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from . import prompt_cache
-from .prompts import _inject_think_hint, _inject_autonomy_hint, _log_llm_request, _build_call_kwargs
+from .prompts import apply_prompt_hints, _log_llm_request, _build_call_kwargs
 from .tool_calls import _FakeToolCall, _parse_text_tool_calls, _parse_qwen_function_xml, _parse_agent_exec_xml
 
 if TYPE_CHECKING:
@@ -327,8 +327,7 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
     tc_acc: dict[int, dict] = {}
     finish_reason = "stop"
 
-    api_messages = _inject_think_hint(api_messages, config)
-    api_messages = _inject_autonomy_hint(api_messages, config)
+    api_messages = apply_prompt_hints(api_messages, config)
     _log_llm_request(api_messages, tools, config)
     # Last step before the wire: hint injection rewrites the system message, so
     # breakpoints have to be placed after it or they mark stale content.

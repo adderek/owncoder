@@ -459,13 +459,15 @@ class Agent:
         if not content.strip():
             return
 
-        # Inject after last static system message, before any user/assistant turns.
-        insert_at = 0
-        for i, m in enumerate(self.messages):
-            if m.get("role") == "system":
-                insert_at = i + 1
-            else:
-                break
+        # Inject just before the most recent user message, same as notes — NOT
+        # after the static system block. Skills change whenever the active plan
+        # step changes; sitting at the front of the request, every such change
+        # invalidated the whole cached prompt prefix (see core/prompt_cache.py).
+        # At the tail it invalidates nothing that was not already being sent
+        # fresh, and the instructions land closer to the message they apply to.
+        insert_at = len(self.messages) - 1
+        if insert_at < 0:
+            insert_at = 0
         self.messages.insert(insert_at, {
             "role": "system",
             "content": f"# Active step skills\n\n{content}",

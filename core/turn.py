@@ -11,7 +11,7 @@ from agent.memory.compactor import compact, _count_tokens_approx
 from agent.tools import get_schemas
 from openai import APIConnectionError, APIError, APITimeoutError, BadRequestError, InternalServerError, RateLimitError
 
-from .prompts import _build_call_kwargs, _inject_think_hint, _inject_autonomy_hint, _inject_aei_hint, _log_llm_request
+from .prompts import _build_call_kwargs, apply_prompt_hints, _log_llm_request
 from .tool_calls import _tool_result_message, _FakeToolCall, execute_tool, _parse_raw_tool_calls
 from .streaming import _stream_response, _strip_tool_blocks, _is_narrating_tool_use, _has_unexecuted_agent_exec, _mark_unexecuted_agent_exec, _gpu_slot, build_streamed_choice, StreamStalledError
 from .cache_tracker import check_cache, mark_request
@@ -647,9 +647,7 @@ async def run_turn(
                     if _cache_msg:
                         logger.info("%s", _cache_msg)
                         _phase("cache", _cache_msg)
-                api_messages_sent = _inject_think_hint(api_messages, config)
-                api_messages_sent = _inject_autonomy_hint(api_messages_sent, config)
-                api_messages_sent = _inject_aei_hint(api_messages_sent, config)
+                api_messages_sent = apply_prompt_hints(api_messages, config)
                 _log_llm_request(api_messages_sent, tools, config)
                 api_messages_sent = prompt_cache.prepare(api_messages_sent, config)
                 t_start = time.monotonic()

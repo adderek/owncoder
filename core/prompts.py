@@ -491,6 +491,19 @@ def _inject_aei_hint(api_messages: list[dict], config: "Config") -> list[dict]:
     return [{"role": "system", "content": hint}] + api_messages
 
 
+def apply_prompt_hints(api_messages: list[dict], config: "Config") -> list[dict]:
+    """Every per-request system-prompt hint, in one place.
+
+    Both send paths (streaming and non-streaming) must apply the same set. They
+    did not: the AEI hint was only on the non-streaming path, so it never
+    shipped, streaming being the default. One function, called from both, so a
+    hint added later cannot land on half the paths again.
+    """
+    api_messages = _inject_think_hint(api_messages, config)
+    api_messages = _inject_autonomy_hint(api_messages, config)
+    return _inject_aei_hint(api_messages, config)
+
+
 def _inject_think_hint(api_messages: list[dict], config: "Config") -> list[dict]:
     level = (getattr(config.llm, "think_level", "normal") or "normal").lower()
     level = _THINK_LEVEL_ALIASES.get(level, level)
