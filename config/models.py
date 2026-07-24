@@ -220,6 +220,35 @@ class VerifyConfig:
 
 
 @dataclass
+class DiagnosticsCheckerConfig:
+    """One declared file-scoped checker (see DiagnosticsConfig).
+
+    agent.toml example:
+
+        [[diagnostics.checkers]]
+        suffixes = [".py"]
+        command = ["ruff", "check", "--output-format", "concise", "{file}"]
+    """
+    suffixes: list = field(default_factory=list)   # file extensions, with the dot
+    command: list = field(default_factory=list)    # argv; "{file}" -> edited file path
+
+
+@dataclass
+class DiagnosticsConfig:
+    """Per-edit, file-scoped diagnostics folded into the tool result.
+
+    Distinct from [verify]: that runs one project-wide command at the end of a
+    turn; this runs a fast single-file checker right after each successful edit,
+    so the model sees the breakage on its next step. Declaring `checkers` takes
+    the command as written; leaving it empty auto-selects installed checkers.
+    """
+    enabled: bool = False
+    timeout_s: float = 5.0       # per checker, per file — must stay sub-turn
+    max_findings: int = 10       # cap injected lines so a noisy file can't flood context
+    checkers: list = field(default_factory=list)   # [[diagnostics.checkers]] entries
+
+
+@dataclass
 class TestSuiteConfig:
     """One declared test suite (see TestsConfig).
 
@@ -1018,6 +1047,7 @@ class Config:
     logs: LogsConfig = field(default_factory=LogsConfig)
     loop_guard: LoopGuardConfig = field(default_factory=LoopGuardConfig)
     verify: VerifyConfig = field(default_factory=VerifyConfig)
+    diagnostics: DiagnosticsConfig = field(default_factory=DiagnosticsConfig)
     tests: TestsConfig = field(default_factory=TestsConfig)
     confidence_guard: ConfidenceGuardConfig = field(default_factory=ConfidenceGuardConfig)
     compile_prompts: CompilePromptsConfig = field(default_factory=CompilePromptsConfig)

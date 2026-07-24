@@ -19,6 +19,7 @@ from .history_ops import (
     _merge_consecutive_assistants, _collapse_tool_rounds, _truncate_large_messages,
     _apply_code_from_history,
 )
+from . import diagnostics
 from .loop_detector import LoopDetector
 from .confidence import ConfidenceMonitor
 
@@ -1013,6 +1014,17 @@ async def run_turn(
                         _read_advance,
                     )
                 patched_results.append(result)
+            # File-scoped diagnostics on the files this batch just edited, folded
+            # into the results before they enter history — the model reads the
+            # breakage on its next step instead of at end-of-turn verify time.
+            _diag_calls = [tc for tc in tool_calls if tc.function.name in _MUTATING_TOOLS]
+            if _diag_calls:
+                try:
+                    patched_results = await diagnostics.annotate(
+                        tool_calls, patched_results, config,
+                    )
+                except Exception:
+                    logger.exception("diagnostics.annotate failed")
             _batch_errs = 0
             for i, (tc, result) in enumerate(zip(tool_calls, patched_results)):
                 messages.append(_tool_result_message(tc.id, result))

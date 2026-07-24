@@ -537,3 +537,20 @@ max_retries = 1         # at most this many remote→local switches per turn
 enabled     = false
 strategy    = "redact"  # "redact" | "force-local" | "block"
 local_entry = ""        # entry used by force-local ("" = first local-tier entry)
+
+# ── Per-edit diagnostics ──────────────────────────────────────────────────────
+# Runs a fast, single-file checker right after each successful edit and folds
+# its output into the tool result the model is about to read, so breakage is
+# fixed on the next step. Different from [verify], which runs one project-wide
+# command at the end of a turn. Leave `checkers` empty to auto-select whichever
+# supported checkers are installed (ruff / bash -n / gofmt / eslint, with
+# py_compile as the Python fallback). Commands run as argv — never a shell — and
+# the file is confined to the working directory.
+[diagnostics]
+enabled      = false
+timeout_s    = 5.0      # per checker, per file — keep it sub-second in practice
+max_findings = 10       # cap on lines injected into context
+
+# [[diagnostics.checkers]]
+# suffixes = [".py"]
+# command  = ["ruff", "check", "--output-format", "concise", "{file}"]

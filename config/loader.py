@@ -266,7 +266,7 @@ def _merge(config: Config, data: dict) -> None:
 # sections — endpoints live in [models.<entry>]; behavior knobs in [agent].
 _KNOWN_SECTIONS = {
     "agent", "rag", "tools", "ui", "asm_analysis", "logs", "loop_guard",
-    "verify", "tests", "confidence_guard", "compile_prompts", "token_limits",
+    "verify", "diagnostics", "tests", "confidence_guard", "compile_prompts", "token_limits",
     "tool_compaction", "security", "planning", "recovery", "parallel",
     "explore", "web_search", "concurrency", "kb", "aei", "notify", "mcp",
     "speech", "auto_tier", "failover", "privacy", "scheduler", "hooks",
@@ -321,6 +321,14 @@ def _coerce_mcp_servers(config: Config) -> None:
     from agent.config.models import MCPServerConfig
     config.mcp.servers = _coerce_dataclass_list(
         config.mcp.servers, MCPServerConfig, "mcp.servers"
+    )
+
+
+def _coerce_diagnostics_checkers(config: Config) -> None:
+    """Convert diagnostics.checkers dicts ([[diagnostics.checkers]]) to dataclasses."""
+    from agent.config.models import DiagnosticsCheckerConfig
+    config.diagnostics.checkers = _coerce_dataclass_list(
+        config.diagnostics.checkers, DiagnosticsCheckerConfig, "diagnostics.checkers"
     )
 
 
@@ -543,6 +551,7 @@ def load_config(extra_path: Path | list[Path] | None = None) -> Config:
     _coerce_mcp_servers(config)
     _coerce_test_suites(config)
     _coerce_hooks(config)
+    _coerce_diagnostics_checkers(config)
     from .validate import validate_config, report_issues
     report_issues(validate_config(config))
     return config
