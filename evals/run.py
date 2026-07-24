@@ -67,11 +67,16 @@ def _load_task_file(path: Path) -> dict:
     return data
 
 
-def load_tasks(tasks_dir: Path = TASKS_DIR) -> tuple[list[dict], list[tuple[str, str]]]:
+def load_tasks(tasks_dir: Path = TASKS_DIR,
+               include_drafts: bool = False) -> tuple[list[dict], list[tuple[str, str]]]:
     """Load all task definitions. Returns (tasks, errors).
 
     A malformed task file is reported in `errors` (id derived from filename)
     rather than raising, so one bad file doesn't crash the whole run.
+
+    Tasks marked ``draft: true`` are skipped. evals/mine.py scaffolds tasks from
+    recorded failures, and a scaffold has placeholder prompts and checks — it
+    must sit in the repo without failing the suite until a human finishes it.
     """
     tasks: list[dict] = []
     errors: list[tuple[str, str]] = []
@@ -81,6 +86,8 @@ def load_tasks(tasks_dir: Path = TASKS_DIR) -> tuple[list[dict], list[tuple[str,
         task_id = path.stem
         try:
             data = _load_task_file(path)
+            if data.get("draft") and not include_drafts:
+                continue
             if "id" not in data:
                 raise ValueError("missing required 'id' field")
             if "prompt" not in data:
@@ -350,6 +357,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                          help="previous --json results file to compare against; "
                               "a mechanical pass->fail flip or a judged drop "
                               ">2 points is a regression and fails the run")
+    parser.add_argument("--fail-under", type=float, default=None, metavar="RATE",
+                         help="fail the run if the pass rate drops below RATE "
+                              "(0-1, e.g. 0.8). An absolute floor — --baseline "
+                              "only catches movement relative to a previous run, "
+                              "so a suite that was already bad stays bad silently.")
+    parser.add_argument("--drafts", action="store_true",
+                         help="also run tasks marked `draft: true` (scaffolds "
+                              "written by evals/mine.py)")
     parser.add_argument("--tasks-dir", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--fixtures-dir", default=None, help=argparse.SUPPRESS)
     return parser.parse_args(argv)
@@ -361,7 +376,7 @@ def main(argv: list[str] | None = None) -> int:
     tasks_dir = Path(args.tasks_dir) if args.tasks_dir else TASKS_DIR
     fixtures_dir = Path(args.fixtures_dir) if args.fixtures_dir else FIXTURES_DIR
 
-    tasks, load_errors = load_tasks(tasks_dir)
+    tasks, load_errors = load_tasks(tasks_dir, include_drafts=args.drafts)
 
     if args.tasks:
         wanted = {t.strip() for t in args.tasks.split(",") if t.strip()}
@@ -397,6 +412,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.json_path:
         write_json(results, Path(args.json_path))
 
+    # An absolute floor is checked before (and independently of) the baseline
+    # comparison: a suite can be free of regressions and still be failing half
+    # its tasks, which --baseline alone would report as success.
+    floor_failed = False
+    if args.fail_under is not None and results:
+        rate = sum(1 for r in results if r.status == "pass") / len(results)
+        if rate < args.fail_under:
+            print(f"\nPass rate {rate:.0%} is below the --fail-under floor "
+                  f"of {args.fail_under:.0%}.")
+            floor_failed = True
+
     regressions: list[str] = []
     if args.baseline:
         baseline_path = Path(args.baseline)
@@ -412,10 +438,10 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  {reg}")
         else:
             print("\nNo regressions vs baseline.")
-        return 1 if regressions else 0
+        return 1 if (regressions or floor_failed) else 0
 
     all_passed = all(r.status == "pass" for r in results)
-    return 0 if all_passed else 1
+    return 0 if (all_passed and not floor_failed) else 1
 
 
 if __name__ == "__main__":

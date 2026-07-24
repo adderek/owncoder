@@ -105,6 +105,40 @@ judge:
     - "test_*.py"
 ```
 
+## Absolute floor
+
+`--baseline` catches *movement*. A suite that is already failing half its tasks
+compares clean against a matching baseline and reports success. `--fail-under`
+adds an absolute floor on the pass rate, and can be combined with `--baseline`:
+
+```
+.venv/bin/python evals/run.py --fail-under 0.8
+```
+
+## Mining eval tasks from real failures (`evals/mine.py`)
+
+`failure_report.py` records every invalid tool call, tool exception and runtime
+exception under `.agent/failures/`. `evals/mine.py` clusters those records into
+recurring failure *modes* — normalising away paths, numbers and timestamps so
+forty one-off records collapse into one ranked entry — and scaffolds an eval
+task from a mode you pick.
+
+```
+python evals/mine.py                        # rank failure modes in this project
+python evals/mine.py --project ~/src/other  # …repeatable, merges projects
+python evals/mine.py --json /tmp/modes.json
+python evals/mine.py --scaffold 1           # write a task from mode #1
+```
+
+A scaffold writes `tasks/regress-<tool>.yaml` plus
+`fixtures/regress-<tool>/FAILURE.json` (the evidence: real arguments, real
+error, how often, over how many sessions). The task is marked `draft: true`, so
+the runner skips it — a scaffold has placeholder prompts and checks and must not
+fail the suite before a human finishes it. Run drafts explicitly with `--drafts`.
+
+This is deliberately not automatic: a failure record proves something went
+wrong, it does not specify what right looks like.
+
 ## Regression gating against a baseline
 
 ```
