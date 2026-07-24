@@ -1,7 +1,26 @@
 # Permission model design (S1)
 
-Status: **design approved for implementation** — implementation is a
-PLAN_NORMAL-class task; every decision that requires judgment is made here.
+Status: **implemented** (`security/permissions.py`, enforced in
+`core/tool_calls.execute_tool`, config in `[permissions]`, runtime rules in
+`.agent/permissions.json`, `/permissions` command in all three UIs).
+
+Deviations from the design as written, and why:
+
+- **Narrowing invariant is tested semantically, not by call order.** The design
+  asked for a "permission engine was never invoked" assertion on mode-blocked
+  calls. Air-gap and the fs gate are enforced *inside* the tool bodies, which run
+  after `execute_tool`'s policy check, so a call-order assertion would encode the
+  opposite of the truth. The property that matters is unchanged and is what the
+  tests pin: an `allow` verdict grants nothing those layers refuse.
+- **`ask` needs a registered asker.** UIs call `permissions.set_asker()`; the
+  readline UI does. With no asker (headless `agent run`, or a UI that has not
+  wired one yet) an `ask` verdict resolves to deny, per the fail-closed rule.
+  Textual/HTTP asker wiring is still open.
+- **Config-layer merge is bespoke.** Permission rules cannot use the ordinary
+  list-replace layer merge — a project layer declaring one rule would silently
+  drop the user's entire rule set. `_merge_permissions` concatenates every
+  layer's rules, later layers first (first match wins), and strips project-layer
+  `allow` verdicts and any project attempt to loosen `default`.
 
 ## Problem
 

@@ -67,6 +67,7 @@ _DEFAULT_WRITE_DENY_GLOBS: list[str] = [
     ".claude/**",
     ".agent/**/*.toml",
     ".agent/path_grants.json",  # agent must not self-grant paths
+    ".agent/permissions.json",  # agent must not rewrite the policy binding it
 ]
 
 

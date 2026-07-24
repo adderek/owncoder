@@ -554,3 +554,30 @@ max_findings = 10       # cap on lines injected into context
 # [[diagnostics.checkers]]
 # suffixes = [".py"]
 # command  = ["ruff", "check", "--output-format", "concise", "{file}"]
+
+# ── Tool permissions (policy layer) ───────────────────────────────────────────
+# allow / ask / deny per tool, with optional matching on the tool's primary
+# argument. This sits ABOVE the enforcement layers (sandbox, fs gate, deny
+# globs, air-gap): it can only narrow what those permit, never widen it.
+# Rules are evaluated in order and the FIRST MATCH WINS.
+#   match  — glob by default; prefix "re:" for a regex (refused on path args).
+#            argv lists are joined with spaces, so "git push*" matches
+#            run_argv(argv=["git", "push", "origin"]).
+# An `ask` verdict with no interactive UI (headless run) resolves to deny.
+# Durable rules added at runtime live in .agent/permissions.json, which is
+# write-denied to the agent's own file tools. Manage with /permissions.
+[permissions]
+default       = "allow"   # allow | ask | deny — "allow" keeps current behavior
+ask_timeout_s = 300.0     # no answer in this long = deny (fail closed)
+
+# [[permissions.rules]]
+# tool    = "run_argv"
+# match   = "git push*"
+# verdict = "ask"
+# reason  = "pushing publishes work"
+
+# [[permissions.rules]]
+# tool    = "write_file"
+# match   = "deploy/**"
+# verdict = "deny"
+# reason  = "deploy config is changed by humans only"

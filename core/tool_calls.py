@@ -402,6 +402,22 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
                 }, config=config)
                 args = {k: v for k, v in args.items() if k in allowed}
 
+    # Permission policy: allow / ask / deny per tool + primary argument. Runs
+    # after argument validation (so the prompt shows the real arguments) and
+    # before hooks and the tool itself. It can only narrow — the sandbox, fs
+    # gate, deny globs and air-gap all sit below and are untouched by a verdict.
+    if config is not None:
+        try:
+            from agent.security import permissions as _perms
+            _decision = await _perms.check(name, args, config)
+        except Exception:
+            logger.exception("permission check failed for %s", name)
+            _decision = None
+        if _decision is not None and not _decision.allowed:
+            rules.record_tool_usage(name, False)
+            logger.warning("permission denied: %s (%s)", name, _decision.reason)
+            return json.dumps(_perms.denial_result(name, _decision))
+
     # Pre-tool hooks: a blocking hook (non-zero exit) denies the call before
     # the tool runs. User-authored shell from [[hooks.entries]].
     try:

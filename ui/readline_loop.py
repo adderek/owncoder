@@ -414,6 +414,10 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                 from agent.security.credpool import run_credpool_command
                 console.print(run_credpool_command(agent.config, arg))
 
+            elif cmd in ("/permissions", "/perms"):
+                from agent.security.permissions import run_permissions_command
+                console.print(run_permissions_command(agent.config, arg))
+
             elif cmd == "/models":
                 from agent.ui.slash import _render_models_table, handle_models_toggle
                 toggled = handle_models_toggle(agent.config, arg)
@@ -791,6 +795,30 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
         def _on_user_message() -> None:
             if session is not None:
                 server.save_session(session)
+
+        async def _on_permission_ask(question: str, options: list) -> str:
+            """Permission prompt — same pause-spinner/ask/resume idiom as the
+            loop guard. Anything unparseable answers Deny: fail closed."""
+            _spinner_stop.set()
+            sys.stdout.write("\r\033[K")
+            sys.stdout.flush()
+            for line in question.splitlines():
+                console.print(f"[{t.warning}]{line}[/{t.warning}]")
+            menu = "  ".join(f"[{i}] {o}" for i, o in enumerate(options, 1))
+            console.print(f"  {menu}")
+            loop = asyncio.get_running_loop()
+            try:
+                answer = await loop.run_in_executor(
+                    None, lambda: input("  Choose [1-4, default deny]: ").strip()
+                )
+            except (EOFError, KeyboardInterrupt):
+                return options[2] if len(options) > 2 else "Deny"
+            if answer.isdigit() and 1 <= int(answer) <= len(options):
+                return options[int(answer) - 1]
+            return options[2] if len(options) > 2 else "Deny"
+
+        from agent.security import permissions as _permissions
+        _permissions.set_asker(_on_permission_ask)
 
         async def _on_loop_detected(summary: str, count: int) -> bool:
             # Pause spinner output, ask user, resume.

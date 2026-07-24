@@ -429,6 +429,42 @@ class SecurityConfig:
 
 
 @dataclass
+class PermissionRule:
+    """One permission rule (see PermissionsConfig / docs/permissions-design.md).
+
+        [[permissions.rules]]
+        tool    = "run_argv"        # fnmatch glob on the tool name (required)
+        match   = "git push*"       # optional; matched against the tool's primary arg
+        verdict = "ask"             # allow | ask | deny
+        reason  = "pushes publish"  # optional; shown in the ask prompt / deny error
+    """
+    tool: str = ""
+    match: str = ""
+    verdict: str = "ask"
+    reason: str = ""
+    # Where the rule came from: "config" | "project" | "file" | "session".
+    # Set by the loader / runtime, never by the user — it drives the
+    # can-only-narrow treatment of project-layer rules.
+    origin: str = "config"
+
+
+@dataclass
+class PermissionsConfig:
+    """Interactive per-tool permissioning: allow / ask / deny with arg matching.
+
+    A *policy* layer above the enforcement layers (sandbox, fs gate, deny globs,
+    air-gap). Rules can only narrow what those already allow — an `allow` verdict
+    means "no additional restriction", never "re-enable something a lower layer
+    blocked". Rules are evaluated in order, first match wins; `default` applies
+    when nothing matches. See docs/permissions-design.md.
+    """
+    default: str = "allow"      # allow | ask | deny — "allow" keeps today's behavior
+    rules: list = field(default_factory=list)   # [[permissions.rules]] entries
+    # Seconds to wait for an answer to an ask prompt before failing closed (deny).
+    ask_timeout_s: float = 300.0
+
+
+@dataclass
 class CredPoolConfig:
     """Credential pool for authenticated, well-behaved internet access.
 
@@ -1055,6 +1091,7 @@ class Config:
     tool_compaction: ToolCompactionConfig = field(default_factory=ToolCompactionConfig)
     tool_discovery: ToolDiscoveryConfig = field(default_factory=ToolDiscoveryConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
+    permissions: PermissionsConfig = field(default_factory=PermissionsConfig)
     planning: PlanningConfig = field(default_factory=PlanningConfig)
     recovery: RecoveryConfig = field(default_factory=RecoveryConfig)
     parallel: ParallelConfig = field(default_factory=ParallelConfig)
@@ -1080,3 +1117,9 @@ class Config:
     # Agent.set_session_mode("private"); read by mid-turn routing so an auto-tier
     # escalation can't silently move a private turn onto a remote endpoint.
     runtime_local_only: bool = False
+    # Runtime (non-persisted) flag: True for the config handed to a QUARANTINED
+    # subagent (the ultrasecure ask_internet broker). Permission rules are not
+    # consulted on that side at all — its tool surface is fixed by the broker,
+    # and letting repo-level config alter it would hand fetched page content an
+    # indirect knob. Mirrors the "quarantined side fires no hooks" decision.
+    runtime_quarantined: bool = False

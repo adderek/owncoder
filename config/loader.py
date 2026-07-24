@@ -270,7 +270,7 @@ _KNOWN_SECTIONS = {
     "tool_compaction", "security", "planning", "recovery", "parallel",
     "explore", "web_search", "concurrency", "kb", "aei", "notify", "mcp",
     "speech", "auto_tier", "failover", "privacy", "scheduler", "hooks",
-    "credpool", "tool_discovery", "summarization", "output_store",
+    "credpool", "permissions", "tool_discovery", "summarization", "output_store",
     "turn_signals", "ui_server", "models",
 }
 
@@ -322,6 +322,71 @@ def _coerce_mcp_servers(config: Config) -> None:
     config.mcp.servers = _coerce_dataclass_list(
         config.mcp.servers, MCPServerConfig, "mcp.servers"
     )
+
+
+def _merge_permissions(config: Config, layers: list[tuple[dict, bool]]) -> None:
+    """Assemble [permissions] across config layers, project layers last-trusted.
+
+    Permission rules cannot use the ordinary list-replace merge: a project layer
+    that declares any rule would silently drop the user's whole rule set. Instead
+    every layer's rules are kept and concatenated in precedence order — later
+    (more specific) layers first, because the engine takes the first match.
+
+    A project layer is a *cloned repo's* config: untrusted input. It may only
+    narrow, so its `allow` rules and any loosening of `default` are dropped with
+    a warning. A hostile repo can restrict the agent, never loosen it.
+    """
+    from agent.config.models import PermissionRule, PermissionsConfig
+    from agent.security.permissions import ALLOW, VERDICTS
+
+    # The generic layer merge already ran and may have applied a project layer's
+    # scalars; replay them here from clean defaults so the narrowing rules below
+    # actually get the last word.
+    fresh = PermissionsConfig()
+    config.permissions.default = fresh.default
+    config.permissions.ask_timeout_s = fresh.ask_timeout_s
+
+    collected: list[list[PermissionRule]] = []
+    for data, is_project in layers:
+        section = data.get("permissions")
+        if not isinstance(section, dict):
+            continue
+        default = section.get("default")
+        if isinstance(default, str) and default in VERDICTS:
+            if is_project and default == ALLOW:
+                _config_problem(
+                    "[permissions] default = \"allow\" from a project config is "
+                    "ignored — project rules may only narrow")
+            else:
+                config.permissions.default = default
+        timeout = section.get("ask_timeout_s")
+        if isinstance(timeout, (int, float)) and not is_project:
+            config.permissions.ask_timeout_s = float(timeout)
+
+        layer_rules: list[PermissionRule] = []
+        for item in section.get("rules", []) or []:
+            if isinstance(item, PermissionRule):
+                rule = item
+            elif isinstance(item, dict):
+                rule = PermissionRule()
+                for k, v in item.items():
+                    if hasattr(rule, k) and k != "origin":
+                        setattr(rule, k, v)
+            else:
+                raise ValueError("permissions.rules entries must be mappings")
+            rule.origin = "project" if is_project else "config"
+            if is_project and rule.verdict == ALLOW:
+                _config_problem(
+                    f"[[permissions.rules]] allow-rule for {rule.tool!r} from a "
+                    f"project config is ignored — project rules may only narrow")
+                continue
+            layer_rules.append(rule)
+        collected.append(layer_rules)
+
+    if collected:
+        # Later layers win, and "winning" for a first-match-wins engine means
+        # sitting in front.
+        config.permissions.rules = [r for layer in reversed(collected) for r in layer]
 
 
 def _coerce_diagnostics_checkers(config: Config) -> None:
@@ -497,12 +562,19 @@ def load_config(extra_path: Path | list[Path] | None = None) -> Config:
     if host and host != "local":  # "local" would collide with agent.local.*
         search_paths += [global_dir / f"agent.{host}.{ext}" for ext in ("toml", "yaml", "yml")]
     search_paths += [global_dir / f"agent.local.{ext}" for ext in ("toml", "yaml", "yml")]
+    # Everything from extra_path is a *project* layer: it ships with the repo,
+    # so a clone can carry it. Tracked separately because permission rules from
+    # an untrusted layer may only narrow (see _merge_permissions).
+    project_paths: set[Path] = set()
     if isinstance(extra_path, Path):
         search_paths.append(extra_path)
+        project_paths.add(extra_path)
     elif extra_path:
         search_paths.extend(extra_path)
+        project_paths.update(extra_path)
 
     raw_data: list[dict] = []
+    perm_layers: list[tuple[dict, bool]] = []
     loaded_layers: list[str] = []
     for p in search_paths:
         if p.exists():
@@ -521,6 +593,7 @@ def load_config(extra_path: Path | list[Path] | None = None) -> Config:
                 )
                 sys.exit(1)
             raw_data.append(data)
+            perm_layers.append((data, p in project_paths))
             loaded_layers.append(str(p))
             _check_unknown_sections(data)
             _merge(config, data)
@@ -552,6 +625,9 @@ def load_config(extra_path: Path | list[Path] | None = None) -> Config:
     _coerce_test_suites(config)
     _coerce_hooks(config)
     _coerce_diagnostics_checkers(config)
+    _merge_permissions(config, perm_layers)
+    from agent.security.permissions import validate as _validate_permissions
+    _validate_permissions(config)   # malformed policy must not start a session
     from .validate import validate_config, report_issues
     report_issues(validate_config(config))
     return config

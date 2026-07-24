@@ -1248,6 +1248,15 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
             from agent.security.credpool import run_credpool_command
             pub({"type": "sys",
                  "text": await asyncio.to_thread(run_credpool_command, cfg, arg)})
+
+    elif cmd in ("/permissions", "/perms"):
+        cfg = _agent_config(server)
+        if cfg is None:
+            pub({"type": "sys", "error": True, "text": _NEEDS_LOCAL})
+        else:
+            from agent.security.permissions import run_permissions_command
+            pub({"type": "sys",
+                 "text": await asyncio.to_thread(run_permissions_command, cfg, arg)})
     elif cmd == "/notify":
         _apply(server.set_notify)
     elif cmd == "/effort":

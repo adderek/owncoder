@@ -307,6 +307,10 @@ class SlashHandlerMixin:
             from agent.security.credpool import run_credpool_command
             self._write_sys(_escape(run_credpool_command(self._server._agent.config, arg)))
 
+        elif cmd in ("/permissions", "/perms"):
+            from agent.security.permissions import run_permissions_command
+            self._write_sys(_escape(run_permissions_command(self._server._agent.config, arg)))
+
         elif cmd == "/save":
             if arg.strip():
                 from agent.memory.session import _sanitize_short_name

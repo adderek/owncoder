@@ -48,6 +48,8 @@ def setup(config: "Config") -> Policy:
     _policy = Policy(root=root, agent_dir=agent_dir, cfg=config.security)
     from . import path_grants as _pg
     _pg.setup(config)
+    from . import permissions as _perms
+    _perms.load_file_rules(config)
     return _policy
 
 

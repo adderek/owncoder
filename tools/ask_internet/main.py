@@ -69,8 +69,13 @@ def _quarantine_config(config: "Config") -> "Config":
     role_model = (config.model_roles or {}).get("internet")
     entry = config.model_entries.get(role_model) if role_model else None
     if entry is None:
-        return config
+        # Still a copy, never the caller's object: the quarantine flag must not
+        # leak back onto the privileged agent's config.
+        new_cfg = copy.copy(config)
+        new_cfg.runtime_quarantined = True
+        return new_cfg
     new_cfg = copy.copy(config)
+    new_cfg.runtime_quarantined = True
     new_llm = copy.copy(config.llm)
     new_llm.base_url = entry.base_url
     new_llm.api_key = entry.api_key
