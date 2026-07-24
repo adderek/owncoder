@@ -449,6 +449,8 @@ def _apply_entry_to_llm(config: Config, name: str, entry: "ModelEntry") -> None:
         config.llm.model = entry.model
     config.llm.ctx_window = entry.ctx_window
     config.llm.cache_ttl = entry.cache_ttl
+    if entry.cache_breakpoints:      # "" = inherit whatever [agent] set
+        config.llm.cache_breakpoints = entry.cache_breakpoints
     config.llm.max_output_tokens = entry.max_output_tokens
     config.llm.temperature = entry.temperature
     config.llm.seed = entry.seed

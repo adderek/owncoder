@@ -581,3 +581,15 @@ ask_timeout_s = 300.0     # no answer in this long = deny (fail closed)
 # match   = "deploy/**"
 # verdict = "deny"
 # reason  = "deploy config is changed by humans only"
+
+# ── Prompt-cache breakpoints ──────────────────────────────────────────────────
+# Most endpoints (OpenAI, DeepSeek, vLLM, llama.cpp) cache prompt prefixes
+# automatically and need nothing here — leave it "off". Anthropic-compatible
+# endpoints only cache what the request marks explicitly; set "anthropic" to
+# emit cache_control blocks at the end of the system preamble and at the end of
+# the conversation. Sending markers to an endpoint that validates its request
+# schema breaks the request, which is why this is opt-in per model entry:
+#   [models.my-claude]
+#   cache_breakpoints = "anthropic"
+# The cached share of each request is reported in the post-turn usage line when
+# the endpoint tells us (many do not). Default is "off" for every entry.

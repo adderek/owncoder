@@ -90,6 +90,9 @@ class Agent:
         self._skill_loader = None
         self.stats: dict = {
             "input_tokens": 0,
+            # Portion of input_tokens the endpoint served from its prompt cache.
+            # Only some providers report it; 0 means "not reported", not "miss".
+            "cached_input_tokens": 0,
             "output_tokens": 0,
             "content_tokens": 0,
             "reasoning_tokens": 0,
@@ -634,6 +637,7 @@ class Agent:
     def _record_usage(self, u: dict) -> None:
         s = self.stats
         s["input_tokens"] += u.get("input_tokens", 0)
+        s["cached_input_tokens"] += u.get("cached_input_tokens", 0)
         s["output_tokens"] += u.get("output_tokens", 0)
         s["content_tokens"] += u.get("content_tokens", 0)
         s["reasoning_tokens"] += u.get("reasoning_tokens", 0)

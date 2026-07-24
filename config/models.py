@@ -25,6 +25,11 @@ class LLMConfig:
     think_budget: int = -1          # token budget for thinking; -1 = unlimited / server default
     narration_fallback: bool = True
     cache_ttl: int = 300         # prompt cache TTL in seconds; 0 = disable cache tracking
+    # Explicit prompt-cache breakpoints. "off" suits every endpoint that caches
+    # prefixes automatically (OpenAI, DeepSeek, vLLM, llama.cpp) and is the only
+    # safe default: an endpoint that validates its request schema rejects the
+    # markers outright. "anthropic" emits cache_control blocks.
+    cache_breakpoints: str = "off"   # off | anthropic
     gpu: bool = False             # True when resolved default entry is in [concurrency].gpu_pool
     request_timeout: int = 600    # hard ceiling (s) for a single LLM request; 0 = SDK default
     stream_stall_seconds: int = 90  # mid-stream gap (after first token) before declaring a wedge (0 = off)
@@ -636,6 +641,7 @@ class ModelEntry:
     thinking: bool = False       # supports extended thinking / chain-of-thought
     local: bool = False          # runs locally (no network cost / latency)
     cache_ttl: int = 300         # prompt cache TTL in seconds; 0 = disable cache tracking
+    cache_breakpoints: str = ""  # "" = inherit [agent]; off | anthropic (see LLMConfig)
     cost_in_per_1k: float = 0.0  # USD per 1k input tokens (0 = free/unknown)
     cost_out_per_1k: float = 0.0 # USD per 1k output tokens (0 = free/unknown)
     tokens_per_sec: float = 0.0  # estimated throughput (0 = unknown)

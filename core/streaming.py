@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from . import prompt_cache
 from .prompts import _inject_think_hint, _inject_autonomy_hint, _log_llm_request, _build_call_kwargs
 from .tool_calls import _FakeToolCall, _parse_text_tool_calls, _parse_qwen_function_xml, _parse_agent_exec_xml
 
@@ -329,6 +330,9 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
     api_messages = _inject_think_hint(api_messages, config)
     api_messages = _inject_autonomy_hint(api_messages, config)
     _log_llm_request(api_messages, tools, config)
+    # Last step before the wire: hint injection rewrites the system message, so
+    # breakpoints have to be placed after it or they mark stale content.
+    api_messages = prompt_cache.prepare(api_messages, config)
     t_start = time.monotonic()
     t_first_token: float | None = None
     server_usage: dict | None = None
@@ -398,6 +402,9 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
                     "prompt_tokens": getattr(u, "prompt_tokens", 0) or 0,
                     "completion_tokens": getattr(u, "completion_tokens", 0) or 0,
                     "total_tokens": getattr(u, "total_tokens", 0) or 0,
+                    # Part of prompt_tokens that the endpoint served from cache.
+                    # 0 means "not reported", which is not the same as a miss.
+                    "cached_tokens": prompt_cache.extract_cached_tokens(u),
                 }
 
             choice = chunk.choices[0] if chunk.choices else None
@@ -512,6 +519,7 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
         )
         on_usage({
             "input_tokens": input_tokens,
+            "cached_input_tokens": (server_usage or {}).get("cached_tokens", 0),
             "output_tokens": output_tokens,
             "content_tokens": content_tokens,
             "reasoning_tokens": reasoning_tokens,

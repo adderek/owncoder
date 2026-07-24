@@ -20,6 +20,7 @@ from .history_ops import (
     _apply_code_from_history,
 )
 from . import diagnostics
+from . import prompt_cache
 from .loop_detector import LoopDetector
 from .confidence import ConfidenceMonitor
 
@@ -650,6 +651,7 @@ async def run_turn(
                 api_messages_sent = _inject_autonomy_hint(api_messages_sent, config)
                 api_messages_sent = _inject_aei_hint(api_messages_sent, config)
                 _log_llm_request(api_messages_sent, tools, config)
+                api_messages_sent = prompt_cache.prepare(api_messages_sent, config)
                 t_start = time.monotonic()
                 async with _gpu_slot(config):
                     response = await client.chat.completions.create(
@@ -667,6 +669,7 @@ async def run_turn(
                     output_tokens = getattr(u, "completion_tokens", 0) if u else 0
                     on_usage({
                         "input_tokens": input_tokens or 0,
+                        "cached_input_tokens": prompt_cache.extract_cached_tokens(u),
                         "output_tokens": output_tokens or 0,
                         "content_tokens": 0,
                         "reasoning_tokens": 0,

@@ -898,6 +898,12 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                 f"↑{s['input_tokens']}",
                 f"↓{s['output_tokens']}",
             ]
+            # Only shown when the endpoint actually reports cache hits — a
+            # permanent "cache 0%" on a backend that never reports it would be
+            # noise, not information.
+            _cached = s.get("cached_input_tokens", 0)
+            if _cached and s.get("input_tokens"):
+                parts.append(f"cached {100 * _cached // s['input_tokens']}%")
             if s.get("in_tps"):
                 parts.append(f"{_fmt_tps(s['in_tps'])} in-tok/s")
             if s.get("out_tps"):
