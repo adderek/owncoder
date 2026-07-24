@@ -338,13 +338,19 @@ def _apply_model(agent, arg: str) -> tuple[bool, str]:
 
 
 def handle_models_toggle(config: "Config", arg: str) -> tuple[bool, str] | None:
-    """Handle '/models enable|disable <name>'. None when arg isn't a toggle
-    (caller shows the table instead)."""
+    """Handle '/models enable|disable|enable-save|disable-save <name>'. None
+    when arg isn't a toggle (caller shows the table instead)."""
     parts = (arg or "").split()
-    if len(parts) == 2 and parts[0] in ("enable", "disable"):
+    ACTIONS = ("enable", "disable", "enable-save", "disable-save")
+    if len(parts) == 2 and parts[0] in ACTIONS:
+        save = parts[0].endswith("-save")
+        enabled = parts[0].startswith("enable")
+        if save:
+            from agent.core.model_control import save_model_enabled
+            return save_model_enabled(config, parts[1], enabled)
         from agent.core.model_control import set_model_enabled
-        return set_model_enabled(config, parts[1], parts[0] == "enable")
-    if len(parts) == 1 and parts[0] in ("enable", "disable"):
+        return set_model_enabled(config, parts[1], enabled)
+    if len(parts) == 1 and parts[0] in ACTIONS:
         return False, f"usage: /models {parts[0]} <entry-name>"
     return None
 
@@ -393,6 +399,7 @@ def _render_models_table(config: "Config", probe: bool = True):
     tbl.add_column("temp", justify="right", no_wrap=True)
     tbl.add_column("params", justify="right", no_wrap=True)
     tbl.add_column("tok/s", justify="right", no_wrap=True)
+    tbl.add_column("ok%", justify="right", no_wrap=True)  # success rate, last 24h
     tbl.add_column("L", justify="center", no_wrap=True)  # local
     tbl.add_column("T", justify="center", no_wrap=True)  # thinking
     tbl.add_column("$/in", justify="right", no_wrap=True)
@@ -417,6 +424,12 @@ def _render_models_table(config: "Config", probe: bool = True):
         temp_str = f"{e.temperature:.2f}"
         params_str = f"{e.params_b:.0f}B" if e.params_b else "?"
         tps_str = f"{e.tokens_per_sec:.0f}" if e.tokens_per_sec else "—"
+        try:
+            from agent.metrics.model_reliability import reliability_summary
+            _rel = reliability_summary(name)
+            ok_str = f"{_rel['success_rate'] * 100:.0f}% ({_rel['total']})" if _rel["success_rate"] is not None else "—"
+        except Exception:
+            ok_str = "—"
         local_str = "[green]✓[/green]" if e.local else ""
         think_str = "[cyan]✓[/cyan]" if e.thinking else ""
         cost_in_str = f"{e.cost_in_per_1k:.4f}" if e.cost_in_per_1k else "—"
@@ -433,7 +446,7 @@ def _render_models_table(config: "Config", probe: bool = True):
 
         tbl.add_row(
             name_str, model_str, _live_cell(e), st_str, tier_str, e.base_url,
-            ctx_str, out_str, temp_str, params_str, tps_str,
+            ctx_str, out_str, temp_str, params_str, tps_str, ok_str,
             local_str, think_str,
             cost_in_str, cost_out_str, badge_str,
         )

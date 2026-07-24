@@ -26,6 +26,8 @@ _ALLOWED: list[tuple[str, set[str]]] = [
     ("agent.mode", {"fast", "ultrasecure"}),                       # core/agent.py
     ("agent.model_mode", {"local-only", "free-cloud", "free-hybrid",
                           "paid-cloud", "manual", "any"}),         # config/registry.py
+    ("agent.startup_profile", {"ask", "auto", "off"}),             # config/profile_detect.py
+    ("rag.embed_server_device", {"cpu", "gpu"}),                   # rag/embed_server.py
     ("agent.think_level", {"off", "low", "normal", "med", "medium",
                            "high", "max"}),                        # core/prompts.py THINK_LEVELS
     ("security.network", {"off", "on"}),                           # tools/shell/main.py

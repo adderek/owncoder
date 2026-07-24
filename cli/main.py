@@ -78,6 +78,14 @@ def main() -> None:
     idx_p.add_argument("--watch", action="store_true", help="Watch for file changes and re-index (foreground; used internally by daemon)")
 
     # chat
+    emb_p = sub.add_parser("embed", help="Manage the local embeddings server (external launcher script)")
+    emb_p.add_argument("--start", action="store_true", help="Start the server (rag.embed_server_command)")
+    emb_p.add_argument("--stop", action="store_true", help="Stop the server")
+    emb_p.add_argument("--status", action="store_true", help="Show server status (default action)")
+    emb_dev = emb_p.add_mutually_exclusive_group()
+    emb_dev.add_argument("--gpu", action="store_true", help="Run the model on GPU")
+    emb_dev.add_argument("--cpu", action="store_true", help="Run the model on CPU")
+
     chat_p = sub.add_parser("chat", help="Start interactive session")
     chat_p.add_argument("--model", type=str, help="Override model name")
     chat_p.add_argument("--ctx", type=int, help="Override context window size")
@@ -214,6 +222,10 @@ def main() -> None:
     _setup_logging(str(log_dir), config.logs)
     log_path = log_dir / "agent.log"
 
+    from agent.core.model_state_store import load_disabled
+    from agent.core.model_control import disabled_set
+    disabled_set(config).update(load_disabled(str(log_dir)))
+
     try:
         if args.command == "init":
             from agent.cli.index import cmd_init
@@ -248,8 +260,19 @@ def main() -> None:
                 )
             else:
                 parser.parse_args(["index", "--help"])
+        elif args.command == "embed":
+            from agent.rag import embed_server
+            if getattr(args, "stop", False):
+                print(embed_server.stop(config))
+            elif getattr(args, "start", False):
+                device = "gpu" if args.gpu else ("cpu" if args.cpu else None)
+                print(embed_server.start(config, device))
+            else:
+                print(embed_server.status(config))
         elif args.command == "chat":
             from agent.cli.chat import cmd_chat
+            from agent.config.profile_detect import run_startup_profile_check
+            run_startup_profile_check(config, interactive=sys.stdin.isatty())
             check_reachability(config)
             if config.recovery.enabled:
                 from agent.planning import recovery as _rec
@@ -260,6 +283,8 @@ def main() -> None:
             cmd_chat(args, config)
         elif args.command == "run":
             from agent.cli.run import cmd_run
+            from agent.config.profile_detect import run_startup_profile_check
+            run_startup_profile_check(config, interactive=False)
             check_reachability(config)
             cmd_run(args, config)
         elif args.command == "sessions":

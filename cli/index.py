@@ -625,6 +625,16 @@ def cmd_index_stats(args, config):
     else:
         console.print("  [green]Index is up to date.[/green]")
     console.print(f"  Chunks: {stats['chunks']}")
+    idx_model = stats.get("embedding_model")
+    if idx_model:
+        cur_model = config.embeddings.model
+        if cur_model and cur_model != idx_model:
+            console.print(
+                f"  [yellow]Embedder: {idx_model} (index) ≠ {cur_model} (config) — "
+                f"mixed vectors degrade search; rebuild with `agent init --force`[/yellow]"
+            )
+        else:
+            console.print(f"  Embedder: {idx_model}")
     console.print(f"  DB:     {config.rag.db_path}")
     console.print("[bold]Archive stats:[/bold]")
     console.print(f"  Files:  {astats['files']}")

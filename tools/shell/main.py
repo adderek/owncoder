@@ -264,30 +264,6 @@ def get_transcript() -> list[dict]:
     return list(_transcript)
 
 
-@register(
-    "run_argv",
-    {
-        "description": (
-            "Run command as argv list — no shell interpretation, sandboxed. "
-            "Pipes/redirects: ['sh','-c','cmd']. "
-            "Network blocked by default; network=true for curl/fetch."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "argv": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Argument vector, e.g. ['git','status','--short']",
-                },
-                "cwd": {"type": "string", "description": "Working directory (default: project root)"},
-                "timeout": {"type": "integer", "description": "Timeout in seconds (default: security.wall_seconds)"},
-                "network": {"type": "boolean", "description": "Allow network egress (default: false)"},
-            },
-            "required": ["argv"],
-        },
-    },
-)
 def _precheck_argv(argv: list[str], network: bool, timeout: int | None,
                    *, cap_timeout: bool = True) -> tuple[dict | None, int]:
     """Shared validation for run_argv / run_argv_bg. Returns (error|None,
@@ -343,6 +319,30 @@ def _precheck_argv(argv: list[str], network: bool, timeout: int | None,
     return None, eff_timeout
 
 
+@register(
+    "run_argv",
+    {
+        "description": (
+            "Run command as argv list — no shell interpretation, sandboxed. "
+            "Pipes/redirects: ['sh','-c','cmd']. "
+            "Network blocked by default; network=true for curl/fetch."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "argv": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Argument vector, e.g. ['git','status','--short']",
+                },
+                "cwd": {"type": "string", "description": "Working directory (default: project root)"},
+                "timeout": {"type": "integer", "description": "Timeout in seconds (default: security.wall_seconds)"},
+                "network": {"type": "boolean", "description": "Allow network egress (default: false)"},
+            },
+            "required": ["argv"],
+        },
+    },
+)
 def run_argv(argv: list[str], cwd: str | None = None, timeout: int | None = None, network: bool = False) -> dict:
     err, eff_timeout = _precheck_argv(argv, network, timeout)
     if err is not None:

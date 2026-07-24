@@ -611,10 +611,16 @@ async function loadModels(silent) {
         '<span class="mrun" title="requests in flight"><span class="mrun-dot"></span>' +
           (running > 1 ? running : '') + '</span>' +
         (e.calls ? '<span class="mcalls" title="completed calls this session">×' + e.calls + '</span>' : '') +
+        (e.reliability && e.reliability.total ? '<span class="mrel" title="' +
+          esc(e.reliability.success + ' ok / ' + e.reliability.failure + ' fail / ' +
+            e.reliability.rate_limited + ' rate-limited, last 24h') + '">' +
+          (e.reliability.success_rate != null ? Math.round(e.reliability.success_rate * 100) + '%' : '–') +
+          ' (' + e.reliability.total + ')</span>' : '') +
         (e.embeddings ? '<span class="mtier">emb</span>' :
           '<button class="mbtn" data-use="' + esc(e.name) + '">use</button>') +
         '<button class="mbtn" data-toggle="' + esc(e.name) + '" data-en="' +
           (off ? '1' : '') + '">' + (off ? 'enable' : 'disable') + '</button>' +
+        (off ? '<button class="mbtn" data-save="' + esc(e.name) + '" title="persist disabled state for future sessions in this project">save</button>' : '') +
         '</div>';
     }
     // Skip the DOM write entirely when nothing changed — a poll landing on an
@@ -629,6 +635,8 @@ async function loadModels(silent) {
       modelAction({action: 'use', entry: b.dataset.use})));
     el.querySelectorAll('[data-toggle]').forEach(b => b.addEventListener('click', () =>
       modelAction({action: 'toggle', entry: b.dataset.toggle, enabled: !!b.dataset.en})));
+    el.querySelectorAll('[data-save]').forEach(b => b.addEventListener('click', () =>
+      modelAction({action: 'toggle', entry: b.dataset.save, enabled: false, save: true})));
     document.getElementById('modesel').addEventListener('change', (ev) =>
       modelAction({action: 'mode', mode: ev.target.value}));
   } catch (e) { el.textContent = 'failed: ' + e; }

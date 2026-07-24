@@ -58,6 +58,12 @@ class RAGConfig:
     # Also index generic text files (.md, .toml, .example, .template, Makefile,
     # any unknown extension that sniffs as text). Code extensions are unaffected.
     index_text_files: bool = True
+    # Local embeddings server launcher (agent/rag/embed_server.py — `agent
+    # embed --start`). Points at an external sub-project script that starts an
+    # OpenAI-compatible embeddings server on config.embeddings.base_url; the
+    # script receives one argument: "cpu" or "gpu". "" disables the launcher.
+    embed_server_command: str = ""
+    embed_server_device: str = "cpu"  # default when --gpu/--cpu not given
     # Per-file byte cap for generic text files (binary-sniffed; code files exempt).
     text_max_bytes: int = 256 * 1024
 
@@ -508,6 +514,13 @@ class AgentConfig:
     #                   [models]/`/model role=` pins (the user's matrix) are used
     #   "any"         — local + free + paid (idle work auto-offloads to free cloud)
     model_mode: str = "any"
+    # Startup profile check (config/profile_detect.py): probe all configured
+    # endpoints in parallel (pure code, no LLM), report offline hosts and
+    # suggest the best matching model-mode profile for this session.
+    #   "ask"  — print report; in interactive chat prompt to confirm/override
+    #   "auto" — print report and apply the suggestion without prompting
+    #   "off"  — skip the check
+    startup_profile: str = "ask"
     # Per-tier system-prompt overlays (S5). When on, an extra prompt overlay is
     # appended for the running model's cost tier — currently a weak-model
     # ("local") overlay with shorter, more imperative tool-choice discipline.

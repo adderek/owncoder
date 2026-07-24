@@ -143,6 +143,11 @@ async def _walk_candidates(config, role, kwargs, metrics_role, max_candidates, l
                 except Exception:
                     pass
             resp = await client.chat.completions.create(model=entry.model, **kwargs)
+            try:
+                from agent.metrics.model_reliability import record_outcome
+                record_outcome(name, "success", role=metrics_role)
+            except Exception:
+                pass
             return resp, name, entry, client
         except RateLimitError as e:
             retry_after = retry_after_seconds(e)
@@ -152,6 +157,11 @@ async def _walk_candidates(config, role, kwargs, metrics_role, max_candidates, l
                 mark_rate_limited(entry.base_url, entry.model, cooldown_s=cooldown)
             except Exception:
                 logger.debug("llm_retry: mark_rate_limited failed", exc_info=True)
+            try:
+                from agent.metrics.model_reliability import record_outcome
+                record_outcome(name, "rate_limited", role=metrics_role)
+            except Exception:
+                pass
             logger.warning("llm_retry: %s rate limited on '%s' (%s) — trying next candidate",
                             role, name, "daily quota" if daily else "burst")
             last_exc = e
@@ -160,10 +170,20 @@ async def _walk_candidates(config, role, kwargs, metrics_role, max_candidates, l
                 mark_rate_limited(entry.base_url, entry.model)
             except Exception:
                 logger.debug("llm_retry: mark_rate_limited failed", exc_info=True)
+            try:
+                from agent.metrics.model_reliability import record_outcome
+                record_outcome(name, "failure", role=metrics_role)
+            except Exception:
+                pass
             logger.warning("llm_retry: %s failed on '%s' (%s: %s) — trying next candidate",
                             role, name, type(e).__name__, e)
             last_exc = e
         except Exception as e:  # noqa: BLE001 - client construction or any other failure
+            try:
+                from agent.metrics.model_reliability import record_outcome
+                record_outcome(name, "failure", role=metrics_role)
+            except Exception:
+                pass
             logger.warning("llm_retry: %s failed on '%s' (%s: %s) — trying next candidate",
                             role, name, type(e).__name__, e)
             last_exc = e

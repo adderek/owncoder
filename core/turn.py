@@ -676,6 +676,12 @@ async def run_turn(
                     })
                 if config.llm.cache_ttl > 0:
                     mark_request(config.llm.base_url, config.llm.model)
+            try:
+                from agent.metrics.model_stats import resolve_entry_name
+                from agent.metrics.model_reliability import record_outcome
+                record_outcome(resolve_entry_name(config), "success")
+            except Exception:
+                pass
         except StreamStalledError as e:
             # Backend wedged mid-stream (e.g. a GPU/HSA lost-wakeup on the
             # llama.cpp side). The stream was already closed, freeing the server
@@ -688,6 +694,12 @@ async def run_turn(
                 _phase("stall_retry", f"{stall_retry_count}/{max_stall_retries}")
                 continue
             logger.error("%s — giving up after %d retries", e, max_stall_retries)
+            try:
+                from agent.metrics.model_stats import resolve_entry_name
+                from agent.metrics.model_reliability import record_outcome
+                record_outcome(resolve_entry_name(config), "failure")
+            except Exception:
+                pass
             raise
         except BadRequestError as e:
             err_body = e.body or {}
@@ -715,6 +727,12 @@ async def run_turn(
             # once exhausted, degrade to the local model like a remote outage.
             # Put this (endpoint, model) on cooldown so tier ladders and
             # escalation stop picking it while it rejects requests.
+            try:
+                from agent.metrics.model_stats import resolve_entry_name
+                from agent.metrics.model_reliability import record_outcome
+                record_outcome(resolve_entry_name(config), "rate_limited")
+            except Exception:
+                pass
             retry_after = _retry_after_seconds(e)
             daily = _is_daily_quota_429(e, retry_after)
             try:
@@ -775,6 +793,12 @@ async def run_turn(
             # stream body (openai raises the base class there, not
             # InternalServerError) plus any remaining status errors not
             # handled by the clauses above.
+            try:
+                from agent.metrics.model_stats import resolve_entry_name
+                from agent.metrics.model_reliability import record_outcome
+                record_outcome(resolve_entry_name(config), "failure")
+            except Exception:
+                pass
             # Failure cooldown: keep the tier ladder off this endpoint until a
             # fresh availability probe confirms it works again (retry-to-revive).
             try:

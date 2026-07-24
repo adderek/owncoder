@@ -47,6 +47,21 @@ def set_model_enabled(config, entry_name: str, enabled: bool) -> tuple[bool, str
     return True, f"'{entry_name}' disabled for this session{note}"
 
 
+def save_model_enabled(config, entry_name: str, enabled: bool) -> tuple[bool, str]:
+    """Like set_model_enabled, but also persists the disabled set to
+    <agent_dir>/model_state.json so it survives restarts."""
+    ok, msg = set_model_enabled(config, entry_name, enabled)
+    if ok:
+        try:
+            from pathlib import Path
+            from agent.core.model_state_store import save_disabled
+            agent_dir = Path(config.tools.working_dir) / config.tools.agent_dir
+            save_disabled(str(agent_dir), disabled_set(config))
+        except Exception:
+            logger.exception("failed to persist model disable state")
+    return ok, msg
+
+
 def entry_status(config, entry_name: str, entry) -> str:
     """One-word status for display: 'off' (disabled), 'cool' (failure cooldown),
     '' (normal)."""

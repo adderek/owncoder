@@ -540,7 +540,11 @@ class _HttpUI:
                 arg = f"{role}={entry}" if role and role != "default" else entry
                 ok, msg = self._call_on_loop(self.server.set_model, arg)
             elif action == "toggle":
-                setter = getattr(self.server, "set_model_entry_enabled", None)
+                save = bool(payload.get("save"))
+                setter = getattr(
+                    self.server,
+                    "save_model_entry_enabled" if save else "set_model_entry_enabled",
+                    None)
                 if setter is None:
                     return {"ok": False, "msg": "server does not support entry toggling"}
                 ok, msg = self._call_on_loop(
@@ -1142,7 +1146,7 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
             mark = "?" if avail is None else ("✓" if avail else "✗")
             lines.append(f"{role}: {mark} {c.get('model')}  {c.get('base_url', '')}"
                          f"  ctx={c.get('ctx_window', '-')}")
-        lines.append("(/models enable|disable <entry> — toggle; models panel in Details drawer)")
+        lines.append("(/models enable|disable <entry> — toggle; add -save (e.g. disable-save) to persist; models panel in Details drawer)")
         pub({"type": "sys", "text": "\n".join(lines)})
     elif cmd == "/mode":
         setter = getattr(server, "set_model_mode", None)

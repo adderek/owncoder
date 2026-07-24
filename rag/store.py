@@ -371,11 +371,49 @@ class VectorStore:
         combined.sort(key=lambda x: x[0], reverse=True)
         return [{"combined_score": s, **d} for s, d in combined[:top_k]]
 
+    def get_meta(self, key: str) -> str | None:
+        row = self._conn().execute(
+            "SELECT value FROM _meta WHERE key = ?", (key,)
+        ).fetchone()
+        return row["value"] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        conn = self._conn()
+        conn.execute(
+            "INSERT OR REPLACE INTO _meta(key, value) VALUES (?, ?)", (key, value)
+        )
+        conn.commit()
+
+    def record_embedding_model(self, model: str, endpoint: str = "") -> str | None:
+        """Record which embedding model produced this index's vectors.
+
+        Returns the PREVIOUS model name when it differs and the index already
+        holds embeddings (the caller should warn: same dims from a different
+        model/quant — e.g. bge-m3 q4_k_m vs q8_0 — silently degrade search).
+        Returns None when unchanged or the index was empty.
+        """
+        prev = self.get_meta("embedding_model")
+        self.set_meta("embedding_model", model)
+        if endpoint:
+            self.set_meta("embedding_endpoint", endpoint)
+        if prev and prev != model:
+            has_vecs = self._vec_dims is not None and self._conn().execute(
+                "SELECT 1 FROM vec_chunks LIMIT 1"
+            ).fetchone() is not None
+            if has_vecs:
+                return prev
+        return None
+
     def stats(self) -> dict:
         conn = self._conn()
         row = conn.execute("SELECT COUNT(*) as cnt FROM chunks").fetchone()
         paths = conn.execute("SELECT COUNT(DISTINCT path) as cnt FROM chunks").fetchone()
-        return {"chunks": row["cnt"], "files": paths["cnt"]}
+        return {
+            "chunks": row["cnt"],
+            "files": paths["cnt"],
+            "embedding_model": self.get_meta("embedding_model"),
+            "embedding_endpoint": self.get_meta("embedding_endpoint"),
+        }
 
     def get_indexed_mtimes(self) -> dict[str, float]:
         """Return {path: mtime} for all indexed files (including chunk-less visited files)."""

@@ -494,10 +494,15 @@ class LocalUIServer:
                 calls_by_model[row["model"]] = calls_by_model.get(row["model"], 0) + row["calls"]
         except Exception:
             logger.debug("models_overview: session_token_rows failed", exc_info=True)
+        try:
+            from agent.metrics.model_reliability import reliability_summary
+        except Exception:
+            reliability_summary = None
         rows = []
         for name in sorted(entries):
             e = entries[name]
             model = getattr(e, "model", "") or ""
+            reliability = reliability_summary(name) if reliability_summary else None
             rows.append({
                 "name": name,
                 "model": model,
@@ -513,6 +518,7 @@ class LocalUIServer:
                 "active": name == active,
                 "running": running.get(model, 0),
                 "calls": calls_by_model.get(model, 0),
+                "reliability": reliability,
             })
         try:
             from agent.core.model_mode import _ORDER as modes
@@ -535,6 +541,13 @@ class LocalUIServer:
         and failover while disabled)."""
         from agent.core.model_control import set_model_enabled
         return set_model_enabled(self._agent.config, name, enabled)
+
+    def save_model_entry_enabled(self, name: str, enabled: bool,
+                                  session_id: str = "") -> "tuple[bool, str]":
+        """Like set_model_entry_enabled, but persists the choice to
+        <agent_dir>/model_state.json so it survives restarts."""
+        from agent.core.model_control import save_model_enabled
+        return save_model_enabled(self._agent.config, name, enabled)
 
     def set_model_mode(self, arg: str, session_id: str = "") -> "tuple[bool, str]":
         """Show/switch model-mode (local-only / free-cloud / … / any)."""

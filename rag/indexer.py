@@ -201,6 +201,23 @@ def index_directory(
 ) -> dict:
     root_path = Path(root).resolve()
     exclude = exclude or []
+
+    # Stamp which embedding model fills this index; different models (or quants
+    # of one model, e.g. bge-m3 q4_k_m vs q8_0) share dims but produce
+    # incompatible vectors, so a silent switch would degrade search quality.
+    emb_cfg = getattr(embedder, "_cfg", None)
+    if emb_cfg is not None and getattr(emb_cfg, "model", ""):
+        prev_model = store.record_embedding_model(
+            emb_cfg.model, getattr(emb_cfg, "base_url", "")
+        )
+        if prev_model:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Embedding model changed: index built with %r, now embedding with %r "
+                "(same dims, different vectors). Mixed vectors degrade search — "
+                "run `agent init --force` to rebuild the whole index.",
+                prev_model, emb_cfg.model,
+            )
     default_exclude = {
         ".git", "__pycache__", "node_modules", "build", "dist",
         ".agent", ".venv", "venv", ".env",
