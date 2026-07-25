@@ -21,6 +21,12 @@ from .history_ops import (
 )
 from . import diagnostics
 from . import prompt_cache
+from . import turn_batch
+from . import turn_errors
+from . import turn_guards
+from .turn_errors import NoUsableModelError  # re-exported: run_turn raises it
+from .turn_guards import MUTATING_TOOLS
+from .turn_setup import normalize_api_messages, select_tools
 from .loop_detector import LoopDetector
 from .confidence import ConfidenceMonitor
 
@@ -61,188 +67,6 @@ async def _post_turn_capture_and_summarize(
         logger.exception("_post_turn_capture_and_summarize: error (ignored)")
 
 
-def _loop_guard_stop_note(summary: str, triggered: list[tuple[str, str, int, str]]) -> str:
-    """Build a tool-specific recovery message for loop-guard stops that persists in history."""
-    tool_names = {n for n, _, _, _ in triggered}
-    parts: list[str] = [f"[loop guard: stopped after repeated tool calls ({summary})."]
-
-    if "edit_file" in tool_names:
-        paths = []
-        for n, _, _, args_json in triggered:
-            if n == "edit_file":
-                try:
-                    p = json.loads(args_json).get("path", "")
-                    if p and p not in paths:
-                        paths.append(p)
-                except Exception:
-                    pass
-        if paths:
-            parts.append(f" The anchor used for {', '.join(paths)} was not found repeatedly.")
-            parts.append(" To recover: re-read the file to get current content and correct anchors, then retry the edit.")
-        else:
-            parts.append(" edit_file anchor was not found repeatedly. Re-read the target file for fresh anchors before retrying.")
-
-    if "read_file" in tool_names:
-        parts.append(" The same file range was read repeatedly without progress. Use search_files to locate the target or specify a different start_line/end_line range.")
-
-    if not tool_names & {"edit_file", "read_file"}:
-        parts.append(" Redirect: describe what you are trying to accomplish or ask the user for guidance.")
-
-    parts.append("]")
-    return "".join(parts)
-
-
-def _patch_read_file_result(tc, result: str, read_path_counts: dict,
-                            warn_threshold: int, stop_threshold: int,
-                            read_advance: dict | None = None) -> tuple[str, str | None]:
-    """Track repeated read_file of the same range; auto-advance, warn, then stop.
-
-    Mutates *read_path_counts* (and *read_advance*) in place. On a repeated read of
-    the same range the identical window is replaced with the *next* slice of the
-    file so an instruction-ignoring model is forced to make progress instead of
-    re-reading the same head. Returns (result, stop_note): stop_note is non-None
-    only at the hard ceiling, when even auto-advance failed to unstick the model.
-    """
-    try:
-        a = json.loads(tc.function.arguments or "{}")
-        rpath = str(a.get("path", ""))
-        if not rpath:
-            return result, None
-        # Key on (path, start_line, end_line) so reading different sections of
-        # the same large file doesn't trigger the guard.
-        rkey = (rpath, a.get("start_line"), a.get("end_line"))
-        read_path_counts[rkey] = read_path_counts.get(rkey, 0) + 1
-        count = read_path_counts[rkey]
-
-        # Auto-advance: the model re-read the SAME range without acting on it.
-        # Serving the identical window again just feeds the loop, so return the
-        # NEXT lines of the file instead. read_file already advertises
-        # "read offset=N for more"; this enforces it behaviourally.
-        auto_advanced = False
-        if read_advance is not None and count >= 2:
-            try:
-                from agent.tools.files.read import read_file as _rf, READ_WINDOW_LINES
-                try:
-                    total = int(json.loads(result).get("metadata", {}).get("total_lines") or 0)
-                except Exception:
-                    total = 0
-                win = READ_WINDOW_LINES
-                # The advance cursor is keyed per path (not per range like the
-                # counts): once a file is stuck, every repeat pages forward
-                # regardless of which range the model keeps asking for.
-                nxt = read_advance.get(rpath)
-                if nxt is None:
-                    sl, el = a.get("start_line"), a.get("end_line")
-                    base_end = el if el else ((sl + win - 1) if sl else win)
-                    nxt = (base_end or win) + 1
-                if total and nxt > total:
-                    note = (
-                        f"[loop guard: all {total} lines of '{rpath}' have now been shown "
-                        f"across {count} reads. Stop re-reading — make your change with "
-                        f"edit_file, or use search_files for a specific anchor.]"
-                    )
-                    result = json.dumps({"content": note, "end_of_file": True,
-                                         "metadata": {"total_lines": total}})
-                    auto_advanced = True
-                else:
-                    adv = _rf(rpath, start_line=nxt, end_line=nxt + win - 1)
-                    if isinstance(adv, dict) and not adv.get("error"):
-                        adv["_auto_advanced"] = (
-                            f"[loop-guard] You re-read '{rpath}' without acting, so this is the "
-                            f"NEXT block (lines {nxt}+) — the offset advances on each repeat. "
-                            f"Use search_files or edit_file once you have the anchor; do not "
-                            f"re-request the same range."
-                        )
-                        read_advance[rpath] = nxt + win
-                        result = json.dumps(adv)
-                        auto_advanced = True
-            except Exception:
-                pass
-
-        if count >= stop_threshold:
-            logger.warning("loop_guard: read_file path '%s' range %s-%s count %d >= stop threshold",
-                           rpath, a.get("start_line"), a.get("end_line"), count)
-            return result, (
-                f"[loop guard: '{rpath}' same range read {count}× this turn without progress. "
-                f"Stop re-reading — use search_files to find a specific anchor, "
-                f"or report what you need and ask the user for guidance.]"
-            )
-        # When auto-advance replaced the result it already carries its own
-        # note about a *different* range — adding the "same range read N×"
-        # warning on top would contradict it and confuse weak models.
-        if count >= warn_threshold and not auto_advanced:
-            try:
-                r_parsed = json.loads(result)
-            except Exception:
-                r_parsed = {}
-            if isinstance(r_parsed, dict):
-                r_parsed["_loop_warning"] = (
-                    f"[loop-guard] '{rpath}' same range read {count}× this turn. "
-                    "If previous reads didn't give you the anchor, use search_files or "
-                    "specify start_line/end_line to target a different section. "
-                    "Do not re-read the same range again."
-                )
-                result = json.dumps(r_parsed)
-    except Exception:
-        pass
-    return result, None
-
-
-def _patch_edit_file_result(tc, result: str, read_path_counts: dict,
-                            edit_file_fails: dict, fail_threshold: int,
-                            read_advance: dict | None = None) -> str:
-    """On successful edit clear that file's read counters; on repeated
-    anchor_not_found inject a structure hint. Mutates both count dicts in place."""
-    try:
-        e_parsed = json.loads(result)
-        if not isinstance(e_parsed, dict):
-            return result
-        a = json.loads(tc.function.arguments or "{}")
-        e_path = str(a.get("path", "") or "")
-        if not e_parsed.get("error"):
-            # Successful edit — drop read-path counters for this file so reads
-            # after the edit don't accumulate against the guard, and reset the
-            # auto-advance offset so a fresh read starts at the top of the file.
-            if e_path:
-                for k in [k for k in read_path_counts if k[0] == e_path]:
-                    del read_path_counts[k]
-                if read_advance is not None:
-                    read_advance.pop(e_path, None)
-            return result
-        if e_parsed.get("error") == "atomic_rollback":
-            for e_chunk in e_parsed.get("errors", []):
-                if isinstance(e_chunk, dict) and e_chunk.get("kind") == "anchor_not_found":
-                    fail_key = f"{e_path}:{e_chunk.get('chunk_index', 0)}"
-                    edit_file_fails[fail_key] = edit_file_fails.get(fail_key, 0) + 1
-                    if edit_file_fails[fail_key] >= fail_threshold:
-                        structure = e_chunk.get("file_structure") or []
-                        def_names = [s["name"] for s in structure if s["kind"] == "def"]
-                        class_names = [s["name"] for s in structure if s["kind"] == "class"]
-                        hint_parts = []
-                        if class_names:
-                            hint_parts.append(f"classes: {', '.join(class_names[:5])}")
-                        if def_names:
-                            hint_parts.append(f"methods: {', '.join(def_names[:10])}")
-                        hint = (
-                            f"[loop-guard] The anchor you used is not in this file "
-                            f"({edit_file_fails[fail_key]}×). "
-                        )
-                        if hint_parts:
-                            hint += "File has " + "; ".join(hint_parts) + ". "
-                        hint += "Search the file with search_files or read different sections to find the right anchor."
-                        e_parsed["_error_hint"] = hint
-                        result = json.dumps(e_parsed)
-                    break  # only process first anchor_not_found per call
-    except Exception:
-        pass
-    return result
-
-
-# Tool names that mutate files on disk — a successful call marks the turn
-# "dirty" for the post-edit verify hook (see run_turn / VerifyConfig).
-_MUTATING_TOOLS = {"edit_file", "write_file", "patch_file", "replace_text", "replace_symbol", "undo_file"}
-
-
 def _run_verify_command(command: str, cwd: str, timeout_s: int) -> tuple[int, str]:
     """Run the configured project verify command; returns (returncode, combined output).
 
@@ -256,110 +80,6 @@ def _run_verify_command(command: str, cwd: str, timeout_s: int) -> tuple[int, st
         out = e.stdout if isinstance(e.stdout, str) else (e.stdout or b"").decode("utf-8", "replace")
         err = e.stderr if isinstance(e.stderr, str) else (e.stderr or b"").decode("utf-8", "replace")
         return 1, f"[verify] command timed out after {timeout_s}s\n{out}{err}"
-
-
-class NoUsableModelError(Exception):
-    """No model could serve the turn: the active endpoint failed (rate-limit /
-    outage) and self-hosted failover found nothing live to degrade to.
-
-    Carries the original endpoint error (``cause``) and the names of configured
-    entries the user could enable to recover (``candidates``), so the UI can
-    offer a retry + an enable-a-model choice instead of crash-reporting it. This
-    is an expected operational state, not a bug — UIs should surface it, not
-    write a crash report.
-    """
-    def __init__(self, cause: BaseException, candidates: list[str]):
-        self.cause = cause
-        self.candidates = candidates
-        hint = (f" — enable one to continue: {', '.join(candidates)}"
-                if candidates else "")
-        super().__init__(
-            "no enabled model is reachable (active endpoint failed and no live "
-            f"local/LAN model to fall back to){hint}")
-
-
-def _no_usable_model_error(config, cause: BaseException) -> "NoUsableModelError":
-    """Build a NoUsableModelError listing disabled entries the user could enable."""
-    from agent.core.model_control import is_disabled
-    entries = config.model_entries or {}
-    candidates = [n for n in entries if is_disabled(config, n)]
-    return NoUsableModelError(cause, candidates)
-
-
-# Rate-limit classification lives in config.model_probe (shared with the
-# background-task failover helper in core.llm_retry); re-exported here under
-# their historical names since this module's callers and tests use them.
-from agent.config.model_probe import (
-    retry_after_seconds as _retry_after_seconds,
-    is_daily_quota_429 as _is_daily_quota_429,
-)
-
-
-def _normalize_api_messages(messages: list[dict]) -> list[dict]:
-    """Strip internal keys and apply model-quirk fixups to produce API-ready messages.
-
-    Pure transform (no side effects): drops _-prefixed keys, surfaces stored
-    reasoning, merges consecutive assistants, merges leading system messages,
-    strips a trailing prefill assistant, and fills reasoning_content for
-    thinking-mode sessions.
-    """
-    def _to_api_msg(m: dict) -> dict:
-        result = {k: v for k, v in m.items() if not k.startswith("_")}
-        if rc := m.get("_reasoning_content"):
-            result["reasoning_content"] = rc
-        return result
-
-    api_messages = [_to_api_msg(m) for m in messages]
-    api_messages = _merge_consecutive_assistants(api_messages)
-    # Merge ALL system messages into a single leading one — some models (e.g.
-    # Qwen3.6 with --jinja) raise a Jinja exception if any system message has
-    # loop.first=False, meaning only the very first message may be a system msg.
-    # System msgs can end up mid-conversation (e.g. scheduled/bg-job status
-    # notes appended by agent.py between turns), not just as a leading run, so
-    # this must scan the whole list rather than only the leading prefix.
-    sys_msgs = [m for m in api_messages if m.get("role") == "system"]
-    rest = [m for m in api_messages if m.get("role") != "system"]
-    if sys_msgs:
-        merged_content = "\n\n".join(m["content"] for m in sys_msgs if m.get("content"))
-        api_messages = [{**sys_msgs[0], "content": merged_content}] + rest
-    # Trailing assistant without tool_calls = unintentional prefill; reject by
-    # most APIs (and always incompatible with enable_thinking). Strip it.
-    if api_messages and api_messages[-1].get("role") == "assistant" and not api_messages[-1].get("tool_calls"):
-        logger.warning("run_turn: stripping trailing assistant message (prefill) before API call")
-        api_messages = api_messages[:-1]
-    # DeepSeek / reasoning models require reasoning_content on ALL assistant
-    # messages in a thinking-mode session. Fill absent ones with "".
-    if any(m.get("role") == "assistant" and m.get("reasoning_content") for m in api_messages):
-        api_messages = [
-            {**m, "reasoning_content": m.get("reasoning_content", "")}
-            if m.get("role") == "assistant" and "reasoning_content" not in m
-            else m
-            for m in api_messages
-        ]
-    return api_messages
-
-
-async def _compact_tool_result(tc, parsed_arg: dict, purpose: str, raw: str,
-                               config: "Config", client, side_log, turn_index) -> str:
-    """Compact one tool result and (optionally) record the compaction to side_log."""
-    from agent.tool_compactor import compact_result
-    compacted, info = await compact_result(
-        tc.function.name, parsed_arg, purpose, raw, config, client,
-    )
-    if side_log is not None and not info.get("skipped"):
-        try:
-            side_log.append("tool_compactions.jsonl", {
-                "turn": turn_index,
-                "tool_call_id": tc.id,
-                "tool": tc.function.name,
-                "purpose": purpose,
-                "original_len": info["original_len"],
-                "compacted_len": info["compacted_len"],
-                "seconds": info["seconds"],
-            })
-        except Exception as e:
-            logger.warning("side_log append failed (compaction): %s", e)
-    return compacted
 
 
 async def run_turn(
@@ -428,45 +148,12 @@ async def run_turn(
                 _orig_on_usage(u)
         on_usage = _on_usage_logged
 
-    tools = get_schemas()
     # Reset web search rate limit counters each turn.
     if config.web_search.enabled:
         from agent.tools.web_search.main import reset_turn_state
         reset_turn_state()
-    if excluded_tools:
-        tools = [t for t in tools if t.get("function", {}).get("name") not in excluded_tools]
-    # Typed turn-signal tools (ask_user/mark_done/blocked/…) are only offered
-    # when turn signals are enabled; otherwise drop them from the schema.
     _ts_cfg = getattr(config, "turn_signals", None)
-    if _ts_cfg is not None and not getattr(_ts_cfg, "enabled", True):
-        from agent.tools.turn_signals import SIGNAL_TOOL_NAMES
-        tools = [t for t in tools if t.get("function", {}).get("name") not in SIGNAL_TOOL_NAMES]
-    compaction_on = config.tool_compaction.enabled
-    if compaction_on:
-        from agent.tool_compactor import inject_purpose_into_schemas
-        tools = inject_purpose_into_schemas(tools)
-    # Progressive tool disclosure: when enabled, send only core + on-demand
-    # activated schemas; the model pulls the rest via find_tools (it learns the
-    # full catalog from the system prompt). The active set resets each turn so
-    # context stays lean — the model re-discovers what THIS turn needs.
-    _discovery_on = bool(getattr(getattr(config, "tool_discovery", None), "enabled", False))
-    _all_tools = tools
-    if _discovery_on:
-        from agent.core import tool_discovery as _td
-        _td.reset_active()
-
-        def _discovery_tools():
-            return _td.select_schemas(_all_tools, _td.active_names(), config)
-        tools = _discovery_tools()
-        _full_tok = _count_tokens_approx([{"content": json.dumps(_all_tools)}])
-        _core_tok = _count_tokens_approx([{"content": json.dumps(tools)}])
-        logger.info(
-            "tool_discovery: %d/%d tool schemas exposed (~%d of ~%d tokens, saving ~%d)",
-            len(tools), len(_all_tools), _core_tok, _full_tok, _full_tok - _core_tok,
-        )
-    else:
-        # find_tools is meaningless without the catalog → never offer it.
-        tools = [t for t in tools if t.get("function", {}).get("name") != "find_tools"]
+    tools, _refresh_tools, compaction_on = select_tools(get_schemas(), config, excluded_tools)
     nudge_count = 0
     MAX_NUDGES = 3
     _NO_TOOL_SENTINEL = "NO_TOOL_NEEDED:"
@@ -563,8 +250,8 @@ async def run_turn(
 
     while True:
         # Re-expose any tools the model activated via find_tools last iteration.
-        if _discovery_on:
-            tools = _discovery_tools()
+        if _refresh_tools is not None:
+            tools = _refresh_tools()
         if inject_queue is not None:
             drained: list[dict] = []
             while True:
@@ -592,7 +279,7 @@ async def run_turn(
                 messages = _truncate_large_messages(messages, budget)
                 logger.warning("Post-truncation: %d tokens (budget %d)", _count_tokens_approx(messages), budget)
 
-        api_messages = _normalize_api_messages(messages)
+        api_messages = normalize_api_messages(messages)
 
         # Privacy routing: if the active endpoint is remote and the outbound
         # payload carries a secret, redact / reroute-local / block per policy.
@@ -678,12 +365,7 @@ async def run_turn(
                     })
                 if config.llm.cache_ttl > 0:
                     mark_request(config.llm.base_url, config.llm.model)
-            try:
-                from agent.metrics.model_stats import resolve_entry_name
-                from agent.metrics.model_reliability import record_outcome
-                record_outcome(resolve_entry_name(config), "success")
-            except Exception:
-                pass
+            turn_errors.record_model_outcome(config, "success")
         except StreamStalledError as e:
             # Backend wedged mid-stream (e.g. a GPU/HSA lost-wakeup on the
             # llama.cpp side). The stream was already closed, freeing the server
@@ -696,12 +378,7 @@ async def run_turn(
                 _phase("stall_retry", f"{stall_retry_count}/{max_stall_retries}")
                 continue
             logger.error("%s — giving up after %d retries", e, max_stall_retries)
-            try:
-                from agent.metrics.model_stats import resolve_entry_name
-                from agent.metrics.model_reliability import record_outcome
-                record_outcome(resolve_entry_name(config), "failure")
-            except Exception:
-                pass
+            turn_errors.record_model_outcome(config, "failure")
             raise
         except BadRequestError as e:
             err_body = e.body or {}
@@ -729,23 +406,14 @@ async def run_turn(
             # once exhausted, degrade to the local model like a remote outage.
             # Put this (endpoint, model) on cooldown so tier ladders and
             # escalation stop picking it while it rejects requests.
-            try:
-                from agent.metrics.model_stats import resolve_entry_name
-                from agent.metrics.model_reliability import record_outcome
-                record_outcome(resolve_entry_name(config), "rate_limited")
-            except Exception:
-                pass
-            retry_after = _retry_after_seconds(e)
-            daily = _is_daily_quota_429(e, retry_after)
-            try:
-                from agent.config.model_probe import mark_rate_limited
-                # A per-day free-tier exhaustion won't clear in minutes — cool the
-                # endpoint down until its reset (Retry-After) or 6h, so tier
-                # ladders/escalation stop hammering a model that's out for the day.
-                cooldown = max(retry_after, 21600.0) if daily else 300.0
-                mark_rate_limited(config.llm.base_url, config.llm.model, cooldown_s=cooldown)
-            except Exception:
-                logger.debug("mark_rate_limited failed (ignored)", exc_info=True)
+            turn_errors.record_model_outcome(config, "rate_limited")
+            retry_after = turn_errors.retry_after_seconds(e)
+            daily = turn_errors.is_daily_quota_429(e, retry_after)
+            # A per-day free-tier exhaustion won't clear in minutes — cool the
+            # endpoint down until its reset (Retry-After) or 6h, so tier
+            # ladders/escalation stop hammering a model that's out for the day.
+            turn_errors.mark_endpoint_cooldown(
+                config, max(retry_after, 21600.0) if daily else 300.0)
             max_rl = max(0, int(getattr(config.llm, "rate_limit_retries", 3)))
             if daily:
                 # Backing off seconds is pointless against a daily cap — go
@@ -772,15 +440,7 @@ async def run_turn(
             fcfg = getattr(config, "failover", None)
             if (fcfg is not None and fcfg.enabled
                     and failover_count < max(1, int(fcfg.max_retries))):
-                from agent.core import model_routing
-                # Cloud→cloud first: another mode-allowed cloud entry (e.g. a
-                # different free provider) beats degrading to a local model.
-                new_client = model_routing.failover_to_peer(config)
-                if new_client is None:
-                    new_client = model_routing.failover_to_local(config)
-                if new_client is None:
-                    # Already on a local endpoint — try another live local entry.
-                    new_client = model_routing.failover_to_alternative(config)
+                new_client = turn_errors.try_failover(config)
                 if new_client is not None:
                     client = new_client
                     failover_count += 1
@@ -789,25 +449,16 @@ async def run_turn(
                     continue
             # Nothing self-hosted to degrade to: surface a recoverable "no model"
             # state (retry / enable an online model) instead of crashing.
-            raise _no_usable_model_error(config, e) from e
+            raise turn_errors.no_usable_model_error(config, e) from e
         except (APIConnectionError, APITimeoutError, InternalServerError, APIError) as e:
             # Plain APIError covers server errors delivered inside a 200 SSE
             # stream body (openai raises the base class there, not
             # InternalServerError) plus any remaining status errors not
             # handled by the clauses above.
-            try:
-                from agent.metrics.model_stats import resolve_entry_name
-                from agent.metrics.model_reliability import record_outcome
-                record_outcome(resolve_entry_name(config), "failure")
-            except Exception:
-                pass
+            turn_errors.record_model_outcome(config, "failure")
             # Failure cooldown: keep the tier ladder off this endpoint until a
             # fresh availability probe confirms it works again (retry-to-revive).
-            try:
-                from agent.config.model_probe import mark_rate_limited
-                mark_rate_limited(config.llm.base_url, config.llm.model)
-            except Exception:
-                logger.debug("mark failure cooldown failed (ignored)", exc_info=True)
+            turn_errors.mark_endpoint_cooldown(config)
             # Endpoint unreachable / timed out / 5xx. If failover is on, degrade
             # a remote endpoint to a local model — or, when already local (e.g.
             # a router whose preset fails to load), switch to another live local
@@ -815,19 +466,14 @@ async def run_turn(
             fcfg = getattr(config, "failover", None)
             if (fcfg is not None and fcfg.enabled
                     and failover_count < max(1, int(fcfg.max_retries))):
-                from agent.core import model_routing
-                new_client = model_routing.failover_to_peer(config)
-                if new_client is None:
-                    new_client = model_routing.failover_to_local(config)
-                if new_client is None:
-                    new_client = model_routing.failover_to_alternative(config)
+                new_client = turn_errors.try_failover(config)
                 if new_client is not None:
                     client = new_client
                     failover_count += 1
                     _phase("failover", f"endpoint error → {config.llm.model}")
                     logger.warning("failover: endpoint error (%s) — retrying on '%s'", e, config.llm.model)
                     continue
-            raise _no_usable_model_error(config, e) from e
+            raise turn_errors.no_usable_model_error(config, e) from e
 
         finish_reason = getattr(choice, "finish_reason", None)
         if finish_reason == "length" and on_truncation is not None:
@@ -862,15 +508,7 @@ async def run_turn(
 
         if tool_calls:
             if loop_detector is not None:
-                triggered: list[tuple[str, str, int, str]] = []
-                for tc in tool_calls:
-                    sig = LoopDetector.signature(tc.function.name, tc.function.arguments)
-                    cnt = loop_detector.observe(sig)
-                    if loop_detector.triggered(sig, cnt):
-                        triggered.append((tc.function.name, sig, cnt, tc.function.arguments or "{}"))
-                    name_cnt = loop_detector.observe_name(tc.function.name)
-                    if loop_detector.name_capped(tc.function.name, name_cnt):
-                        triggered.append((tc.function.name, f"name:{tc.function.name}", name_cnt, tc.function.arguments or "{}"))
+                triggered = turn_guards.observe_tool_calls(loop_detector, tool_calls)
                 if triggered:
                     summary = ", ".join(f"{n}×{c}" for n, _, c, _ in triggered)
                     logger.warning("loop_guard: repeated tool calls detected: %s", summary)
@@ -893,7 +531,7 @@ async def run_turn(
                                 loop_detector.acknowledge(_sig)
                         if _try_escalate_loop_guard(_ack_triggered):
                             continue
-                        note = _loop_guard_stop_note(summary, triggered)
+                        note = turn_guards.loop_guard_stop_note(summary, triggered)
                         messages = messages + [{"role": "assistant", "content": note}]
                         return "".join(content_parts + [note]), messages
 
@@ -913,79 +551,23 @@ async def run_turn(
             for tc in tool_calls:
                 if on_tool_call:
                     on_tool_call(tc.function.name, tc.function.arguments)
-            purposes: list[str] = []
-            parsed_args: list[dict] = []
-            for tc in tool_calls:
-                try:
-                    a = json.loads(tc.function.arguments or "{}")
-                    if not isinstance(a, dict):
-                        a = {}
-                except Exception:
-                    a = {}
-                purposes.append(str(a.get("purpose", "")) if compaction_on else "")
-                parsed_args.append(a)
+            parsed_args, purposes = turn_batch.parse_arguments(tool_calls, compaction_on)
             from agent import prompt_compiler
 
-            # Deduplicate identical tool calls within a single batch
-            # Model may issue the same call N times in confusion (e.g. file not found).
-            # Only execute unique calls, broadcast result to all duplicates.
-            def _tc_sig(tc) -> str:
-                try:
-                    a = json.loads(tc.function.arguments or "{}") if isinstance(tc.function.arguments, str) else tc.function.arguments
-                    return f"{tc.function.name}:{json.dumps(a, sort_keys=True)}"
-                except Exception:
-                    return f"{tc.function.name}:{tc.function.arguments}"
-
-            dedup_groups: dict[str, list[int]] = {}
-            for i, tc in enumerate(tool_calls):
-                dedup_groups.setdefault(_tc_sig(tc), []).append(i)
-            unique_indices = [group[0] for group in dedup_groups.values()]
-            unique_tool_calls = [tool_calls[i] for i in unique_indices]
-            dedup_count = len(tool_calls) - len(unique_tool_calls)
-            if dedup_count > 0:
-                logger.warning("dedup: %d duplicate tool call(s) in batch (unique: %d, total: %d)",
-                               dedup_count, len(unique_tool_calls), len(tool_calls))
-
-            # Execute only unique calls (once); duplicates share the same result.
-            # Wall-time each call so the side-log captures per-tool latency —
-            # the missing piece for spotting slow-tool bottlenecks in daily use.
-            async def _timed_execute(tc):
-                _t0 = time.monotonic()
-                _r = await execute_tool(tc, config)
-                return _r, (time.monotonic() - _t0) * 1000.0
-
-            _timed = await asyncio.gather(*[_timed_execute(tc) for tc in unique_tool_calls])
-            raw_unique_results = [r for r, _ in _timed]
-            unique_durations = [d for _, d in _timed]
-
-            unique_results = raw_unique_results
-            if compaction_on:
-                unique_results = list(await asyncio.gather(*[
-                    _compact_tool_result(
-                        tool_calls[unique_indices[i]], parsed_args[unique_indices[i]],
-                        purposes[unique_indices[i]], raw, config, client, side_log, turn_index,
-                    )
-                    for i, raw in enumerate(raw_unique_results)
-                ]))
-
-            # Map unique results back to all positions
-            results_map: dict[int, str] = {}
-            raw_results_map: dict[int, str] = {}
-            duration_map: dict[int, float] = {}
-            for ui, result, raw, dur in zip(unique_indices, unique_results, raw_unique_results, unique_durations):
-                for idx in dedup_groups[_tc_sig(tool_calls[ui])]:
-                    results_map[idx] = result
-                    raw_results_map[idx] = raw
-                    duration_map[idx] = dur
-            results = [results_map[i] for i in range(len(tool_calls))]
-            # Full, uncompacted results — persisted to the side-log so the UI can
-            # fetch the real tool I/O on demand even when context was compacted.
-            raw_results = [raw_results_map[i] for i in range(len(tool_calls))]
+            # `execute_tool` is passed in rather than imported by turn_batch so
+            # this module's binding is the one that runs. *raw_results* are the
+            # full, uncompacted outputs — persisted to the side-log so the UI can
+            # fetch real tool I/O on demand even when context was compacted.
+            results, raw_results, duration_map = await turn_batch.execute_batch(
+                tool_calls, parsed_args, purposes, config, client,
+                execute=execute_tool, compaction_on=compaction_on,
+                side_log=side_log, turn_index=turn_index,
+            )
             patched_results: list[str] = []
             _read_guard_escalated = False
             for tc, result in zip(tool_calls, results):
                 if tc.function.name == "read_file":
-                    result, stop_note = _patch_read_file_result(
+                    result, stop_note = turn_guards.patch_read_file_result(
                         tc, result, _read_path_counts,
                         _READ_PATH_WARN_THRESHOLD, _READ_PATH_STOP_THRESHOLD,
                         _read_advance,
@@ -1010,7 +592,7 @@ async def run_turn(
                             messages = messages + [{"role": "assistant", "content": stop_note}]
                             return "".join(content_parts + [stop_note]), messages
                 elif tc.function.name == "edit_file":
-                    result = _patch_edit_file_result(
+                    result = turn_guards.patch_edit_file_result(
                         tc, result, _read_path_counts, _edit_file_fails, _EDIT_FILE_FAIL_THRESHOLD,
                         _read_advance,
                     )
@@ -1018,7 +600,7 @@ async def run_turn(
             # File-scoped diagnostics on the files this batch just edited, folded
             # into the results before they enter history — the model reads the
             # breakage on its next step instead of at end-of-turn verify time.
-            _diag_calls = [tc for tc in tool_calls if tc.function.name in _MUTATING_TOOLS]
+            _diag_calls = [tc for tc in tool_calls if tc.function.name in MUTATING_TOOLS]
             if _diag_calls:
                 try:
                     patched_results = await diagnostics.annotate(
@@ -1036,7 +618,7 @@ async def run_turn(
                         ok = False
                 except Exception:
                     pass
-                if ok and tc.function.name in _MUTATING_TOOLS:
+                if ok and tc.function.name in MUTATING_TOOLS:
                     _dirty = True
                 # Persist full tool I/O to the side-log at execution time so the
                 # UI can show what each tool (web_search, …) was called with and

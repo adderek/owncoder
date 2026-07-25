@@ -5,7 +5,8 @@ from types import SimpleNamespace
 import pytest
 
 from agent.core.loop_detector import LoopDetector
-from agent.core.turn import run_turn, _patch_read_file_result, _patch_edit_file_result
+from agent.core.turn import run_turn
+from agent.core.turn_guards import patch_read_file_result, patch_edit_file_result
 from agent.config import Config
 
 
@@ -186,19 +187,19 @@ class TestReadAutoAdvance:
         result = self._read_result(path)  # head window (file > 500 lines)
         counts, adv = {}, {}
 
-        r1, stop = _patch_read_file_result(tc, result, counts, WARN, STOP, adv)
+        r1, stop = patch_read_file_result(tc, result, counts, WARN, STOP, adv)
         assert stop is None
         assert r1 == result  # first read passes through untouched
         assert adv == {}
 
-        r2, stop = _patch_read_file_result(tc, result, counts, WARN, STOP, adv)
+        r2, stop = patch_read_file_result(tc, result, counts, WARN, STOP, adv)
         assert stop is None
         parsed = json.loads(r2)
         assert "_auto_advanced" in parsed
         assert "line 201" in parsed["content"]
         assert adv[path] == 401
 
-        r3, _ = _patch_read_file_result(tc, result, counts, WARN, STOP, adv)
+        r3, _ = patch_read_file_result(tc, result, counts, WARN, STOP, adv)
         assert "line 401" in json.loads(r3)["content"]
         assert adv[path] == 601
 
@@ -208,11 +209,11 @@ class TestReadAutoAdvance:
         result = self._read_result(path, start_line=1, end_line=200)
         counts, adv = {}, {}
 
-        _patch_read_file_result(tc, result, counts, WARN, STOP, adv)
-        r2, _ = _patch_read_file_result(tc, result, counts, WARN, STOP, adv)
+        patch_read_file_result(tc, result, counts, WARN, STOP, adv)
+        r2, _ = patch_read_file_result(tc, result, counts, WARN, STOP, adv)
         assert "line 201" in json.loads(r2)["content"]  # clamped 201-300 block
 
-        r3, stop = _patch_read_file_result(tc, result, counts, WARN, STOP, adv)
+        r3, stop = patch_read_file_result(tc, result, counts, WARN, STOP, adv)
         assert stop is None
         parsed = json.loads(r3)
         assert parsed.get("end_of_file") is True
@@ -224,12 +225,12 @@ class TestReadAutoAdvance:
         result = self._read_result(path)
         counts, adv = {}, {}
 
-        _patch_read_file_result(read_tc, result, counts, WARN, STOP, adv)
-        _patch_read_file_result(read_tc, result, counts, WARN, STOP, adv)
+        patch_read_file_result(read_tc, result, counts, WARN, STOP, adv)
+        patch_read_file_result(read_tc, result, counts, WARN, STOP, adv)
         assert adv[path] == 401 and counts
 
         edit_tc = _fake_tool_call("edit_file", {"path": path})
-        _patch_edit_file_result(edit_tc, json.dumps({"ok": True}), counts, {}, 2, adv)
+        patch_edit_file_result(edit_tc, json.dumps({"ok": True}), counts, {}, 2, adv)
         assert adv == {}
         assert counts == {}
 
@@ -238,8 +239,8 @@ class TestReadAutoAdvance:
         result = json.dumps({"error": "File not found: missing.txt"})
         counts, adv = {}, {}
 
-        _patch_read_file_result(tc, result, counts, WARN, STOP, adv)
-        r2, stop = _patch_read_file_result(tc, result, counts, WARN, STOP, adv)
+        patch_read_file_result(tc, result, counts, WARN, STOP, adv)
+        r2, stop = patch_read_file_result(tc, result, counts, WARN, STOP, adv)
         assert stop is None
         assert r2 == result  # auto-advance read errored too → passthrough
         assert adv == {}
@@ -251,8 +252,8 @@ class TestReadAutoAdvance:
         counts, adv = {}, {}
 
         for _ in range(2):
-            _patch_read_file_result(tc, result, counts, WARN, STOP, adv)
-        r3, _ = _patch_read_file_result(tc, result, counts, WARN, STOP, adv)  # count=3
+            patch_read_file_result(tc, result, counts, WARN, STOP, adv)
+        r3, _ = patch_read_file_result(tc, result, counts, WARN, STOP, adv)  # count=3
         parsed = json.loads(r3)
         assert "_auto_advanced" in parsed
         assert "_loop_warning" not in parsed
@@ -264,8 +265,8 @@ class TestReadAutoAdvance:
         counts = {}
 
         for _ in range(2):
-            _patch_read_file_result(tc, result, counts, WARN, STOP, None)
-        r3, _ = _patch_read_file_result(tc, result, counts, WARN, STOP, None)
+            patch_read_file_result(tc, result, counts, WARN, STOP, None)
+        r3, _ = patch_read_file_result(tc, result, counts, WARN, STOP, None)
         assert "_loop_warning" in json.loads(r3)
 
     def test_stop_note_at_hard_ceiling(self):
@@ -276,5 +277,5 @@ class TestReadAutoAdvance:
 
         stop = None
         for _ in range(STOP):
-            _, stop = _patch_read_file_result(tc, result, counts, WARN, STOP, adv)
+            _, stop = patch_read_file_result(tc, result, counts, WARN, STOP, adv)
         assert stop is not None and "loop guard" in stop
