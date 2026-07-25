@@ -16,17 +16,55 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_BUSY_MS = 30_000
 
 
+JOURNAL_MODE_ATTEMPTS = 5
+_JOURNAL_RETRY_S = 0.02
+
+
 def apply_concurrency_pragmas(conn: sqlite3.Connection, busy_ms: int = DEFAULT_BUSY_MS) -> None:
-    """Set WAL + busy_timeout + synchronous=NORMAL on *conn*."""
-    conn.execute("PRAGMA journal_mode=WAL")
+    """Set busy_timeout + WAL + synchronous=NORMAL on *conn*.
+
+    Order and retries here are load-bearing:
+
+    - busy_timeout goes first so it is already in effect for everything after it.
+    - The journal_mode switch takes a short exclusive lock and, unlike ordinary
+      statements, does **not** wait on the busy handler: on a database another
+      connection is mid-write on, it raises "database is locked" immediately.
+      Since every caller opens lazily per thread, that lands as a *lost write*
+      inside whatever store swallows connection errors, not as a visible
+      failure — so it is retried, and skipped when the file already says WAL
+      (the mode is persisted on the database, so re-setting it buys nothing).
+    """
     conn.execute(f"PRAGMA busy_timeout={int(busy_ms)}")
+    if not _set_wal(conn):
+        # Every store here tolerates rollback-journal mode (correct, just less
+        # concurrent), so degrade with a warning rather than failing the open.
+        logger.warning("could not switch database to WAL (locked by another "
+                       "connection); continuing in its current journal mode")
     conn.execute("PRAGMA synchronous=NORMAL")
+
+
+def _set_wal(conn: sqlite3.Connection) -> bool:
+    """Put *conn*'s database in WAL mode. True if it is in WAL when we return."""
+    for attempt in range(JOURNAL_MODE_ATTEMPTS):
+        try:
+            current = conn.execute("PRAGMA journal_mode").fetchone()
+            if current and str(current[0]).lower() == "wal":
+                return True
+            row = conn.execute("PRAGMA journal_mode=WAL").fetchone()
+            if row and str(row[0]).lower() == "wal":
+                return True
+        except sqlite3.OperationalError:
+            pass  # locked by a concurrent writer — back off and retry
+        if attempt < JOURNAL_MODE_ATTEMPTS - 1:
+            time.sleep(_JOURNAL_RETRY_S * (attempt + 1))
+    return False
 
 
 def open_threadlocal_conn(
