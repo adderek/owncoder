@@ -1,0 +1,249 @@
+"""On-disk backing for core.checkpoint — survives a process restart.
+
+The edit journal used to live only in memory, so the checkpoint you took before
+a risky refactor was gone the moment the agent crashed — precisely when rollback
+matters most. This persists it under ``.agent/checkpoints/``:
+
+    journal.jsonl        one line per recorded edit: {seq, path, blob, ts}
+    checkpoints.json     the checkpoint markers
+    blobs/ab/cdef…       pre-image contents, content-addressed by sha256
+
+Content addressing matters because the journal holds a *copy of the file before
+each edit*: ten edits to one large file would otherwise be ten copies. Identical
+pre-images collapse to one blob.
+
+Concurrency: appends are single ``O_APPEND`` writes, which the kernel keeps
+atomic per line, so two agents in one project interleave lines instead of
+corrupting them. The rewrite paths (trim after a rollback, prune) take an
+exclusive ``flock`` first, matching how core/gpu_lock.py coordinates across
+processes.
+
+The directory is in the built-in write-deny globs: the agent's own file tools
+must not be able to edit the record of what it changed.
+"""
+from __future__ import annotations
+
+import fcntl
+import hashlib
+import json
+import logging
+import os
+import time
+from contextlib import contextmanager
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agent.config import Config
+
+logger = logging.getLogger(__name__)
+
+_DIRNAME = "checkpoints"
+_JOURNAL = "journal.jsonl"
+_CHECKPOINTS = "checkpoints.json"
+_LOCK = ".lock"
+_BLOBS = "blobs"
+
+
+def enabled(config: "Config | None") -> bool:
+    if config is None:
+        return False
+    return bool(getattr(getattr(config, "checkpoints", None), "persist", False))
+
+
+def root(config: "Config") -> Path:
+    agent_dir = Path(config.tools.agent_dir)
+    if not agent_dir.is_absolute():
+        agent_dir = Path(config.tools.working_dir) / agent_dir
+    return agent_dir / _DIRNAME
+
+
+@contextmanager
+def _exclusive(directory: Path):
+    """flock the store for a rewrite. Released on close *or* process death."""
+    directory.mkdir(parents=True, exist_ok=True)
+    lock_path = directory / _LOCK
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _blob_path(directory: Path, digest: str) -> Path:
+    return directory / _BLOBS / digest[:2] / digest[2:]
+
+
+def write_blob(directory: Path, content: str) -> str:
+    """Store *content*, returning its digest. Writing an existing blob is a no-op."""
+    digest = hashlib.sha256(content.encode("utf-8", "surrogatepass")).hexdigest()
+    path = _blob_path(directory, digest)
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(content, encoding="utf-8", errors="surrogatepass")
+        tmp.replace(path)   # atomic: a reader never sees a partial blob
+    return digest
+
+
+def read_blob(directory: Path, digest: str) -> str | None:
+    path = _blob_path(directory, digest)
+    try:
+        return path.read_text(encoding="utf-8", errors="surrogatepass")
+    except OSError:
+        logger.warning("checkpoints: pre-image blob %s is missing", digest[:12])
+        return None
+
+
+def append_entry(config: "Config", entry: dict, before: str | None) -> None:
+    """Persist one journal entry. Never raises — journaling is best-effort."""
+    try:
+        directory = root(config)
+        directory.mkdir(parents=True, exist_ok=True)
+        record = {"seq": entry["seq"], "path": entry["path"], "ts": entry.get("ts") or time.time()}
+        record["blob"] = write_blob(directory, before) if before is not None else None
+        line = json.dumps(record, ensure_ascii=False) + "\n"
+        fd = os.open(directory / _JOURNAL, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+        try:
+            os.write(fd, line.encode("utf-8", "surrogatepass"))
+        finally:
+            os.close(fd)
+    except Exception:
+        logger.exception("checkpoints: failed to persist journal entry")
+
+
+def save_checkpoints(config: "Config", checkpoints: list[dict]) -> None:
+    try:
+        directory = root(config)
+        with _exclusive(directory):
+            tmp = directory / (_CHECKPOINTS + ".tmp")
+            tmp.write_text(json.dumps({"checkpoints": checkpoints}, indent=2) + "\n",
+                           encoding="utf-8")
+            tmp.replace(directory / _CHECKPOINTS)
+    except Exception:
+        logger.exception("checkpoints: failed to persist checkpoint list")
+
+
+def load(config: "Config") -> tuple[list[dict], list[dict]]:
+    """(journal, checkpoints) as plain dicts. Corrupt state is dropped, not fatal.
+
+    Journal entries whose pre-image blob has gone missing are dropped: an entry
+    that cannot be restored is worse than absent, because it would make a
+    rollback report success while silently skipping a file.
+    """
+    directory = root(config)
+    journal: list[dict] = []
+    path = directory / _JOURNAL
+    if path.is_file():
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except ValueError:
+                logger.warning("checkpoints: skipping malformed journal line")
+                continue
+            if not isinstance(record, dict) or "seq" not in record or "path" not in record:
+                continue
+            digest = record.get("blob")
+            if digest is None:
+                before = None
+            else:
+                before = read_blob(directory, str(digest))
+                if before is None:
+                    continue
+            journal.append({"seq": int(record["seq"]), "path": str(record["path"]),
+                            "before": before, "ts": record.get("ts")})
+    journal.sort(key=lambda e: e["seq"])
+
+    checkpoints: list[dict] = []
+    cpath = directory / _CHECKPOINTS
+    if cpath.is_file():
+        try:
+            raw = json.loads(cpath.read_text(encoding="utf-8"))
+            entries = raw.get("checkpoints", []) if isinstance(raw, dict) else raw
+            for item in entries or []:
+                if isinstance(item, dict) and item.get("id"):
+                    checkpoints.append(item)
+        except (OSError, ValueError):
+            logger.warning("checkpoints: ignoring unreadable %s", cpath)
+    return journal, checkpoints
+
+
+def rewrite_journal(config: "Config", journal: list[dict]) -> None:
+    """Replace the journal wholesale — used after a rollback trims it."""
+    try:
+        directory = root(config)
+        with _exclusive(directory):
+            lines = []
+            for entry in journal:
+                before = entry.get("before")
+                lines.append(json.dumps({
+                    "seq": entry["seq"], "path": entry["path"],
+                    "ts": entry.get("ts") or time.time(),
+                    "blob": write_blob(directory, before) if before is not None else None,
+                }, ensure_ascii=False))
+            tmp = directory / (_JOURNAL + ".tmp")
+            tmp.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+            tmp.replace(directory / _JOURNAL)
+    except Exception:
+        logger.exception("checkpoints: failed to rewrite journal")
+
+
+def prune(config: "Config") -> dict:
+    """Drop entries older than the age cap, then delete unreferenced blobs.
+
+    Returns a summary. Pruning is bounded work over the journal and the blob
+    tree, so it is cheap enough to run at session start.
+    """
+    cfg = getattr(config, "checkpoints", None)
+    max_age_days = float(getattr(cfg, "max_age_days", 7) or 0)
+    directory = root(config)
+    if not directory.is_dir():
+        return {"dropped": 0, "blobs_deleted": 0}
+
+    journal, checkpoints = load(config)
+    dropped = 0
+    if max_age_days > 0:
+        cutoff = time.time() - max_age_days * 86400
+        kept = [e for e in journal if float(e.get("ts") or 0) >= cutoff]
+        dropped = len(journal) - len(kept)
+        if dropped:
+            # A checkpoint whose journal window is gone can no longer roll
+            # anything back; drop it rather than leave a marker that lies.
+            oldest_seq = kept[0]["seq"] if kept else None
+            checkpoints = [c for c in checkpoints
+                           if oldest_seq is not None and int(c.get("seq", 0)) >= oldest_seq - 1]
+            journal = kept
+            rewrite_journal(config, journal)
+            save_checkpoints(config, checkpoints)
+
+    referenced = set()
+    for entry in journal:
+        before = entry.get("before")
+        if before is not None:
+            referenced.add(hashlib.sha256(before.encode("utf-8", "surrogatepass")).hexdigest())
+    deleted = 0
+    blobs_dir = directory / _BLOBS
+    if blobs_dir.is_dir():
+        with _exclusive(directory):
+            for shard in blobs_dir.iterdir():
+                if not shard.is_dir():
+                    continue
+                for blob in shard.iterdir():
+                    if shard.name + blob.name not in referenced:
+                        try:
+                            blob.unlink()
+                            deleted += 1
+                        except OSError:
+                            pass
+                try:
+                    shard.rmdir()      # only succeeds once the shard is empty
+                except OSError:
+                    pass
+    return {"dropped": dropped, "blobs_deleted": deleted}

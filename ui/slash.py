@@ -63,7 +63,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/skills", [], "skills: list | show <name> | history <name> | rm <name>", True),
     ("/commands", ["/cmds"], "list project ':name' commands from .agent/commands/", False),
     ("/undo", [], "restore last file snapshot", False),
-    ("/checkpoint", ["/cp"], "checkpoint: list | new [label] | rollback <id>", True),
+    ("/checkpoint", ["/cp"], "checkpoint: list | new [label] | rollback <id> | prune", True),
     ("/mcp", [], "show MCP server status + their tools", False),
     ("/speech", [], "speech-to-text input status  [status]", True),
     ("/security", ["/sec", "/audit"], "security: scan|diff|triage|selfaudit|report [path] | baseline [...] | airgap [...] | integrity [seal|check] | weights [pin|verify|list] | sbom [path] | taint [path] | evolve | knowledge | verify [<i>|run] | full [path] | review [path]", True),

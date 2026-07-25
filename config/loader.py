@@ -266,7 +266,7 @@ def _merge(config: Config, data: dict) -> None:
 # sections — endpoints live in [models.<entry>]; behavior knobs in [agent].
 _KNOWN_SECTIONS = {
     "agent", "rag", "tools", "ui", "asm_analysis", "logs", "loop_guard",
-    "verify", "diagnostics", "tests", "confidence_guard", "compile_prompts", "token_limits",
+    "verify", "diagnostics", "checkpoints", "tests", "confidence_guard", "compile_prompts", "token_limits",
     "tool_compaction", "security", "planning", "recovery", "parallel",
     "explore", "web_search", "concurrency", "kb", "aei", "notify", "mcp",
     "speech", "auto_tier", "failover", "privacy", "scheduler", "hooks",

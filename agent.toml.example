@@ -593,3 +593,15 @@ ask_timeout_s = 300.0     # no answer in this long = deny (fail closed)
 #   cache_breakpoints = "anthropic"
 # The cached share of each request is reported in the post-turn usage line when
 # the endpoint tells us (many do not). Default is "off" for every entry.
+
+# ── Checkpoint persistence ────────────────────────────────────────────────────
+# /checkpoint takes a session-wide rollback point before a risky multi-file
+# change. The journal holds a pre-image copy of every edited file, mirrored to
+# .agent/checkpoints/ so the rollback point survives a crash or restart — which
+# is exactly when it is wanted. Pre-images are content-addressed, so repeated
+# edits to one file do not store repeated copies, and the journal is pruned by
+# age at session start. .agent/checkpoints/ is write-denied to the agent's own
+# file tools. Set persist = false for the old memory-only behavior.
+[checkpoints]
+persist      = true
+max_age_days = 7.0     # drop journal entries older than this (0 = keep forever)

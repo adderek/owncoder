@@ -225,6 +225,19 @@ class VerifyConfig:
 
 
 @dataclass
+class CheckpointsConfig:
+    """Persistence for session-wide edit checkpoints (core/checkpoint.py).
+
+    The journal holds a pre-image copy of every edited file, so it is mirrored
+    to .agent/checkpoints/ with content-addressed blobs (identical pre-images
+    collapse) and pruned by age at session start. Turn `persist` off to keep the
+    old memory-only behavior, where a crash loses the rollback point.
+    """
+    persist: bool = True
+    max_age_days: float = 7.0   # drop journal entries older than this (0 = keep forever)
+
+
+@dataclass
 class DiagnosticsCheckerConfig:
     """One declared file-scoped checker (see DiagnosticsConfig).
 
@@ -1090,6 +1103,7 @@ class Config:
     loop_guard: LoopGuardConfig = field(default_factory=LoopGuardConfig)
     verify: VerifyConfig = field(default_factory=VerifyConfig)
     diagnostics: DiagnosticsConfig = field(default_factory=DiagnosticsConfig)
+    checkpoints: CheckpointsConfig = field(default_factory=CheckpointsConfig)
     tests: TestsConfig = field(default_factory=TestsConfig)
     confidence_guard: ConfidenceGuardConfig = field(default_factory=ConfidenceGuardConfig)
     compile_prompts: CompilePromptsConfig = field(default_factory=CompilePromptsConfig)

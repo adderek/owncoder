@@ -11,8 +11,11 @@ replays the journal in reverse for every edit made after it — restoring prior
 content, or deleting files that were created after the checkpoint — then trims
 the journal back to that marker.
 
-State is in-memory and session-scoped, matching the existing undo stack; it is
-not persisted across process restarts.
+State is held in memory and, when ``[checkpoints] persist`` is on, mirrored to
+``.agent/checkpoints/`` by core/checkpoint_store.py so a checkpoint survives a
+crash or restart — which is exactly when a rollback is wanted. The in-memory
+structures stay the source of truth for a running session; the store is a
+write-through mirror that is read back once at session start.
 """
 from __future__ import annotations
 
@@ -42,21 +45,85 @@ class Checkpoint:
 _checkpoints: dict[str, Checkpoint] = {}
 _ckpt_counter = 0
 
+# Config for the persistence mirror. None → memory only (the pre-S5 behavior,
+# and what every test that does not opt in gets).
+_config = None
+
 
 def reset() -> None:
-    """Clear journal + checkpoints (called when the tools layer re-inits)."""
-    global _seq, _ckpt_counter
+    """Clear the in-memory journal + checkpoints. Does NOT touch the store."""
+    global _seq, _ckpt_counter, _config
     _journal.clear()
     _checkpoints.clear()
     _seq = 0
     _ckpt_counter = 0
+    _config = None
+
+
+def setup(config) -> None:
+    """Attach persistence and restore any state from a previous process.
+
+    Called from the tools layer's setup() after reset(), so a fresh session
+    starts from what is on disk rather than from nothing.
+    """
+    global _config, _seq, _ckpt_counter
+    from agent.core import checkpoint_store as store
+
+    reset()
+    if not store.enabled(config):
+        return
+    _config = config
+    try:
+        store.prune(config)
+        journal, checkpoints = store.load(config)
+    except Exception:
+        logger.exception("checkpoints: restore failed; continuing in memory only")
+        return
+
+    _journal.extend(journal)
+    _seq = max((e["seq"] for e in _journal), default=0)
+    for item in checkpoints:
+        cp = Checkpoint(
+            id=str(item.get("id")),
+            label=str(item.get("label") or item.get("id")),
+            seq=int(item.get("seq", 0)),
+            ts=float(item.get("ts") or time.time()),
+            files=int(item.get("files", 0)),
+        )
+        _checkpoints[cp.id] = cp
+    # Keep generated ids unique against restored ones instead of restarting at
+    # cp1 and colliding with a checkpoint from the previous process.
+    for cid in _checkpoints:
+        if cid.startswith("cp") and cid[2:].isdigit():
+            _ckpt_counter = max(_ckpt_counter, int(cid[2:]))
+    if _journal or _checkpoints:
+        logger.info("checkpoints: restored %d journal entr(ies), %d checkpoint(s)",
+                    len(_journal), len(_checkpoints))
+
+
+def _persisted() -> bool:
+    return _config is not None
+
+
+def _save_checkpoints() -> None:
+    if not _persisted():
+        return
+    from agent.core import checkpoint_store as store
+    store.save_checkpoints(_config, [
+        {"id": c.id, "label": c.label, "seq": c.seq, "ts": c.ts, "files": c.files}
+        for c in list_checkpoints()
+    ])
 
 
 def journal_record(path: str, before: str | None) -> None:
     """Record one successful edit. ``before`` None means the file was created."""
     global _seq
     _seq += 1
-    _journal.append({"seq": _seq, "path": path, "before": before})
+    entry = {"seq": _seq, "path": path, "before": before, "ts": time.time()}
+    _journal.append(entry)
+    if _persisted():
+        from agent.core import checkpoint_store as store
+        store.append_entry(_config, entry, before)
 
 
 def create_checkpoint(label: str = "") -> Checkpoint:
@@ -70,6 +137,7 @@ def create_checkpoint(label: str = "") -> Checkpoint:
         files=len({e["path"] for e in _journal}),
     )
     _checkpoints[cid] = cp
+    _save_checkpoints()
     return cp
 
 
@@ -115,6 +183,10 @@ def rollback_to(checkpoint_id: str) -> dict:
     _journal[:] = [e for e in _journal if e["seq"] <= cp.seq]
     for cid in [c.id for c in _checkpoints.values() if c.seq > cp.seq]:
         _checkpoints.pop(cid, None)
+    if _persisted():
+        from agent.core import checkpoint_store as store
+        store.rewrite_journal(_config, _journal)
+        _save_checkpoints()
 
     # De-dup while preserving the fact a file may appear in both lists across
     # multiple edits; report distinct paths.
@@ -166,4 +238,14 @@ def run_checkpoint_command(arg: str) -> str:
             + (f"  errors: {res['errors']}" if res.get("errors") else "")
         )
 
-    return f"Unknown subcommand '{sub}'. Use: list | new [label] | rollback <id>"
+    if sub == "prune":
+        if not _persisted():
+            return "Checkpoint persistence is off ([checkpoints] persist = false)."
+        from agent.core import checkpoint_store as store
+        res = store.prune(_config)
+        setup(_config)   # reload so memory matches what survived the prune
+        return (f"Pruned {res['dropped']} journal entr(ies), "
+                f"deleted {res['blobs_deleted']} unreferenced blob(s).")
+
+    return (f"Unknown subcommand '{sub}'. "
+            f"Use: list | new [label] | rollback <id> | prune")

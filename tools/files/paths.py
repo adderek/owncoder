@@ -16,10 +16,12 @@ _undo_stack: dict[str, str] = {}
 def setup(config: "Config") -> None:
     global _config
     _config = config
-    # New tools-layer session → drop stale edit journal / checkpoints.
+    # New tools-layer session → reset the in-memory edit journal, then restore
+    # whatever a previous process persisted (no-op when [checkpoints] persist
+    # is off, which leaves the old memory-only behavior).
     try:
-        from agent.core.checkpoint import reset as _ckpt_reset
-        _ckpt_reset()
+        from agent.core.checkpoint import setup as _ckpt_setup
+        _ckpt_setup(config)
     except Exception:
         pass
     # Keep the security harness synchronised with the working directory the
