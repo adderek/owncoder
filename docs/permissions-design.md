@@ -15,9 +15,13 @@ Deviations from the design as written, and why:
 - **`ask` needs a registered asker.** UIs call `permissions.set_asker()`. All
   three interactive UIs now do: readline (numbered menu), HTTP/browser (buttons
   over SSE, answered via `POST /api/permission`), and Textual (`PermissionScreen`
-  modal, keys `1`–`4`, Esc denies, visible countdown). With no asker — headless
-  `agent run`, or the HTTP *sidecar*, which does not serve `/api/permission` — an
-  `ask` verdict resolves to deny, per the fail-closed rule. Every non-answer path
+  modal, keys `1`–`4`, Esc denies, visible countdown). The HTTP *sidecar* serves
+  `/api/permission` too, but registers its asker **only when none exists** — it
+  is a companion view, and the primary UI's modal must keep ownership rather than
+  two surfaces racing for the same future. That makes the sidecar the answer path
+  for `--ui simple`, where there was none. With no asker at all — headless
+  `agent run` — an `ask` verdict resolves to deny, per the fail-closed rule.
+  Every non-answer path
   yields deny too: timeout, Esc, a screen that cannot be shown, or the app
   unmounting (which clears the asker, so `has_asker()` never lies about a prompt
   nobody can see).

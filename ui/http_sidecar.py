@@ -15,6 +15,7 @@ currently owns the turn loop — see `agent/ui_server/local.py`.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import queue
@@ -23,7 +24,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agent.ui.http_loop import _EventBus, _args_full, _args_preview, _bind_server
+from agent.ui.http_loop import (
+    _agent_config, _EventBus, _args_full, _args_preview, _bind_server,
+)
 
 if TYPE_CHECKING:
     from agent.ui_server import UIServerProtocol
@@ -74,6 +77,16 @@ td { font-variant-numeric: tabular-nums; }
        8px calc(8px + env(safe-area-inset-left)); background: inherit; border-top: 1px solid #ffffff22; }
 #in { flex: 1; font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid #ffffff2a; background: transparent; color: inherit; }
 #send { padding: 0 14px; border-radius: 8px; border: none; background: #3a6ea5; color: #fff; font: inherit; }
+/* Permission box: fixed above the input bar, because the agent is blocked on it
+   and it must not scroll out of view with the transcript. */
+#perm { position: fixed; bottom: 52px; left: 8px; right: 8px; max-width: 760px; margin: 0 auto;
+        background: #2a2028; border: 1px solid #e0a63f; border-radius: 8px; padding: 10px; z-index: 2; }
+@media (prefers-color-scheme: light) { #perm { background: #fff6e5; } }
+.perm-q { margin-bottom: 8px; white-space: pre-wrap; }
+.perm-opts { display: flex; gap: 6px; flex-wrap: wrap; }
+.perm-opts button { padding: 6px 12px; border-radius: 6px; border: 1px solid #ffffff33;
+                    background: #3a6ea5; color: #fff; font: inherit; }
+.perm-hint { font-size: 11.5px; opacity: .7; margin-top: 6px; }
 #note { font-size: 11.5px; opacity: .6; padding: 0 10px 6px; max-width: 760px; margin: 0 auto; }
 </style>
 </head>
@@ -118,6 +131,8 @@ function connect() {
     else if (ev.type === 'sys') row('sys', ev.text);
     else if (ev.type === 'state') document.getElementById('dot').className = ev.state === 'busy' ? 'busy' : '';
     else if (ev.type === 'tokens') document.getElementById('tok').textContent = ev.used.toLocaleString() + '/' + ev.ctx.toLocaleString();
+    else if (ev.type === 'permission') askPermission(ev);
+    else if (ev.type === 'permission_done') clearPermission(ev.choice);
   };
   es.onerror = () => setTimeout(connect, 2000);
 }
@@ -141,6 +156,56 @@ function notifyDone() {
     try { new Notification('owncoder', {body: 'turn finished', tag: 'owncoder-turn'}); } catch {}
   }
 }
+// Permission prompt. The agent is blocked until this is answered and no answer
+// is a denial, so the box pins itself above the input and counts down out loud
+// rather than scrolling away with the transcript.
+let permBox = null, permTimer = null;
+function askPermission(ev) {
+  clearPermission(null);
+  const box = document.createElement('div');
+  box.id = 'perm';
+  const q = document.createElement('div');
+  q.className = 'perm-q';
+  q.textContent = ev.question;
+  box.appendChild(q);
+  const opts = document.createElement('div');
+  opts.className = 'perm-opts';
+  (ev.options || []).forEach((opt, i) => {
+    const b = document.createElement('button');
+    b.textContent = (i + 1) + '. ' + opt;
+    b.onclick = () => answerPermission(opt);
+    opts.appendChild(b);
+  });
+  box.appendChild(opts);
+  const hint = document.createElement('div');
+  hint.className = 'perm-hint';
+  box.appendChild(hint);
+  document.body.appendChild(box);
+  permBox = box;
+  let left = Math.round(ev.timeout || 0);
+  const tick = () => {
+    hint.textContent = left > 0 ? 'denies in ' + left + 's' : 'denied (no answer)';
+    if (left-- <= 0) clearInterval(permTimer);
+  };
+  tick();
+  permTimer = setInterval(tick, 1000);
+  document.onkeydown = (e) => {
+    const n = parseInt(e.key, 10);
+    if (permBox && n >= 1 && n <= (ev.options || []).length) answerPermission(ev.options[n - 1]);
+  };
+}
+async function answerPermission(choice) {
+  try {
+    await fetch('/api/permission', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                    body: JSON.stringify({choice})});
+  } catch (e) { row('sys', 'permission answer failed: ' + e); }
+}
+function clearPermission(choice) {
+  if (permTimer) { clearInterval(permTimer); permTimer = null; }
+  if (permBox) { permBox.remove(); permBox = null; document.onkeydown = null; }
+  if (choice !== null && choice !== undefined) row('sys', 'permission: ' + (choice || 'denied (no answer)'));
+}
+
 async function send() {
   const inp = document.getElementById('in');
   const text = inp.value.trim();
@@ -197,9 +262,66 @@ class _SidecarServer:
         self._inner = inner
         self.bus = _EventBus()
         self.busy = False
+        self.permission_fut: asyncio.Future | None = None
+        self.permission_options: list = []
+        self.permission_loop = None
 
     def __getattr__(self, name):
         return getattr(self._inner, name)
+
+    # ── permission prompts ────────────────────────────────────────────────
+    # The sidecar is a companion view and does not take controls the primary UI
+    # owns — but a permission prompt with nobody to answer it is a denial, and
+    # the agent then reports a refusal the user never made. So the sidecar
+    # answers only when nothing else can (see start_http_sidecar).
+
+    async def ask_permission(self, question: str, options: list) -> str:
+        """Ask over SSE and wait for a POST to /api/permission.
+
+        No answer within the window returns "" — the engine treats anything it
+        does not recognise as a denial, so a closed tab or a timeout fails
+        closed rather than granting.
+        """
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future = loop.create_future()
+        timeout = 300.0
+        try:
+            perms = getattr(_agent_config(self._inner), "permissions", None)
+            timeout = float(getattr(perms, "ask_timeout_s", 300.0) or 300.0)
+        except Exception:
+            logger.debug("sidecar: permission timeout unreadable", exc_info=True)
+        self.permission_loop = loop
+        self.permission_fut = fut
+        self.permission_options = list(options)
+        self.bus.publish({"type": "permission", "question": question,
+                          "options": list(options), "timeout": timeout})
+        try:
+            choice = await asyncio.wait_for(fut, timeout=timeout)
+        except asyncio.TimeoutError:
+            choice = ""
+        finally:
+            self.permission_fut = None
+            self.permission_options = []
+        self.bus.publish({"type": "permission_done", "choice": choice})
+        return choice
+
+    def permission_choice(self, choice: str) -> bool:
+        """Resolve a pending prompt from an HTTP handler thread.
+
+        An unrecognised choice is refused here rather than forwarded: it would
+        otherwise become a silent denial that looks like a bug in the agent.
+        """
+        fut = self.permission_fut
+        loop = self.permission_loop
+        if fut is None or loop is None or choice not in self.permission_options:
+            return False
+
+        def _set() -> None:
+            if not fut.done():
+                fut.set_result(choice)
+
+        loop.call_soon_threadsafe(_set)
+        return True
 
     async def chat(self, text: str, session_id: str = "", on_token=None,
                     on_tool_call=None, on_tool_result=None, on_usage=None,
@@ -348,7 +470,7 @@ def _make_sidecar_handler(wrapped: "_SidecarServer"):
                 wrapped.bus.unsubscribe(q)
 
         def do_POST(self):
-            if self.path != "/api/chat":
+            if self.path not in ("/api/chat", "/api/permission"):
                 self._json({"error": "not found"}, 404)
                 return
             length = int(self.headers.get("Content-Length") or 0)
@@ -356,6 +478,14 @@ def _make_sidecar_handler(wrapped: "_SidecarServer"):
                 payload = json.loads(self.rfile.read(length) or b"{}")
             except Exception:
                 self._json({"error": "bad json"}, 400)
+                return
+            if self.path == "/api/permission":
+                choice = str(payload.get("choice") or "")
+                if wrapped.permission_choice(choice):
+                    self._json({"ok": True})
+                else:
+                    self._json({"ok": False, "msg": "no permission prompt pending, "
+                                                    "or unknown choice"}, 400)
                 return
             text = str(payload.get("text") or "").strip()
             if not text:
@@ -384,11 +514,32 @@ def _make_sidecar_handler(wrapped: "_SidecarServer"):
     return Handler
 
 
+def register_permission_asker(wrapped: "_SidecarServer") -> bool:
+    """Make the sidecar the permission asker, but only if nothing else is.
+
+    The textual UI registers its own modal asker when it mounts, which happens
+    after this — set_asker replaces, so the terminal keeps ownership whenever it
+    has one, and two surfaces never race for the same prompt. This exists for
+    the case that had no asker at all: `--ui simple` and any primary that
+    cannot prompt, where every `ask` verdict silently became a denial.
+    """
+    try:
+        from agent.security import permissions as _permissions
+        if _permissions.has_asker():
+            return False
+        _permissions.set_asker(wrapped.ask_permission)
+        return True
+    except Exception:
+        logger.debug("sidecar: permission asker not registered", exc_info=True)
+        return False
+
+
 def start_http_sidecar(server: "UIServerProtocol", host: str, port: int) -> "tuple[_SidecarServer, ThreadingHTTPServer]":
     """Start the sidecar HTTP server as a daemon thread and return the
     wrapped server (pass this to the primary UI in place of `server`) plus
     the bound httpd (for logging the actual port / shutdown on exit)."""
     wrapped = _SidecarServer(server)
+    register_permission_asker(wrapped)
     httpd = _bind_server(_make_sidecar_handler(wrapped), host, port)
     threading.Thread(target=httpd.serve_forever, daemon=True, name="http-sidecar").start()
     return wrapped, httpd

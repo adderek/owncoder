@@ -195,3 +195,140 @@ async def test_sidecar_server_delegates_unknown_attrs_to_inner():
     wrapped.inject("nudge")
     assert inner.injected == ["nudge"]
     assert wrapped.token_estimate() == 99
+
+
+# ---------------------------------------------------------------------------
+# sidecar permission prompts
+#
+# Before this, the sidecar served no way to answer one: an `ask` verdict with no
+# registered asker fails closed, so every prompt raised while the sidecar was
+# the only usable surface became a denial the user never made.
+# ---------------------------------------------------------------------------
+
+def _perm_events(wrapped, q):
+    out = []
+    while not q.empty():
+        out.append(q.get_nowait())
+    return [e for e in out if e["type"].startswith("permission")]
+
+
+@pytest.mark.asyncio
+async def test_permission_prompt_is_published_and_answered():
+    from agent.ui.http_sidecar import _SidecarServer
+
+    wrapped = _SidecarServer(_FakeInner())
+    q = wrapped.bus.subscribe()
+    task = asyncio.create_task(wrapped.ask_permission("run rm -rf?", ["allow", "deny"]))
+    await asyncio.sleep(0)          # let the asker publish and start waiting
+
+    published = _perm_events(wrapped, q)
+    assert published[0]["type"] == "permission"
+    assert published[0]["question"] == "run rm -rf?"
+    assert published[0]["options"] == ["allow", "deny"]
+    assert published[0]["timeout"] > 0
+
+    # …answered the way the HTTP handler thread does it.
+    assert await asyncio.to_thread(wrapped.permission_choice, "allow") is True
+    assert await asyncio.wait_for(task, timeout=2) == "allow"
+    done = _perm_events(wrapped, q)
+    assert done[-1] == {"type": "permission_done", "choice": "allow"}
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_choice_is_refused_rather_than_becoming_a_denial():
+    from agent.ui.http_sidecar import _SidecarServer
+
+    wrapped = _SidecarServer(_FakeInner())
+    task = asyncio.create_task(wrapped.ask_permission("q", ["allow", "deny"]))
+    await asyncio.sleep(0)
+    assert wrapped.permission_choice("allo") is False       # typo
+    assert wrapped.permission_choice("") is False
+    assert not task.done()
+    wrapped.permission_choice("deny")
+    assert await asyncio.wait_for(task, timeout=2) == "deny"
+
+
+def test_answering_when_nothing_is_pending_is_refused():
+    from agent.ui.http_sidecar import _SidecarServer
+
+    wrapped = _SidecarServer(_FakeInner())
+    assert wrapped.permission_choice("allow") is False
+
+
+@pytest.mark.asyncio
+async def test_no_answer_within_the_window_fails_closed():
+    from agent.ui.http_sidecar import _SidecarServer
+
+    inner = _FakeInner()
+    inner._agent = N(config=N(permissions=N(ask_timeout_s=0.05)))
+    wrapped = _SidecarServer(inner)
+    assert await wrapped.ask_permission("q", ["allow"]) == ""
+    assert wrapped.permission_fut is None        # state cleared for the next prompt
+
+
+@pytest.mark.asyncio
+async def test_the_timeout_comes_from_the_permissions_config():
+    from agent.ui.http_sidecar import _SidecarServer
+
+    inner = _FakeInner()
+    inner._agent = N(config=N(permissions=N(ask_timeout_s=42.0)))
+    wrapped = _SidecarServer(inner)
+    q = wrapped.bus.subscribe()
+    task = asyncio.create_task(wrapped.ask_permission("q", ["allow"]))
+    await asyncio.sleep(0)
+    assert _perm_events(wrapped, q)[0]["timeout"] == 42.0
+    wrapped.permission_choice("allow")
+    await asyncio.wait_for(task, timeout=2)
+
+
+class TestSidecarAskerRegistration:
+    """The sidecar must not take the prompt away from a UI that can show it."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_asker(self):
+        from agent.security import permissions as p
+        p.set_asker(None)
+        yield
+        p.set_asker(None)
+
+    def test_it_registers_when_nothing_else_can_ask(self):
+        from agent.security import permissions as p
+        from agent.ui.http_sidecar import _SidecarServer, register_permission_asker
+
+        wrapped = _SidecarServer(_FakeInner())
+        assert register_permission_asker(wrapped) is True
+        assert p.has_asker() is True
+
+    def test_it_yields_to_an_asker_that_is_already_registered(self):
+        """The textual UI owns interactive prompts; two surfaces racing for the
+        same future would leave one of them hung."""
+        from agent.security import permissions as p
+        from agent.ui.http_sidecar import _SidecarServer, register_permission_asker
+
+        async def _primary(question, options):
+            return "allow"
+
+        p.set_asker(_primary)
+        wrapped = _SidecarServer(_FakeInner())
+        assert register_permission_asker(wrapped) is False
+
+    def test_starting_the_sidecar_registers_it(self):
+        from agent.security import permissions as p
+        from agent.ui.http_sidecar import start_http_sidecar
+
+        wrapped, httpd = start_http_sidecar(_FakeInner(), "127.0.0.1", 0)
+        try:
+            assert p.has_asker() is True
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+
+def test_the_page_can_answer_a_prompt():
+    """Server-side plumbing is useless if the page ignores the event."""
+    from agent.ui.http_sidecar import _SIDECAR_PAGE
+
+    assert "'permission'" in _SIDECAR_PAGE
+    assert "/api/permission" in _SIDECAR_PAGE
+    assert "permission_done" in _SIDECAR_PAGE
+    assert "denies in" in _SIDECAR_PAGE          # the countdown says it fails closed
