@@ -71,6 +71,13 @@ _DEFAULT_WRITE_DENY_GLOBS: list[str] = [
     ".agent/checkpoints/**",    # agent must not rewrite the record of its edits
 ]
 
+# The immutable core of the system prompt: human input only, so the agent's own
+# file tools must refuse it outright. The list lives next to its rationale in
+# core_rules rather than being restated here, so the two cannot drift apart.
+from agent.core.core_rules import WRITE_DENY_GLOBS as _CORE_WRITE_DENY_GLOBS
+
+_DEFAULT_WRITE_DENY_GLOBS += list(_CORE_WRITE_DENY_GLOBS)
+
 
 def _is_write_protected(root: Path, resolved: Path) -> bool:
     """Return True if *resolved* matches any write-deny glob relative to *root*."""

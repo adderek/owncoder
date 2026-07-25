@@ -177,6 +177,20 @@ class Agent:
             self._project_memory_store = None
 
         self.messages = []
+
+        # Core rules go first and are never compiled, compacted, or written by
+        # the agent — the one part of the prompt with a human in the loop.
+        # See agent/core/core_rules.py.
+        try:
+            from agent.core import core_rules as _core_rules
+            core_text = _core_rules.load_core(config)
+            if core_text:
+                self.messages.append({"role": "system", "content": core_text,
+                                      HARD_RULES_MARKER: True})
+            _core_rules.record_state(config)
+        except Exception:
+            logger.warning("core rules not injected", exc_info=True)
+
         if base_rules:
             self.messages.append({"role": "system", "content": base_rules, HARD_RULES_MARKER: True})
 

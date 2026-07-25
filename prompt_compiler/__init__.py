@@ -36,6 +36,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: Prompt names no compilation may ever rewrite, regardless of config. See
+#: agent/core/core_rules.py for why the core is exempt from self-optimisation.
+NEVER_COMPILE = frozenset({"core.txt"})
+
 
 def is_enabled(config: "Config") -> bool:
     """Top-level enable check: env override beats config."""
@@ -51,6 +55,11 @@ def load(name: str, original: str, config: "Config") -> str:
     Cache hit & status=compiled → returns compiled text.
     Cache miss / suspect / disabled → returns *original*.
     """
+    if name in NEVER_COMPILE:
+        # Not configurable, and checked before `enabled`: the core rules are the
+        # one prompt a token-saving rewrite must never touch, and a compressor
+        # dropping one line of it is the exact failure it exists to prevent.
+        return original
     if not is_enabled(config):
         return original
     if name in (config.compile_prompts.exclude or []):
