@@ -101,3 +101,27 @@ retrieval; the repo root carries stray logs/backups.
 behind the current `run_turn` signature; archive dead docs; clean root junk.
 
 **Accept:** no behavior change, unit + integration tests green.
+
+**Done** (agent `5c054bd`, parent `chore: archive superseded docs…`). Deviations
+from the plan as written:
+
+- Extracted four modules — `turn_setup` (tool selection + API-message fixups),
+  `turn_batch` (dedup/execute/time/compact one batch), `turn_guards` (result
+  rewriting guards), `turn_errors` (endpoint failure policy) — 1351 → 933 lines.
+  *Compaction* was **not** extracted: its two call sites are three lines each
+  and closing over the turn's `messages`/`budget`/`_phase`, so a module boundary
+  there would have cost more indirection than it removed. Verify stayed too:
+  tests patch `_run_verify_command` on `core.turn`.
+- Root junk needed no commit — `crash-*.txt`, `even-terminal-*.log`, `*.bak` and
+  `/_` are already gitignored and untracked, i.e. local-only files that are the
+  user's to delete. One *tracked* stray was removed: root `streaming.py`, a
+  comment fragment ending in `pass` that shadowed `agent/core/streaming.py`.
+- Dead docs were **archived, not deleted**: `docs/archive/` + `.agent.ignore`,
+  which is the mechanism the indexer already has for this (`search_archive`
+  still reaches hidden entries). Only provably superseded files moved (17 of
+  58); "looks old" was not treated as evidence.
+- Found and fixed an unrelated real defect on the way: `apply_concurrency_pragmas`
+  ran `PRAGMA journal_mode=WAL` before setting `busy_timeout`, and that pragma
+  does not wait on the busy handler — a concurrent writer made a lazily-opened
+  connection raise "database is locked", which the best-effort stores swallow as
+  a dropped write. Was a ~40% flake in `test_model_reliability.py`.
