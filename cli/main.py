@@ -177,6 +177,35 @@ def build_parser() -> argparse.ArgumentParser:
     cron_sub.add_parser("list", help="List jobs (default)")
 
     # diag
+    # todo — the backlog (.agent/ideas.db), also reachable as /idea in chat
+    todo_p = sub.add_parser("todo", help="Backlog: list, add, update, export")
+    todo_sub = todo_p.add_subparsers(dest="todo_action")
+    todo_list = todo_sub.add_parser("list", help="List backlog items (default)")
+    todo_list.add_argument("--status", type=str, help="raw|evaluated|planned|implementing|verifying|done|rejected")
+    todo_list.add_argument("--type", type=str, help="feature|bug|optimization|integration|module|idea|core_change")
+    todo_list.add_argument("--limit", type=int, default=50)
+    todo_list.add_argument("--json", action="store_true", help="Raw JSON for scripting")
+    todo_add = todo_sub.add_parser("add", help="Add an item")
+    todo_add.add_argument("title", nargs="+")
+    todo_add.add_argument("--body", type=str, default="")
+    todo_add.add_argument("--type", type=str, default="idea")
+    todo_add.add_argument("--tags", type=str, default="", help="comma-separated")
+    todo_add.add_argument("--priority", type=int, default=3, help="1 (low) – 5 (critical)")
+    todo_show = todo_sub.add_parser("show", help="Show one item in full")
+    todo_show.add_argument("id")
+    todo_set = todo_sub.add_parser("set", help="Update fields: status=… priority=… tags=a,b")
+    todo_set.add_argument("id")
+    todo_set.add_argument("fields", nargs="+")
+    todo_done = todo_sub.add_parser("done", help="Mark done")
+    todo_done.add_argument("id")
+    todo_reject = todo_sub.add_parser("reject", help="Mark rejected")
+    todo_reject.add_argument("id")
+    todo_export = todo_sub.add_parser(
+        "export", help="Export the whole backlog as JSON (migration to a real tracker)")
+    todo_export.add_argument("--out", type=str, help="File to write (default: stdout)")
+    todo_import = todo_sub.add_parser("import", help="Import a previously exported backlog")
+    todo_import.add_argument("file")
+
     diag_p = sub.add_parser("diag", help="Tool health report from audit.jsonl")
     diag_p.add_argument("--json", action="store_true", help="Output raw JSON (for scripting)")
 
@@ -322,6 +351,9 @@ def main() -> None:
             if getattr(args, "cron_action", None) == "run":
                 check_reachability(config)
             cmd_cron(args, config)
+        elif args.command == "todo":
+            from agent.cli.todo import cmd_todo
+            raise SystemExit(cmd_todo(args, config))
         elif args.command == "diag":
             from agent.cli.diag import cmd_diag
             cmd_diag(args, config)

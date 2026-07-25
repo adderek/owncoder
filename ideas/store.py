@@ -152,6 +152,45 @@ class IdeasStore:
             cur = con.execute(f"UPDATE ideas SET {cols} WHERE id=?", vals)
         return cur.rowcount > 0
 
+    def upsert(self, record: dict[str, Any]) -> str:
+        """Insert *record* verbatim, id included, replacing any row with that id.
+
+        The import half of export/import. Ids are preserved so a round trip
+        through an external tracker keeps every reference (`plan_ref`,
+        `session_ref`, links written into commit messages) pointing at the same
+        item — a re-id on import would quietly break all of them.
+        """
+        idea_id = str(record.get("id") or "").strip() or _new_idea_id()
+        now = time.time()
+        tags = record.get("tags") or []
+        with self._conn() as con:
+            con.execute(
+                """INSERT OR REPLACE INTO ideas
+                   (id, title, type, status, priority, effort_score, value_score,
+                    tags, source, created_at, updated_at, body, requirements_ref,
+                    plan_ref, session_ref, project)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    idea_id,
+                    str(record.get("title") or "").strip(),
+                    record.get("type") if record.get("type") in IDEA_TYPES else "idea",
+                    record.get("status") if record.get("status") in IDEA_STATUSES else "raw",
+                    int(record.get("priority") or 3),
+                    record.get("effort_score"),
+                    record.get("value_score"),
+                    tags if isinstance(tags, str) else json.dumps(tags),
+                    str(record.get("source") or "human"),
+                    float(record.get("created_at") or now),
+                    float(record.get("updated_at") or now),
+                    str(record.get("body") or ""),
+                    record.get("requirements_ref"),
+                    record.get("plan_ref"),
+                    record.get("session_ref"),
+                    record.get("project"),
+                ),
+            )
+        return idea_id
+
     def count(self, status: str | None = None) -> int:
         with self._conn() as con:
             if status:
