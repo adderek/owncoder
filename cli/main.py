@@ -128,6 +128,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true",
         help="Show what --split would do without modifying files.",
     )
+    sess_p.add_argument(
+        "--prune-empty", action="store_true",
+        help="Delete saved sessions that hold no conversation (left behind by "
+             "older versions). Lists them; add -y to actually delete.",
+    )
+    sess_p.add_argument(
+        "--include-empty", action="store_true",
+        help="Include content-free sessions in the listing.",
+    )
+    sess_p.add_argument(
+        "-y", "--yes", action="store_true",
+        help="Answer yes to the confirmation (for scripts).",
+    )
 
     # commit
     commit_p = sub.add_parser("commit", help="Generate and apply a commit message for a subrepo")

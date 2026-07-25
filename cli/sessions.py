@@ -13,6 +13,10 @@ def cmd_sessions(args, config):
         _split_sessions(args.split, console, dry_run=bool(getattr(args, "dry_run", False)))
         return
 
+    if getattr(args, "prune_empty", False):
+        _prune_empty(console, confirmed=bool(getattr(args, "yes", False)))
+        return
+
     if args.load:
         session, messages = load_session(args.load)
         if session is None:
@@ -22,7 +26,7 @@ def cmd_sessions(args, config):
         console.print(f"Session '{label}' ({session.id}): {len(messages)} messages")
         return
 
-    sessions = list_sessions()
+    sessions = list_sessions(include_empty=bool(getattr(args, "include_empty", False)))
     if not sessions:
         console.print("No sessions found.")
         return
@@ -48,6 +52,46 @@ def cmd_sessions(args, config):
         )
 
     console.print(table)
+
+
+def _prune_empty(console, confirmed: bool = False) -> None:
+    """Delete saved sessions that hold no conversation.
+
+    Older versions wrote a session.json as soon as a session started, so a
+    backlog of files containing nothing but the system prompt built up and
+    crowded the "recent sessions" list. Nothing writes them any more; this
+    clears what is already there.
+
+    Deletion is irreversible, so the default run only lists. Anything with even
+    one user, assistant or tool message is out of scope and never touched.
+    """
+    import shutil
+    from agent.memory.session import get_session_full_dir, list_sessions
+
+    empty = [s for s in list_sessions(include_empty=True) if s["message_count"] == 0]
+    if not empty:
+        console.print("No content-free sessions.")
+        return
+
+    for s in empty:
+        label = s.get("name") or s.get("short_name") or ""
+        console.print(f"  {s['id']}  {label}")
+    if not confirmed:
+        console.print(f"\n[yellow]{len(empty)} session(s) hold no conversation.[/yellow]")
+        console.print("[dim]Re-run with -y to delete them. Each is a directory under "
+                      ".agent/sessions and goes away entirely.[/dim]")
+        return
+
+    removed = 0
+    for s in empty:
+        directory = get_session_full_dir(s["id"])
+        try:
+            if directory.is_dir():
+                shutil.rmtree(directory)
+                removed += 1
+        except OSError as exc:
+            console.print(f"[red]could not remove {directory}: {exc}[/red]")
+    console.print(f"Deleted {removed} session(s).")
 
 
 def _split_sessions(target: str, console, dry_run: bool = False) -> None:

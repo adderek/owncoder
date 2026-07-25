@@ -252,6 +252,32 @@ def new_session(
     )
 
 
+#: Roles that make a session worth keeping. System messages are the prompt the
+#: agent was built with, not a conversation: a file holding only those describes
+#: the configuration, which is on disk anyway.
+_CONTENT_ROLES = ("user", "assistant", "tool")
+
+
+def content_count(messages: list[dict]) -> int:
+    """How many messages a person would call messages.
+
+    Not `len(messages)`: the system prompt, the preamble placeholder and any
+    injected rules all live in the same list, which is why an untouched session
+    used to be listed as "1 msgs" with nothing in it.
+    """
+    return sum(1 for m in messages or []
+               if isinstance(m, dict) and m.get("role") in _CONTENT_ROLES)
+
+
+def has_content(messages: list[dict]) -> bool:
+    return content_count(messages) > 0
+
+
+def _already_saved(session: "Session") -> bool:
+    path = getattr(session, "_file_path", None)
+    return bool(path is not None and path.exists())
+
+
 def save_session(session: Session, messages: list[dict]) -> None:
     """Persist session and messages to disk.
 
@@ -262,6 +288,17 @@ def save_session(session: Session, messages: list[dict]) -> None:
     all persistence paths (cli, UI, idle tasks) funnel through.
     """
     if session.mode == "incognito":
+        return
+
+    # A session nobody said anything in is not a session. Starting the UI,
+    # looking at it and quitting used to leave a session.json behind holding
+    # nothing but the system prompt, and those accumulated at the top of every
+    # "recent sessions" list, pushing real work out of view.
+    #
+    # Only skipped while the session has never been written: once a file exists
+    # it stays, because at that point it holds something worth keeping and this
+    # function is not in the business of deleting it.
+    if not has_content(messages) and not _already_saved(session):
         return
 
     # Notes injections are transient context, re-injected fresh each turn.
@@ -331,11 +368,18 @@ def load_session(id_or_name: str) -> tuple[Session | None, list[dict]]:
     return None, []
 
 
-def list_sessions(oldest_first: bool = False, limit: int | None = None) -> list[dict]:
+def list_sessions(oldest_first: bool = False, limit: int | None = None,
+                  include_empty: bool = False) -> list[dict]:
     """Return summary dicts for all sessions.
 
     Newest-first by default (back-compat). Pass oldest_first=True for
     chronological order, and limit to cap the number returned (after ordering).
+
+    Sessions nobody said anything in are left out: they are files written by
+    older versions (and by any path that saves before the first message), and a
+    list of empty sessions is a list of nothing. They are still on disk and
+    still loadable by id — `include_empty=True` shows them, and
+    `agent sessions --prune-empty` deletes them.
     """
     sdir = _get_session_dir()
     sessions = []
@@ -359,12 +403,16 @@ def list_sessions(oldest_first: bool = False, limit: int | None = None) -> list[
                     "classification": data.get("classification", ""),
                     "created_at": data.get("created_at", data.get("saved_at")),
                     "updated_at": data.get("updated_at", data.get("saved_at")),
-                    "message_count": len(data.get("messages", [])),
+                    # Conversation only. Counting the system prompt is what made
+                    # an empty session read as "1 msgs".
+                    "message_count": content_count(data.get("messages", [])),
                     "hidden": bool(data.get("hidden", False)),
                 }
             )
         except Exception:
             pass
+    if not include_empty:
+        sessions = [s for s in sessions if s["message_count"] > 0]
     if limit is not None and limit >= 0:
         sessions = sessions[:limit]
     return sessions
