@@ -43,8 +43,13 @@ def _friendly_error(exc: Exception) -> str:
     return f"\nError ({name}): {msg}"
 
 
-def main() -> None:
-    sys.setrecursionlimit(5000)
+def build_parser() -> argparse.ArgumentParser:
+    """The full `agent` CLI surface.
+
+    Split out of main() so the flags can be tested without running a
+    command — previously nothing could assert that an option existed,
+    parsed to the name the handler reads, or kept its default.
+    """
     parser = argparse.ArgumentParser(prog="agent", description="Local code agent")
     parser.add_argument("--config", type=str, help="Path to agent.toml")
     parser.add_argument("--ultrasecure", action="store_true",
@@ -134,6 +139,10 @@ def main() -> None:
                           help="-s alone: list available models; -s NAME: use that model for summarization")
     commit_p.add_argument("-c", "--chunk-size", type=str, default="50%",
                           help="Chunk size (integer chars or percentage, e.g. '12000' or '50%%'); default: 50%% of context window")
+    commit_p.add_argument("-y", "--yes", action="store_true",
+                          help="Commit without the confirmation prompt (for scripts and CI)")
+    commit_p.add_argument("--print", dest="print_only", action="store_true",
+                          help="Print the generated message and exit without committing")
 
     # exec
     exec_p = sub.add_parser("exec", help="Execute a system command in the project directory")
@@ -180,6 +189,12 @@ def main() -> None:
     serve_p = sub.add_parser("serve", help="Start chunk browser web UI")
     serve_p.add_argument("--port", type=int, default=8765, help="Port (default 8765; auto-increments if busy)")
 
+    return parser
+
+
+def main() -> None:
+    sys.setrecursionlimit(5000)
+    parser = build_parser()
     args = parser.parse_args()
 
     from agent.config import load_config, check_reachability, Config, ToolsConfig

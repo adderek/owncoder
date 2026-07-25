@@ -189,6 +189,51 @@ class CommitModelError(RuntimeError):
         self.failures = failures
 
 
+def _ask(console, question: str, *, choices: list[str], default: str,
+         on_eof: str | None = None) -> str | None:
+    """Prompt.ask that survives having no terminal to ask on.
+
+    Every other interactive prompt in cli/ guards EOFError; these did not, so
+    running `agent commit` from a script or with piped output crashed with a
+    traceback and wrote a crash dump instead of saying what was wrong.
+
+    Returns *on_eof* when stdin is exhausted (None means "the caller decides"),
+    and treats Ctrl-C as a decline rather than letting it unwind.
+    """
+    from rich.prompt import Prompt      # imported lazily, as elsewhere in this module
+    try:
+        return Prompt.ask(question, choices=choices, default=default)
+    except (EOFError, KeyboardInterrupt):
+        return on_eof
+
+
+def _resolve_confirmation(args, console) -> str:
+    """What to do with the proposed message: "y", "n", "e", "rpt", or "print".
+
+    Extracted from cmd_commit so the non-interactive contract is testable — it
+    is the branch where the command used to crash with an EOFError traceback.
+    Exits 1 when there is nobody to ask: a script that expected a commit has to
+    be able to tell, and committing a message no one approved is the one
+    outcome worse than not committing.
+    """
+    if getattr(args, "print_only", False):
+        return "print"
+    if getattr(args, "yes", False):
+        return "y"
+    # on_eof stays None so the no-terminal case stays distinguishable from a
+    # user typing "n" — they want different output and different exit codes.
+    choice = _ask(console, "Commit with this message?",
+                  choices=["y", "n", "e", "rpt"], default="y")
+    if choice is None:
+        console.print(
+            "[yellow]Not committed: no terminal to confirm on.[/yellow]\n"
+            "[dim]Re-run with '-y' to commit without asking, or '--print' to "
+            "just emit the message.[/dim]"
+        )
+        raise SystemExit(1)
+    return choice
+
+
 def _err_brief(exc: Exception) -> str:
     """One-line ``Type: first line of message`` summary, capped at 200 chars."""
     s = str(exc).strip().splitlines()[0] if str(exc).strip() else ""
@@ -652,11 +697,17 @@ def cmd_commit(args, config):
         return
 
     console.print(Panel(message, title="Proposed commit message", border_style="cyan"))
-    choice = Prompt.ask("Commit with this message?", choices=["y", "n", "e", "rpt"], default="y")
+
+    choice = _resolve_confirmation(args, console)
+    if choice == "print":
+        return
 
     if choice == "rpt":
-        desc = Prompt.ask("[yellow]Describe the issue[/yellow]",
-                          default="leaked thinking/comments in output")
+        _default_desc = "leaked thinking/comments in output"
+        try:
+            desc = Prompt.ask("[yellow]Describe the issue[/yellow]", default=_default_desc)
+        except (EOFError, KeyboardInterrupt):
+            desc = _default_desc
         report_dir = _save_problem_report(state, message, chunked, len(chunks),
                                           diff_chars, config, primary_model,
                                           summ_model, elapsed, path, desc)
@@ -685,7 +736,9 @@ def cmd_commit(args, config):
             console.print("[red]Empty commit message. Aborting.[/red]")
             return
         console.print(Panel(message, title="Edited commit message", border_style="cyan"))
-        confirm = Prompt.ask("Commit?", choices=["y", "n"], default="y")
+        # EOF here means the editor closed stdin; decline rather than commit
+        # an edited message that was never confirmed.
+        confirm = _ask(console, "Commit?", choices=["y", "n"], default="y", on_eof="n")
         if confirm == "n":
             console.print("[dim]Aborted.[/dim]")
             return
