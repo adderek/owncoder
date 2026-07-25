@@ -110,6 +110,8 @@ def load_all_tools(config=None, store=None, embedder=None, asm_store=None, data_
     build_project.setup(config)
     retranscribe_voice.setup(config)
     schedule.setup(config)
+    from agent.tools import core_rules_tools
+    core_rules_tools.setup(config)
     from agent.tools import discovery  # noqa: F401
     discovery.setup(config)
 

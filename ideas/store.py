@@ -14,7 +14,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-IDEA_TYPES = ("feature", "bug", "optimization", "integration", "module", "idea")
+#: `core_change` is a proposal to amend the immutable core rules
+#: (agent/core/core_rules.py). The agent can only ever file one of these; the
+#: file itself is human input only, so the backlog entry *is* the change
+#: request, and it stays open until a human edits the core and closes it.
+IDEA_TYPES = ("feature", "bug", "optimization", "integration", "module", "idea",
+              "core_change")
 IDEA_STATUSES = (
     "raw", "evaluated", "planned", "implementing", "verifying", "done", "rejected"
 )
