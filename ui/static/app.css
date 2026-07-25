@@ -180,6 +180,34 @@ aside.resizing { transition: none; }   /* no lag while dragging */
 .acc-add input:focus { outline: none; border-color: var(--accent); }
 .acc-add select { background: var(--bg); color: var(--fg); border: 1px solid var(--border);
                   border-radius: 5px; font-size: 11px; }
+/* Backlog panel: .agent/ideas.db, the same store as `agent todo` and /idea. */
+.todo-filters { display: flex; gap: 4px; margin-bottom: 4px; }
+.todo-filters select, .todo-add select { background: var(--bg); color: var(--fg);
+                  border: 1px solid var(--border); border-radius: 5px; font-size: 11px; }
+.trow { display: flex; gap: 6px; align-items: center; padding: 3px 6px;
+        border-radius: 5px; font-size: 11px; cursor: pointer; }
+.trow:hover { background: var(--panel2); }
+.trow.tdone { opacity: .5; }
+.trow .tpri { flex-shrink: 0; font-family: var(--mono); color: var(--dim); }
+/* Only the top two priorities get colour: if everything is highlighted, the
+   highlight stops meaning anything. */
+.trow .tp1 { color: var(--warn); }
+.trow .tp2 { color: var(--warn); }
+.trow .tstatus { flex-shrink: 0; color: var(--dimmer); font-family: var(--mono); }
+.trow .tsrc { flex-shrink: 0; }
+.trow .ttitle { flex: 1; color: var(--fg); overflow: hidden; text-overflow: ellipsis;
+                white-space: nowrap; }
+.trow.tdone .ttitle { text-decoration: line-through; }
+.tbody { padding: 4px 10px 8px 10px; color: var(--dim); font-size: 11px;
+         white-space: pre-wrap; word-break: break-word; }
+.tbody.hidden { display: none; }
+.todo-add { display: flex; gap: 4px; margin-top: 6px; }
+.todo-add input { flex: 1; min-width: 0; background: var(--bg); color: var(--fg);
+                  border: 1px solid var(--border); border-radius: 5px;
+                  font-size: 11px; padding: 3px 6px; }
+.todo-add input:focus { outline: none; border-color: var(--accent); }
+#todocount { margin-left: 6px; }
+
 /* Read-only history preview banner — pinned above the previewed transcript. */
 #previewbar { max-width: 920px; margin: 0 auto 14px; padding: 8px 12px;
               border: 1px solid var(--sig-border); background: var(--sig-bg);

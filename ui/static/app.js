@@ -745,6 +745,108 @@ document.getElementById('accpath').addEventListener('keydown', (e) => {
 document.getElementById('d-access').addEventListener('click', (e) => {
   e.preventDefault(); e.stopPropagation(); loadGrants();
 });
+
+// Backlog panel: the same store as `agent todo` and /idea. Rows are one line
+// until clicked; the body is often a whole rationale (agent-filed core_change
+// proposals especially) and the panel is narrow.
+const TODO_DONE = ['done', 'rejected'];
+let todoOptionsFilled = false;
+
+function todoFillOptions(d) {
+  if (todoOptionsFilled) return;
+  const status = document.getElementById('todostatus');
+  (d.statuses || []).forEach(s => status.add(new Option(s, s)));
+  const types = d.types || [];
+  const filter = document.getElementById('todotype');
+  const adder = document.getElementById('todonewtype');
+  types.forEach(t => { filter.add(new Option(t, t)); adder.add(new Option(t, t)); });
+  adder.value = 'idea';
+  todoOptionsFilled = types.length > 0;
+}
+
+function todoRow(item) {
+  const done = TODO_DONE.indexOf(item.status) >= 0;
+  const tags = (item.tags || []).length ? ' [' + item.tags.join(',') + ']' : '';
+  // Agent-filed items stay visually distinct: a proposal the agent wrote is not
+  // the same thing as work the user asked for.
+  const src = item.source === 'agent' ? '<span class="tsrc" title="Filed by the agent">🤖</span>' : '';
+  return '<div class="trow' + (done ? ' tdone' : '') + '" data-id="' + esc(item.id) + '">' +
+    '<span class="tpri tp' + (item.priority || 3) + '" title="Priority">P' + (item.priority || 3) + '</span>' +
+    '<span class="tstatus">' + esc(item.status) + '</span>' + src +
+    '<span class="ttitle" title="' + esc(item.type) + ' — click to expand">' + esc(item.title) + esc(tags) + '</span>' +
+    (done
+      ? '<button class="sbtn" data-ta="status" data-s="raw" title="Reopen">↺</button>'
+      : '<button class="sbtn" data-ta="status" data-s="done" title="Mark done">✓</button>' +
+        '<button class="sbtn" data-ta="status" data-s="rejected" title="Reject">✗</button>') +
+    '</div>' +
+    (item.body ? '<div class="tbody hidden">' + esc(item.body) + '</div>' : '');
+}
+
+async function loadTodos() {
+  const el = document.getElementById('todobody');
+  el.textContent = '…';
+  const status = document.getElementById('todostatus').value;
+  const type = document.getElementById('todotype').value;
+  try {
+    const q = new URLSearchParams();
+    if (status) q.set('status', status);
+    if (type) q.set('type', type);
+    const d = await (await fetch('/api/todos?' + q.toString())).json();
+    todoFillOptions(d);
+    document.getElementById('todocount').textContent =
+      d.error ? '!' : (d.open || 0) + '/' + (d.total || 0);
+    if (d.error) { el.textContent = d.error; return; }
+    let items = d.items || [];
+    // The default view is "open": a backlog whose first screen is finished
+    // work is one nobody reads.
+    if (!status) items = items.filter(i => TODO_DONE.indexOf(i.status) < 0);
+    el.innerHTML = items.map(todoRow).join('') ||
+      '<div class="trow">' + (status || type ? 'nothing matches' : 'backlog empty') + '</div>';
+    el.querySelectorAll('[data-ta]').forEach(b => b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      todoAction({action: 'status', id: b.closest('.trow').dataset.id, status: b.dataset.s});
+    }));
+    el.querySelectorAll('.trow').forEach(r => r.addEventListener('click', () => {
+      const body = r.nextElementSibling;
+      if (body && body.classList.contains('tbody')) body.classList.toggle('hidden');
+    }));
+  } catch (e) { el.textContent = 'failed: ' + e; }
+}
+
+async function todoAction(payload) {
+  try {
+    const r = await (await fetch('/api/todo', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    })).json();
+    if (!r.ok) row('sys error', null, 'backlog: ' + (r.msg || 'failed'));
+  } catch (e) {
+    row('sys error', null, 'backlog change failed: ' + e);
+  }
+  loadTodos();
+}
+
+document.getElementById('todoadd').addEventListener('click', () => {
+  const input = document.getElementById('todotitle');
+  const title = input.value.trim();
+  if (!title) return;
+  input.value = '';
+  todoAction({action: 'add', title,
+              type: document.getElementById('todonewtype').value || 'idea',
+              priority: parseInt(document.getElementById('todopri').value, 10)});
+});
+document.getElementById('todotitle').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') document.getElementById('todoadd').click();
+});
+document.getElementById('todostatus').addEventListener('change', loadTodos);
+document.getElementById('todotype').addEventListener('change', loadTodos);
+document.getElementById('d-todo').addEventListener('click', (e) => {
+  e.preventDefault(); e.stopPropagation(); loadTodos();
+});
+document.getElementById('todofold').addEventListener('toggle', (e) => {
+  if (e.target.open) loadTodos();
+});
 document.getElementById('accessfold').addEventListener('toggle', (e) => {
   if (e.target.open) loadGrants();
 });

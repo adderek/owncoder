@@ -143,6 +143,20 @@ _PAGE = r"""<!DOCTYPE html>
       <button class="sbtn" id="accadd">add</button>
     </div>
   </details>
+  <details id="todofold" class="dfold">
+    <summary class="dhead">backlog <span id="todocount" class="chip"></span><span id="d-todo" class="dhead-refresh" title="Refresh">⟳</span></summary>
+    <div class="todo-filters">
+      <select id="todostatus" title="Filter by status"><option value="">open</option></select>
+      <select id="todotype" title="Filter by type"><option value="">all types</option></select>
+    </div>
+    <div id="todobody">—</div>
+    <div class="todo-add">
+      <input id="todotitle" placeholder="new item…">
+      <select id="todonewtype"></select>
+      <select id="todopri" title="Priority"><option value="1">P1</option><option value="2">P2</option><option value="3" selected>P3</option><option value="4">P4</option><option value="5">P5</option></select>
+      <button class="sbtn" id="todoadd">add</button>
+    </div>
+  </details>
   <div class="placeholder">Attach files with the 📎 button by the message box.</div>
 </div></aside>
 <div class="resizer hidden" id="resize-left" title="Drag to resize; drag past the edge to close"></div>
@@ -435,6 +449,95 @@ class _HttpUI:
             logger.exception("http ui: grant action failed")
             return {"ok": False, "msg": f"failed: {exc}"}
         return {"ok": bool(ok), "msg": msg}
+
+    # ── backlog (.agent/ideas.db) ─────────────────────────────────────────
+    # Same store as `agent todo` and /idea. Configured against the *session's*
+    # working dir on every call: the browser can switch sessions across
+    # projects, and a backlog panel showing another project's items would be
+    # worse than no panel.
+
+    def _todo_store(self):
+        from agent import ideas as _ideas
+
+        _ideas.configure(self.workdir(), self._agent_dir())
+        return _ideas.get_store()
+
+    def _agent_dir(self) -> str:
+        cfg = _agent_config(self.server)
+        return str(getattr(getattr(cfg, "tools", None), "agent_dir", ".agent") or ".agent")
+
+    def todos_info(self, status: str = "", kind: str = "", limit: int = 100) -> dict:
+        """Backlog rows for the Backlog panel, newest first."""
+        from agent.ideas.store import IDEA_STATUSES, IDEA_TYPES
+
+        store = self._todo_store()
+        if store is None:
+            return {"items": [], "error": "backlog unavailable", "workdir": self.workdir()}
+        try:
+            items = store.list(status=status or None, limit=max(1, min(int(limit), 500)))
+            if kind:
+                items = [i for i in items if i.get("type") == kind]
+            return {
+                "workdir": self.workdir(),
+                "statuses": list(IDEA_STATUSES),
+                "types": list(IDEA_TYPES),
+                "open": store.count() - store.count("done") - store.count("rejected"),
+                "total": store.count(),
+                "items": items,
+            }
+        except Exception as exc:
+            logger.exception("http ui: backlog listing failed")
+            return {"items": [], "error": str(exc), "workdir": self.workdir()}
+
+    def todo_action(self, payload: dict) -> dict:
+        """Backlog edits from the browser: add / status / priority / delete-ish.
+
+        Statuses are validated against the store's own list rather than trusted:
+        an unknown status would be written straight through and the item would
+        vanish from every filtered view.
+        """
+        from agent.ideas.store import IDEA_STATUSES, IDEA_TYPES
+
+        store = self._todo_store()
+        if store is None:
+            return {"ok": False, "msg": "backlog unavailable"}
+        action = str(payload.get("action") or "")
+        try:
+            if action == "add":
+                title = str(payload.get("title") or "").strip()
+                if not title:
+                    return {"ok": False, "msg": "empty title"}
+                kind = str(payload.get("type") or "idea")
+                if kind not in IDEA_TYPES:
+                    return {"ok": False, "msg": f"unknown type {kind!r}"}
+                raw_tags = payload.get("tags") or []
+                tags = ([t.strip() for t in raw_tags.split(",") if t.strip()]
+                        if isinstance(raw_tags, str) else [str(t) for t in raw_tags])
+                idea_id = store.add(
+                    title=title[:200], body=str(payload.get("body") or ""),
+                    type=kind, tags=tags, source="human",
+                    priority=max(1, min(5, int(payload.get("priority") or 3))),
+                )
+                return {"ok": True, "id": idea_id, "msg": f"added {title[:60]}"}
+
+            idea_id = str(payload.get("id") or "").strip()
+            if not idea_id:
+                return {"ok": False, "msg": "no item id"}
+            if action == "status":
+                status = str(payload.get("status") or "")
+                if status not in IDEA_STATUSES:
+                    return {"ok": False, "msg": f"unknown status {status!r}"}
+                fields = {"status": status}
+            elif action == "priority":
+                fields = {"priority": max(1, min(5, int(payload.get("priority") or 3)))}
+            else:
+                return {"ok": False, "msg": f"unknown action {action!r}"}
+            if not store.update(idea_id, **fields):
+                return {"ok": False, "msg": "no such item"}
+            return {"ok": True, "msg": ", ".join(f"{k}={v}" for k, v in fields.items())}
+        except Exception as exc:
+            logger.exception("http ui: backlog action failed")
+            return {"ok": False, "msg": f"failed: {exc}"}
 
     def workdir(self) -> str:
         """Project dir of the active session (falls back to the configured root)."""
@@ -879,6 +982,12 @@ def _make_handler(ui: _HttpUI):
                 self._json(ui.models_info())
             elif self.path == "/api/grants":
                 self._json(ui.grants_info())
+            elif self.path.startswith("/api/todos"):
+                from urllib.parse import parse_qs, urlparse
+                q = parse_qs(urlparse(self.path).query)
+                self._json(ui.todos_info(status=(q.get("status") or [""])[0],
+                                         kind=(q.get("type") or [""])[0],
+                                         limit=int((q.get("limit") or ["100"])[0] or 100)))
             elif self.path == "/api/background":
                 try:
                     self._json({"jobs": ui.server.background_info()})
@@ -967,6 +1076,8 @@ def _make_handler(ui: _HttpUI):
                 self._json(ui.upload_file(fname, data))
             elif self.path == "/api/grants":
                 self._json(ui.grant_action(payload))
+            elif self.path == "/api/todo":
+                self._json(ui.todo_action(payload))
             else:
                 self._json({"error": "not found"}, 404)
 
