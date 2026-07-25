@@ -134,6 +134,14 @@ class Agent:
 
         load_all_tools(config=config, data_provider=data_provider)
 
+        # Record how the tool surface changed since last session, with the
+        # reason from git. See agent/core/tool_ledger.py.
+        try:
+            from agent.core import tool_ledger as _tool_ledger
+            _tool_ledger.record_changes(config, get_schemas())
+        except Exception:
+            logger.debug("tool ledger not updated", exc_info=True)
+
         indexed_stats = store.stats() if store else {"chunks": 0, "files": 0}
         indexed_count = indexed_stats["files"]
         total_files = indexed_count

@@ -104,6 +104,42 @@ def propose_core_change(title: str, rationale: str, proposed_text: str = "",
 
 
 @register(
+    "tool_change_history",
+    {
+        "description": (
+            "When a tool's schema changed, and why. Answers questions like "
+            "'did read_file always have this parameter' — the ledger records "
+            "each added/removed/changed tool with the commit message behind it. "
+            "Use before assuming a tool behaved in the past as it does now."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tool": {"type": "string",
+                         "description": "Tool name; omit for every tool."},
+                "limit": {"type": "integer",
+                          "description": "Most recent N entries. Default 20."},
+            },
+        },
+    },
+)
+def tool_change_history(tool: str = "", limit: int = 20) -> dict[str, Any]:
+    from agent.core import tool_ledger
+
+    if _config is None:
+        return {"error": "not configured"}
+    entries = tool_ledger.public_history(_config, tool=tool.strip(),
+                                         limit=max(1, int(limit)))
+    result = {"tool": tool.strip(), "count": len(entries), "entries": entries}
+    if not entries:
+        result["note"] = (
+            f"No recorded change for {tool.strip()!r}." if tool.strip() else
+            "No tool changes recorded yet for this project."
+        )
+    return result
+
+
+@register(
     "core_rules_history",
     {
         "description": (
