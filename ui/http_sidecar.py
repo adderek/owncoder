@@ -20,6 +20,7 @@ import logging
 import queue
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agent.ui.http_loop import _EventBus, _args_full, _args_preview, _bind_server
@@ -55,8 +56,19 @@ body { margin: 0; font: 14px/1.4 -apple-system, system-ui, sans-serif; backgroun
 #log { padding: 10px; max-width: 760px; margin: 0 auto; padding-bottom: 90px; }
 .row { margin: 6px 0; padding: 8px 10px; border-radius: 8px; white-space: pre-wrap; word-break: break-word; }
 .user { background: #2a4a6a33; }
-.assistant { background: #ffffff0c; }
+/* Assistant rows are rendered HTML (<p>/<ul>/<table>), so pre-wrap would add a
+   line break on top of every block margin. User rows stay pre-wrap: they are
+   inserted as text and their newlines are all the structure they have. */
+.assistant { background: #ffffff0c; white-space: normal; }
 .tool { font-size: 12px; opacity: .7; font-family: ui-monospace, monospace; }
+/* Tables come from the shared renderer; a pipe table in a proportional font
+   does not line up, so it needs real table layout here too. */
+.table-wrap { overflow-x: auto; margin: 6px 0; max-width: 100%; }
+table { border-collapse: collapse; font-size: 13px; }
+th, td { border: 1px solid #ffffff2a; padding: 3px 8px; text-align: left; vertical-align: top; }
+th { background: #ffffff14; white-space: nowrap; }
+td { font-variant-numeric: tabular-nums; }
+.ta-center { text-align: center; } .ta-right { text-align: right; } .ta-left { text-align: left; }
 .sys { font-size: 12px; opacity: .55; font-style: italic; }
 #bar { position: fixed; bottom: 0; left: 0; right: 0; display: flex; gap: 6px; padding: 8px calc(8px + env(safe-area-inset-right))
        8px calc(8px + env(safe-area-inset-left)); background: inherit; border-top: 1px solid #ffffff22; }
@@ -72,32 +84,9 @@ body { margin: 0; font: 14px/1.4 -apple-system, system-ui, sans-serif; backgroun
 <div id="log"></div>
 <div id="bar"><input id="in" placeholder="Message… (mid-turn: injected; idle: starts a new turn)">
 <button id="send">Send</button></div>
+<script src="/static/md.js"></script>
 <script>
 const log = document.getElementById('log');
-function esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
-
-// Minimal markdown (fences, inline code, bold/italic, links, lists) — a
-// deliberately smaller copy of app.js's renderMd; the sidecar stays a
-// companion view, not a second full frontend, so this isn't shared/imported.
-function renderMd(raw) {
-  const fences = [];
-  raw = raw.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
-    fences.push('<pre><code>' + esc(code) + '</code></pre>');
-    return '\x00F' + (fences.length - 1) + '\x00';
-  });
-  let h = esc(raw);
-  h = h.replace(/`([^`\n]+)`/g, (_, c) => '<code>' + c + '</code>');
-  h = h.replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>');
-  h = h.replace(/(^|\s)\*([^*\n]+)\*(?=\s|$|[.,;:!?])/g, '$1<i>$2</i>');
-  h = h.replace(/\[([^\]\n]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
-  h = h.replace(/(^|\n)((?:[-*] .*(?:\n|$))+)/g, (m, pre, block) => {
-    const items = block.trim().split('\n').map(l => '<li>' + l.replace(/^[-*] /, '') + '</li>');
-    return pre + '<ul>' + items.join('') + '</ul>\n';
-  });
-  h = h.replace(/\n/g, '<br>');
-  h = h.replace(/\x00F(\d+)\x00/g, (_, i) => fences[+i]);
-  return h;
-}
 
 function row(cls, text) { const d = document.createElement('div'); d.className = 'row ' + cls; d.textContent = text; log.appendChild(d); d.scrollIntoView({block: 'end'}); return d; }
 function mdRow(cls, raw) { const d = document.createElement('div'); d.className = 'row ' + cls; d.dataset.raw = raw; d.innerHTML = renderMd(raw); log.appendChild(d); d.scrollIntoView({block: 'end'}); return d; }
@@ -187,7 +176,13 @@ _MANIFEST = json.dumps({
     "icons": [{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}],
 }).encode()
 
+_STATIC_DIR = Path(__file__).parent / "static"
+
 _STATIC_ASSETS = {
+    # Shared with the full HTTP UI: the sidecar used to inline its own smaller
+    # markdown renderer, and that copy silently lacked table support.
+    "/static/md.js": ("application/javascript; charset=utf-8",
+                      (_STATIC_DIR / "md.js").read_bytes()),
     "/icon.svg": ("image/svg+xml", _ICON_SVG),
     "/manifest.webmanifest": ("application/manifest+json", _MANIFEST),
 }

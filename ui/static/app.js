@@ -29,57 +29,7 @@ let pendingTools = {};    // name -> [tool detail elements awaiting result]
 let turn = null;          // active work fold: {details, body, tools, steps, t0, userToggled}
 let busyFlag = false;
 
-function esc(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
-
-// Minimal markdown: fences, inline code, headers, bold/italic, links,
-// lists, blockquotes. Also folds <agent_exec> blocks from restored
-// history into tool chips, matching the terminal UI's collapsed rounds.
-function renderMd(raw) {
-  const execs = [];
-  raw = raw.replace(/<agent_exec\b([^>]*)>([\s\S]*?)<\/agent_exec>/g, (_, attrs, body) => {
-    execs.push({attrs, body});
-    return '\x00EXEC' + (execs.length - 1) + '\x00';
-  });
-  const fences = [];
-  raw = raw.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
-    fences.push('<div class="code-block"><button class="codecopy" type="button" ' +
-      'title="Copy code">⧉</button><pre><code>' + esc(code) + '</code></pre></div>');
-    return '\x00F' + (fences.length - 1) + '\x00';
-  });
-  let h = esc(raw);
-  h = h.replace(/`([^`\n]+)`/g, (_, c) => '<code>' + c + '</code>');
-  h = h.replace(/^### (.*)$/gm, '<h3>$1</h3>');
-  h = h.replace(/^## (.*)$/gm, '<h2>$1</h2>');
-  h = h.replace(/^# (.*)$/gm, '<h1>$1</h1>');
-  h = h.replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>');
-  h = h.replace(/(^|\s)\*([^*\n]+)\*(?=\s|$|[.,;:!?])/g, '$1<i>$2</i>');
-  h = h.replace(/\[([^\]\n]+)\]\((https?:[^)\s]+)\)/g,
-                '<a href="$2" target="_blank" rel="noopener">$1</a>');
-  h = h.replace(/^&gt; ?(.*)$/gm, '<blockquote>$1</blockquote>');
-  h = h.replace(/(^|\n)((?:[-*] .*(?:\n|$))+)/g, (m, pre, block) => {
-    const items = block.trim().split('\n').map(l => '<li>' + l.replace(/^[-*] /, '') + '</li>');
-    return pre + '<ul>' + items.join('') + '</ul>\n';
-  });
-  h = h.replace(/(^|\n)((?:\d+\. .*(?:\n|$))+)/g, (m, pre, block) => {
-    const items = block.trim().split('\n').map(l => '<li>' + l.replace(/^\d+\. /, '') + '</li>');
-    return pre + '<ol>' + items.join('') + '</ol>\n';
-  });
-  h = h.split(/\n{2,}/).map(seg =>
-    /^\s*(<(h\d|ul|ol|blockquote|pre)|\x00)/.test(seg) ? seg : '<p>' + seg.replace(/\n/g, '<br>') + '</p>'
-  ).join('\n');
-  h = h.replace(/\x00F(\d+)\x00/g, (_, i) => fences[+i]);
-  h = h.replace(/\x00EXEC(\d+)\x00/g, (_, i) => {
-    const e = execs[+i];
-    const tool = (e.attrs.match(/tool="([^"]*)"/) || [,'?'])[1];
-    const args = (e.attrs.match(/args="([^"]*)"/) || [,''])[1];
-    return '<details class="tool"><summary><span class="toolname">⚙ ' + esc(tool) +
-           '</span><span class="toolargs">' + args + '</span></summary>' +
-           '<div class="body">' + e.body + '</div></details>';
-  });
-  return h;
-}
+// Markdown rendering (esc / renderMd) lives in md.js, loaded before this file.
 
 function row(cls, html, text) {
   const wrap = document.createElement('div');

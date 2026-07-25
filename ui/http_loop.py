@@ -169,6 +169,7 @@ _PAGE = r"""<!DOCTYPE html>
   <div class="dsec"><div class="dhead" id="d-bg">Background jobs ⟳</div><div id="bgbody">—</div></div>
 </div></aside>
 </div>
+<script src="/static/md.js" defer></script>
 <script src="/static/app.js" defer></script>
 </body>
 </html>
@@ -177,6 +178,7 @@ _PAGE = r"""<!DOCTYPE html>
 _STATIC_DIR = Path(__file__).parent / "static"
 _STATIC_ASSETS = {
     "/static/app.css": ("text/css; charset=utf-8", (_STATIC_DIR / "app.css").read_bytes()),
+    "/static/md.js": ("application/javascript; charset=utf-8", (_STATIC_DIR / "md.js").read_bytes()),
     "/static/app.js": ("application/javascript; charset=utf-8", (_STATIC_DIR / "app.js").read_bytes()),
 }
 

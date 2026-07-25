@@ -289,9 +289,22 @@ details.think summary:hover { color: var(--dim); }
 .assistant .md pre code { border: none; background: none; padding: 0; font-size: 12.5px;
                           white-space: pre; }
 .assistant .md a { color: var(--link); }
-.assistant .md table { border-collapse: collapse; margin: 8px 0; }
-.assistant .md th, .assistant .md td { border: 1px solid var(--border); padding: 4px 9px;
-                                       font-size: 13px; }
+/* Tables are not scoped to .assistant: restored turn detail also renders md. */
+/* A wide table must scroll inside its own box — never widen the chat column. */
+.md .table-wrap { overflow-x: auto; margin: 8px 0; max-width: 100%; }
+.md table { border-collapse: collapse; font-size: 13px; }
+.md th, .md td { border: 1px solid var(--border); padding: 4px 9px;
+                 text-align: left; vertical-align: top; }
+.md th { background: var(--panel2); color: var(--head-fg); font-weight: bold;
+         white-space: nowrap; }
+.md tbody tr:nth-child(even) td { background: var(--panel); }
+/* Alignment from the delimiter row (|:--|:-:|--:|) wins over the default. */
+.md th.ta-left, .md td.ta-left { text-align: left; }
+.md th.ta-center, .md td.ta-center { text-align: center; }
+.md th.ta-right, .md td.ta-right { text-align: right; }
+/* Numeric-looking columns still line up: tabular figures, not proportional. */
+.md td { font-variant-numeric: tabular-nums; }
+.md td code, .md th code { white-space: pre; }
 details.tool { margin: 0 0 6px 6px; font-size: 12px; font-family: var(--mono); color: var(--dim); }
 details.tool summary { cursor: pointer; list-style: none; display: flex; gap: 6px;
                        align-items: baseline; user-select: none; }
