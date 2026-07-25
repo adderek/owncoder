@@ -141,7 +141,14 @@ in its traceback are compared with when the failure was last seen.
 |-------|---------|
 | `live` | at least one implicated file has not been committed to since the last sighting — the bug can still be there |
 | `stale` | every implicated file has changed since — probably already fixed, so it sinks to the bottom of the ranking and its scaffold carries a warning |
-| `?` | nothing to judge on: no traceback, no project files in it, or no git history (the normal case for invalid tool calls) |
+| `?` | nothing to judge on: no traceback, no file found for the tool, or no git history for it |
+
+Records with a traceback are attributed to the project files in it. Records
+without one — invalid tool calls, the largest class — fall back to the module
+that registers the named tool, found by grep rather than by importing another
+checkout's registry. That is a weaker attribution (the fault may be in the
+schema or the prompt, not the implementation), so a traceback always wins when
+there is one.
 
 `?` ranks with `live`: a mode that cannot be judged must not be demoted on no
 evidence. `--no-staleness` skips the git lookups entirely. This is a heuristic —

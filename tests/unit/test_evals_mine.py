@@ -412,3 +412,64 @@ class TestStalenessCli:
         assert payload[0]["stale"] is True
         assert payload[0]["files"] == ["a.py"]
         assert payload[0]["changed_since"][0]["file"] == "a.py"
+
+
+class TestToolAttribution:
+    """Records with no traceback — invalid tool calls, the largest class — used
+    to be permanently unjudgeable. The tool's own module is the one file they do
+    point at."""
+
+    def test_it_finds_the_module_that_registers_the_tool(self):
+        """Against this repo, where read_file really is registered somewhere."""
+        found = mine.tool_source_files("read_file", REPO_ROOT)
+        assert found, "read_file is a real tool; its module should be findable"
+        assert any(f.endswith(".py") for f in found)
+
+    def test_an_unknown_tool_finds_nothing(self):
+        assert mine.tool_source_files("no_such_tool_xyzzy", REPO_ROOT) == []
+
+    def test_a_tool_name_that_is_not_an_identifier_is_refused(self):
+        """The name reaches a subprocess argv; regex metacharacters in it would
+        at best mis-match and at worst match half the tree."""
+        assert mine.tool_source_files("read_file|.*", REPO_ROOT) == []
+        assert mine.tool_source_files("", REPO_ROOT) == []
+
+    def test_outside_a_repo_it_is_empty_not_an_error(self, tmp_path):
+        assert mine.tool_source_files("read_file", tmp_path) == []
+
+    def test_a_tracebackless_mode_is_attributed_to_its_tool(self, project):
+        project.mkdir(parents=True)
+        _journal(project, [{"ts": "2026-01-01T00:00:00+00:00", "kind": "invalid_tool_call",
+                            "tool": "edit_file", "reason": "unknown argument"}])
+        modes = mine.cluster(mine.load_records(project / ".agent" / "failures"))
+        mine.annotate_staleness(
+            modes,
+            last_changed=lambda p, r: "2026-06-01T00:00:00+00:00",
+        )
+        # tool_source_files is the real one here and finds nothing in an empty
+        # tmp project — the verdict stays unknown rather than becoming a guess.
+        assert modes[0].stale is None
+
+    def test_the_tool_module_drives_the_verdict_when_it_is_found(self, project, monkeypatch):
+        project.mkdir(parents=True)
+        _journal(project, [{"ts": "2026-01-01T00:00:00+00:00", "kind": "invalid_tool_call",
+                            "tool": "edit_file", "reason": "unknown argument"}])
+        modes = mine.cluster(mine.load_records(project / ".agent" / "failures"))
+        monkeypatch.setattr(mine, "tool_source_files",
+                            lambda tool, root: ["tools/edit_file/__init__.py"])
+        mine.annotate_staleness(modes, last_changed=lambda p, r: "2026-06-01T00:00:00+00:00")
+        assert modes[0].files == ["tools/edit_file/__init__.py"]
+        assert modes[0].stale is True
+
+    def test_a_traceback_still_wins_over_the_tool_module(self, project, monkeypatch):
+        """The traceback names the code that actually ran; the registry entry is
+        only a guess at where the problem lives."""
+        project.mkdir(parents=True)
+        tb = f'Traceback (most recent call last):\n  File "{project}/core/x.py", line 1, in f\n'
+        _journal(project, [{"ts": "2026-01-01T00:00:00+00:00", "kind": "tool_exception",
+                            "tool": "edit_file", "error": "boom", "traceback": tb}])
+        modes = mine.cluster(mine.load_records(project / ".agent" / "failures"))
+        monkeypatch.setattr(mine, "tool_source_files",
+                            lambda tool, root: ["tools/edit_file/__init__.py"])
+        mine.annotate_staleness(modes, last_changed=lambda p, r: "2026-06-01T00:00:00+00:00")
+        assert modes[0].files == ["core/x.py"]

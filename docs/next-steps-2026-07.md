@@ -78,9 +78,11 @@ delete.
 `evals/mine.py` now judges a mode `live`/`stale`/`?` by comparing the files in
 its traceback against git. Two known limits, both acceptable today:
 
-- Records with no traceback (invalid tool calls — a large share of them) are
-  always `?`. Attributing those would mean mapping a tool name to its
-  implementing module, which is guessable but not reliable.
+- ~~Records with no traceback are always `?`~~ — done 2026-07-25: they now fall
+  back to the module registering the named tool (grep for the `register(...)`
+  decorator, no import of a foreign checkout). Weaker than a traceback, so a
+  traceback wins whenever there is one, and a tool nobody can locate stays `?`
+  rather than becoming a guess.
 - "The file changed" is not "the bug is fixed". Stale modes are therefore still
   listed and still scaffoldable, just demoted.
 

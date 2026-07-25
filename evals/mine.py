@@ -75,6 +75,46 @@ def implicated_files(record: dict, project: Path) -> list[str]:
     return out
 
 
+def tool_source_files(tool: str, project: Path) -> list[str]:
+    """Files declaring `@register("<tool>")`, the module that implements it.
+
+    Most failure records are invalid tool calls, which carry no traceback at
+    all — so without this the majority of modes could never be judged. Found by
+    grepping rather than importing: mine.py runs against other checkouts, and
+    importing another project's tool registry to ask where a tool lives is both
+    slow and a code-execution decision this has no business making.
+    """
+    if not re.fullmatch(r"[A-Za-z0-9_.\-]+", tool or ""):
+        return []
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(project), "grep", "-l", "-F", f'"{tool}"', "--", "*.py"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if proc.returncode != 0:
+        return []
+    # git grep is line-based and the decorator routinely wraps:
+    #     @register(
+    #         "read_file",
+    # so candidates are narrowed by the literal name first, then confirmed
+    # against the whole file text.
+    pattern = re.compile(rf"""@?register\(\s*["']{re.escape(tool)}["']""")
+    out = []
+    for name in proc.stdout.splitlines():
+        name = name.strip()
+        if not name:
+            continue
+        try:
+            text = (project / name).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if pattern.search(text):
+            out.append(name)
+    return out
+
+
 def last_changed(path: str, project: Path) -> str:
     """ISO timestamp of the last commit touching *path*, or "" if unknown.
 
@@ -227,9 +267,11 @@ def annotate_staleness(modes: list[Mode], last_changed=None) -> None:
     exists — which is what happened the first two times this miner was used.
     """
     lookup = last_changed or globals()["last_changed"]
+    sources = globals()["tool_source_files"]
     cache: dict[tuple[str, str], str] = {}
     for mode in modes:
-        sample = next((s for s in mode.samples if s.get("traceback")), None)
+        sample = next((s for s in mode.samples if s.get("traceback")), None) \
+            or (mode.samples[0] if mode.samples else None)
         if sample is None:
             continue
         directory = sample.get("_dir")
@@ -237,6 +279,12 @@ def annotate_staleness(modes: list[Mode], last_changed=None) -> None:
             continue
         project = Path(directory).parent.parent
         mode.files = implicated_files(sample, project)
+        if not mode.files and mode.tool:
+            # No traceback — the invalid-tool-call case, and the majority of
+            # records. The tool's own module is a weaker attribution than a
+            # traceback (the bug may be in the prompt or the schema, not the
+            # implementation), but it is the only file the record points at.
+            mode.files = sources(mode.tool, project)
         seen_at = _as_datetime(mode.last_seen)
         if not seen_at:
             continue
