@@ -230,3 +230,185 @@ class TestFailUnderFloor:
     def test_floor_without_baseline_still_needs_every_task_to_pass(self, monkeypatch, tmp_path):
         assert self._exit(monkeypatch, tmp_path, ["pass", "pass", "pass", "fail"],
                           ["--fail-under", "0.5"]) == 1
+
+
+class TestStaleness:
+    """Does the code this failure came from still look like the code that broke?
+
+    Without this the miner ranked by error shape alone, so a bug fixed months
+    ago outranked a live one purely on how often it used to happen — which is
+    how the first two mined modes both turned out to be already fixed.
+    """
+
+    def _record(self, project: Path, ts: str, traceback: str) -> dict:
+        return {"ts": ts, "kind": "tool_exception", "tool": "t",
+                "error": "TypeError: boom", "traceback": traceback}
+
+    def _tb(self, project: Path, name: str) -> str:
+        return (f'Traceback (most recent call last):\n'
+                f'  File "{project}/{name}", line 3, in f\n'
+                f'  File "/usr/lib/python3.14/json/encoder.py", line 2, in g\n'
+                f'TypeError: boom\n')
+
+    def test_only_project_files_are_implicated(self, project):
+        project.mkdir(parents=True)
+        record = {"traceback": self._tb(project, "core/tool_calls.py")}
+        assert mine.implicated_files(record, project) == ["core/tool_calls.py"]
+
+    def test_a_record_without_a_traceback_implicates_nothing(self, project):
+        project.mkdir(parents=True)
+        assert mine.implicated_files({}, project) == []
+
+    def test_duplicate_frames_are_listed_once(self, project):
+        project.mkdir(parents=True)
+        tb = self._tb(project, "a.py") + self._tb(project, "a.py")
+        assert mine.implicated_files({"traceback": tb}, project) == ["a.py"]
+
+    def test_mode_is_stale_when_its_file_changed_after_the_last_failure(self, project):
+        project.mkdir(parents=True)
+        _journal(project, [self._record(project, "2026-01-01T00:00:00+00:00",
+                                        self._tb(project, "core/x.py"))])
+        modes = mine.cluster(mine.load_records(project / ".agent" / "failures"))
+        mine.annotate_staleness(modes, last_changed=lambda p, r: "2026-06-01T00:00:00+00:00")
+        assert modes[0].files == ["core/x.py"]
+        assert modes[0].stale is True
+
+    def test_mode_is_live_when_the_file_predates_the_failure(self, project):
+        project.mkdir(parents=True)
+        _journal(project, [self._record(project, "2026-06-01T00:00:00+00:00",
+                                        self._tb(project, "core/x.py"))])
+        modes = mine.cluster(mine.load_records(project / ".agent" / "failures"))
+        mine.annotate_staleness(modes, last_changed=lambda p, r: "2026-01-01T00:00:00+00:00")
+        assert modes[0].stale is False
+
+    def test_one_untouched_file_keeps_the_whole_mode_live(self, project):
+        """Any implicated file that nobody has touched can still hold the bug."""
+        project.mkdir(parents=True)
+        tb = (f'Traceback (most recent call last):\n'
+              f'  File "{project}/a.py", line 1, in f\n'
+              f'  File "{project}/b.py", line 1, in g\n')
+        _journal(project, [self._record(project, "2026-03-01T00:00:00+00:00", tb)])
+        modes = mine.cluster(mine.load_records(project / ".agent" / "failures"))
+        stamps = {"a.py": "2026-06-01T00:00:00+00:00", "b.py": "2026-01-01T00:00:00+00:00"}
+        mine.annotate_staleness(modes, last_changed=lambda p, r: stamps[p])
+        assert modes[0].stale is False
+
+    def test_unknown_staleness_is_not_reported_as_either(self, project):
+        """No traceback, no verdict — the invalid-tool-call case."""
+        project.mkdir(parents=True)
+        _journal(project, [{"ts": "2026-03-01T00:00:00+00:00", "kind": "invalid_tool_call",
+                            "reason": "unknown tool"}])
+        modes = mine.cluster(mine.load_records(project / ".agent" / "failures"))
+        mine.annotate_staleness(modes, last_changed=lambda p, r: "2026-06-01T00:00:00+00:00")
+        assert modes[0].stale is None
+
+    def test_no_git_history_leaves_the_verdict_unknown(self, project):
+        project.mkdir(parents=True)
+        _journal(project, [self._record(project, "2026-03-01T00:00:00+00:00",
+                                        self._tb(project, "a.py"))])
+        modes = mine.cluster(mine.load_records(project / ".agent" / "failures"))
+        mine.annotate_staleness(modes, last_changed=lambda p, r: "")
+        assert modes[0].stale is None
+
+    def test_last_changed_reads_git_not_the_filesystem(self, tmp_path):
+        """A checkout or a `touch` must not read as 'someone fixed this'."""
+        import subprocess
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e",
+               "GIT_COMMITTER_DATE": "2026-02-03T04:05:06+00:00", "PATH": "/usr/bin:/bin"}
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True, env=env)
+        (repo / "a.py").write_text("x = 1\n")
+        subprocess.run(["git", "add", "a.py"], cwd=repo, check=True, env=env)
+        subprocess.run(["git", "commit", "-qm", "add"], cwd=repo, check=True, env=env)
+        assert mine.last_changed("a.py", repo).startswith("2026-02-03")
+        assert mine.last_changed("missing.py", repo) == ""
+
+    def test_last_changed_outside_a_repo_is_empty_not_an_error(self, tmp_path):
+        assert mine.last_changed("a.py", tmp_path) == ""
+
+
+class TestRanking:
+    def _mode(self, count, stale_files, changed):
+        mode = mine.Mode(kind="k", tool="t", reason="", shape="s", count=count)
+        mode.files = stale_files
+        mode.dated_files = list(stale_files)
+        mode.changed_since = changed
+        return mode
+
+    def test_stale_modes_sink_below_live_ones_however_frequent(self):
+        stale = self._mode(100, ["a.py"], [("a.py", "2026-06-01T00:00:00+00:00")])
+        live = self._mode(1, ["b.py"], [])
+        assert mine.rank([stale, live]) == [live, stale]
+
+    def test_unknown_staleness_ranks_with_the_live_ones(self):
+        unknown = self._mode(5, [], [])
+        stale = self._mode(50, ["a.py"], [("a.py", "2026-06-01T00:00:00+00:00")])
+        assert mine.rank([stale, unknown]) == [unknown, stale]
+
+    def test_frequency_still_orders_within_a_state(self):
+        assert [m.count for m in mine.rank([self._mode(2, [], []), self._mode(9, [], [])])] \
+            == [9, 2]
+
+    def test_report_labels_the_state(self, capsys):
+        stale = self._mode(3, ["a.py"], [("a.py", "2026-06-01T00:00:00+00:00")])
+        mine.print_report([stale, self._mode(1, [], [])], 10)
+        out = capsys.readouterr().out
+        assert "stale" in out and "likely already fixed" in out
+
+    def test_scaffold_warns_when_the_mode_looks_fixed(self, tmp_path):
+        mode = self._mode(3, ["core/x.py"], [("core/x.py", "2026-06-01T00:00:00+00:00")])
+        mode.last_seen = "2026-01-01T00:00:00+00:00"
+        mode.samples = [{"arguments": {}, "error": "boom"}]
+        tasks, fixtures = tmp_path / "tasks", tmp_path / "fixtures"
+        tasks.mkdir(); fixtures.mkdir()
+        task_path, fixture_dir = mine.scaffold(mode, tasks, fixtures)
+        text = task_path.read_text()
+        assert "may already be fixed" in text
+        assert "core/x.py (2026-06-01)" in text
+        assert json.loads((fixture_dir / "FAILURE.json").read_text())["stale"] is True
+
+    def test_scaffold_of_a_live_mode_carries_no_warning(self, tmp_path):
+        mode = self._mode(3, ["core/x.py"], [])
+        mode.samples = [{}]
+        tasks, fixtures = tmp_path / "tasks", tmp_path / "fixtures"
+        tasks.mkdir(); fixtures.mkdir()
+        task_path, _ = mine.scaffold(mode, tasks, fixtures)
+        assert "may already be fixed" not in task_path.read_text()
+
+
+class TestStalenessCli:
+    def test_live_only_drops_the_stale_modes(self, project, capsys, monkeypatch):
+        project.mkdir(parents=True)
+        tb = (f'Traceback (most recent call last):\n  File "{project}/a.py", line 1, in f\n')
+        _journal(project, [{"ts": "2026-01-01T00:00:00+00:00", "kind": "tool_exception",
+                            "tool": "gone", "error": "TypeError: boom", "traceback": tb}])
+        monkeypatch.setattr(mine, "last_changed", lambda p, r: "2026-06-01T00:00:00+00:00")
+        assert mine.main(["--project", str(project), "--live-only"]) == 0
+        assert "Nothing to mine" in capsys.readouterr().out
+
+    def test_no_staleness_skips_the_git_lookups(self, project, capsys, monkeypatch):
+        project.mkdir(parents=True)
+        _journal(project, [{"ts": "2026-01-01T00:00:00+00:00", "kind": "tool_exception",
+                            "tool": "gone", "error": "TypeError: boom"}])
+
+        def _boom(*a, **kw):
+            raise AssertionError("git must not be consulted with --no-staleness")
+
+        monkeypatch.setattr(mine, "last_changed", _boom)
+        assert mine.main(["--project", str(project), "--no-staleness"]) == 0
+        assert "gone" in capsys.readouterr().out
+
+    def test_json_output_carries_the_verdict(self, project, tmp_path, monkeypatch):
+        project.mkdir(parents=True)
+        tb = (f'Traceback (most recent call last):\n  File "{project}/a.py", line 1, in f\n')
+        _journal(project, [{"ts": "2026-01-01T00:00:00+00:00", "kind": "tool_exception",
+                            "tool": "t", "error": "TypeError: boom", "traceback": tb}])
+        monkeypatch.setattr(mine, "last_changed", lambda p, r: "2026-06-01T00:00:00+00:00")
+        out = tmp_path / "modes.json"
+        mine.main(["--project", str(project), "--json", str(out)])
+        payload = json.loads(out.read_text())
+        assert payload[0]["stale"] is True
+        assert payload[0]["files"] == ["a.py"]
+        assert payload[0]["changed_since"][0]["file"] == "a.py"

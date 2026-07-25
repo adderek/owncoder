@@ -23,8 +23,8 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
-from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -53,6 +53,45 @@ def normalize(text: str, limit: int = 160) -> str:
     return out[:limit]
 
 
+_TB_FILE = re.compile(r'^\s*File "([^"]+)", line \d+', re.MULTILINE)
+
+
+def implicated_files(record: dict, project: Path) -> list[str]:
+    """Project-relative source files named in *record*'s traceback, deepest last.
+
+    Only files under *project* count: a traceback is mostly stdlib and
+    site-packages frames, and "json/encoder.py changed" says nothing about
+    whether this agent still has the bug.
+    """
+    out: list[str] = []
+    for raw in _TB_FILE.findall(str(record.get("traceback") or "")):
+        try:
+            relative = Path(raw).resolve().relative_to(project.resolve())
+        except (ValueError, OSError):
+            continue
+        name = relative.as_posix()
+        if name not in out:
+            out.append(name)
+    return out
+
+
+def last_changed(path: str, project: Path) -> str:
+    """ISO timestamp of the last commit touching *path*, or "" if unknown.
+
+    git, not the filesystem mtime: a checkout or a `touch` would otherwise read
+    as "someone fixed this", which is exactly the false negative that makes a
+    staleness signal worse than none.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(project), "log", "-1", "--format=%cI", "--", path],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
 @dataclass
 class Mode:
     """One recurring failure shape."""
@@ -65,16 +104,36 @@ class Mode:
     last_seen: str = ""
     sessions: set = field(default_factory=set)
     samples: list = field(default_factory=list)   # full records, newest first
+    files: list = field(default_factory=list)     # implicated project files
+    dated_files: list = field(default_factory=list)     # those with git history
+    changed_since: list = field(default_factory=list)   # (file, commit ts) pairs
 
     @property
     def key(self) -> tuple:
         return (self.kind, self.tool, self.reason, self.shape)
+
+    @property
+    def stale(self) -> bool | None:
+        """True if every implicated file changed after the last sighting.
+
+        None means "no idea": no traceback, no project files in it, or no git
+        history for them. Ranking must not treat that as fresh *or* stale — it
+        is the common case for invalid-tool-call records, which carry no
+        traceback at all.
+        """
+        if not self.files or not self.dated_files:
+            return None
+        if len(self.changed_since) < len(self.files):
+            return False        # something implicated has not been touched since
+        return True
 
     def as_dict(self) -> dict:
         return {
             "kind": self.kind, "tool": self.tool, "reason": self.reason,
             "shape": self.shape, "count": self.count, "sessions": len(self.sessions),
             "first_seen": self.first_seen, "last_seen": self.last_seen,
+            "files": list(self.files), "stale": self.stale,
+            "changed_since": [{"file": f, "committed": ts} for f, ts in self.changed_since],
         }
 
 
@@ -150,18 +209,80 @@ def cluster(records: list[dict]) -> list[Mode]:
     return sorted(modes.values(), key=lambda m: (-m.count, -len(m.sessions), m.tool))
 
 
+def _as_datetime(text: str):
+    try:
+        parsed = datetime.fromisoformat(str(text).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def annotate_staleness(modes: list[Mode], last_changed=None) -> None:
+    """Fill in `files` and `changed_since` on each mode, in place.
+
+    Answers the one question the report could not: has the code this failure
+    came from been touched since the failure last happened? A mode whose every
+    implicated file has been rewritten since is probably already fixed, and
+    ranking it first sends a human to write an eval for a bug that no longer
+    exists — which is what happened the first two times this miner was used.
+    """
+    lookup = last_changed or globals()["last_changed"]
+    cache: dict[tuple[str, str], str] = {}
+    for mode in modes:
+        sample = next((s for s in mode.samples if s.get("traceback")), None)
+        if sample is None:
+            continue
+        directory = sample.get("_dir")
+        if not directory:
+            continue
+        project = Path(directory).parent.parent
+        mode.files = implicated_files(sample, project)
+        seen_at = _as_datetime(mode.last_seen)
+        if not seen_at:
+            continue
+        for name in mode.files:
+            key = (str(project), name)
+            if key not in cache:
+                cache[key] = lookup(name, project)
+            committed = _as_datetime(cache[key])
+            if not committed:
+                continue
+            mode.dated_files.append(name)
+            if committed > seen_at:
+                mode.changed_since.append((name, cache[key]))
+
+
+def rank(modes: list[Mode]) -> list[Mode]:
+    """Frequency order, but modes that look already-fixed sink to the bottom.
+
+    Unknown staleness ranks with the live ones: an unjudgeable mode must not be
+    demoted on no evidence.
+    """
+    return sorted(modes, key=lambda m: (bool(m.stale), -m.count, -len(m.sessions), m.tool))
+
+
+def _stale_flag(mode: Mode) -> str:
+    return {True: "stale", False: "live", None: "?"}[mode.stale]
+
+
 def print_report(modes: list[Mode], limit: int) -> None:
     if not modes:
         print("No failure records found. Nothing to mine.")
         return
     total = sum(m.count for m in modes)
-    print(f"{len(modes)} failure mode(s) across {total} record(s)\n")
-    header = f"{'#':>3}  {'N':>5} {'SESS':>5}  {'KIND':<20} {'TOOL':<18} SHAPE"
+    stale = sum(1 for m in modes if m.stale)
+    print(f"{len(modes)} failure mode(s) across {total} record(s)"
+          + (f", {stale} likely already fixed" if stale else "") + "\n")
+    header = (f"{'#':>3}  {'N':>5} {'SESS':>5} {'STATE':<6} {'KIND':<20} "
+              f"{'TOOL':<18} SHAPE")
     print(header)
     print("-" * min(len(header) + 30, 110))
     for i, mode in enumerate(modes[:limit], 1):
-        print(f"{i:>3}  {mode.count:>5} {len(mode.sessions):>5}  "
+        print(f"{i:>3}  {mode.count:>5} {len(mode.sessions):>5} {_stale_flag(mode):<6} "
               f"{mode.kind[:20]:<20} {mode.tool[:18]:<18} {mode.shape[:50]}")
+    print("\nSTATE: live = implicated code unchanged since the failure last "
+          "happened;\n       stale = every implicated file has been changed since, "
+          "so it may\n       already be fixed; ? = no traceback to attribute it to a file.")
     print("\nScaffold an eval task from a mode with: "
           "python evals/mine.py --scaffold <#>")
 
@@ -195,6 +316,10 @@ def scaffold(mode: Mode, tasks_dir: Path = TASKS_DIR,
         "last_seen": mode.last_seen,
         "example_arguments": sample.get("arguments") or sample.get("raw_arguments"),
         "example_error": str(sample.get("error", ""))[:500],
+        "implicated_files": list(mode.files),
+        "stale": mode.stale,
+        "changed_since_last_seen": [{"file": f, "committed": ts}
+                                    for f, ts in mode.changed_since],
     }
     (fixture_dir / "FAILURE.json").write_text(
         json.dumps(evidence, indent=2, default=str) + "\n", encoding="utf-8")
@@ -208,9 +333,23 @@ def _yaml_quote(text: str) -> str:
     return '"' + str(text).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+def _stale_warning(mode: Mode) -> str:
+    if not mode.stale:
+        return ""
+    files = ", ".join(f"{f} ({ts[:10]})" for f, ts in mode.changed_since)
+    return (f"""#
+# WARNING: this mode may already be fixed. Every file its traceback implicates
+# has been committed to since the failure was last seen ({mode.last_seen or "?"}):
+#   {files}
+# Confirm the bug still reproduces before writing an eval for it.
+""")
+
+
 def _task_yaml(task_id: str, mode: Mode, evidence: dict) -> str:
     mined_at = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     return f"""# Mined from recorded failures on {mined_at} by evals/mine.py.
+{_stale_warning(mode)}\
+
 #
 # This is a SCAFFOLD, not a finished task. A failure record proves something
 # went wrong; it does not say what right looks like. Before enabling it:
@@ -250,6 +389,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="write the ranked modes to a JSON file")
     parser.add_argument("--scaffold", type=int, default=None, metavar="N",
                         help="write an eval task scaffold from mode #N")
+    parser.add_argument("--live-only", action="store_true",
+                        help="drop modes whose implicated files all changed since "
+                             "the failure last happened (probably already fixed)")
+    parser.add_argument("--no-staleness", action="store_true",
+                        help="skip the git lookups that judge staleness")
     parser.add_argument("--tasks-dir", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--fixtures-dir", default=None, help=argparse.SUPPRESS)
     return parser.parse_args(argv)
@@ -264,6 +408,12 @@ def main(argv: list[str] | None = None) -> int:
         records.extend(load_records(directory))
 
     modes = [m for m in cluster(records) if m.count >= args.min_count]
+
+    if not args.no_staleness:
+        annotate_staleness(modes)
+        if args.live_only:
+            modes = [m for m in modes if not m.stale]
+        modes = rank(modes)
 
     if args.json_path:
         Path(args.json_path).write_text(

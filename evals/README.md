@@ -128,7 +128,25 @@ python evals/mine.py                        # rank failure modes in this project
 python evals/mine.py --project ~/src/other  # …repeatable, merges projects
 python evals/mine.py --json /tmp/modes.json
 python evals/mine.py --scaffold 1           # write a task from mode #1
+python evals/mine.py --live-only            # hide modes that look already fixed
 ```
+
+### The STATE column
+
+A failure record is history, not a bug report — the code it came from may have
+been rewritten since. Each mode is therefore judged against git: the files named
+in its traceback are compared with when the failure was last seen.
+
+| STATE | Meaning |
+|-------|---------|
+| `live` | at least one implicated file has not been committed to since the last sighting — the bug can still be there |
+| `stale` | every implicated file has changed since — probably already fixed, so it sinks to the bottom of the ranking and its scaffold carries a warning |
+| `?` | nothing to judge on: no traceback, no project files in it, or no git history (the normal case for invalid tool calls) |
+
+`?` ranks with `live`: a mode that cannot be judged must not be demoted on no
+evidence. `--no-staleness` skips the git lookups entirely. This is a heuristic —
+"the file changed" is not "the bug is fixed", which is why stale modes are still
+listed and still scaffoldable.
 
 A scaffold writes `tasks/regress-<tool>.yaml` plus
 `fixtures/regress-<tool>/FAILURE.json` (the evidence: real arguments, real
