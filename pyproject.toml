@@ -54,9 +54,14 @@ build-backend = "setuptools.build_meta"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-pythonpath = [".."]
+# ".." makes `agent.*` importable from a source checkout; "../kb/src" is the
+# sibling kb package, which is src-layout and therefore invisible from ".."
+# alone. Without it the whole integration suite skipped itself as "kb package
+# not installed" and had never once run.
+pythonpath = ["..", "../kb/src"]
 markers = [
     "e2e: end-to-end tests requiring a live LLM server",
+    "integration: tests against the kb fixture corpus (no LLM, no network)",
 ]
 addopts = "-m 'not e2e'"
 # Concurrent pytest sessions (e.g. parallel agent workers) share

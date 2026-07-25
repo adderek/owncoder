@@ -38,15 +38,24 @@ pipe table. Failure modes to expect are the untested ones above, not the parser.
 Until this is done, treat the extension as unverified regardless of green tests
 — a passing parser suite in node says nothing about whether the panel opens.
 
-## N3 — Run the integration suite once against a live model
+## N3 — ~~Run the integration suite~~ (done 2026-07-25 — and it was not what it looked like)
 
-`tests/integration` is 1 skipped and has never actually executed; it needs a
-live endpoint. Everything the 1954 unit tests prove is proven with the model
-mocked out, which means no test in this repo has ever exercised a real
-tool-calling round trip end to end.
+Recorded here because the diagnosis in the first draft of this document was
+wrong, and the wrong version is the kind that gets believed.
 
-Cheapest real check: point it at the LAN workhorse (192.168.31.42:8093) rather
-than a paid endpoint.
+`tests/integration` was 1 skipped, and this document assumed it needed a live
+model. It does not: it is the kb fixture corpus, no LLM and no network, and it
+runs in 0.15s. It skipped because pytest's `pythonpath` was `[".."]` while `kb`
+is src-layout, so `kb.model` never imported no matter what was checked out — a
+skip is a pass, so nothing ever complained. Fixed by adding `../kb/src`; all 9
+tests pass, and they are now in the pre-push gate.
+
+The real gap the wrong version was pointing at still stands and is **not**
+covered by any test: no test in this repo exercises a live tool-calling round
+trip. The `e2e` marker is registered and excluded by default `addopts` — and no
+test in the repo uses it, so that suite is empty rather than merely unrun. That
+is where a live round trip belongs, against the LAN workhorse
+(192.168.31.42:8093) rather than a paid endpoint.
 
 ## N4 — Reconcile the local-only working tree
 
