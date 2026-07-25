@@ -201,6 +201,21 @@ aside.resizing { transition: none; }   /* no lag while dragging */
 .tbody { padding: 4px 10px 8px 10px; color: var(--dim); font-size: 11px;
          white-space: pre-wrap; word-break: break-word; }
 .tbody.hidden { display: none; }
+.trow .tgrip { flex-shrink: 0; color: var(--dimmer); cursor: grab; }
+.trow.tdragging { opacity: .4; }
+/* Drop indicator on the row the pointer is over, on the half it would land. */
+.trow.tdropbefore { box-shadow: inset 0 2px 0 0 var(--accent); }
+.trow.tdropafter { box-shadow: inset 0 -2px 0 0 var(--accent); }
+.trow .tmore { flex-shrink: 0; }
+/* ⋯ menu. Status changes live here rather than as inline buttons: a ✓/✗ in a
+   dense list is a mis-click away from closing someone else's task. */
+.tmenu { position: absolute; right: 6px; z-index: 5; background: var(--panel2);
+         border: 1px solid var(--border); border-radius: 6px; padding: 3px;
+         display: flex; flex-direction: column; min-width: 110px; }
+.tmenu-item { background: none; border: none; color: var(--fg); font: inherit;
+              font-size: 11px; text-align: left; padding: 4px 8px; border-radius: 4px;
+              cursor: pointer; }
+.tmenu-item:hover { background: var(--panel); }
 .todo-add { display: flex; gap: 4px; margin-top: 6px; }
 .todo-add input { flex: 1; min-width: 0; background: var(--bg); color: var(--fg);
                   border: 1px solid var(--border); border-radius: 5px;
@@ -252,6 +267,31 @@ aside.resizing { transition: none; }   /* no lag while dragging */
 #retrybox .retry-msg { color: var(--err); flex: 1; overflow: hidden;
                        text-overflow: ellipsis; white-space: nowrap; }
 #log { flex: 1; overflow-y: auto; padding: 18px 16px; scroll-behavior: smooth; }
+#log.hidden, #inputrow.hidden { display: none; }
+
+/* Task editor: takes over the centre column, so the description gets real
+   width. The transcript is hidden, not unloaded — going back must not cost the
+   conversation. */
+#taskpane { flex: 1; display: flex; flex-direction: column; gap: 10px;
+            padding: 16px; max-width: 920px; width: 100%; margin: 0 auto;
+            overflow-y: auto; }
+#taskpane.hidden { display: none; }
+#taskbar { display: flex; gap: 10px; align-items: center; }
+#taskid { font-family: var(--mono); font-size: 11px; }
+#tasksaved { margin-left: auto; font-size: 11px; }
+#tasktitle { font-size: 16px; padding: 8px 10px; background: var(--bg); color: var(--fg);
+             border: 1px solid var(--border); border-radius: 6px; }
+#taskbody { flex: 1; min-height: 240px; resize: vertical; padding: 10px;
+            background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+            border-radius: 6px; font: inherit; line-height: 1.5; }
+#tasktitle:focus, #taskbody:focus, #tasktags:focus { outline: none; border-color: var(--accent); }
+#taskmeta { display: flex; gap: 14px; flex-wrap: wrap; align-items: center;
+            font-size: 12px; color: var(--dim); }
+#taskmeta label { display: flex; gap: 5px; align-items: center; }
+#taskmeta select, #tasktags { background: var(--bg); color: var(--fg);
+            border: 1px solid var(--border); border-radius: 5px; font-size: 12px;
+            padding: 3px 6px; }
+#taskactions { display: flex; gap: 10px; align-items: center; padding-bottom: 8px; }
 .row { max-width: 920px; margin: 0 auto; position: relative;
        animation: fadein .18s ease-out; }
 body[data-layout="wide"] .row { max-width: 1320px; }

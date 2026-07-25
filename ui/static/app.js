@@ -746,22 +746,30 @@ document.getElementById('d-access').addEventListener('click', (e) => {
   e.preventDefault(); e.stopPropagation(); loadGrants();
 });
 
-// Backlog panel: the same store as `agent todo` and /idea. Rows are one line
-// until clicked; the body is often a whole rationale (agent-filed core_change
-// proposals especially) and the panel is narrow.
+// Backlog panel: the same store as `agent todo` and /idea. A row is one line;
+// clicking it opens the task in the centre column. Nothing destructive is one
+// click away — status changes live behind the ⋯ menu, because ✓/✗ sitting in a
+// dense list is a mis-click waiting to close someone's task.
 const TODO_DONE = ['done', 'rejected'];
 let todoOptionsFilled = false;
+let todoMeta = {statuses: [], types: []};
+let todoDragId = null;
 
 function todoFillOptions(d) {
-  if (todoOptionsFilled) return;
+  if (d.statuses && d.statuses.length) todoMeta = {statuses: d.statuses, types: d.types || []};
+  if (todoOptionsFilled || !todoMeta.types.length) return;
   const status = document.getElementById('todostatus');
-  (d.statuses || []).forEach(s => status.add(new Option(s, s)));
-  const types = d.types || [];
+  todoMeta.statuses.forEach(s => status.add(new Option(s, s)));
   const filter = document.getElementById('todotype');
   const adder = document.getElementById('todonewtype');
-  types.forEach(t => { filter.add(new Option(t, t)); adder.add(new Option(t, t)); });
+  const editorType = document.getElementById('tasktype');
+  const editorStatus = document.getElementById('taskstatus');
+  todoMeta.types.forEach(t => {
+    filter.add(new Option(t, t)); adder.add(new Option(t, t)); editorType.add(new Option(t, t));
+  });
+  todoMeta.statuses.forEach(s => editorStatus.add(new Option(s, s)));
   adder.value = 'idea';
-  todoOptionsFilled = types.length > 0;
+  todoOptionsFilled = true;
 }
 
 function todoRow(item) {
@@ -770,17 +778,49 @@ function todoRow(item) {
   // Agent-filed items stay visually distinct: a proposal the agent wrote is not
   // the same thing as work the user asked for.
   const src = item.source === 'agent' ? '<span class="tsrc" title="Filed by the agent">🤖</span>' : '';
-  return '<div class="trow' + (done ? ' tdone' : '') + '" data-id="' + esc(item.id) + '">' +
+  return '<div class="trow' + (done ? ' tdone' : '') + '" draggable="true" data-id="' + esc(item.id) + '">' +
+    '<span class="tgrip" title="Drag to reorder">⠿</span>' +
     '<span class="tpri tp' + (item.priority || 3) + '" title="Priority">P' + (item.priority || 3) + '</span>' +
     '<span class="tstatus">' + esc(item.status) + '</span>' + src +
-    '<span class="ttitle" title="' + esc(item.type) + ' — click to expand">' + esc(item.title) + esc(tags) + '</span>' +
-    (done
-      ? '<button class="sbtn" data-ta="status" data-s="raw" title="Reopen">↺</button>'
-      : '<button class="sbtn" data-ta="status" data-s="done" title="Mark done">✓</button>' +
-        '<button class="sbtn" data-ta="status" data-s="rejected" title="Reject">✗</button>') +
-    '</div>' +
-    (item.body ? '<div class="tbody hidden">' + esc(item.body) + '</div>' : '');
+    '<span class="ttitle" title="' + esc(item.type) + ' — click to open">' + esc(item.title) + esc(tags) + '</span>' +
+    '<button class="sbtn tmore" data-more="' + esc(item.id) + '" title="More…">⋯</button>' +
+    '</div>';
 }
+
+function todoCloseMenus() {
+  document.querySelectorAll('.tmenu').forEach(m => m.remove());
+}
+
+function todoMenu(button, id, status) {
+  todoCloseMenus();
+  const done = TODO_DONE.indexOf(status) >= 0;
+  const items = done
+    ? [['raw', 'Reopen']]
+    : [['done', 'Mark done'], ['rejected', 'Reject']];
+  const menu = document.createElement('div');
+  menu.className = 'tmenu';
+  items.forEach(([value, label]) => {
+    const entry = document.createElement('button');
+    entry.className = 'tmenu-item';
+    entry.textContent = label;
+    entry.addEventListener('click', (e) => {
+      e.stopPropagation();
+      todoCloseMenus();
+      todoAction({action: 'status', id, status: value});
+    });
+    menu.appendChild(entry);
+  });
+  const edit = document.createElement('button');
+  edit.className = 'tmenu-item';
+  edit.textContent = 'Edit…';
+  edit.addEventListener('click', (e) => { e.stopPropagation(); todoCloseMenus(); openTask(id); });
+  menu.appendChild(edit);
+  button.parentElement.appendChild(menu);
+}
+
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.tmenu') && !e.target.closest('.tmore')) todoCloseMenus();
+});
 
 async function loadTodos() {
   const el = document.getElementById('todobody');
@@ -800,17 +840,60 @@ async function loadTodos() {
     // The default view is "open": a backlog whose first screen is finished
     // work is one nobody reads.
     if (!status) items = items.filter(i => TODO_DONE.indexOf(i.status) < 0);
+    const byId = {};
+    items.forEach(i => { byId[i.id] = i; });
     el.innerHTML = items.map(todoRow).join('') ||
       '<div class="trow">' + (status || type ? 'nothing matches' : 'backlog empty') + '</div>';
-    el.querySelectorAll('[data-ta]').forEach(b => b.addEventListener('click', (e) => {
+    el.querySelectorAll('[data-more]').forEach(b => b.addEventListener('click', (e) => {
       e.stopPropagation();
-      todoAction({action: 'status', id: b.closest('.trow').dataset.id, status: b.dataset.s});
+      const id = b.dataset.more;
+      todoMenu(b, id, (byId[id] || {}).status || 'raw');
     }));
-    el.querySelectorAll('.trow').forEach(r => r.addEventListener('click', () => {
-      const body = r.nextElementSibling;
-      if (body && body.classList.contains('tbody')) body.classList.toggle('hidden');
-    }));
+    el.querySelectorAll('.trow[data-id]').forEach(r => {
+      r.addEventListener('click', () => openTask(r.dataset.id));
+      todoBindDrag(r);
+    });
   } catch (e) { el.textContent = 'failed: ' + e; }
+}
+
+// Reordering. The drop is sent as the two items it landed between, never as an
+// index: an index means whatever the client had on screen, and a filtered or
+// stale list turns it into a move nobody asked for.
+function todoBindDrag(row) {
+  row.addEventListener('dragstart', (e) => {
+    todoDragId = row.dataset.id;
+    row.classList.add('tdragging');
+    e.dataTransfer.effectAllowed = 'move';
+    // Firefox refuses to start a drag without payload.
+    try { e.dataTransfer.setData('text/plain', row.dataset.id); } catch (_) {}
+  });
+  row.addEventListener('dragend', () => {
+    todoDragId = null;
+    document.querySelectorAll('.tdragging, .tdropbefore, .tdropafter')
+      .forEach(n => n.classList.remove('tdragging', 'tdropbefore', 'tdropafter'));
+  });
+  row.addEventListener('dragover', (e) => {
+    if (!todoDragId || todoDragId === row.dataset.id) return;
+    e.preventDefault();
+    const box = row.getBoundingClientRect();
+    const above = (e.clientY - box.top) < box.height / 2;
+    row.classList.toggle('tdropbefore', above);
+    row.classList.toggle('tdropafter', !above);
+  });
+  row.addEventListener('dragleave', () => {
+    row.classList.remove('tdropbefore', 'tdropafter');
+  });
+  row.addEventListener('drop', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const target = row.dataset.id;
+    const above = row.classList.contains('tdropbefore');
+    row.classList.remove('tdropbefore', 'tdropafter');
+    if (!todoDragId || todoDragId === target) return;
+    todoAction(above
+      ? {action: 'reorder', id: todoDragId, before: target}
+      : {action: 'reorder', id: todoDragId, after: target});
+  });
 }
 
 async function todoAction(payload) {
@@ -821,11 +904,75 @@ async function todoAction(payload) {
       body: JSON.stringify(payload),
     })).json();
     if (!r.ok) row('sys error', null, 'backlog: ' + (r.msg || 'failed'));
+    else if (payload.action === 'status') row('sys', null, 'backlog: ' + (r.msg || 'updated'));
+    return r;
   } catch (e) {
     row('sys error', null, 'backlog change failed: ' + e);
+    return {ok: false};
+  } finally {
+    loadTodos();
   }
-  loadTodos();
 }
+
+// Task editor in the centre column. Chat and task management are different
+// activities; the transcript stays where it is and comes back untouched.
+let taskCurrentId = null;
+
+function showTaskPane(on) {
+  document.getElementById('taskpane').classList.toggle('hidden', !on);
+  document.getElementById('log').classList.toggle('hidden', on);
+  document.getElementById('inputrow').classList.toggle('hidden', on);
+  const jump = document.getElementById('jumpdown');
+  if (on && jump) jump.classList.add('hidden');
+}
+
+async function openTask(id) {
+  try {
+    const d = await (await fetch('/api/todo?id=' + encodeURIComponent(id))).json();
+    if (d.error) { row('sys error', null, 'backlog: ' + d.error); return; }
+    todoFillOptions(d);
+    const item = d.item;
+    taskCurrentId = item.id;
+    document.getElementById('taskid').textContent = item.id;
+    document.getElementById('tasktitle').value = item.title || '';
+    document.getElementById('taskbody').value = item.body || '';
+    document.getElementById('tasktype').value = item.type || 'idea';
+    document.getElementById('taskstatus').value = item.status || 'raw';
+    document.getElementById('taskpri').value = String(item.priority || 3);
+    document.getElementById('tasktags').value = (item.tags || []).join(', ');
+    document.getElementById('taskinfo').textContent =
+      'filed by ' + (item.source || '?') + (item.plan_ref ? ' · plan ' + item.plan_ref : '');
+    document.getElementById('tasksaved').textContent = '';
+    showTaskPane(true);
+    document.getElementById('tasktitle').focus();
+  } catch (e) { row('sys error', null, 'could not open task: ' + e); }
+}
+
+async function saveTask() {
+  if (!taskCurrentId) return;
+  const r = await todoAction({
+    action: 'update',
+    id: taskCurrentId,
+    title: document.getElementById('tasktitle').value,
+    body: document.getElementById('taskbody').value,
+    type: document.getElementById('tasktype').value,
+    status: document.getElementById('taskstatus').value,
+    priority: parseInt(document.getElementById('taskpri').value, 10),
+    tags: document.getElementById('tasktags').value,
+  });
+  document.getElementById('tasksaved').textContent = r.ok ? 'saved' : 'not saved';
+}
+
+document.getElementById('tasksave').addEventListener('click', saveTask);
+document.getElementById('taskback').addEventListener('click', () => {
+  taskCurrentId = null;
+  showTaskPane(false);
+});
+document.getElementById('taskpane').addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') document.getElementById('taskback').click();
+  // Ctrl/Cmd+Enter saves, matching the message box.
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) saveTask();
+});
 
 document.getElementById('todoadd').addEventListener('click', () => {
   const input = document.getElementById('todotitle');
@@ -834,7 +981,8 @@ document.getElementById('todoadd').addEventListener('click', () => {
   input.value = '';
   todoAction({action: 'add', title,
               type: document.getElementById('todonewtype').value || 'idea',
-              priority: parseInt(document.getElementById('todopri').value, 10)});
+              priority: parseInt(document.getElementById('todopri').value, 10)})
+    .then(r => { if (r && r.id) openTask(r.id); });    // straight into the description
 });
 document.getElementById('todotitle').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') document.getElementById('todoadd').click();

@@ -161,6 +161,28 @@ _PAGE = r"""<!DOCTYPE html>
 </div></aside>
 <div class="resizer hidden" id="resize-left" title="Drag to resize; drag past the edge to close"></div>
 <div id="center">
+<!-- Task editor. Takes over the centre column instead of overlaying the chat:
+     managing work and talking to the agent are different activities, and the
+     description field is unusable at drawer width. -->
+<div id="taskpane" class="hidden">
+  <div id="taskbar">
+    <button class="sbtn" id="taskback" title="Back to the conversation">← chat</button>
+    <span id="taskid" class="dim"></span>
+    <span id="tasksaved" class="dim"></span>
+  </div>
+  <input id="tasktitle" placeholder="Title">
+  <textarea id="taskbody" placeholder="Description — what, why, how it will be checked."></textarea>
+  <div id="taskmeta">
+    <label>type <select id="tasktype"></select></label>
+    <label>status <select id="taskstatus"></select></label>
+    <label>priority <select id="taskpri"><option value="1">P1</option><option value="2">P2</option><option value="3">P3</option><option value="4">P4</option><option value="5">P5</option></select></label>
+    <label>tags <input id="tasktags" placeholder="comma,separated"></label>
+  </div>
+  <div id="taskactions">
+    <button class="sbtn" id="tasksave">Save</button>
+    <span id="taskinfo" class="dim"></span>
+  </div>
+</div>
 <div id="log"></div>
 <button id="jumpdown" class="hidden" title="Jump to latest">↓ new output</button>
 <div id="inputrow"><div class="row">
@@ -489,6 +511,18 @@ class _HttpUI:
             logger.exception("http ui: backlog listing failed")
             return {"items": [], "error": str(exc), "workdir": self.workdir()}
 
+    def todo_info(self, idea_id: str) -> dict:
+        """One backlog item, for the task editor."""
+        from agent.ideas.store import IDEA_STATUSES, IDEA_TYPES
+
+        store = self._todo_store()
+        if store is None:
+            return {"error": "backlog unavailable"}
+        item = store.get(idea_id) if idea_id else None
+        if item is None:
+            return {"error": "no such item"}
+        return {"item": item, "statuses": list(IDEA_STATUSES), "types": list(IDEA_TYPES)}
+
     def todo_action(self, payload: dict) -> dict:
         """Backlog edits from the browser: add / status / priority / delete-ish.
 
@@ -530,6 +564,43 @@ class _HttpUI:
                 fields = {"status": status}
             elif action == "priority":
                 fields = {"priority": max(1, min(5, int(payload.get("priority") or 3)))}
+            elif action == "update":
+                # Full edit from the task editor. Only the keys actually sent are
+                # written, so an editor that does not know about a field cannot
+                # blank it out.
+                fields = {}
+                if "title" in payload:
+                    title = str(payload.get("title") or "").strip()
+                    if not title:
+                        return {"ok": False, "msg": "a task needs a title"}
+                    fields["title"] = title[:200]
+                if "body" in payload:
+                    fields["body"] = str(payload.get("body") or "")
+                if "type" in payload:
+                    kind = str(payload.get("type") or "")
+                    if kind not in IDEA_TYPES:
+                        return {"ok": False, "msg": f"unknown type {kind!r}"}
+                    fields["type"] = kind
+                if "status" in payload:
+                    status = str(payload.get("status") or "")
+                    if status not in IDEA_STATUSES:
+                        return {"ok": False, "msg": f"unknown status {status!r}"}
+                    fields["status"] = status
+                if "priority" in payload:
+                    fields["priority"] = max(1, min(5, int(payload.get("priority") or 3)))
+                if "tags" in payload:
+                    raw_tags = payload.get("tags") or []
+                    fields["tags"] = ([t.strip() for t in raw_tags.split(",") if t.strip()]
+                                      if isinstance(raw_tags, str)
+                                      else [str(t) for t in raw_tags])
+                if not fields:
+                    return {"ok": False, "msg": "nothing to update"}
+            elif action == "reorder":
+                if not store.reorder(idea_id,
+                                     after=str(payload.get("after") or ""),
+                                     before=str(payload.get("before") or "")):
+                    return {"ok": False, "msg": "could not move that item"}
+                return {"ok": True, "msg": "moved"}
             else:
                 return {"ok": False, "msg": f"unknown action {action!r}"}
             if not store.update(idea_id, **fields):
@@ -988,6 +1059,10 @@ def _make_handler(ui: _HttpUI):
                 self._json(ui.todos_info(status=(q.get("status") or [""])[0],
                                          kind=(q.get("type") or [""])[0],
                                          limit=int((q.get("limit") or ["100"])[0] or 100)))
+            elif self.path.startswith("/api/todo"):
+                from urllib.parse import parse_qs, urlparse
+                q = parse_qs(urlparse(self.path).query)
+                self._json(ui.todo_info((q.get("id") or [""])[0]))
             elif self.path == "/api/background":
                 try:
                     self._json({"jobs": ui.server.background_info()})

@@ -41,11 +41,22 @@ CREATE TABLE IF NOT EXISTS ideas (
     requirements_ref TEXT,
     plan_ref TEXT,
     session_ref TEXT,
-    project TEXT
+    project TEXT,
+    rank REAL
 );
 CREATE INDEX IF NOT EXISTS idx_ideas_status ON ideas (status);
 CREATE INDEX IF NOT EXISTS idx_ideas_created ON ideas (created_at);
 """
+# The rank index is created in _migrate, not here: this script also runs against
+# a database made before the column existed, where CREATE TABLE IF NOT EXISTS is
+# a no-op and indexing `rank` would fail before the ALTER ever happens.
+
+#: Manual ordering. Ranks are sparse floats, so dropping an item between two
+#: neighbours is one UPDATE (their midpoint) rather than a renumbering of the
+#: list; they are renormalised to a clean spacing when a gap gets too small to
+#: halve meaningfully. Scoped to this database, i.e. to one project.
+_RANK_STEP = 1024.0
+_MIN_GAP = 1e-4
 
 
 def _new_idea_id() -> str:
@@ -60,6 +71,21 @@ class IdeasStore:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._conn() as con:
             con.executescript(_SCHEMA)
+            self._migrate(con)
+
+    @staticmethod
+    def _migrate(con) -> None:
+        """Add what a database created by an older version is missing.
+
+        Backfilled ranks derive from created_at, so an existing backlog opens in
+        the order it already had instead of whatever order SQLite happens to
+        return.
+        """
+        columns = {r["name"] for r in con.execute("PRAGMA table_info(ideas)")}
+        if "rank" not in columns:
+            con.execute("ALTER TABLE ideas ADD COLUMN rank REAL")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_ideas_rank ON ideas (rank)")
+        con.execute("UPDATE ideas SET rank = -created_at WHERE rank IS NULL")
 
     @contextmanager
     def _conn(self):
@@ -85,11 +111,15 @@ class IdeasStore:
         idea_id = _new_idea_id()
         now = time.time()
         with self._conn() as con:
+            # New items land on top: a backlog you have to scroll to see what you
+            # just added is one you stop adding to.
+            top = con.execute("SELECT MIN(rank) FROM ideas").fetchone()[0]
+            rank = (top - _RANK_STEP) if top is not None else 0.0
             con.execute(
                 """INSERT INTO ideas
                    (id, title, type, status, priority, tags, source,
-                    created_at, updated_at, body, session_ref, project)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    created_at, updated_at, body, session_ref, project, rank)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     idea_id,
                     title.strip(),
@@ -103,6 +133,7 @@ class IdeasStore:
                     body.strip(),
                     session_ref,
                     project,
+                    rank,
                 ),
             )
         return idea_id
@@ -122,14 +153,17 @@ class IdeasStore:
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         with self._conn() as con:
+            # Manual order first, newest-first only to break ties: an operator
+            # who dragged an item somewhere expects it to stay there.
+            order = "ORDER BY rank ASC, created_at DESC LIMIT ?"
             if status:
                 rows = con.execute(
-                    "SELECT * FROM ideas WHERE status=? ORDER BY created_at DESC LIMIT ?",
+                    f"SELECT * FROM ideas WHERE status=? {order}",
                     (status, limit),
                 ).fetchall()
             else:
                 rows = con.execute(
-                    "SELECT * FROM ideas ORDER BY created_at DESC LIMIT ?",
+                    f"SELECT * FROM ideas {order}",
                     (limit,),
                 ).fetchall()
         return [_row_to_dict(r) for r in rows]
@@ -152,6 +186,69 @@ class IdeasStore:
             cur = con.execute(f"UPDATE ideas SET {cols} WHERE id=?", vals)
         return cur.rowcount > 0
 
+    def reorder(self, idea_id: str, after: str = "", before: str = "") -> bool:
+        """Move *idea_id* between two neighbours. Returns False if it cannot.
+
+        The drop target is given as the items it lands *between*, not as an
+        index: indices are computed from whatever the client had on screen, and
+        a filtered or stale list turns them into a move nobody asked for.
+        Passing only `after` means *immediately* after it, only `before` means
+        immediately above it, and neither means "to the top".
+        """
+        with self._conn() as con:
+            rows = con.execute(
+                "SELECT id, rank FROM ideas ORDER BY rank ASC, created_at DESC"
+            ).fetchall()
+            ranks = {r["id"]: r["rank"] for r in rows}
+            if idea_id not in ranks:
+                return False
+            if after and after not in ranks:
+                return False
+            if before and before not in ranks:
+                return False
+            if idea_id in (after, before):
+                return False
+
+            # Neighbours of the gap. Given only one side, the other is the
+            # adjacent row in the stored order — "after X" has to mean
+            # *immediately* after X, not "somewhere below it", or a drop lands
+            # in a different place than the one the operator saw.
+            order = [r["id"] for r in rows if r["id"] != idea_id]
+            if after and not before:
+                position = order.index(after)
+                before = order[position + 1] if position + 1 < len(order) else ""
+            elif before and not after:
+                position = order.index(before)
+                after = order[position - 1] if position > 0 else ""
+
+            lower = ranks[after] if after else None            # rank above the gap
+            upper = ranks[before] if before else None          # rank below the gap
+            if lower is None and upper is None:
+                target = min(ranks.values()) - _RANK_STEP
+            elif lower is None:
+                target = upper - _RANK_STEP
+            elif upper is None:
+                target = lower + _RANK_STEP
+            else:
+                if upper < lower:
+                    lower, upper = upper, lower
+                target = (lower + upper) / 2.0
+                if upper - lower < _MIN_GAP:
+                    # Repeated drops into the same gap eventually exhaust float
+                    # precision; respace everything and retry once, so the move
+                    # still happens rather than silently landing nowhere.
+                    order = [r["id"] for r in rows]
+                    for position, row_id in enumerate(order):
+                        con.execute("UPDATE ideas SET rank=? WHERE id=?",
+                                    (position * _RANK_STEP, row_id))
+                    lower = order.index(after) * _RANK_STEP if after else None
+                    upper = order.index(before) * _RANK_STEP if before else None
+                    target = ((lower + upper) / 2.0 if lower is not None and upper is not None
+                              else (upper - _RANK_STEP if lower is None else lower + _RANK_STEP))
+            con.execute("UPDATE ideas SET rank=?, updated_at=? WHERE id=?",
+                        (target, time.time(), idea_id))
+        return True
+
     def upsert(self, record: dict[str, Any]) -> str:
         """Insert *record* verbatim, id included, replacing any row with that id.
 
@@ -168,8 +265,8 @@ class IdeasStore:
                 """INSERT OR REPLACE INTO ideas
                    (id, title, type, status, priority, effort_score, value_score,
                     tags, source, created_at, updated_at, body, requirements_ref,
-                    plan_ref, session_ref, project)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    plan_ref, session_ref, project, rank)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     idea_id,
                     str(record.get("title") or "").strip(),
@@ -187,6 +284,8 @@ class IdeasStore:
                     record.get("plan_ref"),
                     record.get("session_ref"),
                     record.get("project"),
+                    (float(record["rank"]) if record.get("rank") is not None
+                     else -float(record.get("created_at") or now)),
                 ),
             )
         return idea_id
