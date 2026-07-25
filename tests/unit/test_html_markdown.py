@@ -24,7 +24,11 @@ pytestmark = pytest.mark.skipif(shutil.which("node") is None,
 
 
 def render(markdown: str) -> str:
-    """Run md.js's renderMd over *markdown* in node and return the HTML."""
+    """Run md.js's renderMd over *markdown* in node and return the HTML.
+
+    Trailing whitespace is stripped: a source ending in a newline leaves an
+    empty trailing segment, which is not what any assertion here is about.
+    """
     script = (
         "const { renderMd } = require(process.argv[1]);\n"
         "process.stdout.write(renderMd(JSON.parse(process.argv[2])));\n"
@@ -34,7 +38,7 @@ def render(markdown: str) -> str:
         capture_output=True, text=True, timeout=30,
     )
     assert proc.returncode == 0, proc.stderr
-    return proc.stdout
+    return proc.stdout.strip()
 
 
 TABLE = (
@@ -131,6 +135,116 @@ def test_two_tables_in_one_message_both_render():
     html = render(TABLE + "\ntext between\n\n" + TABLE)
     assert html.count("<table>") == 2
     assert "text between" in html
+
+
+# ── other markdown the agent emits that used to render literally ──────────
+
+def test_all_six_heading_levels():
+    html = render("# One\n## Two\n### Three\n#### Four\n##### Five\n###### Six\n")
+    for level in range(1, 7):
+        assert "<h%d>" % level in html
+    assert "####" not in html
+
+
+def test_hash_without_a_space_is_not_a_heading():
+    assert "<h1>" not in render("#hashtag\n")
+
+
+def test_nested_bullets_stay_inside_the_list():
+    """They used to escape the <ul> and show up as literal '  - text'."""
+    html = render("- top\n  - nested\n  - nested2\n- top2\n")
+    assert html == "<ul><li>top<ul><li>nested</li><li>nested2</li></ul></li><li>top2</li></ul>"
+
+
+def test_three_levels_of_nesting():
+    html = render("- a\n  - b\n    - c\n  - b2\n- a2\n")
+    assert html == ("<ul><li>a<ul><li>b<ul><li>c</li></ul></li><li>b2</li></ul></li>"
+                    "<li>a2</li></ul>")
+
+
+def test_a_bullet_list_can_nest_inside_a_numbered_one():
+    html = render("1. one\n   - bullet\n2. two\n")
+    assert html == "<ol><li>one<ul><li>bullet</li></ul></li><li>two</li></ol>"
+
+
+def test_a_wrapped_item_line_joins_the_item_above_it():
+    html = render("- first line\n  continues here\n- second\n")
+    assert html == "<ul><li>first line continues here</li><li>second</li></ul>"
+
+
+def test_paren_numbered_items_are_a_list_too():
+    assert "<ol><li>one</li>" in render("1) one\n2) two\n")
+
+
+def test_task_list_items_get_a_checkbox_glyph():
+    html = render("- [ ] todo\n- [x] done\n")
+    assert '<li class="task">☐ todo</li>' in html
+    assert '<li class="task done">☑ done</li>' in html
+    assert "[ ]" not in html
+
+
+def test_thematic_break_becomes_an_hr():
+    html = render("before\n\n---\n\nafter")
+    assert "<hr>" in html
+    assert "<p>---</p>" not in html
+
+
+def test_strikethrough():
+    assert "<del>gone</del>" in render("~~gone~~ stays")
+
+
+def test_bare_urls_become_links():
+    html = render("see https://example.com/x for more")
+    assert '<a href="https://example.com/x"' in html
+
+
+def test_an_existing_link_is_not_linked_twice():
+    html = render("[docs](https://example.com/d) and https://bare.example")
+    assert html.count("<a ") == 2
+    assert 'href="https://example.com/d"' in html
+    assert ">docs</a>" in html
+    assert 'href="https://bare.example"' in html
+
+
+def test_underscore_emphasis_only_at_word_boundaries():
+    """snake_case identifiers are everywhere in this agent's output; turning
+    them into italics would mangle tool and file names."""
+    html = render("call read_file_now on my_var_name")
+    assert "<i>" not in html
+    assert "read_file_now" in html and "my_var_name" in html
+    emphasised = render("_italic_ and __bold__")
+    assert "<i>italic</i>" in emphasised
+    assert "<b>bold</b>" in emphasised
+
+
+def test_no_empty_paragraphs_around_a_lifted_block():
+    html = render(TABLE)
+    assert "<p></p>" not in html
+
+
+def test_a_url_at_the_end_of_a_sentence_keeps_its_period_out_of_the_link():
+    html = render("See https://ex.com/i/1. Also (https://ex.com/y) fine.")
+    assert 'href="https://ex.com/i/1"' in html
+    assert 'href="https://ex.com/i/1."' not in html
+    assert 'href="https://ex.com/y"' in html
+
+
+def test_a_fence_inside_a_list_item_keeps_the_code_but_drops_the_list_indent():
+    html = render("- do this:\n  ```sh\n  make test\n  make lint\n  ```\n- then that\n")
+    assert "<code>make test\nmake lint" in html, "the item's indent leaked into the code"
+    # …and the fence stayed inside the item rather than ending the list.
+    assert html.startswith("<ul><li>do this:")
+    assert html.count("<li>") == 2
+
+
+def test_a_table_inside_a_list_item_does_not_split_the_list():
+    """The placeholder lives inside built <ul> markup here, so isolating it into
+    its own paragraph would cut the list in half and emit stray tags."""
+    html = render("- results:\n  | a | b |\n  |---|---|\n  | 1 | 2 |\n- next\n")
+    assert html.startswith("<ul><li>results:")
+    assert html.endswith("</ul>")
+    assert "<p></li>" not in html
+    assert html.count("<table>") == 1
 
 
 # ── the passes that already existed must not have regressed ────────────────

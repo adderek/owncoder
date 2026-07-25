@@ -274,12 +274,23 @@ details.think summary:hover { color: var(--dim); }
         white-space: pre-wrap; }
 .assistant { background: var(--panel); border: 1px solid var(--border); margin-right: 6%; }
 .assistant.streaming { border-left: 3px solid var(--warn); white-space: pre-wrap; }
-.assistant .md h1, .assistant .md h2, .assistant .md h3 { margin: 10px 0 6px; color: var(--head-fg); }
+.assistant .md h1, .assistant .md h2, .assistant .md h3,
+.assistant .md h4, .assistant .md h5, .assistant .md h6 { margin: 10px 0 6px; color: var(--head-fg); }
 .assistant .md h1 { font-size: 18px; } .assistant .md h2 { font-size: 16px; }
-.assistant .md h3 { font-size: 14.5px; }
+.assistant .md h3 { font-size: 14.5px; } .assistant .md h4 { font-size: 13.5px; }
+/* h5/h6 stop shrinking — below body size they are unreadable, so they lean on
+   weight and letter-spacing to stay distinguishable from a paragraph. */
+.assistant .md h5, .assistant .md h6 { font-size: 13px; letter-spacing: .02em; }
+.assistant .md h6 { color: var(--dim); }
 .assistant .md p { margin: 6px 0; }
 .assistant .md ul, .assistant .md ol { margin: 6px 0 6px 22px; }
 .assistant .md li { margin: 2px 0; }
+/* Nested lists sit tighter: the outer margin already provides the indent step. */
+.assistant .md li > ul, .assistant .md li > ol { margin: 2px 0 2px 18px; }
+.assistant .md li.task { list-style: none; margin-left: -14px; }
+.assistant .md li.task.done { color: var(--dim); }
+.assistant .md hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
+.assistant .md del { color: var(--dim); }
 .assistant .md blockquote { border-left: 3px solid var(--accent); padding: 2px 10px;
                             color: var(--dim); margin: 6px 0; }
 .assistant .md code { font-family: var(--mono); font-size: 12.5px; background: var(--code-bg);
