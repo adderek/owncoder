@@ -901,6 +901,105 @@ def build_widget_classes(t) -> SimpleNamespace:
                     pass
                 self._refresh(self.query_one("#session-picker-input").value)
 
+    class PermissionScreen(ModalScreen):
+        """Blocking permission prompt for a `[permissions]` ask verdict.
+
+        The held tool call has NOT run: it runs only if this dismisses with an
+        allow answer. Dismissing with "" therefore means deny, and that is what
+        every exit that is not a deliberate choice does — Esc, the countdown
+        expiring, or the screen being torn down. Fail closed, in other words:
+        the one wrong behaviour here would be treating "no answer" as consent.
+        """
+
+        CSS = """
+        PermissionScreen {
+            align: center middle;
+        }
+        #perm-dialog {
+            width: 78;
+            height: auto;
+            max-height: 90%;
+            border: solid $warning;
+            background: $surface;
+            padding: 1 2;
+        }
+        #perm-question {
+            margin-bottom: 1;
+        }
+        #perm-options {
+            height: auto;
+        }
+        #perm-hint {
+            margin-top: 1;
+        }
+        """
+
+        def __init__(self, question: str, options: list[str], timeout: float = 300.0) -> None:
+            super().__init__()
+            self._question = question
+            self._options = list(options)
+            self._timeout = max(1.0, float(timeout))
+            self._remaining = self._timeout
+            self._answered = False
+
+        def compose(self):
+            from textual.widgets import Static
+            with Vertical(id="perm-dialog"):
+                yield Static(
+                    f"[{t.warning}]🔒 permission required[/{t.warning}]\n\n"
+                    + _escape(self._question),
+                    id="perm-question",
+                    markup=True,
+                )
+                yield Static(self._render_options(), id="perm-options", markup=True)
+                yield Static(self._render_hint(), id="perm-hint", markup=True)
+
+        def _render_options(self) -> str:
+            rows = []
+            for i, option in enumerate(self._options, start=1):
+                rows.append(f"  [{t.cmd_color}]{i}[/{t.cmd_color}]  {_escape(option)}")
+            return "\n".join(rows)
+
+        def _render_hint(self) -> str:
+            return (f"[{t.text_dim}]press 1–{len(self._options)} to choose · "
+                    f"Esc denies · denies in {int(self._remaining)}s[/{t.text_dim}]")
+
+        def on_mount(self) -> None:
+            self.set_interval(1.0, self._tick)
+
+        def _tick(self) -> None:
+            self._remaining -= 1.0
+            if self._remaining <= 0:
+                self._answer("")
+                return
+            try:
+                self.query_one("#perm-hint").update(self._render_hint())
+            except Exception:
+                pass
+
+        def _answer(self, choice: str) -> None:
+            # Guard against a second dismiss: a keypress landing in the same
+            # frame as the countdown expiry would otherwise resolve twice.
+            if self._answered:
+                return
+            self._answered = True
+            self.dismiss(choice)
+
+        def cancel(self) -> None:
+            """Take the prompt down without an answer, i.e. deny. Idempotent."""
+            self._answer("")
+
+        def on_key(self, event) -> None:
+            if event.key == "escape":
+                event.stop()
+                self._answer("")
+                return
+            if event.key.isdigit():
+                idx = int(event.key) - 1
+                if 0 <= idx < len(self._options):
+                    event.stop()
+                    self._answer(self._options[idx])
+
     class WorkersScreen(ModalScreen):
         """Modal showing parallel worker status. Auto-refreshes while workers run."""
 
@@ -2181,6 +2280,7 @@ def build_widget_classes(t) -> SimpleNamespace:
         ExpandTurn=ExpandTurn,
         TurnDetailScreen=TurnDetailScreen,
         SessionPickerScreen=SessionPickerScreen,
+        PermissionScreen=PermissionScreen,
         ToolCallDetailScreen=ToolCallDetailScreen,
         FileDiffScreen=FileDiffScreen,
         ModelCallsScreen=ModelCallsScreen,

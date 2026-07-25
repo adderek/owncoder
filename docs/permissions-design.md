@@ -12,10 +12,15 @@ Deviations from the design as written, and why:
   after `execute_tool`'s policy check, so a call-order assertion would encode the
   opposite of the truth. The property that matters is unchanged and is what the
   tests pin: an `allow` verdict grants nothing those layers refuse.
-- **`ask` needs a registered asker.** UIs call `permissions.set_asker()`; the
-  readline UI does. With no asker (headless `agent run`, or a UI that has not
-  wired one yet) an `ask` verdict resolves to deny, per the fail-closed rule.
-  Textual/HTTP asker wiring is still open.
+- **`ask` needs a registered asker.** UIs call `permissions.set_asker()`. All
+  three interactive UIs now do: readline (numbered menu), HTTP/browser (buttons
+  over SSE, answered via `POST /api/permission`), and Textual (`PermissionScreen`
+  modal, keys `1`–`4`, Esc denies, visible countdown). With no asker — headless
+  `agent run`, or the HTTP *sidecar*, which does not serve `/api/permission` — an
+  `ask` verdict resolves to deny, per the fail-closed rule. Every non-answer path
+  yields deny too: timeout, Esc, a screen that cannot be shown, or the app
+  unmounting (which clears the asker, so `has_asker()` never lies about a prompt
+  nobody can see).
 - **Config-layer merge is bespoke.** Permission rules cannot use the ordinary
   list-replace layer merge — a project layer declaring one rule would silently
   drop the user's entire rule set. `_merge_permissions` concatenates every

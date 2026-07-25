@@ -446,6 +446,41 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                 _pg.register_notify(_on_path_requested)
             except Exception:
                 pass
+            # Permission asker. Without one registered, a `[permissions]` ask
+            # verdict resolves to deny (see security/permissions.py::check), so
+            # the TUI silently blocked tools the user meant to be asked about.
+            try:
+                from agent.security import permissions as _permissions
+                _permissions.set_asker(self._ask_permission)
+            except Exception:
+                logger.debug("textual ui: permission asker not registered", exc_info=True)
+
+        async def _ask_permission(self, question: str, options: list) -> str:
+            """Show the permission modal and wait for the answer; "" means deny.
+
+            Called from inside the held tool call, on this app's event loop, so
+            the screen can be pushed directly. ``check`` also applies its own
+            outer timeout — if that fires first this coroutine is cancelled, and
+            the modal must come down with it rather than stranding on screen.
+            """
+            from agent.ui.permission_prompt import ask_via_modal
+            timeout = float(getattr(
+                getattr(self._server._agent.config, "permissions", None),
+                "ask_timeout_s", 300.0,
+            ) or 300.0)
+            screen = self._wt.PermissionScreen(question, list(options), timeout)
+            return await ask_via_modal(self.push_screen, screen)
+
+        def on_unmount(self) -> None:
+            # Drop the asker with the app: a bound method on a dead app can no
+            # longer show anything, and leaving it registered would make
+            # has_asker() lie — permissions would report an interactive prompt
+            # is available and then hang until the ask timeout denied it.
+            try:
+                from agent.security import permissions as _permissions
+                _permissions.set_asker(None)
+            except Exception:
+                logger.debug("textual ui: permission asker not cleared", exc_info=True)
 
         # ── actions ──────────────────────────────────────────────────────────
 
