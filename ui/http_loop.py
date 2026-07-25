@@ -193,6 +193,11 @@ class _HttpUI:
         self.busy = False
         self.chat_task: asyncio.Task | None = None
         self.loop_guard_fut: asyncio.Future | None = None
+        # Pending permission prompt ([permissions] ask verdict). Same
+        # future-over-SSE shape as the loop guard: the turn engine awaits it, so
+        # no LLM calls burn while the human decides.
+        self.permission_fut: asyncio.Future | None = None
+        self.permission_options: list = []
         # Set when the agent ended its turn with ask_user/blocked/…: the next
         # submitted text is the answer and must start a fresh turn, never be
         # injected into whatever else may be running (background QA, delegate).
@@ -319,6 +324,24 @@ class _HttpUI:
         """Resolve a pending loop-guard prompt from a handler thread."""
         fut = self.loop_guard_fut
         if fut is None:
+            return False
+
+        def _set() -> None:
+            if not fut.done():
+                fut.set_result(choice)
+
+        self.loop.call_soon_threadsafe(_set)
+        return True
+
+    def permission_choice(self, choice: str) -> bool:
+        """Resolve a pending permission prompt from a handler thread.
+
+        An unknown choice is refused here rather than passed through: the
+        permission engine treats anything it does not recognise as a denial, and
+        a typo silently becoming "deny" would look like the agent misbehaving.
+        """
+        fut = self.permission_fut
+        if fut is None or choice not in self.permission_options:
             return False
 
         def _set() -> None:
@@ -917,6 +940,13 @@ def _make_handler(ui: _HttpUI):
                     self._json({"ok": True})
                 else:
                     self._json({"ok": False, "msg": "no loop-guard prompt pending"})
+            elif self.path == "/api/permission":
+                choice = str(payload.get("choice") or "")
+                if ui.permission_choice(choice):
+                    self._json({"ok": True})
+                else:
+                    self._json({"ok": False,
+                                "msg": "no permission prompt pending, or unknown choice"}, 400)
             elif self.path == "/api/model":
                 self._json(ui.model_action(payload))
             elif self.path == "/api/background":
@@ -1581,6 +1611,33 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
                     # is the user's answer (see _HttpUI.submit).
                     ui.pending_ask = payload
                     pub({"type": "ask", "kind": kind, "text": payload})
+
+            async def _on_permission_ask(question: str, options: list) -> str:
+                """Permission prompt over SSE. No answer = deny (fail closed)."""
+                fut: asyncio.Future = loop.create_future()
+                ui.permission_fut = fut
+                ui.permission_options = list(options)
+                timeout = float(getattr(
+                    getattr(_agent_config(ui.server), "permissions", None),
+                    "ask_timeout_s", 300.0,
+                ) or 300.0)
+                pub({"type": "permission", "question": question,
+                     "options": list(options), "timeout": timeout})
+                try:
+                    choice = await asyncio.wait_for(fut, timeout=timeout)
+                except asyncio.TimeoutError:
+                    choice = ""
+                finally:
+                    ui.permission_fut = None
+                    ui.permission_options = []
+                pub({"type": "permission_done", "choice": choice})
+                return choice
+
+            try:
+                from agent.security import permissions as _permissions
+                _permissions.set_asker(_on_permission_ask)
+            except Exception:
+                logger.debug("http ui: permission asker not registered", exc_info=True)
 
             async def _on_loop_detected(summary: str, count: int) -> bool:
                 # Interactive over SSE: the browser shows continue / soft stop /

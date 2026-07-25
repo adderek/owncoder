@@ -313,6 +313,47 @@ function resolveLoopGuard(choice) {
   lgEl = null;
 }
 
+// Permission prompt ([permissions] ask verdict): the tool call is held
+// server-side until answered. Same shape as the loop-guard prompt — mounted
+// outside the work fold, with a countdown, because no answer means DENY.
+let permEl = null;
+let permTimer = null;
+function permissionPrompt(ev) {
+  resolvePermission(null);   // stale prompt (reconnect edge) — clear it
+  const opts = ev.options || [];
+  const d = document.createElement('div');
+  d.className = 'loopguard';
+  d.innerHTML = '🔒 ' + esc(ev.question || 'permission required') +
+    '<div class="lg-acts">' +
+    opts.map((o, i) => '<button class="sbtn" data-perm="' + i + '">' + esc(o) + '</button>').join('') +
+    '<span class="lg-note"></span></div>';
+  d.querySelectorAll('[data-perm]').forEach(b => b.addEventListener('click', () => {
+    fetch('/api/permission', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({choice: opts[Number(b.dataset.perm)]}),
+    }).catch(e => row('sys error', null, 'permission answer failed: ' + e));
+  }));
+  mount(d);
+  permEl = d;
+  let left = Math.round(ev.timeout || 300);
+  const note = d.querySelector('.lg-note');
+  const tick = () => {
+    note.textContent = 'denies in ' + left + 's';
+    if (left-- <= 0) resolvePermission('');
+  };
+  tick();
+  permTimer = setInterval(tick, 1000);
+}
+function resolvePermission(choice) {
+  if (permTimer) { clearInterval(permTimer); permTimer = null; }
+  if (!permEl) return;
+  const acts = permEl.querySelector('.lg-acts');
+  if (acts) acts.innerHTML = '<span class="lg-note">→ ' +
+    esc(choice ? choice : 'denied (no answer)') + '</span>';
+  permEl = null;
+}
+
 function reasoning(text) {
   if (!thinkEl) {
     const d = document.createElement('details');
@@ -329,7 +370,8 @@ function handle(ev) {
   // History preview is read-only: drop render events while it's open (header
   // chips still update); count them so the banner shows activity happened.
   if (previewing && ['tokens','stats','state','switched',
-                     'loopguard','loopguard_done','grants_changed'].indexOf(ev.type) < 0) {
+                     'loopguard','loopguard_done','permission','permission_done',
+                     'grants_changed'].indexOf(ev.type) < 0) {
     missedLive++;
     const lv = document.querySelector('#previewbar .pb-live');
     if (lv) lv.textContent = '· ' + missedLive + ' live event' +
@@ -385,6 +427,12 @@ function handle(ev) {
       if (fold) fold.open = true;   // surface the request; toggle → loadGrants
     }
     loadGrants();
+  } else if (ev.type === 'permission') {
+    endStream();
+    permissionPrompt(ev);
+    setBusy(true, 'permission — waiting for your decision');
+  } else if (ev.type === 'permission_done') {
+    resolvePermission(ev.choice);
   } else if (ev.type === 'loopguard') {
     endStream();
     loopGuardPrompt(ev);
