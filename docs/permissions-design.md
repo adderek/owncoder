@@ -20,7 +20,10 @@ Deviations from the design as written, and why:
   is a companion view, and the primary UI's modal must keep ownership rather than
   two surfaces racing for the same future. That makes the sidecar the answer path
   for `--ui simple`, where there was none. With no asker at all — headless
-  `agent run` — an `ask` verdict resolves to deny, per the fail-closed rule.
+  `agent run` — an `ask` verdict resolves to deny, per the fail-closed rule, and
+  `run` warns about that up front (`permissions.unanswerable_asks`) rather than
+  letting it surface as a mid-run tool error. No flag turns `ask` into `allow`
+  for an unattended run; that is the exact path the ask flow exists to close.
   Every non-answer path
   yields deny too: timeout, Esc, a screen that cannot be shown, or the app
   unmounting (which clears the asker, so `has_asker()` never lies about a prompt

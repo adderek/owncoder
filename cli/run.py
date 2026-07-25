@@ -27,6 +27,35 @@ def _classify_exit(response: str) -> tuple[int, str]:
     return 0, "done"
 
 
+def _warn_unanswerable_asks(config, as_json: bool) -> list[str]:
+    """Say up front that `ask` rules will deny here, and return what they are.
+
+    `agent run` is non-interactive, so it registers no permission asker and an
+    `ask` verdict fails closed. That is right — a headless run has nobody to
+    approve — but it used to surface only as a tool error partway through a run,
+    which reads like the agent malfunctioning rather than like policy.
+
+    Deliberately a warning, not a flag that grants: nothing here should offer a
+    way to turn `ask` into `allow` without a human answering.
+    """
+    import sys
+
+    from agent.security import permissions as _permissions
+
+    try:
+        sources = _permissions.unanswerable_asks(config)
+    except Exception:
+        return []
+    if not sources:
+        return []
+    shown = ", ".join(sources[:4]) + (f" (+{len(sources) - 4} more)" if len(sources) > 4 else "")
+    # stderr, so --json stdout stays a single parseable object.
+    print(f"warning: no interactive UI, so 'ask' permission verdicts will deny: {shown}\n"
+          f"         review with 'agent permissions', or use 'agent chat' to answer them.",
+          file=sys.stderr)
+    return sources
+
+
 def cmd_run(args, config):
     import sys
     from agent.rag.store import VectorStore
@@ -48,6 +77,8 @@ def cmd_run(args, config):
     else:
         _fail(as_json, "Provide a prompt argument or pipe one via stdin.", console)
         sys.exit(1)
+
+    _warn_unanswerable_asks(config, as_json)
 
     store = None
     embedder = None

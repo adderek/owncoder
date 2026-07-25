@@ -100,16 +100,18 @@ the editor's process. If this is picked up, the way to do it safely is to reuse
 `md.js` and keep cell/text insertion on `textContent`, not to widen
 `tables.js`'s remit.
 
-## N7 — Headless `agent run` still denies every `ask`
+## N7 — ~~Headless `agent run` denies every `ask` silently~~ (done 2026-07-25)
 
-The sidecar closed this for `--ui simple`. Headless `agent run` has no surface
-at all, so an `ask` verdict is a denial there.
+Still denies — that part is correct and unchanged — but says so before the run
+instead of surfacing it as a tool error partway through, which read like the
+agent malfunctioning rather than like the policy doing what it says.
+`permissions.unanswerable_asks(config)` lists the `ask` sources reachable with
+no asker registered; `agent run` prints them to stderr (stdout stays a single
+object for `--json`).
 
-This is correct fail-closed behavior, not a bug, and the fix is a *policy*
-decision rather than a UI one: either document that `run` needs rules with no
-`ask` verdicts, or add a `--permissions-deny-ask`/`--yes` style flag that makes
-the refusal explicit at invocation time. Do not add a prompt to a
-non-interactive command.
+No flag was added to turn `ask` into `allow`. A one-switch path from "the agent
+wants X" to "X is approved, unattended" is the thing the whole ask flow exists
+to prevent — the same reasoning that keeps session grants in memory only.
 
 ## Not on this list
 

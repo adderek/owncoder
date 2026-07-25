@@ -306,6 +306,29 @@ def active_rules(config: "Config") -> list["PermissionRule"]:
     return _session_rules + _file_rules + configured
 
 
+def unanswerable_asks(config: "Config") -> list[str]:
+    """Sources of `ask` verdicts that nobody can answer in this process.
+
+    Empty when an asker is registered, or when the policy can never produce an
+    `ask`. Non-interactive entry points (`agent run`) use this to say so *before*
+    the run instead of letting the user discover it as a tool failure ten minutes
+    in — the denial is correct, the silence about it was not.
+    """
+    if has_asker():
+        return []
+    perms = getattr(config, "permissions", None)
+    if perms is None or not getattr(perms, "enabled", True):
+        return []
+    sources = []
+    if str(getattr(perms, "default", ALLOW)) == ASK:
+        sources.append("default verdict is 'ask'")
+    for rule in active_rules(config):
+        if str(getattr(rule, "verdict", "")) == ASK:
+            match = getattr(rule, "match", "") or "*"
+            sources.append(f"rule {getattr(rule, 'tool', '?')}({match})")
+    return sources
+
+
 def evaluate(tool: str, args: dict, config: "Config",
              internal_security: bool = False) -> Decision:
     """Pure rule walk. No I/O, no prompting — `check()` does the asking.
