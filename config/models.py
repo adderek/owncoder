@@ -405,6 +405,12 @@ class SecurityConfig:
     fsize_mb: int = 256
     nofile: int = 256
     follow_symlinks: bool = False
+    # Prepend <root>/.venv/bin (or venv/bin) to PATH for sandboxed commands, so
+    # `python3`/`pip` mean the project's interpreter. The sandbox mounts only
+    # /usr and the project root, so a venv outside the project is invisible and
+    # bare `python3` would otherwise be the system one, without the project's
+    # dependencies. See security/policy.py::_add_project_venv.
+    project_venv_on_path: bool = True
     env_allow: list = field(default_factory=lambda: [
         "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "HOME",
         "USER", "LOGNAME", "TMPDIR", "PWD", "SHELL",

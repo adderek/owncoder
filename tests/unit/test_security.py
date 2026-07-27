@@ -96,6 +96,54 @@ class TestEnvScrub:
         assert out["HOME"] == "/root"  # in allow list
 
 
+class TestProjectVenvOnPath:
+    """A project venv must become the default python3 for sandboxed commands.
+
+    Without this, `python3` inside the sandbox is /usr/bin/python3 (the only
+    interpreter mounted) and every project dependency is missing, which reads
+    as "this machine needs pip install" rather than "use the project venv".
+    """
+
+    def _venv(self, project, name=".venv"):
+        bindir = project / name / "bin"
+        bindir.mkdir(parents=True)
+        (bindir / "python3").write_text("#!/bin/sh\n")
+        return bindir
+
+    def test_venv_bin_prepended(self, project):
+        bindir = self._venv(project)
+        out = sec_policy.get().env_for_child({"PATH": "/usr/bin"})
+        assert out["PATH"] == f"{bindir}:/usr/bin"
+        assert out["VIRTUAL_ENV"] == str(project / ".venv")
+
+    def test_unvenved_project_untouched(self, project):
+        out = sec_policy.get().env_for_child({"PATH": "/usr/bin"})
+        assert out["PATH"] == "/usr/bin"
+        assert "VIRTUAL_ENV" not in out
+
+    def test_plain_venv_dir_also_found(self, project):
+        bindir = self._venv(project, "venv")
+        out = sec_policy.get().env_for_child({"PATH": "/usr/bin"})
+        assert out["PATH"].startswith(str(bindir))
+
+    def test_dot_venv_wins_over_venv(self, project):
+        dot = self._venv(project, ".venv")
+        self._venv(project, "venv")
+        out = sec_policy.get().env_for_child({"PATH": "/usr/bin"})
+        assert out["PATH"].startswith(str(dot))
+
+    def test_disabled_by_config(self, project):
+        self._venv(project)
+        sec_policy.get().cfg.project_venv_on_path = False
+        out = sec_policy.get().env_for_child({"PATH": "/usr/bin"})
+        assert out["PATH"] == "/usr/bin"
+
+    def test_empty_host_path(self, project):
+        bindir = self._venv(project)
+        out = sec_policy.get().env_for_child({})
+        assert out["PATH"] == str(bindir)   # no trailing separator
+
+
 class TestRunnerProcessGroup:
     def test_child_started_in_new_session(self, project, monkeypatch):
         # The timeout path kills the whole tree with os.killpg(proc.pid, ...),

@@ -479,6 +479,12 @@ fsize_mb           = 256
 nofile             = 256
 follow_symlinks    = false
 allow_legacy_shell = false
+project_venv_on_path = true  # prepend <project>/.venv/bin (or venv/bin) to PATH for sandboxed
+                             # commands, so `python3`/`pip` are the project's. The sandbox mounts
+                             # only /usr and the project root, so a venv kept anywhere else is
+                             # invisible inside it and bare `python3` is the system interpreter
+                             # without the project's dependencies — which reads to a model as
+                             # "the machine needs pip install" instead of "use the venv".
 
 # ── Adaptive Emotional Intelligence ──────────────────────────────────────────
 # Controls how the agent adapts its tone and communication style.
