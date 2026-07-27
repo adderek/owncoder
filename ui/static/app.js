@@ -94,8 +94,67 @@ function assistantMd(text) {
   return d;
 }
 
+// ── Activity + stall watchdog ────────────────────────────────────────────────
+// `liveActivity` is what the last event said the agent is doing; the watchdog
+// can override it with "stalled" when nothing arrives for a while. The pair is
+// published as body[data-activity], which drives the header activity bar, the
+// work-fold spinner and the caret (see app.css).
+//   thinking  — turn running, model has not produced output yet
+//   streaming — tokens arriving
+//   tool      — a tool call is outstanding
+//   waiting   — blocked on the user (permission / ask / loop guard): NOT a stall
+//   stalled   — busy but silent past STALL_MS, or the server said so
+const QUIET_MS = 12000;    // start showing "quiet Ns" in the status line
+const STALL_MS = 45000;    // declare the backend stalled
+const CARET_PAUSE_MS = 1500;  // stream gap after which the caret changes shape
+let liveActivity = 'idle';
+let lastEventAt = Date.now();
+let lastTokenAt = 0;
+let statusBase = 'idle';
+
+function effectiveActivity() {
+  if (!busyFlag) return 'idle';
+  if (liveActivity === 'waiting') return 'waiting';   // us waiting on the user
+  return (Date.now() - lastEventAt >= STALL_MS) ? 'stalled' : liveActivity;
+}
+
+function renderActivity() {
+  const act = effectiveActivity();
+  if (document.body.dataset.activity !== act) document.body.dataset.activity = act;
+  if (streamEl) {
+    streamEl.classList.toggle('paused',
+      lastTokenAt > 0 && Date.now() - lastTokenAt > CARET_PAUSE_MS);
+  }
+  // While the SSE stream is down the status line belongs to the reconnect
+  // logic — don't overwrite its message with a stale activity label.
+  if (dot.className === 'down') return;
+  let text = statusBase;
+  if (busyFlag && liveActivity !== 'waiting') {
+    const quiet = Math.round((Date.now() - lastEventAt) / 1000);
+    // Stalled replaces the label rather than appending to it: the phase text
+    // it would append to is long, and the status field ellipsises.
+    if (act === 'stalled') text = 'stalled — no output for ' + quiet + 's (Stop / wait)';
+    else if (quiet * 1000 >= QUIET_MS) text += '  · quiet ' + quiet + 's';
+  }
+  if (statusEl.textContent !== text) statusEl.textContent = text;
+  statusEl.title = busyFlag
+    ? act + ' — last event ' + Math.round((Date.now() - lastEventAt) / 1000) + 's ago'
+    : '';
+}
+
+function setActivity(kind) {
+  liveActivity = kind;
+  renderActivity();
+}
+
+// One timer for every time-based part of the indicator: the "quiet Ns"
+// counter, the stall escalation and the caret shape. Cheap enough to run
+// always — it does nothing while idle.
+setInterval(renderActivity, 1000);
+
 function setBusy(busy, label) {
-  statusEl.textContent = label || (busy ? 'working…' : 'idle');
+  statusBase = label || (busy ? 'working…' : 'idle');
+  statusEl.textContent = statusBase;
   dot.className = busy ? 'busy' : '';
   // Stop/Kill stay enabled even when this UI thinks it's idle: background
   // QA rounds / delegated turns run without a busy event here, and hard
@@ -106,6 +165,7 @@ function setBusy(busy, label) {
   // prematurely — model stalled mid-task) and there is history to resume.
   document.getElementById('continue').classList.toggle(
     'inert', busy || !log.childElementCount);
+  renderActivity();
 }
 
 function endStream() {
@@ -153,6 +213,7 @@ function beginTurn() {
   mount(d);
   turn = {details: d, body: d.querySelector('.wbody'),
           tools: 0, steps: 0, t0: Date.now(), userToggled: false};
+  d.querySelector('summary').title = 'started ' + fmtClock(turn.t0);
   return turn;
 }
 
@@ -183,8 +244,30 @@ function endTurn() {
   if (t.tools) bits.push(t.tools + (t.tools === 1 ? ' tool' : ' tools'));
   bits.push(secs + 's');
   t.details.querySelector('.wmeta').textContent = bits.join(' · ');
+  t.details.querySelector('summary').title =
+    'started ' + fmtClock(t.t0) + '  ·  ended ' + fmtClock(Date.now()) +
+    '  ·  ' + secs + 's';
   t.details.classList.add('done');
   if (!t.userToggled) t.details.open = false;
+}
+
+// Every step inside the work fold (phase lines, tool folds, reasoning, signals)
+// carries a hover tooltip saying when it happened: wall clock plus the offset
+// into the turn, so a long "backend quiet" line can be placed in time without
+// reading the log. The timestamp is stashed on the element so later updates
+// (a tool result) can extend the same tooltip with a duration.
+function fmtClock(t) {
+  return new Date(t).toLocaleTimeString([], {hour12: false});
+}
+
+function stamp(el, t) {
+  t = t || Date.now();
+  el.dataset.ts = t;
+  const target = el.tagName === 'DETAILS' ? (el.querySelector('summary') || el) : el;
+  let title = fmtClock(t);
+  if (turn) title += '  ·  +' + ((t - turn.t0) / 1000).toFixed(1) + 's into turn';
+  target.title = title;
+  return el;
 }
 
 function toolCall(name, args, argsFull) {
@@ -195,7 +278,7 @@ function toolCall(name, args, argsFull) {
     '</span><span class="toolargs">' + esc(args || '') + '</span>' +
     '<span class="mark pend">●</span></summary>' +
     (full ? '<div class="body">' + esc(full) + '</div>' : '');
-  metaMount(d);
+  stamp(metaMount(d));   // stamp after mount: the fold (turn.t0) may start here
   if (turn) turn.tools++;
   (pendingTools[name] = pendingTools[name] || []).push(d);
 }
@@ -207,6 +290,13 @@ function toolResult(name, ok) {
     const mark = d.querySelector('.mark');
     mark.textContent = ok ? '✓' : '✗';
     mark.className = 'mark ' + (ok ? 'ok' : 'fail');
+    // Same tooltip, now with how long the call took — that is usually the
+    // question being asked when hovering a slow-looking tool.
+    const started = Number(d.dataset.ts) || 0;
+    const summary = d.querySelector('summary');
+    if (started && summary) {
+      summary.title += '  ·  took ' + ((Date.now() - started) / 1000).toFixed(1) + 's';
+    }
   } else {
     metaRow('phase', (ok ? '✓ ' : '✗ ') + name);
   }
@@ -216,7 +306,7 @@ function metaRow(cls, text) {
   const d = document.createElement('div');
   d.className = cls;
   d.textContent = text;
-  return metaMount(d);
+  return stamp(metaMount(d));
 }
 
 // Loop-guard prompt: the turn is paused server-side awaiting a decision.
@@ -309,14 +399,23 @@ function reasoning(text) {
     const d = document.createElement('details');
     d.className = 'think';
     d.innerHTML = '<summary>thinking…</summary><div class="body"></div>';
-    metaMount(d);
+    stamp(metaMount(d));
     thinkEl = d;
   }
   thinkEl.querySelector('.body').textContent += text;
   stickScroll();
 }
 
+// Server phases that mean "the backend went quiet" — core/turn.py emits them
+// from the stream stall detector, so the UI can flag a wedge before the local
+// watchdog threshold is reached.
+const STALL_PHASES = ['waiting', 'stall_retry'];
+
 function handle(ev) {
+  // Any event is proof of life: it resets the stall watchdog. Ignore the
+  // periodic header chip refreshes (tokens/stats) — they keep flowing while a
+  // turn is genuinely wedged and would mask it.
+  if (['tokens', 'stats'].indexOf(ev.type) < 0) lastEventAt = Date.now();
   // History preview is read-only: drop render events while it's open (header
   // chips still update); count them so the banner shows activity happened.
   if (previewing && ['tokens','stats','state','switched',
@@ -335,9 +434,12 @@ function handle(ev) {
       // once the cleaned final response replaces it below the fold.
       streamEl = document.createElement('div');
       streamEl.className = 'msg assistant streaming';
-      metaMount(streamEl);
+      stamp(metaMount(streamEl));   // hover → when the first token landed
     }
     streamEl.textContent += ev.text;
+    lastTokenAt = Date.now();
+    streamEl.classList.remove('paused');
+    setActivity('streaming');
     stickScroll();
   } else if (ev.type === 'response') {
     dropStream();
@@ -346,22 +448,40 @@ function handle(ev) {
   } else if (ev.type === 'user') {
     endTurn();
     busyFlag = true;
+    lastTokenAt = 0;
+    setActivity('thinking');
     row('msg user', null, ev.text);
   } else if (ev.type === 'tool_call') {
     endStream();
+    setActivity('tool');
     toolCall(ev.name, ev.args, ev.args_full);
   } else if (ev.type === 'tool_result') {
     toolResult(ev.name, ev.ok);
+    // Back to the model unless other calls of this batch are still running.
+    if (!Object.keys(pendingTools).some(n => pendingTools[n].length))
+      setActivity('thinking');
   } else if (ev.type === 'phase') {
-    endStream();
+    // A stall heartbeat is not a new step in the turn: keep the half-finished
+    // stream bubble (and its caret) open so the gap is visible where the text
+    // stopped, instead of closing it as if the model had moved on.
+    if (STALL_PHASES.indexOf(ev.label) < 0) endStream();
     metaRow('phase', '• ' + ev.label + (ev.detail ? ': ' + ev.detail : ''));
     if (turn) turn.steps++;
     setBusy(true, ev.label + (ev.detail ? ': ' + ev.detail : ''));
+    // The server's own stall heartbeat outranks the local watchdog: it knows
+    // the stream has been silent even when phases keep arriving.
+    if (STALL_PHASES.indexOf(ev.label) >= 0) {
+      lastEventAt = Date.now() - STALL_MS;
+      renderActivity();
+    } else {
+      setActivity('thinking');
+    }
   } else if (ev.type === 'progress') {
     setBusy(true, 'iteration ' + ev.done + '/' + ev.limit + '…');
     if (turn) turn.details.querySelector('.wmeta').textContent =
       'iteration ' + ev.done + '/' + ev.limit;
   } else if (ev.type === 'reasoning') {
+    setActivity('thinking');
     reasoning(ev.text);
   } else if (ev.type === 'sys') {
     if (ev.error) row('sys error', null, ev.text);
@@ -380,15 +500,19 @@ function handle(ev) {
   } else if (ev.type === 'permission') {
     endStream();
     permissionPrompt(ev);
+    setActivity('waiting');
     setBusy(true, 'permission — waiting for your decision');
   } else if (ev.type === 'permission_done') {
     resolvePermission(ev.choice);
+    setActivity('thinking');
   } else if (ev.type === 'loopguard') {
     endStream();
     loopGuardPrompt(ev);
+    setActivity('waiting');
     setBusy(true, 'loop guard — waiting for your decision');
   } else if (ev.type === 'loopguard_done') {
     resolveLoopGuard(ev.choice);
+    setActivity('thinking');
   } else if (ev.type === 'signal') {
     // Keep the raw streamed text as a folded intermediate step; the cleaned
     // final text arrives separately via `response`.
@@ -396,6 +520,7 @@ function handle(ev) {
     metaRow('signal', '⚑ ' + ev.kind + (ev.payload ? ': ' + ev.payload : ''));
   } else if (ev.type === 'ask') {
     endStream();
+    setActivity('waiting');
     showAsk(ev.kind, ev.text);
   } else if (ev.type === 'usage') {
     const bits = [ev.text, ev.tiers].filter(Boolean).join('  ·  ');
@@ -416,8 +541,13 @@ function handle(ev) {
   } else if (ev.type === 'state') {
     if (ev.state === 'busy') {
       busyFlag = true;
+      if (liveActivity === 'idle') setActivity('thinking');
     } else {
       busyFlag = false;
+      setActivity('idle');
+      // A turn that was stopped/errored mid-tool leaves calls with no result;
+      // drop them so the next turn's activity tracking starts clean.
+      pendingTools = {};
       endStream();   // error/abort path: keep whatever streamed, folded
       endTurn();
       resolveLoopGuard('stop');   // turn over — retire any pending prompt
@@ -520,6 +650,7 @@ function initResizer(side) {
 initResizer('left');
 initResizer('right');
 async function loadModelCalls() {
+  if (!foldOpen('mcfold')) return;
   const el = document.getElementById('mcbody');
   el.textContent = '…';
   try { el.textContent = (await (await fetch('/api/modelcalls')).json()).text; }
@@ -555,6 +686,59 @@ function setSessionChip(id, name) {
   document.title = 'owncoder' + (name || id ? ' — ' + (name || id) : '');
 }
 
+// Unicode sparkline over bucketed values — nulls (buckets with no calls)
+// render as a gap so a quiet night doesn't read as a throughput collapse.
+// Scaled from 0, not from the minimum, so bar height is proportional to the
+// actual rate rather than to variation within the window.
+const SPARK = '▁▂▃▄▅▆▇█';
+function sparkline(vals) {
+  const nums = (vals || []).filter(v => v != null);
+  if (nums.length < 2) return '';
+  const max = Math.max(...nums);
+  if (!max) return '';
+  return vals.map(v => v == null ? '·'
+    : SPARK[Math.min(7, Math.round((v / max) * 7))]).join('');
+}
+
+// Describes the sparkline's window, not its data: the bars always span the
+// full 7 days, so labelling it by the oldest sample would disagree with them.
+function spanLabel(series) {
+  const seen = series.filter(b => b.calls);
+  if (!seen.length) return '';
+  const ageH = Math.round((Date.now() / 1000 - seen[0].t) / 3600);
+  return '  (oldest sample ' +
+    (ageH >= 48 ? Math.round(ageH / 24) + 'd' : ageH + 'h') + ' ago)';
+}
+
+// Throughput chips for a model row. Values are the EWMA over past calls,
+// persisted across sessions in model_stats.json. Rounded to whole tok/s so a
+// jittering last-sample doesn't defeat loadModels' unchanged-HTML skip.
+function tpsChip(t) {
+  if (!t || (!t.in_tps_ewma && !t.tps_ewma)) return '';
+  const parts = [];
+  if (t.in_tps_ewma) parts.push('↑' + Math.round(t.in_tps_ewma));
+  if (t.tps_ewma) parts.push('↓' + Math.round(t.tps_ewma));
+  return '<span class="mtps" title="tok/s — prefill (uncached prompt ÷ TTFT) ' +
+    'and decode (completion ÷ generation time), EWMA over past calls">' +
+    parts.join(' ') + '/s</span>';
+}
+
+function tpsTip(t) {
+  if (!t || !Object.keys(t).length) return '';
+  let s = '\nthroughput (EWMA / avg / last):';
+  if (t.in_tps_ewma) s += '\n  in  ' + t.in_tps_ewma + ' / ' +
+    (t.in_tps_avg || '–') + ' / ' + (t.in_tps_last || '–') + ' tok/s' +
+    ' (' + (t.in_samples || 0) + ' samples, uncached prompt ÷ TTFT)';
+  if (t.tps_ewma) s += '\n  out ' + t.tps_ewma + ' / ' +
+    (t.tps_avg || '–') + ' / ' + (t.tps_last || '–') + ' tok/s' +
+    ' (' + (t.samples || 0) + ' samples)';
+  if (t.ttft_ewma) s += '\n  ttft ' + t.ttft_ewma + 's (last ' + (t.ttft_last || '–') + 's)';
+  if (t.tokens_in || t.tokens_out) s += '\n  lifetime ↑' + fmtK(t.tokens_in) +
+    ' ↓' + fmtK(t.tokens_out);
+  if (t.updated) s += '\n  updated ' + t.updated;
+  return s;
+}
+
 // Models management: switch the active entry, enable/disable entries for the
 // session, change model-mode. Actions POST /api/model then reload the panel.
 async function modelAction(payload) {
@@ -572,8 +756,12 @@ async function modelAction(payload) {
 }
 
 async function loadModels(silent) {
+  if (!foldOpen('modelsfold')) return;
   const el = document.getElementById('modelsbody');
-  if (!silent) el.textContent = '…';
+  // Blanking the panel invalidates the unchanged-HTML cache below: without
+  // this, re-opening the fold wrote '…', then the poll returned identical
+  // HTML and skipped the write, leaving the panel stuck on the ellipsis.
+  if (!silent) { el.textContent = '…'; el.dataset.lastHtml = ''; }
   try {
     const d = await (await fetch('/api/models')).json();
     let h = '<div class="modeline">mode <select id="modesel">' +
@@ -598,9 +786,17 @@ async function loadModels(silent) {
     for (const e of (d.entries || [])) {
       const off = e.status === 'off';
       const running = e.running || 0;
+      const t = e.tps || {};
       h += '<div class="mrow ' + esc(e.status) + (e.active ? ' active' : '') +
         (running ? ' busy' : '') + '"' +
         ' title="' + esc(e.model + '\n' + e.base_url +
+          (e.ctx ? '\nctx: ' + e.ctx.toLocaleString() +
+            (e.out ? '  max out: ' + e.out.toLocaleString() : '') : '') +
+          ((e.cost_in_per_1k || e.cost_out_per_1k) ?
+            '\ncost/1k: ↑$' + e.cost_in_per_1k + ' ↓$' + e.cost_out_per_1k : '') +
+          ((e.session_in || e.session_out) ?
+            '\nthis session: ↑' + fmtK(e.session_in) + ' ↓' + fmtK(e.session_out) : '') +
+          tpsTip(t) +
           (e.tags.length ? '\ntags: ' + e.tags.join(', ') : '')) + '">' +
         '<span class="mst"></span>' +
         '<span class="mname">' + (e.active ? '▸ ' : '') + esc(e.name) + '</span>' +
@@ -609,6 +805,7 @@ async function loadModels(silent) {
         '<span class="mrun" title="requests in flight"><span class="mrun-dot"></span>' +
           (running > 1 ? running : '') + '</span>' +
         (e.calls ? '<span class="mcalls" title="completed calls this session">×' + e.calls + '</span>' : '') +
+        tpsChip(t) +
         (e.reliability && e.reliability.total ? '<span class="mrel" title="' +
           esc(e.reliability.success + ' ok / ' + e.reliability.failure + ' fail / ' +
             e.reliability.rate_limited + ' rate-limited, last 24h') + '">' +
@@ -641,6 +838,7 @@ async function loadModels(silent) {
 }
 
 async function loadStats() {
+  if (!foldOpen('statsfold')) return;
   const el = document.getElementById('statsbody');
   el.textContent = '…';
   try {
@@ -663,6 +861,37 @@ async function loadStats() {
         ((r.in || r.out) ? '  ↑' + fmtK(r.in) + ' ↓' + fmtK(r.out) : '')
       ).join('\n');
     }
+    const tp = d.throughput || [];
+    if (tp.length) {
+      // in = uncached prompt ÷ TTFT, out = completion ÷ generation time.
+      // EWMA first (recent-weighted), lifetime average in parens, then the
+      // 7-day sparkline of decode rate from the sample history.
+      out += '\n\ntok/s per model — EWMA (lifetime avg), 7d decode trend:\n';
+      out += tp.map(r => {
+        const s = r.series || [];
+        let line = r.name +
+          '\n  ↑' + (r.in_tps_ewma ? r.in_tps_ewma.toFixed(0) : '–') +
+          (r.in_tps_avg ? ' (' + r.in_tps_avg.toFixed(0) + ')' : '') +
+          '  ↓' + (r.tps_ewma ? r.tps_ewma.toFixed(0) : '–') +
+          (r.tps_avg ? ' (' + r.tps_avg.toFixed(0) + ')' : '') +
+          (r.ttft_ewma ? '  ttft ' + r.ttft_ewma.toFixed(2) + 's' : '') +
+          '  n=' + (r.samples || 0);
+        if (r.tokens_in || r.tokens_out) {
+          line += '  lifetime ↑' + fmtK(r.tokens_in) + ' ↓' + fmtK(r.tokens_out);
+        }
+        const spark = sparkline(s.map(b => b.out_tps));
+        if (spark) line += '\n  7d ' + spark + spanLabel(s);
+        const w = r.week || {}, day = r.day || {};
+        if (w.calls) {
+          line += '\n  ↓24h ' + (day.out_tps != null ? day.out_tps : '–') +
+            '  7d ' + (w.out_tps != null ? w.out_tps : '–') +
+            (w.out_tps_min != null ?
+              ' (' + w.out_tps_min + '–' + w.out_tps_max + ')' : '') +
+            '  ' + w.calls + ' calls/7d';
+        }
+        return line;
+      }).join('\n');
+    }
     const ob = (d.output || []).filter(r => r.tokens);
     if (ob.length) {
       out += '\n\noutput breakdown:\n' +
@@ -673,6 +902,7 @@ async function loadStats() {
 }
 
 async function loadContext() {
+  if (!foldOpen('ctxfold')) return;
   const el = document.getElementById('ctxbody');
   el.textContent = '…';
   try {
@@ -688,8 +918,41 @@ async function loadContext() {
     el.textContent = s;
   } catch (e) { el.textContent = 'failed: ' + e; }
 }
-function openDetails(loader) {
+// Fold state for every <details class="dfold"> in both drawers, persisted per
+// panel so the drawer comes back the way it was left. Restored at startup
+// (see restoreFolds' call site) *after* the lazy-load toggle handlers are
+// wired, so a fold that comes back open still loads its content.
+function foldOpen(id) {
+  const f = document.getElementById(id);
+  return !f || f.open;   // no fold element → treat as visible
+}
+
+function restoreFolds() {
+  document.querySelectorAll('details.dfold').forEach(f => {
+    if (!f.id) return;
+    const key = 'oc-fold-' + f.id;
+    try {
+      const saved = localStorage.getItem(key);
+      if (saved !== null) f.open = saved === '1';
+    } catch (e) {}
+    f.addEventListener('toggle', () => {
+      try { localStorage.setItem(key, f.open ? '1' : '0'); } catch (e) {}
+    });
+  });
+}
+
+// Refresh (⟳) sits inside the <summary>: clicking it must not toggle the fold.
+function wireRefresh(id, loader) {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener('click', (e) => {
+    e.preventDefault(); e.stopPropagation(); loader();
+  });
+}
+
+function openDetails(loader, foldId) {
   toggleDrawer('right', 'righttoggle', true);
+  const f = foldId ? document.getElementById(foldId) : null;
+  if (f && !f.open) { f.open = true; return; }   // toggle → the fold's loader
   loader();
 }
 // Access panel: allowed paths (grants) of the active session. Pending rows
@@ -1018,9 +1281,9 @@ document.getElementById('righttoggle').addEventListener('click', () => {
     loadModels(); loadStats(); loadModelCalls(); loadContext(); loadBg();
   }
 });
-document.getElementById('model').addEventListener('click', () => openDetails(loadModels));
-document.getElementById('tokenwrap').addEventListener('click', () => openDetails(loadContext));
-document.getElementById('iostats').addEventListener('click', () => openDetails(loadStats));
+document.getElementById('model').addEventListener('click', () => openDetails(loadModels, 'modelsfold'));
+document.getElementById('tokenwrap').addEventListener('click', () => openDetails(loadContext, 'ctxfold'));
+document.getElementById('iostats').addEventListener('click', () => openDetails(loadStats, 'statsfold'));
 // Background jobs: header chip (⚙N, hidden when idle) polled every 5s;
 // details-panel section lists jobs with per-job kill.
 async function loadBg() {
@@ -1031,7 +1294,8 @@ async function loadBg() {
     const chip = document.getElementById('bgchip');
     chip.textContent = '⚙' + jobs.length;
     chip.style.display = jobs.length ? '' : 'none';
-    if (!document.getElementById('right').classList.contains('open')) return;
+    if (!document.getElementById('right').classList.contains('open') ||
+        !foldOpen('bgfold')) return;
     if (!jobs.length) { el.textContent = 'none running'; return; }
     el.innerHTML = jobs.map(j =>
       '<div class="grow"><span class="gpath">[' + j.id + '] ' + esc(j.kind) + ' · ' +
@@ -1055,14 +1319,22 @@ setInterval(loadBg, 5000);
 // Live model activity (running/completed counts) only matters while the
 // Details drawer is open — no point polling into a hidden panel.
 setInterval(() => {
-  if (document.getElementById('right').classList.contains('open')) loadModels(true);
+  if (document.getElementById('right').classList.contains('open') &&
+      foldOpen('modelsfold')) loadModels(true);
 }, 2000);
-document.getElementById('bgchip').addEventListener('click', () => openDetails(loadBg));
-document.getElementById('d-bg').addEventListener('click', loadBg);
-document.getElementById('d-models').addEventListener('click', loadModels);
-document.getElementById('d-stats').addEventListener('click', loadStats);
-document.getElementById('d-mc').addEventListener('click', loadModelCalls);
-document.getElementById('d-ctx').addEventListener('click', loadContext);
+document.getElementById('bgchip').addEventListener('click', () => openDetails(loadBg, 'bgfold'));
+wireRefresh('d-bg', loadBg);
+wireRefresh('d-models', loadModels);
+wireRefresh('d-stats', loadStats);
+wireRefresh('d-mc', loadModelCalls);
+wireRefresh('d-ctx', loadContext);
+// Load a right-drawer panel when its fold is opened — including the restore
+// at startup, which fires toggle for every fold that comes back open.
+[['modelsfold', loadModels], ['statsfold', loadStats], ['mcfold', loadModelCalls],
+ ['ctxfold', loadContext], ['bgfold', loadBg]].forEach(([id, loader]) => {
+  const f = document.getElementById(id);
+  if (f) f.addEventListener('toggle', () => { if (f.open) loader(); });
+});
 
 // Chat width: centered (readable) / wide / full page. Persisted locally.
 // Multi-column views may later reuse the freed side space via the drawers.
@@ -1111,10 +1383,38 @@ async function sessionAction(payload) {
       body: JSON.stringify(payload),
     })).json();
     row('sys' + (r.ok ? '' : ' error'), null, r.msg || (r.ok ? 'ok' : 'failed'));
+    // A turn against a dead endpoint can stay "in progress" forever, and then
+    // every session action refuses. Offer the way out instead of leaving the
+    // ＋ new button looking broken.
+    if (!r.ok && r.busy && !payload.force) showForceSession(payload);
   } catch (e) {
     row('sys error', null, 'session action failed: ' + e);
   }
   loadSessions();
+}
+
+function clearForceSession() {
+  const old = document.getElementById('forcebox');
+  if (old) old.remove();
+}
+
+function showForceSession(payload) {
+  clearForceSession();
+  const box = document.createElement('div');
+  box.id = 'forcebox';
+  box.className = 'retrybox';
+  box.innerHTML =
+    '<span class="retry-msg">⚠ a turn is still running — kill it to ' +
+    (payload.action === 'new' ? 'start a new session' : 'switch') + '?</span>' +
+    '<button class="sbtn" id="force-go" title="Hard-stop the running turn, then retry">⛔ Kill turn &amp; continue</button>' +
+    '<button class="sbtn" id="force-dismiss" title="Leave the turn running">✕</button>';
+  const inputrow = document.getElementById('inputrow');
+  inputrow.parentElement.insertBefore(box, inputrow);
+  document.getElementById('force-go').addEventListener('click', () => {
+    clearForceSession();
+    sessionAction(Object.assign({}, payload, {force: true}));
+  });
+  document.getElementById('force-dismiss').addEventListener('click', clearForceSession);
 }
 
 // Read-only history preview: click a session item to see its transcript in
@@ -1390,6 +1690,11 @@ function applyState(s) {
     else if (m.role === 'assistant' && m.content) assistantMd(m.content);
   }
   busyFlag = s.busy;
+  // Fresh view of a turn already in flight: nothing is known about what it is
+  // doing, and the watchdog must not count the reconnect gap as a stall.
+  lastEventAt = Date.now();
+  lastTokenAt = 0;
+  setActivity(s.busy ? 'thinking' : 'idle');
   setBusy(s.busy);
   stateLoaded = true;
 }
@@ -1633,4 +1938,7 @@ async function cycleSession(dir) {
     sessionAction({action: 'switch', id: next.id});
   } catch (e) { row('sys error', null, 'session cycle failed: ' + e); }
 }
+// Last: every fold's lazy-load toggle handler is wired by now, so a fold
+// restored to open fires toggle → loads its content.
+restoreFolds();
 init();

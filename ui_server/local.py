@@ -487,22 +487,49 @@ class LocalUIServer:
         active = model_roles.get("default", "")
         from agent.core.model_status import get_model_counts, get_endpoint_counts, get_workers
         running = get_model_counts()
-        calls_by_model: dict = {}
+        # Session call/token tallies, folded onto entry names. Call sites are
+        # inconsistent about what they put in the row's "model" field — the
+        # main turn loop records the registry entry name, record_entry records
+        # the model id — so fold both spellings onto the entry name here,
+        # otherwise main-loop calls never show up against their entry.
+        # Entries sharing one model id across endpoints (same model served
+        # locally and on the LAN box) collapse onto whichever entry sorts
+        # last — the tally is per-model there, not per-endpoint.
+        by_model_id = {getattr(e, "model", ""): n for n, e in entries.items()
+                       if getattr(e, "model", "")}
+        session_by_entry: dict = {}
         try:
             from agent.metrics.model_calls import session_token_rows
             for row in session_token_rows():
-                calls_by_model[row["model"]] = calls_by_model.get(row["model"], 0) + row["calls"]
+                key = row["model"]
+                key = key if key in entries else by_model_id.get(key, key)
+                agg = session_by_entry.setdefault(key, {"calls": 0, "in": 0, "out": 0})
+                agg["calls"] += row["calls"]
+                agg["in"] += row.get("in", 0)
+                agg["out"] += row.get("out", 0)
         except Exception:
             logger.debug("models_overview: session_token_rows failed", exc_info=True)
         try:
             from agent.metrics.model_reliability import reliability_summary
         except Exception:
             reliability_summary = None
+        try:
+            from agent.metrics.model_stats import load_stats, stats_for
+            tps_all = load_stats()
+        except Exception:
+            logger.debug("models_overview: model_stats failed", exc_info=True)
+            tps_all, stats_for = {}, None
         rows = []
         for name in sorted(entries):
             e = entries[name]
             model = getattr(e, "model", "") or ""
             reliability = reliability_summary(name) if reliability_summary else None
+            # Keyed by entry name only: resolve_entry_name falls back to the
+            # raw model id solely for endpoints absent from the registry, and
+            # those never reach this loop. Trying the model id as a fallback
+            # here would show another endpoint's throughput on this entry.
+            tps = stats_for(name, tps_all) if stats_for is not None else {}
+            session = session_by_entry.get(name) or {}
             rows.append({
                 "name": name,
                 "model": model,
@@ -517,8 +544,13 @@ class LocalUIServer:
                 "embeddings": bool(getattr(e, "dimensions", 0)),
                 "active": name == active,
                 "running": running.get(model, 0),
-                "calls": calls_by_model.get(model, 0),
+                "calls": session.get("calls", 0),
+                "session_in": session.get("in", 0),
+                "session_out": session.get("out", 0),
+                "cost_in_per_1k": getattr(e, "cost_in_per_1k", 0.0) or 0.0,
+                "cost_out_per_1k": getattr(e, "cost_out_per_1k", 0.0) or 0.0,
                 "reliability": reliability,
+                "tps": tps,
             })
         try:
             from agent.core.model_mode import _ORDER as modes

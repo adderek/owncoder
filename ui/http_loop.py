@@ -14,6 +14,7 @@ import logging
 import queue
 import re
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -198,11 +199,26 @@ _PAGE = r"""<!DOCTYPE html>
 <div class="resizer hidden" id="resize-right" title="Drag to resize; drag past the edge to close"></div>
 <aside id="right"><div class="aside-inner">
   <div class="ptitle">Details</div>
-  <div class="dsec"><div class="dhead" id="d-models">Models ⟳</div><div id="modelsbody">—</div></div>
-  <div class="dsec"><div class="dhead" id="d-stats">Session stats ⟳</div><pre id="statsbody">—</pre></div>
-  <div class="dsec"><div class="dhead" id="d-mc">LLM calls this session ⟳</div><pre id="mcbody">—</pre></div>
-  <div class="dsec"><div class="dhead" id="d-ctx">Context buffer ⟳</div><pre id="ctxbody">—</pre></div>
-  <div class="dsec"><div class="dhead" id="d-bg">Background jobs ⟳</div><div id="bgbody">—</div></div>
+  <details id="modelsfold" class="dfold" open>
+    <summary class="dhead">Models <span id="d-models" class="dhead-refresh" title="Refresh">⟳</span></summary>
+    <div id="modelsbody">—</div>
+  </details>
+  <details id="statsfold" class="dfold" open>
+    <summary class="dhead">Session stats <span id="d-stats" class="dhead-refresh" title="Refresh">⟳</span></summary>
+    <pre id="statsbody">—</pre>
+  </details>
+  <details id="mcfold" class="dfold" open>
+    <summary class="dhead">LLM calls this session <span id="d-mc" class="dhead-refresh" title="Refresh">⟳</span></summary>
+    <pre id="mcbody">—</pre>
+  </details>
+  <details id="ctxfold" class="dfold" open>
+    <summary class="dhead">Context buffer <span id="d-ctx" class="dhead-refresh" title="Refresh">⟳</span></summary>
+    <pre id="ctxbody">—</pre>
+  </details>
+  <details id="bgfold" class="dfold" open>
+    <summary class="dhead">Background jobs <span id="d-bg" class="dhead-refresh" title="Refresh">⟳</span></summary>
+    <div id="bgbody">—</div>
+  </details>
 </div></aside>
 </div>
 <script src="/static/md.js" defer></script>
@@ -952,15 +968,17 @@ class _HttpUI:
                 return {"ok": bool(ok), "msg": str(msg)}
 
             if action == "new":
-                if self.busy:
-                    return {"ok": False, "msg": "turn in progress — stop it before starting a new session"}
+                if self.busy and not self._force_stop(payload):
+                    return {"ok": False, "msg": "turn in progress — stop it before starting a new session",
+                            "busy": True}
                 new_id = self._call_on_loop(self.start_new_session)
                 self.bus.publish({"type": "switched", "session": new_id})
                 return {"ok": True, "msg": f"started new session {new_id}"}
 
             if action == "switch":
-                if self.busy:
-                    return {"ok": False, "msg": "turn in progress — stop it before switching"}
+                if self.busy and not self._force_stop(payload):
+                    return {"ok": False, "msg": "turn in progress — stop it before switching",
+                            "busy": True}
                 if cur:
                     return {"ok": True, "msg": "already the active session"}
 
@@ -974,9 +992,27 @@ class _HttpUI:
             logger.exception("http ui: session action failed")
             return {"ok": False, "msg": f"failed: {exc}"}
 
+    def _force_stop(self, payload: dict, timeout: float = 10.0) -> bool:
+        """Hard-stop a running turn on behalf of new/switch, for a browser that
+        asked to force it. Returns True once the turn is gone.
+
+        An endpoint that dies mid-turn (a crashing remote model, a wedged
+        backend) can leave the agent busy indefinitely, and every session
+        action then refuses. The browser offers "kill the turn" rather than
+        leaving the UI with no way out.
+        """
+        if not payload.get("force"):
+            return False
+        self.request_stop("hard")
+        deadline = time.monotonic() + timeout
+        while self.busy and time.monotonic() < deadline:
+            time.sleep(0.1)
+        return not self.busy
+
     def stats_info(self) -> dict:
         """Session stats — totals, per-model token split, output breakdown."""
-        out: dict = {"stats": {}, "models": [], "output": [], "messages": 0, "cost_usd": 0.0}
+        out: dict = {"stats": {}, "models": [], "output": [], "throughput": [],
+                     "messages": 0, "cost_usd": 0.0}
         try:
             out["stats"] = self.server.stats()
         except Exception:
@@ -987,6 +1023,27 @@ class _HttpUI:
             out["cost_usd"] = self._cost_usd()
         except Exception:
             logger.debug("http ui: session_token_rows failed", exc_info=True)
+        try:
+            # Cross-session throughput per model entry, heaviest first.
+            from agent.metrics.model_stats import load_stats, stats_for
+            from agent.metrics.model_history import (
+                known_entries, series, window_summary)
+            snap = load_stats()
+            names = list(snap) + [n for n in known_entries() if n not in snap]
+            rows = []
+            for name in names:
+                row = dict(stats_for(name, snap), name=name)
+                # 7 days in 24 buckets: enough to see a slow endpoint or a
+                # regression without shipping every raw sample to the browser.
+                row["series"] = series(name, hours=168, buckets=24)
+                row["day"] = window_summary(name, hours=24)
+                row["week"] = window_summary(name, hours=168)
+                rows.append(row)
+            rows.sort(key=lambda r: -(r.get("tokens_in", 0) + r.get("tokens_out", 0)
+                                      + r.get("week", {}).get("calls", 0)))
+            out["throughput"] = rows
+        except Exception:
+            logger.debug("http ui: model_stats failed", exc_info=True)
         try:
             out["output"] = self.server.output_breakdown()
         except Exception:

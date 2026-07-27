@@ -41,7 +41,48 @@ html, body { height: 100%; }
 body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg);
        color: var(--fg); display: flex; flex-direction: column; }
 #header { padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--border);
-          display: flex; gap: 10px; align-items: center; flex-shrink: 0; flex-wrap: wrap; }
+          display: flex; gap: 10px; align-items: center; flex-shrink: 0; flex-wrap: wrap;
+          position: relative; }
+/* ── Activity bar ──────────────────────────────────────────────────────────
+   The header's bottom edge doubles as the "agent is working" indicator: a
+   shuttle of light sweeps it while a turn runs. `body[data-activity]` (set in
+   app.js) picks colour and rhythm per activity, so a glance at the edge says
+   what kind of work is happening — and a stalled backend stops the sweep and
+   goes red instead of quietly looking the same as thinking.
+   --act / --act-speed are read by the work-fold spinner too. */
+body { --act: var(--accent); --act-speed: 2.1s; }
+#header::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px;
+  pointer-events: none; opacity: 0; transition: opacity .25s ease;
+  background-repeat: no-repeat; background-size: 38% 100%;
+  background-image: linear-gradient(90deg, transparent 0%, var(--act) 50%, transparent 100%);
+}
+body[data-activity]:not([data-activity="idle"]) #header::after {
+  opacity: 1; animation: shuttle var(--act-speed) ease-in-out infinite alternate;
+}
+@keyframes shuttle { from { background-position: -20% 0; } to { background-position: 120% 0; } }
+/* thinking — default (accent, unhurried) */
+body[data-activity="streaming"] { --act: var(--ok); --act-speed: 1.25s; }
+body[data-activity="tool"] { --act: var(--warn); --act-speed: 1.6s; }
+/* tools: a marching dashed segment instead of a smooth sweep — discrete work */
+body[data-activity="tool"] #header::after {
+  background-image: repeating-linear-gradient(90deg, var(--act) 0 6px, transparent 6px 14px);
+  background-size: 26% 100%;
+}
+/* waiting on the user: no sweep, a slow breath in a neutral tone — nothing is
+   running server-side, so nothing should look like motion */
+body[data-activity="waiting"] { --act: var(--dim); }
+body[data-activity="waiting"] #header::after {
+  background-image: none; background-color: var(--act); background-size: 100% 100%;
+  animation: actbreathe 2.6s ease-in-out infinite; opacity: .45;
+}
+/* stalled: backend quiet past the threshold — full-width red pulse, no motion */
+body[data-activity="stalled"] { --act: var(--err); }
+body[data-activity="stalled"] #header::after {
+  background-image: none; background-color: var(--act); background-size: 100% 100%;
+  animation: actbreathe 1.4s ease-in-out infinite; height: 3px;
+}
+@keyframes actbreathe { 0%, 100% { opacity: .25; } 50% { opacity: .9; } }
 #header b { color: var(--head-fg); font-size: 15px; letter-spacing: .3px; }
 .chip { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: var(--panel2);
         border: 1px solid var(--border); color: var(--dim); white-space: nowrap; }
@@ -90,7 +131,7 @@ aside.resizing { transition: none; }   /* no lag while dragging */
 .dhead { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .6px;
          margin-bottom: 4px; cursor: pointer; user-select: none; }
 .dhead:hover { color: var(--fg); }
-.dsec pre { font-family: var(--mono); font-size: 11px; color: var(--dim); white-space: pre;
+.dsec pre, .dfold pre { font-family: var(--mono); font-size: 11px; color: var(--dim); white-space: pre;
             overflow-x: auto; background: var(--bg); border: 1px solid var(--border);
             border-radius: 6px; padding: 6px 8px; max-height: 40vh; overflow-y: auto; }
 /* Models management panel */
@@ -127,6 +168,7 @@ aside.resizing { transition: none; }   /* no lag while dragging */
   50% { opacity: 1; transform: scale(1.15); }
 }
 .mrow .mcalls { color: var(--dimmer); font-size: 10px; }
+.mrow .mtps { color: var(--dimmer); font-size: 10px; white-space: nowrap; }
 .mendpoints { color: var(--dimmer); margin: 4px 0 2px; }
 .mendpoints .mep { margin-right: 8px; }
 .placeholder { color: var(--dimmer); font-style: italic; line-height: 1.6; }
@@ -259,12 +301,13 @@ aside.resizing { transition: none; }   /* no lag while dragging */
           border-radius: 8px; font-size: 13.5px; animation: fadein .18s ease-out; }
 #askbox .ask-kind { color: var(--warn); font-family: var(--mono); font-size: 12px; }
 #askbox .ask-text { color: var(--fg); }
-/* Turn-failed retry bar — pinned above the input like the ask box. */
-#retrybox { max-width: 920px; margin: 0 auto 8px; padding: 9px 12px;
+/* Turn-failed retry bar — pinned above the input like the ask box. The
+   force-session bar (kill a wedged turn) reuses the same shape. */
+#retrybox, .retrybox { max-width: 920px; margin: 0 auto 8px; padding: 9px 12px;
             border: 1px solid var(--err); border-radius: 8px;
             background: var(--sig-bg); font-size: 13px; display: flex;
             align-items: center; gap: 10px; animation: fadein .18s ease-out; }
-#retrybox .retry-msg { color: var(--err); flex: 1; overflow: hidden;
+#retrybox .retry-msg, .retrybox .retry-msg { color: var(--err); flex: 1; overflow: hidden;
                        text-overflow: ellipsis; white-space: nowrap; }
 #log { flex: 1; overflow-y: auto; padding: 18px 16px; scroll-behavior: smooth; }
 #log.hidden, #inputrow.hidden { display: none; }
@@ -415,8 +458,12 @@ details.work .wmeta { color: var(--dimmer); margin-left: auto; }
 details.work .wbody { padding: 8px 12px 4px; border-top: 1px solid var(--border); }
 details.work .wbody .msg { font-size: 13px; opacity: .85; }
 .wspin { width: 11px; height: 11px; border: 2px solid var(--dimmer); flex-shrink: 0;
-         border-top-color: var(--warn); border-radius: 50%;
+         border-top-color: var(--act, var(--warn)); border-radius: 50%;
          animation: spin .9s linear infinite; }
+/* Nothing is spinning server-side while we wait on the user or on a wedged
+   backend — say so instead of spinning on. */
+body[data-activity="waiting"] .wspin, body[data-activity="stalled"] .wspin {
+  animation-duration: 3.4s; }
 details.work.done .wspin { animation: none; border: none; width: auto; height: auto; }
 details.work.done .wspin::before { content: "✦"; color: var(--dimmer); font-size: 11px; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -424,12 +471,32 @@ details.work.done .wspin::before { content: "✦"; color: var(--dimmer); font-si
                          text-align: left; animation: dots 1.4s steps(4) infinite; }
 @keyframes dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; }
                   75% { content: "..."; } }
+/* Caret at the end of the streaming bubble. Tokens flowing → the familiar
+   blinking block. Tokens paused (no chunk for ~1.5s, class set in app.js) →
+   the block turns into a slow braille tick, so a gap in the stream is visible
+   without turning into an alarm; `stalled` (past the watchdog threshold)
+   colours it red and slows it further. */
 .streaming::after { content: "▍"; color: var(--warn); animation: blink 1s steps(2) infinite; }
 @keyframes blink { 50% { opacity: 0; } }
+.streaming.paused::after { color: var(--dimmer); animation: caretwait 1.4s steps(1) infinite; }
+@keyframes caretwait {
+  0%   { content: "⠋"; }
+  25%  { content: "⠙"; }
+  50%  { content: "⠹"; }
+  75%  { content: "⠸"; }
+}
+body[data-activity="stalled"] .streaming.paused::after {
+  color: var(--err); animation-duration: 2.4s; }
 details.tool .mark.pend { color: var(--warn); animation: pulse 1.1s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) {
-  .wspin, .wlabel.working::after, .streaming::after, details.tool .mark.pend,
-  #dot.busy { animation: none; }
+  .wspin, .wlabel.working::after, .streaming::after, .streaming.paused::after,
+  details.tool .mark.pend, #dot.busy { animation: none; }
+  /* Keep the activity bar as a static colour band: the state still reads,
+     nothing moves. */
+  body[data-activity]:not([data-activity="idle"]) #header::after {
+    animation: none; opacity: .8;
+    background-image: none; background-color: var(--act); background-size: 100% 100%;
+  }
 }
 .phase, .sys { margin: 0 0 6px 6px; color: var(--dimmer); font-size: 12px;
                font-family: var(--mono); white-space: pre-wrap; }

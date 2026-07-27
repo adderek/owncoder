@@ -42,9 +42,11 @@ def _intake(tx=None, **cfg_over):
 
 
 async def _drain():
-    # let the scheduled _finish task(s) run
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
+    # Let the scheduled _finish task(s) run. Yield repeatedly rather than a
+    # fixed twice: how many loop turns a task needs to complete varies with the
+    # pytest-asyncio version, and a fixed count silently under-drains.
+    for _ in range(20):
+        await asyncio.sleep(0)
 
 
 async def test_reassembly_new_turn():

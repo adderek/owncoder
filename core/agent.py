@@ -684,19 +684,24 @@ class Agent:
             logger.debug("model_calls.record failed", exc_info=True)
         gen = u.get("gen_seconds") or 0.0
         ttft = u.get("ttft")
-        if ttft and ttft > 0 and u.get("input_tokens"):
-            s["in_tps"] = u["input_tokens"] / ttft
+        # Prompt tokens the endpoint had to actually process — tokens it served
+        # from its own cache cost no prefill time, so counting them would make
+        # in-tok/s read absurdly high on a warm prompt.
+        fresh_in = max(0, u.get("input_tokens", 0) - u.get("cached_input_tokens", 0))
+        if ttft and ttft > 0 and fresh_in:
+            s["in_tps"] = fresh_in / ttft
         if gen > 0:
             s["out_tps"] = u.get("output_tokens", 0) / gen
             s["last_gen_seconds"] = gen
-            # Persist throughput so the daily-chat path feeds model_stats.json
-            # (previously only the commit-message generator did). EWMA filter +
-            # _MIN_TOKENS guard live inside update_stats.
-            try:
-                from agent.metrics.model_stats import update_stats
-                update_stats(self._model_entry_name, u.get("output_tokens", 0), gen)
-            except Exception:
-                logger.debug("update_stats failed", exc_info=True)
+        # Persist throughput so the daily-chat path feeds model_stats.json
+        # (previously only the commit-message generator did). EWMA filter +
+        # per-direction sample guards live inside update_stats.
+        try:
+            from agent.metrics.model_stats import update_stats
+            update_stats(self._model_entry_name, u.get("output_tokens", 0), gen,
+                         in_tokens=fresh_in, ttft=ttft or 0.0)
+        except Exception:
+            logger.debug("update_stats failed", exc_info=True)
 
     async def chat(
         self,
