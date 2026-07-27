@@ -496,6 +496,7 @@ def _apply_model_entry_to_llm(config: Config) -> None:
     config.llm.think_level = config.agent.think_level
     config.llm.stream_stall_seconds = config.agent.stream_stall_seconds
     config.llm.stream_ttft_seconds = config.agent.stream_ttft_seconds
+    config.llm.stream_ttft_adaptive = config.agent.stream_ttft_adaptive
     config.llm.stream_heartbeat_seconds = config.agent.stream_heartbeat_seconds
     config.llm.stream_stall_retries = config.agent.stream_stall_retries
 

@@ -357,11 +357,14 @@ class TestStreamStallWatchdog:
         stream = _HangingStream(chunk)
         client = MagicMock()
         client.chat.completions.create = AsyncMock(return_value=stream)
-        beats: list[tuple[str, int]] = []
+        beats: list[tuple[str, int, int]] = []
         with pytest.raises(StreamStalledError):
             await _stream_response(
                 client, c, [], [], on_token=lambda t: None,
-                on_stall_progress=lambda waiting_for, secs: beats.append((waiting_for, secs)),
+                on_stall_progress=lambda waiting_for, secs, budget: beats.append(
+                    (waiting_for, secs, budget)),
             )
         assert beats, "expected at least one heartbeat while the stream was quiet"
         assert "first token" in beats[0][0]
+        # The budget travels with the beat so the UI can show "Ns of Ms".
+        assert beats[0][2] == 3

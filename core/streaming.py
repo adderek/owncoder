@@ -311,7 +311,10 @@ async def _next_chunk(stream_it, *, budget_s: int, heartbeat_s: int, waiting_for
             raise asyncio.TimeoutError
         if on_heartbeat is not None:
             try:
-                on_heartbeat(waiting_for, int(waited))
+                # The budget travels with the heartbeat so the consumer can say
+                # "40s of 260s" instead of a bare elapsed count that means
+                # nothing without knowing what this model normally needs.
+                on_heartbeat(waiting_for, int(waited), int(budget_s))
             except Exception:
                 logger.exception("on_heartbeat callback failed")
 
@@ -357,6 +360,21 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
         ttft_s = int(getattr(config.llm, "stream_ttft_seconds", 0) or 0)
         stall_s = int(getattr(config.llm, "stream_stall_seconds", 0) or 0)
         heartbeat_s = int(getattr(config.llm, "stream_heartbeat_seconds", 0) or 0)
+        # Prefill budget from this model's own measured history, scaled to the
+        # prompt actually being sent: the fixed setting has to cover a cold box
+        # chewing 200k tokens, which makes it far too loose for a normal turn.
+        # Only tightens/loosens the FIRST-token fuse — once tokens flow, a gap
+        # is a wedge regardless of how big the prompt was.
+        if ttft_s > 0 and getattr(config.llm, "stream_ttft_adaptive", True):
+            try:
+                from agent.metrics.ttft_expect import expect_for_config
+                exp = expect_for_config(config, _count_tokens_approx(api_messages))
+                if exp.adaptive:
+                    logger.debug("ttft budget %.0fs (was %ds) from %d samples",
+                                 exp.budget_s, ttft_s, exp.samples)
+                    ttft_s = int(exp.budget_s)
+            except Exception:
+                logger.debug("adaptive ttft budget unavailable", exc_info=True)
         stream_it = stream.__aiter__()
         while True:
             # Cooperative interrupt: a hung `async for` never yields back to the

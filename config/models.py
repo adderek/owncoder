@@ -37,6 +37,9 @@ class LLMConfig:
     #                                 prompt emits no chunks, so this must exceed worst-case prefill (0 = off)
     stream_heartbeat_seconds: int = 20  # while waiting on a quiet stream, emit a progress heartbeat this
     #                                     often so a slow-but-alive backend never looks frozen (0 = off)
+    stream_ttft_adaptive: bool = True  # derive the first-token fuse from this model's measured
+    #                                    prefill history scaled to the prompt size (metrics/ttft_expect.py);
+    #                                    falls back to stream_ttft_seconds until ~8 samples exist
     stream_stall_retries: int = 1   # retries after a stall/timeout before giving up
     rate_limit_retries: int = 3   # backoff-retries on HTTP 429 per turn before failover/surfacing
 
@@ -626,6 +629,7 @@ class AgentConfig:
     # (mirrors LLMConfig — [agent] is the TOML section users set these in).
     stream_stall_seconds: int = 90
     stream_ttft_seconds: int = 600
+    stream_ttft_adaptive: bool = True
     stream_heartbeat_seconds: int = 20
     stream_stall_retries: int = 1
     autonomy: float = 0.5  # 0.0=supervised … 1.0=autopilot; >1.0 treated as percentage

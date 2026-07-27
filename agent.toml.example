@@ -249,6 +249,14 @@ narration_fallback        = true     # emit narration text if model skips tool-c
 auto_detect_ctx           = true     # query server for actual context size on startup
 think_level               = "normal" # "off" | "low" | "normal" | "medium" | "high" | "max"
 stream_stall_seconds      = 90       # mid-stream gap (after first token) before declaring a wedge (0 = off)
+stream_ttft_adaptive      = true     # derive the first-token fuse from this endpoint's own measured
+#                                      prefill history, scaled to the prompt actually being sent
+#                                      (metrics/ttft_expect.py: robust fit of ttft against prompt size,
+#                                      fuse at 2× the p90). Needs ~8 samples at a comparable prompt
+#                                      size; until then, and for prompts far larger than anything
+#                                      measured, stream_ttft_seconds below is used unchanged.
+#                                      The heartbeat line then reads "40s of 190s" so the wait is
+#                                      judged against what THIS model normally needs.
 stream_ttft_seconds       = 600      # wait for FIRST token before declaring a wedge; must exceed worst-case
 #                                      prefill on a big prompt, which emits no chunks (0 = off)
 stream_heartbeat_seconds  = 20       # emit a progress heartbeat this often while a stream is quiet (0 = off)

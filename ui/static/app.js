@@ -104,8 +104,15 @@ function assistantMd(text) {
 //   tool      — a tool call is outstanding
 //   waiting   — blocked on the user (permission / ask / loop guard): NOT a stall
 //   stalled   — busy but silent past STALL_MS, or the server said so
+// The thresholds below are the fallback used until the server says otherwise.
+// Its stall heartbeats carry "Ns of Ms", where M is the budget derived from
+// that model's own measured prefill history scaled to the prompt size
+// (metrics/ttft_expect.py) — a 27B on a cold LAN box legitimately needs
+// minutes on a big prompt, while a warm small model should answer in seconds,
+// and one fixed number cannot be right for both.
 const QUIET_MS = 12000;    // start showing "quiet Ns" in the status line
 const STALL_MS = 45000;    // declare the backend stalled
+let stallBudgetMs = 0;     // server-supplied budget for the current wait (0 = none)
 const CARET_PAUSE_MS = 1500;  // stream gap after which the caret changes shape
 let liveActivity = 'idle';
 let lastEventAt = Date.now();
@@ -115,7 +122,8 @@ let statusBase = 'idle';
 function effectiveActivity() {
   if (!busyFlag) return 'idle';
   if (liveActivity === 'waiting') return 'waiting';   // us waiting on the user
-  return (Date.now() - lastEventAt >= STALL_MS) ? 'stalled' : liveActivity;
+  const limit = stallBudgetMs || STALL_MS;
+  return (Date.now() - lastEventAt >= limit) ? 'stalled' : liveActivity;
 }
 
 function renderActivity() {
@@ -131,10 +139,15 @@ function renderActivity() {
   let text = statusBase;
   if (busyFlag && liveActivity !== 'waiting') {
     const quiet = Math.round((Date.now() - lastEventAt) / 1000);
+    const budget = stallBudgetMs ? Math.round(stallBudgetMs / 1000) : 0;
     // Stalled replaces the label rather than appending to it: the phase text
     // it would append to is long, and the status field ellipsises.
-    if (act === 'stalled') text = 'stalled — no output for ' + quiet + 's (Stop / wait)';
-    else if (quiet * 1000 >= QUIET_MS) text += '  · quiet ' + quiet + 's';
+    if (act === 'stalled') {
+      text = 'stalled — no output for ' + quiet + 's' +
+             (budget ? ' (budget ' + budget + 's)' : '') + ' — Stop or wait';
+    } else if (quiet * 1000 >= QUIET_MS) {
+      text += '  · quiet ' + quiet + 's' + (budget ? ' / ' + budget + 's' : '');
+    }
   }
   if (statusEl.textContent !== text) statusEl.textContent = text;
   statusEl.title = busyFlag
@@ -438,6 +451,7 @@ function handle(ev) {
     }
     streamEl.textContent += ev.text;
     lastTokenAt = Date.now();
+    stallBudgetMs = 0;   // prefill budget spent; the inter-token fuse is short
     streamEl.classList.remove('paused');
     setActivity('streaming');
     stickScroll();
@@ -449,6 +463,7 @@ function handle(ev) {
     endTurn();
     busyFlag = true;
     lastTokenAt = 0;
+    stallBudgetMs = 0;
     setActivity('thinking');
     row('msg user', null, ev.text);
   } else if (ev.type === 'tool_call') {
@@ -471,9 +486,15 @@ function handle(ev) {
     // The server's own stall heartbeat outranks the local watchdog: it knows
     // the stream has been silent even when phases keep arriving.
     if (STALL_PHASES.indexOf(ev.label) >= 0) {
-      lastEventAt = Date.now() - STALL_MS;
+      // "40s of 260s — backend quiet (…)": the server timed the silence and
+      // knows this model's budget for it, so both numbers are adopted as-is.
+      const m = /(\d+)s(?:\s+of\s+(\d+)s)?/.exec(ev.detail || '');
+      const quietS = m ? Number(m[1]) : 0;
+      stallBudgetMs = (m && m[2]) ? Number(m[2]) * 1000 : 0;
+      lastEventAt = quietS ? Date.now() - quietS * 1000 : Date.now() - STALL_MS;
       renderActivity();
     } else {
+      stallBudgetMs = 0;
       setActivity('thinking');
     }
   } else if (ev.type === 'progress') {

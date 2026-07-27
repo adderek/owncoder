@@ -166,6 +166,24 @@ def window_summary(entry_name: str, hours: int = 24) -> dict:
     return res
 
 
+def ttft_samples(entry_name: str, days: int = 30) -> list[tuple[int, float]]:
+    """``[(in_tokens, ttft), …]`` prefill measurements for *entry_name*.
+
+    Feeds ``ttft_expect``: only rows that measured an actual prefill (both
+    fields set) are useful for predicting how long the next one will take.
+    """
+    try:
+        cutoff = int(time.time()) - max(1, days) * 86400
+        rows = _conn().execute(
+            "SELECT in_tokens, ttft FROM samples "
+            "WHERE entry_name = ? AND ts >= ? AND in_tokens > 0 AND ttft > 0",
+            (entry_name, cutoff),
+        ).fetchall()
+    except Exception:
+        return []
+    return [(int(n), float(t)) for n, t in rows]
+
+
 def known_entries(days: int = 30) -> list[str]:
     """Entry names with at least one sample in the window."""
     try:

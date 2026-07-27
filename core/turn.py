@@ -314,10 +314,14 @@ async def run_turn(
                         logger.info("%s", _cache_msg)
                         _phase("cache", _cache_msg)
                 _phase("generating", f"iter {iter_count + 1}/{'∞' if max_iter is None else max_iter}")
-                def _on_stall_progress(waiting_for: str, secs: int) -> None:
+                def _on_stall_progress(waiting_for: str, secs: int, budget: int = 0) -> None:
                     # Backend quiet but not yet declared wedged: surface a heartbeat so a
                     # slow prefill never looks frozen, and remind the user they can interrupt.
-                    _phase("waiting", f"{secs}s — backend quiet ({waiting_for}); interrupt to abort")
+                    # "Ns of Ms" carries the model's own budget (adaptive for prefill), so
+                    # the UI can tell "slow but normal" from "past what this model needs".
+                    of = f" of {budget}s" if budget > 0 else ""
+                    _phase("waiting",
+                           f"{secs}s{of} — backend quiet ({waiting_for}); interrupt to abort")
                 finish_reason, full_content, raw_tool_calls, turn_reasoning = await _stream_response(
                     client, config, api_messages, tools, on_token,
                     on_usage=on_usage, on_reasoning=on_reasoning, stop_event=stop_event,
