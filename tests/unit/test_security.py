@@ -104,11 +104,18 @@ class TestProjectVenvOnPath:
     as "this machine needs pip install" rather than "use the project venv".
     """
 
-    def _venv(self, project, name=".venv"):
+    def _venv(self, project, name=".venv", pyver=None):
         bindir = project / name / "bin"
         bindir.mkdir(parents=True)
         (bindir / "python3").write_text("#!/bin/sh\n")
+        if pyver:
+            (project / name / "lib" / pyver / "site-packages").mkdir(parents=True)
         return bindir
+
+    def _system_pyver(self):
+        from pathlib import Path as _P
+        p = _P("/usr/bin/python3")
+        return p.resolve().name if p.exists() else ""
 
     def test_venv_bin_prepended(self, project):
         bindir = self._venv(project)
@@ -142,6 +149,33 @@ class TestProjectVenvOnPath:
         bindir = self._venv(project)
         out = sec_policy.get().env_for_child({})
         assert out["PATH"] == str(bindir)   # no trailing separator
+
+    def test_site_packages_exposed_for_matching_python(self, project):
+        # `/usr/bin/python3 script.py` (absolute path, or a #! shebang) never
+        # consults PATH — PYTHONPATH is what makes the project's packages
+        # importable for it.
+        pyver = self._system_pyver()
+        if not pyver:
+            pytest.skip("no /usr/bin/python3 on this host")
+        self._venv(project, pyver=pyver)
+        out = sec_policy.get().env_for_child({"PATH": "/usr/bin"})
+        assert out["PYTHONPATH"] == str(project / ".venv" / "lib" / pyver / "site-packages")
+
+    def test_site_packages_skipped_for_other_python(self, project):
+        # A venv built on a different minor version: mixing it into the system
+        # interpreter breaks compiled packages, so PATH is the only fix used.
+        self._venv(project, pyver="python3.0")
+        out = sec_policy.get().env_for_child({"PATH": "/usr/bin"})
+        assert "PYTHONPATH" not in out
+
+    def test_existing_pythonpath_preserved(self, project):
+        pyver = self._system_pyver()
+        if not pyver:
+            pytest.skip("no /usr/bin/python3 on this host")
+        self._venv(project, pyver=pyver)
+        out = sec_policy.get().env_for_child({"PATH": "/usr/bin", "PYTHONPATH": "/host/pp"})
+        assert out["PYTHONPATH"].endswith(":/host/pp")
+        assert out["PYTHONPATH"].startswith(str(project / ".venv"))
 
 
 class TestRunnerProcessGroup:

@@ -56,7 +56,33 @@ class Policy:
             if (bindir / "python3").exists() or (bindir / "python").exists():
                 env["PATH"] = f"{bindir}:{env.get('PATH', '')}".rstrip(":")
                 env["VIRTUAL_ENV"] = str(self.root / name)
+                self._add_venv_pythonpath(env, self.root / name)
                 return
+
+    def _add_venv_pythonpath(self, env: dict[str, str], venv: Path) -> None:
+        """Also expose the venv's site-packages to the SYSTEM interpreter.
+
+        PATH only helps a command that resolves `python3`; a model that writes
+        ``/usr/bin/python3 script.py``, or a script with a
+        ``#!/usr/bin/python3`` shebang, sidesteps it and lands on the system
+        interpreter with none of the project's packages. Adding the venv's
+        site-packages to PYTHONPATH covers that too — but only when the venv
+        was built on the same python as /usr/bin/python3, since mixing minor
+        versions works for pure-Python packages and fails obscurely for
+        compiled ones (a stdlib copy is never on this path, only site-packages).
+        """
+        try:
+            system_py = (Path("/usr/bin/python3").resolve().name
+                         if Path("/usr/bin/python3").exists() else "")
+        except OSError:
+            return
+        if not system_py.startswith("python3"):
+            return
+        site = venv / "lib" / system_py / "site-packages"
+        if not site.is_dir():
+            return          # venv is on a different python — PATH alone then
+        prev = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = f"{site}:{prev}".rstrip(":") if prev else str(site)
 
 
 _policy: Policy | None = None
