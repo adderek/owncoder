@@ -223,15 +223,25 @@ mode                      = "fast"   # "fast" | "ultrasecure"
                                      #   subagent via [models] internet = "<entry>".
 model_mode                = "any"    # which cost tiers auto-selection may use:
                                      #   local-only  — only local models (no egress)
+                                     #   lan-only    — only own LAN box(es): entries on a
+                                     #                 private-IP host (192.168.x, 10.x,
+                                     #                 172.16-31.x). Matches on endpoint
+                                     #                 LOCATION, not cost. Embeddings are
+                                     #                 exempt — a localhost embed server is
+                                     #                 still used when it answers.
                                      #   free-cloud  — only free cloud providers
                                      #   free-hybrid — local + free cloud (offload idle
                                      #                 work to free cloud, keep local
                                      #                 model for the main thread)
                                      #   paid-cloud  — only paid cloud (force quality)
                                      #   any         — local + free + paid
-                                     # Only affects AUTOMATIC picks (idle/background +
-                                     # spawn_agents); a pinned [models] default always
-                                     # wins. Switch live with /mode. Env: AGENT_MODEL_MODE.
+                                     # Affects AUTOMATIC picks only (startup pool walk,
+                                     # idle/background, failover, spawn_agents): allowed
+                                     # entries are tried first, disallowed ones stay as a
+                                     # last-resort fallback. A pinned [models] default (or
+                                     # --model) always wins. Switch live with /mode — that
+                                     # re-pins the default role onto a live allowed
+                                     # endpoint. Env: AGENT_MODEL_MODE.
 max_iterations            = 10       # max tool-call rounds per user turn
 compaction_threshold      = 0.75     # compact context when usage exceeds this fraction
 compaction_message_threshold = 15    # also compact after this many messages

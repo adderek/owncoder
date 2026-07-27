@@ -271,6 +271,49 @@ class TestSummarizerPool:
         _resolve_role_pools(c)
         assert "summarizer" not in c.model_roles
 
+    def test_lan_only_mode_skips_local_pool_entries(self, monkeypatch):
+        # lan-only: the localhost entry listed first must be passed over even
+        # though it answers, because the LAN entry behind it is allowed.
+        c = Config()
+        c.agent.model_mode = "lan-only"
+        c.model_pools["summarizer"] = ["gpu-summ", "remote-summ"]
+        c.model_entries["gpu-summ"] = _entry("qwen-fast", "http://localhost:8081/v1")
+        c.model_entries["remote-summ"] = _entry("qwen-lan", "http://192.168.31.42:8081/v1")
+
+        monkeypatch.setattr("urllib.request.urlopen", lambda *a, **kw: _FakeResponse())
+        _resolve_role_pools(c)
+        assert c.model_roles["summarizer"] == "remote-summ"
+
+    def test_lan_only_falls_back_when_lan_down(self, monkeypatch):
+        # Disallowed entries stay at the back rather than being dropped: a dead
+        # LAN box must not leave the role unresolved.
+        c = Config()
+        c.agent.model_mode = "lan-only"
+        c.model_pools["summarizer"] = ["gpu-summ", "remote-summ"]
+        c.model_entries["gpu-summ"] = _entry("qwen-fast", "http://localhost:8081/v1")
+        c.model_entries["remote-summ"] = _entry("qwen-lan", "http://192.168.31.42:8081/v1")
+
+        def fake_urlopen(req, timeout):
+            if "192.168.31.42" in req.full_url:
+                raise OSError("down")
+            return _FakeResponse()
+
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        _resolve_role_pools(c)
+        assert c.model_roles["summarizer"] == "gpu-summ"
+
+    def test_embeddings_pool_exempt_from_mode(self, monkeypatch):
+        # Embeddings keep their own local-first order under lan-only.
+        c = Config()
+        c.agent.model_mode = "lan-only"
+        c.model_pools["embeddings"] = ["cpu-embed", "remote-embed"]
+        c.model_entries["cpu-embed"] = _entry("bge-m3", "http://localhost:8082/v1")
+        c.model_entries["remote-embed"] = _entry("bge-m3", "http://192.168.31.42:8082/v1")
+
+        monkeypatch.setattr("urllib.request.urlopen", lambda *a, **kw: _FakeResponse())
+        _resolve_role_pools(c)
+        assert c.model_roles["embeddings"] == "cpu-embed"
+
     def test_registry_raises_when_pool_configured_but_none_resolved(self):
         c = Config()
         c.model_pools["summarizer"] = ["cpu-qwen1m", "gpu-summ"]

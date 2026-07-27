@@ -6,6 +6,11 @@ from agent.config.registry import MODE_TIERS
 from agent.core.model_mode import run_mode_command
 
 
+def _lan(url: str = "http://192.168.31.42:8081/v1") -> ModelEntry:
+    """LAN entry: private-IP host, no per-token cost (cost tier stays "free")."""
+    return ModelEntry(base_url=url, model="qwen3.6-27b-iq4_nl", api_key="local")
+
+
 def _cfg(mode: str = "any") -> Config:
     cfg = Config()
     cfg.agent.model_mode = mode
@@ -109,8 +114,103 @@ class TestModeCommand:
 
     def test_all_modes_defined(self):
         assert set(MODE_TIERS) == {
-            "local-only", "free-cloud", "free-hybrid", "paid-cloud", "manual", "any"
+            "local-only", "lan-only", "free-cloud", "free-hybrid", "paid-cloud",
+            "manual", "any"
         }
+
+    def test_lan_entries_listed_separately(self):
+        cfg = _cfg("lan-only")
+        cfg.model_entries["lan-box"] = _lan()
+        out = run_mode_command(cfg, "")
+        assert "model-mode: lan-only" in out
+        assert "* lan  : lan-box" in out
+        assert "  local: local-coder" in out   # not marked under lan-only
+
+
+class TestRepinOnModeSwitch:
+    def _pooled_cfg(self) -> Config:
+        cfg = _cfg("free-hybrid")
+        cfg.model_entries["lan-box"] = _lan()
+        cfg.model_entries["lan-small"] = _lan("http://192.168.31.42:8083/v1")
+        cfg.model_pools = {
+            "default": ["local-coder", "lan-box", "cerebras"],
+            "summarizer": ["local-coder", "lan-small"],
+            "embeddings": ["local-coder"],
+        }
+        cfg.model_roles = {"default": "local-coder", "summarizer": "cerebras",
+                           "embeddings": "local-coder"}
+        return cfg
+
+    def test_switch_repins_pooled_roles(self, monkeypatch):
+        cfg = self._pooled_cfg()
+        monkeypatch.setattr("agent.config.loader._probe_models",
+                            lambda *a, **kw: {"data": []})
+        out = run_mode_command(cfg, "lan-only")
+        assert cfg.model_roles["default"] == "lan-box"
+        assert cfg.model_roles["summarizer"] == "lan-small"
+        assert cfg.model_roles["embeddings"] == "local-coder"   # exempt
+        assert cfg.llm.base_url == "http://192.168.31.42:8081/v1"
+        assert "re-pinned" in out
+
+    def test_no_repin_when_current_allowed(self, monkeypatch):
+        cfg = self._pooled_cfg()
+        monkeypatch.setattr("agent.config.loader._probe_models",
+                            lambda *a, **kw: {"data": []})
+        run_mode_command(cfg, "any")
+        assert cfg.model_roles["default"] == "local-coder"
+
+    def test_dead_endpoints_leave_pin_alone(self, monkeypatch):
+        cfg = self._pooled_cfg()
+        monkeypatch.setattr("agent.config.loader._probe_models", lambda *a, **kw: None)
+        out = run_mode_command(cfg, "lan-only")
+        assert cfg.model_roles["default"] == "local-coder"
+        assert "re-pinned" not in out
+
+    def test_probe_count_capped(self, monkeypatch):
+        cfg = _cfg("free-hybrid")
+        cfg.model_pools = {"default": [f"lan{i}" for i in range(6)]}
+        for i in range(6):
+            cfg.model_entries[f"lan{i}"] = _lan(f"http://192.168.31.42:80{80 + i}/v1")
+        calls: list[str] = []
+
+        def probe(base_url, api_key, timeout=3):
+            calls.append(base_url)
+            return None
+
+        monkeypatch.setattr("agent.config.loader._probe_models", probe)
+        run_mode_command(cfg, "lan-only")
+        assert len(calls) == 3
+
+
+class TestLanOnlyMode:
+    def test_lan_entry_allowed_others_not(self):
+        lan = _lan()
+        assert mode_allows(lan, "lan-only")
+        assert not mode_allows(ModelEntry(base_url="http://localhost:8081/v1", local=True),
+                               "lan-only")
+        assert not mode_allows(ModelEntry(base_url="https://api.groq.com/v1"), "lan-only")
+        assert not mode_allows(ModelEntry(base_url="https://x/v1", cost_in_per_1k=0.01),
+                               "lan-only")
+
+    def test_lan_entry_keeps_free_cost_tier(self):
+        # Location mode must not disturb cost classification used elsewhere
+        # (background picker, cloud→cloud failover, /modelcalls buckets).
+        assert entry_tier(_lan()) == "free"
+
+    def test_other_modes_unchanged_for_lan(self):
+        lan = _lan()
+        assert mode_allows(lan, "free-hybrid")
+        assert mode_allows(lan, "any")
+        assert not mode_allows(lan, "local-only")
+
+    def test_registry_allowed_names(self):
+        cfg = _cfg("lan-only")
+        cfg.model_entries["lan-box"] = _lan()
+        assert make_registry(cfg).allowed_names() == ["lan-box"]
+
+    def test_ipv6_and_hostname_are_not_lan(self):
+        # Only private-IP literals count; a DNS name could resolve anywhere.
+        assert not mode_allows(ModelEntry(base_url="https://gpu.example.com/v1"), "lan-only")
 
 
 class TestRoleMatrix:

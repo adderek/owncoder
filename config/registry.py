@@ -10,8 +10,13 @@ if TYPE_CHECKING:
 # Which cost tiers each model-mode permits for automatic selection.
 # "manual" allows all tiers but disables the free-cloud auto-preference in
 # `background` — only explicit role pins (the user's matrix) are used.
+# "lan-only" is the one LOCATION-based mode: it selects on the endpoint host
+# (private-IP LAN box), not on cost, so its cost-tier set is empty and
+# `mode_allows` special-cases it. The empty set is also what keeps cloud→cloud
+# peer failover (model_routing.failover_to_peer) off in this mode.
 MODE_TIERS: dict[str, set[str]] = {
     "local-only": {"local"},
+    "lan-only": set(),
     "free-cloud": {"free"},
     "free-hybrid": {"local", "free"},
     "paid-cloud": {"paid", "bundled"},
@@ -62,8 +67,27 @@ def entry_tier(entry: "ModelEntry") -> str:
     return "free"
 
 
+def is_lan_entry(entry: "ModelEntry") -> bool:
+    """True when *entry* lives on a private-IP LAN host (own hardware, not cloud).
+
+    Location, not cost: ``loader.entry_tier`` classifies the endpoint host as
+    local / remote (LAN) / cloud. Imported lazily — loader imports this module.
+    """
+    try:
+        from agent.config.loader import entry_tier as location_tier
+    except Exception:
+        return False
+    return location_tier(entry) == "remote"
+
+
 def mode_allows(entry: "ModelEntry", mode: str) -> bool:
-    """True if *entry* is usable under *mode* (unknown mode → permissive)."""
+    """True if *entry* is usable under *mode* (unknown mode → permissive).
+
+    ``lan-only`` matches on endpoint location (own LAN box) rather than cost
+    tier; every other mode matches on ``entry_tier``.
+    """
+    if mode == "lan-only":
+        return is_lan_entry(entry)
     return entry_tier(entry) in MODE_TIERS.get(mode, MODE_TIERS["any"])
 
 

@@ -47,6 +47,14 @@ class TestSuggestMode:
     def test_paid_only(self):
         assert suggest_mode({"paid"}, "any")[0] == "paid-cloud"
 
+    def test_lan_without_local_gives_lan_only(self):
+        # LAN entries also carry cost tier "free"; the location marker must win
+        # so the work stays on own hardware instead of going to free cloud.
+        assert suggest_mode({"lan", "free"}, "any")[0] == "lan-only"
+
+    def test_local_plus_lan_still_hybrid(self):
+        assert suggest_mode({"local", "lan", "free"}, "any")[0] == "free-hybrid"
+
     def test_nothing_reachable_keeps_current(self):
         mode, reason = suggest_mode(set(), "free-hybrid")
         assert mode == "free-hybrid"
@@ -65,6 +73,13 @@ class TestDetect:
         assert set(lan.entries) == {"remote-advisor", "remote-embed"}
         # offline hosts sort before online ones in the report
         assert [h.online for h in report.hosts] == sorted(h.online for h in report.hosts)
+
+    def test_lan_only_online_suggests_lan_only(self):
+        cfg = _cfg()
+        report = detect(cfg, probe=_probe_only("192.168.31.42"))
+        assert "lan" in report.reachable_tiers
+        assert report.suggested == "lan-only"
+        assert report.embeddings_ok          # remote-embed answered
 
     def test_everything_online(self):
         cfg = _cfg()

@@ -642,6 +642,17 @@ def _resolve_role_pools(config: Config, timeout: int = 3) -> None:
             continue  # handled by _try_auto_select_model
         if role in config.model_roles:
             continue  # already pinned (explicit string assignment or env override)
+        if role != "embeddings":
+            # Same mode-ordering as the default pool. Embeddings are exempt:
+            # they are a cheap local vector service, not an LLM cost decision —
+            # "lan-only" still wants the localhost embed server when it is up.
+            from agent.config.registry import mode_allows
+            mode = getattr(config.agent, "model_mode", "any")
+            allowed = [n for n in candidates
+                       if n in config.model_entries
+                       and mode_allows(config.model_entries[n], mode)]
+            if allowed:
+                candidates = allowed + [n for n in candidates if n not in allowed]
         for name in candidates:
             entry = config.model_entries.get(name)
             if entry is None:
@@ -713,9 +724,25 @@ def check_reachability(config: Config) -> None:
     """
     import sys
 
-    current = config.model_roles.get("default") or _resolve_default_entry(config)
+    pinned = config.model_roles.get("default")
+    current = pinned or _resolve_default_entry(config)
     pool = config.model_pools.get("default", [])
     ordered = [current] + [n for n in pool if n != current]
+
+    # Model-mode ordering: an unpinned pool walk must respect the active mode
+    # (e.g. "lan-only" skips the localhost entries that list first), otherwise
+    # a mode switch would leave the main role on a disallowed endpoint. An
+    # explicit pin (TOML string, --model, env) is always honored, and the
+    # disallowed entries stay at the back as a last-resort fallback rather than
+    # being dropped — no reachable endpoint at all is worse than a wrong tier.
+    if not pinned:
+        from agent.config.registry import mode_allows
+        mode = getattr(config.agent, "model_mode", "any")
+        preferred = [n for n in ordered
+                     if n in config.model_entries
+                     and mode_allows(config.model_entries[n], mode)]
+        if preferred:
+            ordered = preferred + [n for n in ordered if n not in preferred]
 
     selected: str | None = None
     for name in ordered:

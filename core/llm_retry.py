@@ -44,7 +44,7 @@ def role_candidates(config: "Config", role: str, max_candidates: int = 4,
     caller a cloud entry the primary pick happened not to be.
     """
     from agent.config import make_registry
-    from agent.config.registry import MODE_TIERS, entry_tier
+    from agent.config.registry import mode_allows
     from agent.core.model_control import is_disabled
     from agent.config.model_probe import is_rate_limited, maybe_schedule_recovery_probe
 
@@ -52,7 +52,6 @@ def role_candidates(config: "Config", role: str, max_candidates: int = 4,
     reg = make_registry(config)
     rev = {id(e): n for n, e in entries.items()}
     mode = getattr(getattr(config, "agent", None), "model_mode", "") or "any"
-    allowed = MODE_TIERS.get(mode, MODE_TIERS["any"])
 
     def _is_local(e) -> bool:
         if not local_only:
@@ -82,7 +81,7 @@ def role_candidates(config: "Config", role: str, max_candidates: int = 4,
         if not _usable(name, e):
             continue
         key = (e.base_url, e.model)
-        if key in seen or entry_tier(e) not in allowed:
+        if key in seen or not mode_allows(e, mode):
             continue
         seen.add(key)
         ordered.append((name, e))

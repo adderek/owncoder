@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable
 from urllib.parse import urlparse
 
-from agent.config.registry import MODE_TIERS, entry_tier
+from agent.config.registry import MODE_TIERS, entry_tier, is_lan_entry
 
 if TYPE_CHECKING:
     from agent.config import Config
@@ -30,7 +30,8 @@ logger = logging.getLogger(__name__)
 # check costs ~one timeout, not one per endpoint.
 PROBE_TIMEOUT_S = 3
 
-_MODE_ORDER = ["local-only", "free-cloud", "free-hybrid", "paid-cloud", "manual", "any"]
+_MODE_ORDER = ["local-only", "lan-only", "free-cloud", "free-hybrid", "paid-cloud",
+               "manual", "any"]
 
 
 @dataclass
@@ -88,6 +89,10 @@ def suggest_mode(reachable_tiers: set, current: str) -> tuple[str, str]:
         return "free-hybrid", "local + free cloud reachable"
     if "local" in r:
         return "local-only", "only local endpoints reachable"
+    # LAN box up but this desktop's router is not: keep the work on own
+    # hardware instead of falling to the cloud tier LAN entries share.
+    if "lan" in r:
+        return "lan-only", "LAN server reachable; no local endpoints"
     if "free" in r:
         return "free-cloud", "no local/LAN endpoints; free cloud reachable"
     if "paid" in r or "bundled" in r:
@@ -134,6 +139,13 @@ def detect(config: "Config", probe: Callable[[str, str], bool] | None = None) ->
         for name, entry in pairs:
             tier = entry_tier(entry)
             st.tiers.add(tier)
+            # Location marker alongside the cost tier: LAN entries are cost
+            # tier "free" (own electricity, no per-token price), so only this
+            # extra marker lets suggest_mode tell them from cloud freebies.
+            if is_lan_entry(entry):
+                st.tiers.add("lan")
+                if online:
+                    reachable_tiers.add("lan")
             st.entries.append(name)
             is_emb = _is_embeddings_entry(name, entry, config)
             st.has_embeddings = st.has_embeddings or is_emb

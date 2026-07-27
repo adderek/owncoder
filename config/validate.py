@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 # Keep in sync with the consumers noted on each line.
 _ALLOWED: list[tuple[str, set[str]]] = [
     ("agent.mode", {"fast", "ultrasecure"}),                       # core/agent.py
-    ("agent.model_mode", {"local-only", "free-cloud", "free-hybrid",
+    ("agent.model_mode", {"local-only", "lan-only", "free-cloud", "free-hybrid",
                           "paid-cloud", "manual", "any"}),         # config/registry.py
     ("agent.startup_profile", {"ask", "auto", "off"}),             # config/profile_detect.py
     ("rag.embed_server_device", {"cpu", "gpu"}),                   # rag/embed_server.py
