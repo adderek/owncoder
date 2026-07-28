@@ -465,6 +465,10 @@ body[data-layout="full"] .row { max-width: none; }
 @media (prefers-reduced-motion: reduce) {
   .row { animation: none; }
   aside { transition: none; }
+  /* Redefining the keyframes covers every user of fadein — the ask box, the
+     retry bar, the slash palette, the @-file list — including ones added
+     later. Opacity stays: the objection is to movement, not to a fade. */
+  @keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
 }
 .msg { margin-bottom: 12px; padding: 10px 14px; border-radius: 10px;
        word-break: break-word; font-size: 14px; line-height: 1.5; }
