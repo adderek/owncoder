@@ -279,6 +279,7 @@ _PAGE = r"""<!DOCTYPE html>
   <button type="button" class="chip btn" id="bgchip" title="Background jobs running — click to review / kill" style="display:none">⚙0</button>
   <button type="button" class="chip btn" id="planchip" title="Active plan — click for the steps" style="display:none">◑</button>
   <button type="button" id="tokenwrap" title="Click for context buffer breakdown" aria-label="Context buffer usage — click for the breakdown"><div id="tokenbar"><div id="tokenfill"></div></div><span id="tokens"></span></button>
+  <button type="button" class="chip btn" id="compact" title="Summarise the oldest messages to free context" style="display:none">⇘ compact</button>
   <button class="icon" id="notifytoggle" title="Notify me when the agent needs an answer or finishes" aria-label="Toggle desktop notifications">🔕</button>
   <button class="icon" id="themetoggle" title="Theme: dark (click to cycle)" aria-label="Cycle theme">◐</button>
   <button class="icon" id="righttoggle" title="Details panel" aria-label="Toggle details panel">☰</button>

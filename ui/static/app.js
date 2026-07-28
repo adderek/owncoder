@@ -847,6 +847,12 @@ function handle(ev) {
     const fill = document.getElementById('tokenfill');
     fill.style.width = pct + '%';
     fill.className = pct > 75 ? 'hot' : '';
+    // A red bar with no next step is just bad news. Past the threshold, offer
+    // the thing that fixes it — /compact was a command you had to know.
+    const cb = document.getElementById('compact');
+    cb.style.display = pct > 75 ? '' : 'none';
+    cb.title = 'Context is ' + Math.round(pct) + '% full — summarise the oldest ' +
+               'messages to free room (same as /compact)';
   }
 }
 
@@ -1697,6 +1703,28 @@ setInterval(() => {
       foldOpen('modelsfold')) loadModels(true);
 }, 2000);
 document.getElementById('bgchip').addEventListener('click', () => openDetails(loadBg, 'bgfold'));
+// Compacting rewrites the history the running turn is reading from, so it
+// waits for the turn to finish rather than racing it.
+document.getElementById('compact').addEventListener('click', async () => {
+  const btn = document.getElementById('compact');
+  if (busyFlag) {
+    row('sys', null, 'compact waits for the running turn — stop it first, or try again when it ends');
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = '⇘ compacting…';
+  try {
+    await fetch('/api/chat', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text: '/compact'}),
+    });
+  } catch (e) {
+    row('sys error', null, 'compact failed to send: ' + e);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '⇘ compact';
+  }
+});
 wireRefresh('d-bg', loadBg);
 wireRefresh('d-plan', loadPlan);
 wireRefresh('d-models', loadModels);
