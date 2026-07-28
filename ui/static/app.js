@@ -100,6 +100,7 @@ function row(cls, html, text) {
   }
   log.appendChild(wrap);
   trimLog();
+  turnNavSync();
   stickScroll();
   return d;
 }
@@ -2892,6 +2893,38 @@ try {
   const draft = localStorage.getItem(DRAFT_KEY);
   if (draft) { input.value = draft; autoGrow(); }
 } catch (e) {}
+// ── Turn navigation ────────────────────────────────────────────────────────
+// A long session offered scrolling and nothing else. Questions are the
+// landmarks people actually look for, so [ and ] step between them.
+function turnAnchors() {
+  return [...log.querySelectorAll('.row')].filter(r => r.querySelector('.msg.user'));
+}
+
+function turnNavSync() {
+  const nav = document.getElementById('turnnav');
+  if (nav) nav.classList.toggle('hidden', turnAnchors().length < 2);
+}
+
+function gotoTurn(dir) {
+  const anchors = turnAnchors();
+  if (!anchors.length) return;
+  const top = log.scrollTop;
+  // "Current" is the last question at or above the top of the view, with a
+  // little slack so a question sitting just off-screen counts as the one you
+  // are reading.
+  let idx = -1;
+  anchors.forEach((a, i) => { if (a.offsetTop - log.offsetTop <= top + 8) idx = i; });
+  const next = Math.min(anchors.length - 1, Math.max(0, idx + dir));
+  const target = anchors[next];
+  if (!target) return;
+  log.scrollTop = target.offsetTop - log.offsetTop;
+  target.classList.add('turn-flash');
+  setTimeout(() => target.classList.remove('turn-flash'), 600);
+}
+
+document.getElementById('turnprev').addEventListener('click', () => gotoTurn(-1));
+document.getElementById('turnnext').addEventListener('click', () => gotoTurn(1));
+
 // ── Find in conversation ───────────────────────────────────────────────────
 // The browser's own find can't see text inside a collapsed <details>, and a
 // long turn hides most of its detail in exactly those folds. This one opens
@@ -3043,6 +3076,7 @@ const SHORTCUTS = [
   ['Ctrl+B', 'sessions drawer'],
   ['Alt+\u2191 / \u2193', 'switch to the previous / next session'],
   ['1 \u2013 9', 'answer a waiting permission or loop-guard prompt'],
+  ['[ / ]', 'jump to the previous / next question'],
   ['Esc', 'close the palette, the find bar, or the drawers'],
   ['?', 'this list'],
 ];
@@ -3094,6 +3128,11 @@ document.addEventListener('keydown', (e) => {
   if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
     e.preventDefault();
     cycleSession(e.key === 'ArrowUp' ? -1 : 1);
+    return;
+  }
+  if ((e.key === '[' || e.key === ']') && !typing && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    e.preventDefault();
+    gotoTurn(e.key === '[' ? -1 : 1);
     return;
   }
   if (e.key === '?' && !typing && !e.ctrlKey && !e.metaKey) {

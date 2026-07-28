@@ -354,6 +354,10 @@ _PAGE = r"""<!DOCTYPE html>
 </div>
 <div id="log"></div>
 <button id="jumpdown" class="hidden" title="Jump to latest">↓ new output</button>
+<div id="turnnav" class="hidden">
+  <button type="button" id="turnprev" title="Previous question ( [ )" aria-label="Previous question">↑</button>
+  <button type="button" id="turnnext" title="Next question ( ] )" aria-label="Next question">↓</button>
+</div>
 <div id="inputrow"><div class="row">
   <input type="file" id="attachfile" multiple style="display:none">
   <button class="icon" id="attach" title="Attach a file — saved under .agent/uploads, a reference is inserted into your message">📎</button>

@@ -125,6 +125,16 @@ body[data-activity="stalled"] #header::after {
             background: var(--panel2); color: var(--fg); border: 1px solid var(--border);
             box-shadow: 0 2px 10px rgba(0,0,0,.3); z-index: 5; }
 #jumpdown.hidden { display: none; }
+/* Step between questions — the landmarks of a long session. */
+#turnnav { position: absolute; right: 14px; bottom: 84px; z-index: 5;
+           display: flex; flex-direction: column; gap: 4px; }
+#turnnav.hidden { display: none; }
+#turnnav button { background: var(--panel2); color: var(--dim);
+                  border: 1px solid var(--border); border-radius: 6px;
+                  padding: 2px 8px; font-size: 12px; line-height: 1.4; }
+#turnnav button:hover { color: var(--fg); border-color: var(--accent); filter: none; }
+/* Brief highlight on the question jumped to, so the eye lands on it. */
+.row.turn-flash > .msg { box-shadow: 0 0 0 2px var(--accent); }
 aside { width: 0; overflow: hidden; background: var(--panel); flex-shrink: 0;
         transition: width .22s ease; }
 aside.open { width: var(--w, 280px); }
