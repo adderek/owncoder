@@ -45,6 +45,70 @@ def _strip_rich(text: str) -> str:
     return _RICH_TAG_RE.sub("", text)
 
 
+def _png_icon(size: int, bg=(0x1c, 0x1f, 0x26), fg=(0x6a, 0xa6, 0xff)) -> bytes:
+    """The favicon as a real PNG, rasterised here rather than shipped.
+
+    Android takes the SVG in the manifest, but iOS only accepts PNG for a
+    home-screen icon, and a LAN agent on a phone is exactly where "add to home
+    screen" earns its keep. A rounded square with a dot is little enough to
+    draw by hand: no image library, no binary blob in the tree.
+    """
+    import struct
+    import zlib
+
+    r = size * 0.22          # corner radius
+    cx = cy = (size - 1) / 2
+    rad = size * 0.25        # dot radius
+    rows = bytearray()
+    for y in range(size):
+        rows.append(0)       # PNG filter type 0 for this scanline
+        for x in range(size):
+            # Rounded-rect mask: only the corner quadrants are curved.
+            dx = max(r - x, x - (size - 1 - r), 0.0)
+            dy = max(r - y, y - (size - 1 - r), 0.0)
+            inside = (dx * dx + dy * dy) <= r * r
+            if not inside:
+                rows.extend((0, 0, 0, 0))
+                continue
+            if (x - cx) ** 2 + (y - cy) ** 2 <= rad * rad:
+                rows.extend((*fg, 255))
+            else:
+                rows.extend((*bg, 255))
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+
+    header = struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)   # 8-bit RGBA
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header)
+            + chunk(b"IDAT", zlib.compress(bytes(rows), 9))
+            + chunk(b"IEND", b""))
+
+
+_ICON_CACHE: dict[int, bytes] = {}
+
+
+def _icon_png(size: int) -> bytes:
+    if size not in _ICON_CACHE:
+        _ICON_CACHE[size] = _png_icon(size)
+    return _ICON_CACHE[size]
+
+
+_MANIFEST = json.dumps({
+    "name": "owncoder",
+    "short_name": "owncoder",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#16181d",
+    "theme_color": "#1e2128",
+    "icons": [
+        {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png"},
+        {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png",
+         "purpose": "any maskable"},
+    ],
+})
+
+
 def _args_preview(args, limit: int = 200) -> str:
     """Human preview of a tool-call arguments payload.
 
@@ -194,6 +258,11 @@ _PAGE = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>owncoder</title>
 <link rel="icon" id="favicon" href="data:,">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="theme-color" content="#1e2128">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body data-layout="center">
@@ -1149,6 +1218,15 @@ def _make_handler(ui: _HttpUI):
         def log_message(self, fmt, *args):  # silence per-request stderr noise
             logger.debug("http ui: " + fmt, *args)
 
+        def _bytes(self, body: bytes, ctype: str, cache: str = "") -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            if cache:
+                self.send_header("Cache-Control", cache)
+            self.end_headers()
+            self.wfile.write(body)
+
         def _json(self, obj, code=200):
             body = json.dumps(obj, ensure_ascii=False).encode()
             self.send_response(code)
@@ -1197,6 +1275,12 @@ def _make_handler(ui: _HttpUI):
                 from urllib.parse import parse_qs, urlparse
                 fp = (parse_qs(urlparse(self.path).query).get("file") or [""])[0]
                 self._json(ui.diff_info(fp))
+            elif self.path == "/manifest.webmanifest":
+                self._bytes(_MANIFEST.encode(), "application/manifest+json")
+            elif self.path in ("/icon-192.png", "/icon-512.png"):
+                size = 512 if "512" in self.path else 192
+                self._bytes(_icon_png(size), "image/png",
+                            cache="public, max-age=86400")
             elif self.path == "/api/models":
                 self._json(ui.models_info())
             elif self.path == "/api/slash":
