@@ -826,6 +826,7 @@ function handle(ev) {
       // also reports idle on connect, and that is not news.
       if (document.getElementById('askbox')) setAttention('wait', null);
       else if (wasBusy) setAttention('done', 'turn finished');
+      if (wasBusy) loadPlan();   // steps advance as the agent works
     }
     if (ev.state !== 'busy' && document.getElementById('askbox'))
       setBusy(false, 'waiting for your answer');
@@ -1631,6 +1632,9 @@ document.getElementById('todofold').addEventListener('toggle', (e) => {
 document.getElementById('accessfold').addEventListener('toggle', (e) => {
   if (e.target.open) loadGrants();
 });
+document.getElementById('planfold').addEventListener('toggle', (e) => {
+  if (e.target.open) loadPlan();
+});
 document.getElementById('workdir').addEventListener('click', () => {
   toggleDrawer('left', 'lefttoggle', true);
   const fold = document.getElementById('accessfold');
@@ -1694,6 +1698,7 @@ setInterval(() => {
 }, 2000);
 document.getElementById('bgchip').addEventListener('click', () => openDetails(loadBg, 'bgfold'));
 wireRefresh('d-bg', loadBg);
+wireRefresh('d-plan', loadPlan);
 wireRefresh('d-models', loadModels);
 wireRefresh('d-stats', loadStats);
 wireRefresh('d-mc', loadModelCalls);
@@ -2383,6 +2388,66 @@ function stopTurn(mode) {
 }
 document.getElementById('stop').onclick = () => stopTurn('soft');
 document.getElementById('kill').onclick = () => stopTurn('hard');
+// ── Plan and goal ──────────────────────────────────────────────────────────
+// An active plan is the agent's current multi-step state — what it thinks it
+// is doing and how far along. It lived behind /plan as printed text, so the
+// browser could never simply show it. The chip carries progress; the drawer
+// fold carries the steps.
+const STEP_MARK = {pending: '·', in_progress: '▶', completed: '✓',
+                   failed: '✗', skipped: '—', blocked: '⚠'};
+
+async function loadPlan() {
+  let d;
+  try { d = await (await fetch('/api/plan')).json(); }
+  catch (e) { return; }
+  const chip = document.getElementById('planchip');
+  const plan = d.plan;
+  if (plan) {
+    chip.style.display = '';
+    chip.textContent = '◑ ' + plan.done + '/' + plan.total;
+    chip.title = 'plan ' + plan.id + ' (' + plan.status + ')\n' + plan.goal +
+                 '\nclick for the steps';
+  } else {
+    chip.style.display = 'none';
+  }
+  const el = document.getElementById('planbody');
+  if (!el || !foldOpen('planfold') ||
+      !document.getElementById('left').classList.contains('open')) return;
+  let html = '';
+  if (d.goal) {
+    html += '<div class="plan-goal"><span class="pg-label">goal</span> ' +
+            esc(d.goal) + '</div>';
+  }
+  if (!plan) {
+    html += '<div class="plan-none">no active plan — <code>/plan new &lt;goal&gt;</code></div>';
+    el.innerHTML = html;
+    return;
+  }
+  html += '<div class="plan-head">' + esc(plan.goal) + '</div>' +
+    '<div class="plan-meta">' + esc(plan.id) + ' · ' + esc(plan.status) + ' · ' +
+    plan.done + '/' + plan.total + ' steps</div>' +
+    plan.steps.map(st => {
+      const bits = [];
+      if (st.ready) bits.push('ready');
+      if (st.deps.length) bits.push('needs ' + st.deps.join(', '));
+      if (st.assigned_to) bits.push('@' + st.assigned_to);
+      return '<div class="plan-step s-' + esc(st.status) +
+        (st.id === plan.current ? ' current' : '') + '">' +
+        '<span class="ps-mark">' + (STEP_MARK[st.status] || '?') + '</span>' +
+        '<span class="ps-text">' + esc(st.description) +
+        (bits.length ? '<span class="ps-meta"> · ' + esc(bits.join(' · ')) + '</span>' : '') +
+        '</span></div>';
+    }).join('');
+  el.innerHTML = html;
+}
+
+document.getElementById('planchip').addEventListener('click', () => {
+  toggleDrawer('left', 'lefttoggle', true);
+  const fold = document.getElementById('planfold');
+  if (fold && !fold.open) fold.open = true;   // fires toggle → loadPlan
+  else loadPlan();
+});
+
 // ── Slash palette ──────────────────────────────────────────────────────────
 // The placeholder has always promised "/ for commands" while nothing
 // completed them. The catalogue comes from /api/slash — the same table the
@@ -2810,5 +2875,6 @@ function restoreDrawers() {
 // Last: every fold's lazy-load toggle handler is wired by now, so a fold
 // restored to open fires toggle → loads its content.
 restoreFolds();
-restoreDrawers();   // after restoreFolds: the loaders check fold state
+restoreDrawers();
+loadPlan();   // the chip must be right before anything happens   // after restoreFolds: the loaders check fold state
 init();

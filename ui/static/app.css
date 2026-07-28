@@ -234,6 +234,23 @@ aside.resizing { transition: none; }   /* no lag while dragging */
 .acc-add input:focus { outline: none; border-color: var(--accent); }
 .acc-add select { background: var(--bg); color: var(--fg); border: 1px solid var(--border);
                   border-radius: 5px; font-size: 11px; }
+/* Plan panel: the agent's current multi-step state, mirrored from /api/plan. */
+.plan-goal { margin-bottom: 6px; font-size: 11.5px; color: var(--fg); }
+.plan-goal .pg-label { color: var(--dimmer); font-family: var(--mono); font-size: 10px;
+                       margin-right: 4px; }
+.plan-none { color: var(--dimmer); font-size: 11px; }
+.plan-head { color: var(--fg); font-size: 12px; margin-bottom: 2px; }
+.plan-meta { color: var(--dimmer); font-family: var(--mono); font-size: 10.5px;
+             margin-bottom: 6px; }
+.plan-step { display: flex; gap: 6px; align-items: baseline; padding: 2px 4px;
+             border-radius: 4px; font-size: 11.5px; color: var(--dim); }
+.plan-step .ps-mark { flex-shrink: 0; font-family: var(--mono); color: var(--dimmer); }
+.plan-step .ps-meta { color: var(--dimmer); font-size: 10.5px; }
+.plan-step.current { background: var(--panel2); color: var(--fg); }
+.plan-step.s-completed { opacity: .6; }
+.plan-step.s-completed .ps-mark { color: var(--ok); }
+.plan-step.s-in_progress .ps-mark { color: var(--warn); }
+.plan-step.s-failed .ps-mark, .plan-step.s-blocked .ps-mark { color: var(--err); }
 /* Backlog panel: .agent/ideas.db, the same store as `agent todo` and /idea. */
 .todo-filters { display: flex; gap: 4px; margin-bottom: 4px; }
 .todo-filters select, .todo-add select { background: var(--bg); color: var(--fg);

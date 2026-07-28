@@ -277,6 +277,7 @@ _PAGE = r"""<!DOCTYPE html>
   <button type="button" class="chip btn" id="condchip" title="Condensed Q/A view — one line per turn, click rows to expand">≣ Q/A</button>
   <button type="button" class="chip btn" id="iostats" title="Session totals: prompt in / completion out / est. USD cost (paid-tier only). Click for per-model split">↑0 ↓0</button>
   <button type="button" class="chip btn" id="bgchip" title="Background jobs running — click to review / kill" style="display:none">⚙0</button>
+  <button type="button" class="chip btn" id="planchip" title="Active plan — click for the steps" style="display:none">◑</button>
   <button type="button" id="tokenwrap" title="Click for context buffer breakdown" aria-label="Context buffer usage — click for the breakdown"><div id="tokenbar"><div id="tokenfill"></div></div><span id="tokens"></span></button>
   <button class="icon" id="notifytoggle" title="Notify me when the agent needs an answer or finishes" aria-label="Toggle desktop notifications">🔕</button>
   <button class="icon" id="themetoggle" title="Theme: dark (click to cycle)" aria-label="Cycle theme">◐</button>
@@ -300,6 +301,10 @@ _PAGE = r"""<!DOCTYPE html>
       <select id="accmode"><option value="ro">ro</option><option value="rw">rw</option></select>
       <button class="sbtn" id="accadd">add</button>
     </div>
+  </details>
+  <details id="planfold" class="dfold">
+    <summary class="dhead">plan &amp; goal <span id="d-plan" class="dhead-refresh" title="Refresh">⟳</span></summary>
+    <div id="planbody">—</div>
   </details>
   <details id="todofold" class="dfold">
     <summary class="dhead">backlog <span id="todocount" class="chip"></span><span id="d-todo" class="dhead-refresh" title="Refresh">⟳</span></summary>
@@ -930,6 +935,49 @@ class _HttpUI:
             return {"ok": False, "msg": f"failed: {exc}"}
         return {"ok": bool(ok), "msg": _strip_rich(str(msg))}
 
+    def plan_info(self) -> dict:
+        """The active plan and the session goal, structured.
+
+        Both existed only as text behind /plan and /goal: the agent's current
+        multi-step state was the one thing the browser could not show.
+        """
+        out: dict = {"goal": "", "plan": None}
+        try:
+            out["goal"] = self.server.get_goal() or ""
+        except Exception:
+            logger.debug("http ui: get_goal failed", exc_info=True)
+        try:
+            from agent.ui.slash_plan import _active_plan
+            agent = _agent_of(self.server)
+            plan = _active_plan(agent) if agent is not None else None
+        except Exception:
+            logger.debug("http ui: active plan lookup failed", exc_info=True)
+            plan = None
+        if plan is None:
+            return out
+        done, total = plan.progress()
+        ready = {s.id for s in plan.ready_steps()}
+        current = plan.current_step()
+        out["plan"] = {
+            "id": plan.id,
+            "goal": plan.goal,
+            "status": plan.status,
+            "done": done,
+            "total": total,
+            "current": current.id if current else "",
+            "steps": [
+                {"id": s.id,
+                 "description": s.description,
+                 "status": s.status,
+                 "ready": s.id in ready and s.status == "pending",
+                 "deps": list(s.deps),
+                 "assigned_to": s.assigned_to,
+                 "notes": (s.notes or "")[:200]}
+                for s in plan.steps
+            ],
+        }
+        return out
+
     def sessions_info(self, query: str = "") -> dict:
         """Recent saved sessions — backs the left-drawer session list.
 
@@ -1281,6 +1329,8 @@ def _make_handler(ui: _HttpUI):
                 size = 512 if "512" in self.path else 192
                 self._bytes(_icon_png(size), "image/png",
                             cache="public, max-age=86400")
+            elif self.path == "/api/plan":
+                self._json(ui.plan_info())
             elif self.path == "/api/models":
                 self._json(ui.models_info())
             elif self.path == "/api/slash":
@@ -1449,8 +1499,13 @@ def _publish_usage(server, pub, cost_before: float = 0.0) -> None:
 _NEEDS_LOCAL = "not supported by this server (needs a local in-process agent)"
 
 
+def _agent_of(server):
+    """The local Agent behind a UI server, or None when it is a remote bridge."""
+    return getattr(server, "_agent", None)
+
+
 def _agent_config(server):
-    a = getattr(server, "_agent", None)
+    a = _agent_of(server)
     return None if a is None else a.config
 
 
