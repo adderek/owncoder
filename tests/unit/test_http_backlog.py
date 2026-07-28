@@ -327,6 +327,30 @@ class TestSafetyOfDestructiveActions:
         assert "Mark done" in menu and "Reject" in menu and "Reopen" in menu
         assert "openTask" in menu
 
+    def test_the_menu_is_anchored_to_its_row(self):
+        """`.tmenu` is position:absolute; without a positioned `.trow` it
+        resolves against the viewport and opens at the right edge of the
+        window, far from the ⋯ that spawned it."""
+        from pathlib import Path
+
+        css = (Path(__file__).resolve().parents[2] / "ui" / "static" / "app.css"
+               ).read_text(encoding="utf-8")
+        trow = css[css.index(".trow {"):css.index(".trow:hover")]
+        assert "position: relative" in trow
+        menu = css[css.index(".tmenu {"):css.index(".tmenu-item {")]
+        assert "position: absolute" in menu and "top: 100%" in menu
+        assert ".tmenu.up { top: auto; bottom: 100%; }" in css
+
+    def test_a_menu_on_the_last_row_flips_above_it(self):
+        """The drawer scrolls, so a downward menu on the last row is clipped."""
+        from pathlib import Path
+
+        app_js = (Path(__file__).resolve().parents[2] / "ui" / "static" / "app.js"
+                  ).read_text(encoding="utf-8")
+        menu = app_js[app_js.index("function todoMenu("):app_js.index("document.addEventListener('click'")]
+        assert "getBoundingClientRect" in menu
+        assert "classList.add('up')" in menu
+
 
 class TestEditorPane:
     def test_the_centre_column_hosts_the_editor(self):

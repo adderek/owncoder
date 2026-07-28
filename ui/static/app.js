@@ -513,7 +513,7 @@ function handle(ev) {
     if (ev.pending) {
       row('sys', null, '⚑ agent requests access to a new path — grant or ' +
           'reject in the Access section (opened at left)');
-      toggleDrawer('left', 'lefttoggle', true);
+      toggleDrawer('left', 'lefttoggle', true, false);
       const fold = document.getElementById('accessfold');
       if (fold) fold.open = true;   // surface the request; toggle → loadGrants
     }
@@ -600,9 +600,17 @@ function handle(ev) {
 // drawer and refresh the matching section.
 const MOBILE_MQ = window.matchMedia('(max-width: 720px)');
 
-function toggleDrawer(id, btnId, force) {
+// persist defaults to true: only *user* toggles should outlive the reload, so
+// agent-driven opens (an access request) and the mobile "close the other one"
+// pass false — otherwise a permission prompt or a phone visit would rewrite
+// the layout the user chose.
+function toggleDrawer(id, btnId, force, persist) {
   const el = document.getElementById(id);
   const open = force === undefined ? !el.classList.contains('open') : force;
+  if (persist !== false) {
+    try { localStorage.setItem('oc-drawer-open-' + id, open ? '1' : '0'); }
+    catch (e) {}
+  }
   el.classList.toggle('open', open);
   document.getElementById(btnId).classList.toggle('active', open);
   const rz = document.getElementById(id === 'left' ? 'resize-left' : 'resize-right');
@@ -612,7 +620,8 @@ function toggleDrawer(id, btnId, force) {
     // tap-outside backdrop (dragging to resize doesn't apply here).
     if (open) {
       const other = id === 'left' ? 'right' : 'left';
-      toggleDrawer(other, other === 'left' ? 'lefttoggle' : 'righttoggle', false);
+      toggleDrawer(other, other === 'left' ? 'lefttoggle' : 'righttoggle',
+                   false, false);
     }
     const backdrop = document.getElementById('backdrop');
     if (backdrop) backdrop.classList.toggle('open', open);
@@ -1099,7 +1108,12 @@ function todoMenu(button, id, status) {
   edit.textContent = 'Edit…';
   edit.addEventListener('click', (e) => { e.stopPropagation(); todoCloseMenus(); openTask(id); });
   menu.appendChild(edit);
-  button.parentElement.appendChild(menu);
+  button.parentElement.appendChild(menu);   // .trow is position:relative
+  // The drawer scrolls: a menu opened on one of the last rows would drop below
+  // the panel and be clipped. Flip it above the row instead.
+  const panel = button.closest('.aside-inner');
+  if (panel && menu.getBoundingClientRect().bottom >
+               panel.getBoundingClientRect().bottom) menu.classList.add('up');
 }
 
 document.addEventListener('click', (e) => {
@@ -1959,7 +1973,25 @@ async function cycleSession(dir) {
     sessionAction({action: 'switch', id: next.id});
   } catch (e) { row('sys error', null, 'session cycle failed: ' + e); }
 }
+// Restore the drawers the user left open. Skipped on narrow screens, where
+// drawers are overlays: coming back to a page covered by a panel is worse
+// than re-tapping the toggle. Goes through toggleDrawer so the resize handle
+// and backdrop stay in sync, and loads the right drawer's sections (their
+// loaders early-return while it is closed, so nothing fetched them yet).
+function restoreDrawers() {
+  if (MOBILE_MQ.matches) return;
+  let open;
+  try { open = localStorage.getItem('oc-drawer-open-left'); } catch (e) {}
+  if (open === '1') toggleDrawer('left', 'lefttoggle', true, false);
+  try { open = localStorage.getItem('oc-drawer-open-right'); } catch (e) {}
+  if (open === '1') {
+    toggleDrawer('right', 'righttoggle', true, false);
+    loadModels(); loadStats(); loadModelCalls(); loadContext(); loadBg();
+  }
+}
+
 // Last: every fold's lazy-load toggle handler is wired by now, so a fold
 // restored to open fires toggle → loads its content.
 restoreFolds();
+restoreDrawers();   // after restoreFolds: the loaders check fold state
 init();
