@@ -2593,6 +2593,106 @@ function slashKey(e) {
   return false;
 }
 
+// ── File completion ────────────────────────────────────────────────────────
+// Attachments upload a new file; pointing the agent at one that already
+// exists meant typing its path exactly right. "@" completes against the
+// project (git ls-files server-side), and inserts the plain path — that is
+// what the agent's tools take.
+let atHits = [];
+let atSel = 0;
+let atSeq = 0;
+
+// The "@word" immediately before the caret, or null. Anchored to a word
+// boundary so an email address in the middle of a sentence is left alone.
+function atQuery() {
+  const upto = input.value.slice(0, input.selectionStart);
+  const m = /(^|[\s(])@([^\s@]*)$/.exec(upto);
+  return m ? m[2] : null;
+}
+
+function atBox() { return document.getElementById('atbox'); }
+function atOpen() { return !!atBox(); }
+
+function atClose() {
+  const box = atBox();
+  if (box) box.remove();
+  atHits = [];
+  atSel = 0;
+}
+
+function atRender() {
+  let box = atBox();
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'atbox';
+    box.className = 'compbox';
+    const inputrow = document.getElementById('inputrow');
+    inputrow.parentElement.insertBefore(box, inputrow);
+  }
+  box.innerHTML = atHits.map((f, i) => {
+    const cut = f.lastIndexOf('/');
+    return '<div class="slash-item' + (i === atSel ? ' sel' : '') + '" data-i="' + i + '">' +
+      '<span class="slash-name">' + esc(cut < 0 ? f : f.slice(cut + 1)) + '</span>' +
+      '<span class="slash-desc">' + esc(cut < 0 ? '' : f.slice(0, cut)) + '</span></div>';
+  }).join('');
+  box.querySelectorAll('.slash-item').forEach(el => {
+    el.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      atApply(atHits[Number(el.dataset.i)]);
+    });
+  });
+}
+
+function atApply(path) {
+  if (!path) return;
+  const upto = input.value.slice(0, input.selectionStart);
+  const m = /(^|[\s(])@([^\s@]*)$/.exec(upto);
+  if (!m) { atClose(); return; }
+  const start = upto.length - m[2].length - 1;      // the "@" itself
+  const rest = input.value.slice(input.selectionStart);
+  input.value = input.value.slice(0, start) + path + ' ' + rest;
+  const caret = start + path.length + 1;
+  atClose();
+  autoGrow();
+  saveDraft();
+  input.focus();
+  input.setSelectionRange(caret, caret);
+}
+
+async function atUpdate() {
+  const q = atQuery();
+  if (q === null) { atClose(); return; }
+  const seq = ++atSeq;
+  let d;
+  try { d = await (await fetch('/api/files?q=' + encodeURIComponent(q))).json(); }
+  catch (e) { atClose(); return; }
+  // A slower earlier request must not overwrite a newer one's results.
+  if (seq !== atSeq || atQuery() === null) return;
+  atHits = d.files || [];
+  if (!atHits.length) { atClose(); return; }
+  atSel = Math.min(atSel, atHits.length - 1);
+  atRender();
+}
+
+function atMove(d) {
+  if (!atHits.length) return;
+  atSel = (atSel + d + atHits.length) % atHits.length;
+  atRender();
+}
+
+// Returns true when the completion consumed the key.
+function atKey(e) {
+  if (!atOpen()) return false;
+  if (e.key === 'ArrowDown') { atMove(1); return true; }
+  if (e.key === 'ArrowUp') { atMove(-1); return true; }
+  if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+    atApply(atHits[atSel]);
+    return true;
+  }
+  if (e.key === 'Escape') { atClose(); return true; }
+  return false;
+}
+
 // ── Message history and draft ──────────────────────────────────────────────
 // This is a prompt: ↑ recalls what you sent, like every shell. Kept in
 // localStorage so it survives the reload, and shared across sessions — you
@@ -2661,6 +2761,7 @@ input.addEventListener('keydown', (e) => {
   // The palette owns the arrows, Tab and Esc while it is open; history and
   // the drawer-closing Esc must not also fire.
   if (slashKey(e)) { e.preventDefault(); e.stopPropagation(); return; }
+  if (atKey(e)) { e.preventDefault(); e.stopPropagation(); return; }
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); return; }
   if (e.key === 'ArrowUp' && histIdx !== 0 && onFirstLine() &&
       (histIdx >= 0 || !input.value || input.selectionStart === 0)) {
@@ -2674,8 +2775,9 @@ input.addEventListener('input', () => {
   autoGrow();
   saveDraft();
   slashUpdate();
+  atUpdate();
 });
-input.addEventListener('blur', () => slashClose());
+input.addEventListener('blur', () => { slashClose(); atClose(); });
 
 // An unsent draft outlives a reload: closing the tab on a half-written
 // message and losing it is the kind of small betrayal people remember.

@@ -11,6 +11,7 @@ import asyncio
 import concurrent.futures
 import json
 import logging
+import os
 import queue
 import re
 import threading
@@ -936,6 +937,46 @@ class _HttpUI:
             return {"ok": False, "msg": f"failed: {exc}"}
         return {"ok": bool(ok), "msg": _strip_rich(str(msg))}
 
+    _FILE_LIST_MAX = 4000     # what we are willing to walk / hold
+    _FILE_HITS_MAX = 12       # what the completion popup can show
+
+    def file_list(self, query: str = "") -> dict:
+        """Project files, for the @-completion in the message box.
+
+        git ls-files where possible: it is fast and it already knows what is
+        ignored. The fallback walk skips the directories a checkout is mostly
+        made of, because a node_modules crawl would be the slowest thing this
+        server does.
+        """
+        import subprocess
+        from pathlib import Path as _P
+
+        root = _P(self.workdir())
+        paths: list[str] = []
+        try:
+            out = subprocess.run(
+                ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+                cwd=str(root), capture_output=True, text=True, timeout=5,
+            )
+            if out.returncode == 0:
+                paths = [ln for ln in out.stdout.splitlines() if ln][:self._FILE_LIST_MAX]
+        except Exception:
+            logger.debug("http ui: git ls-files failed", exc_info=True)
+        if not paths:
+            skip = {".git", "node_modules", ".venv", "venv", "__pycache__",
+                    ".mypy_cache", ".pytest_cache", "dist", "build", ".agent"}
+            for dirpath, dirnames, filenames in os.walk(root):
+                dirnames[:] = [d for d in dirnames if d not in skip and not d.startswith(".")]
+                for fn in filenames:
+                    rel = os.path.relpath(os.path.join(dirpath, fn), root)
+                    paths.append(rel)
+                    if len(paths) >= self._FILE_LIST_MAX:
+                        break
+                if len(paths) >= self._FILE_LIST_MAX:
+                    break
+        return {"files": _rank_paths(paths, query, self._FILE_HITS_MAX),
+                "root": str(root), "truncated": len(paths) >= self._FILE_LIST_MAX}
+
     def plan_info(self) -> dict:
         """The active plan and the session goal, structured.
 
@@ -1330,6 +1371,10 @@ def _make_handler(ui: _HttpUI):
                 size = 512 if "512" in self.path else 192
                 self._bytes(_icon_png(size), "image/png",
                             cache="public, max-age=86400")
+            elif self.path.startswith("/api/files"):
+                from urllib.parse import parse_qs, urlparse
+                q = (parse_qs(urlparse(self.path).query).get("q") or [""])[0]
+                self._json(ui.file_list(q))
             elif self.path == "/api/plan":
                 self._json(ui.plan_info())
             elif self.path == "/api/models":
@@ -1498,6 +1543,43 @@ def _publish_usage(server, pub, cost_before: float = 0.0) -> None:
 # Commands below need the in-process agent (config, ideas, session mode);
 # remote/protocol-only servers can't serve them.
 _NEEDS_LOCAL = "not supported by this server (needs a local in-process agent)"
+
+
+def _rank_paths(paths: list[str], query: str, limit: int) -> list[str]:
+    """Rank by where the query hits: basename first, then anywhere in the path.
+
+    A subsequence fallback catches the way people actually type a path —
+    "uihttp" for "agent/ui/http_loop.py" — without pulling in a fuzzy library.
+    """
+    q = (query or "").strip().lower()
+    if not q:
+        return sorted(paths)[:limit]
+    base_hits, path_hits, fuzzy_hits = [], [], []
+    for p in paths:
+        low = p.lower()
+        base = low.rsplit("/", 1)[-1]
+        if base.startswith(q):
+            base_hits.append(p)
+        elif q in base:
+            base_hits.append(p)
+        elif q in low:
+            path_hits.append(p)
+        elif _subsequence(q, low):
+            fuzzy_hits.append(p)
+        if len(base_hits) >= limit:
+            break
+    # Shallower paths first *within* a tier — sorting across tiers would let a
+    # loose subsequence match outrank a real basename hit.
+    def _shallow(items):
+        return sorted(items, key=lambda p: (len(p.split("/")), len(p)))
+
+    ranked = _shallow(base_hits) + _shallow(path_hits) + _shallow(fuzzy_hits)
+    return ranked[:limit]
+
+
+def _subsequence(needle: str, hay: str) -> bool:
+    it = iter(hay)
+    return all(ch in it for ch in needle)
 
 
 def _agent_of(server):

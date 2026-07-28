@@ -79,7 +79,7 @@ class TestPalette:
     def test_the_palette_owns_its_keys(self):
         """Otherwise ↑ would walk the history and Esc would shut the drawers."""
         i = APP_JS.index("input.addEventListener('keydown'")
-        body = APP_JS[i:i + 500]
+        body = APP_JS[i:APP_JS.index("input.addEventListener('input'", i)]
         assert body.index("slashKey(e)") < body.index("histMove(-1)")
         assert "e.stopPropagation();" in body
 
@@ -95,4 +95,6 @@ class TestPalette:
     def test_it_picks_on_mousedown(self):
         """click lands after blur, and blur has already closed the list."""
         assert "addEventListener('mousedown'" in PALETTE
-        assert "input.addEventListener('blur', () => slashClose());" in APP_JS
+        # blur closes every completion popup, this one included
+        i = APP_JS.index("input.addEventListener('blur'")
+        assert "slashClose();" in APP_JS[i:i + 120]

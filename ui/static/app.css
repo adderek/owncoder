@@ -385,7 +385,8 @@ mark.findhit { background: var(--sig-bg); color: inherit; border-radius: 2px;
 mark.findhit.cur { background: var(--accent); color: var(--bg); }
 /* Slash palette — pinned above the input like the ask box, scrollable so a
    long list never pushes the message box off screen. */
-#slashbox { max-width: 920px; margin: 0 auto 8px; padding: 4px;
+/* Shared by the slash palette and the @-file completion. */
+#slashbox, .compbox { max-width: 920px; margin: 0 auto 8px; padding: 4px;
             border: 1px solid var(--border); background: var(--panel);
             border-radius: 8px; max-height: 240px; overflow-y: auto;
             animation: fadein .12s ease-out; }
