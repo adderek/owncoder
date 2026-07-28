@@ -308,6 +308,10 @@ _PAGE = r"""<!DOCTYPE html>
     <summary class="dhead">plan &amp; goal <span id="d-plan" class="dhead-refresh" title="Refresh">⟳</span></summary>
     <div id="planbody">—</div>
   </details>
+  <details id="trigfold" class="dfold">
+    <summary class="dhead">schedules &amp; watches <span id="d-trig" class="dhead-refresh" title="Refresh">⟳</span></summary>
+    <div id="trigbody">—</div>
+  </details>
   <details id="todofold" class="dfold">
     <summary class="dhead">backlog <span id="todocount" class="chip"></span><span id="d-todo" class="dhead-refresh" title="Refresh">⟳</span></summary>
     <div class="todo-filters">
@@ -977,6 +981,46 @@ class _HttpUI:
         return {"files": _rank_paths(paths, query, self._FILE_HITS_MAX),
                 "root": str(root), "truncated": len(paths) >= self._FILE_LIST_MAX}
 
+    def triggers_info(self) -> dict:
+        """Scheduled jobs and file/url/cmd watches.
+
+        These outlive the session that created them, which makes them exactly
+        the state one forgets having configured — and /schedule and /watch
+        printed them once and left nothing on screen.
+        """
+        cfg = _agent_config(self.server)
+        if cfg is None:
+            return {"jobs": [], "watches": [], "error": "not available on a remote backend"}
+        try:
+            from agent.core.scheduler import list_jobs
+            jobs = list_jobs(cfg)
+        except Exception:
+            logger.debug("http ui: list_jobs failed", exc_info=True)
+            return {"jobs": [], "watches": []}
+        out: dict[str, list] = {"jobs": [], "watches": []}
+        for j in jobs:
+            row = {
+                "id": j.id,
+                "name": j.name or j.id,
+                "prompt": (j.prompt or "")[:160],
+                "kind": j.kind,
+                "spec": j.spec,
+                "enabled": bool(j.enabled),
+                "one_shot": bool(j.one_shot),
+                "next_run": j.next_run,
+                "last_run": j.last_run,
+                "last_status": j.last_status,
+            }
+            if j.kind == "watch":
+                row["watch_type"] = j.watch_type
+                row["watch_target"] = j.watch_target
+                out["watches"].append(row)
+            else:
+                out["jobs"].append(row)
+        out["jobs"].sort(key=lambda r: (not r["enabled"], r["next_run"] or 0))
+        out["watches"].sort(key=lambda r: (not r["enabled"], r["name"]))
+        return out
+
     def drop_last_exchange(self) -> dict:
         """Remove the last user message and everything it produced.
 
@@ -1447,6 +1491,8 @@ def _make_handler(ui: _HttpUI):
                 from urllib.parse import parse_qs, urlparse
                 q = (parse_qs(urlparse(self.path).query).get("q") or [""])[0]
                 self._json(ui.file_list(q))
+            elif self.path == "/api/triggers":
+                self._json(ui.triggers_info())
             elif self.path == "/api/plan":
                 self._json(ui.plan_info())
             elif self.path == "/api/models":

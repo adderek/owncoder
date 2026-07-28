@@ -1767,6 +1767,7 @@ document.getElementById('compact').addEventListener('click', async () => {
 });
 wireRefresh('d-bg', loadBg);
 wireRefresh('d-plan', loadPlan);
+wireRefresh('d-trig', loadTriggers);
 wireRefresh('d-models', loadModels);
 wireRefresh('d-stats', loadStats);
 wireRefresh('d-mc', loadModelCalls);
@@ -2456,6 +2457,72 @@ function stopTurn(mode) {
 }
 document.getElementById('stop').onclick = () => stopTurn('soft');
 document.getElementById('kill').onclick = () => stopTurn('hard');
+// ── Schedules and watches ──────────────────────────────────────────────────
+// Triggers outlive the session that created them, which makes them the state
+// one forgets having configured. /schedule and /watch printed a list once and
+// left nothing behind; this keeps it visible, with a toggle per row.
+function fmtWhen(t) {
+  if (!t) return '—';
+  const d = new Date(t * 1000);
+  const soon = t * 1000 - Date.now();
+  if (soon > 0 && soon < 86400000) return 'in ' + fmtDur(soon / 1000);
+  return d.toLocaleString([], {month: 'short', day: 'numeric',
+                               hour: '2-digit', minute: '2-digit'});
+}
+
+function fmtDur(secs) {
+  if (secs < 60) return Math.round(secs) + 's';
+  if (secs < 3600) return Math.round(secs / 60) + 'm';
+  if (secs < 86400) return Math.round(secs / 3600) + 'h';
+  return Math.round(secs / 86400) + 'd';
+}
+
+function trigRow(t, kindLabel) {
+  const bits = [kindLabel];
+  if (t.kind !== 'watch') bits.push('next ' + fmtWhen(t.next_run));
+  if (t.one_shot) bits.push('once');
+  if (t.last_status) bits.push(t.last_status.startsWith('error') ? '⚠ ' + t.last_status : '✓');
+  return '<div class="trig' + (t.enabled ? '' : ' off') + '">' +
+    '<div class="trig-head"><span class="trig-name">' + esc(t.name) + '</span>' +
+    '<button class="sbtn" data-trig="' + esc(t.id) + '" data-on="' + (t.enabled ? '1' : '') +
+    '" title="' + (t.enabled ? 'Disable' : 'Enable') + '">' +
+    (t.enabled ? '⏸' : '▶') + '</button></div>' +
+    '<div class="trig-meta">' + esc(bits.join(' · ')) + '</div>' +
+    '<div class="trig-prompt">' + esc(t.prompt) + '</div></div>';
+}
+
+async function loadTriggers() {
+  const el = document.getElementById('trigbody');
+  if (!el || !foldOpen('trigfold') ||
+      !document.getElementById('left').classList.contains('open')) return;
+  let d;
+  try { d = await (await fetch('/api/triggers')).json(); }
+  catch (e) { el.textContent = 'failed: ' + e; return; }
+  if (d.error) { el.textContent = d.error; return; }
+  const jobs = d.jobs || [], watches = d.watches || [];
+  if (!jobs.length && !watches.length) {
+    el.innerHTML = '<div class="plan-none">none — <code>/schedule</code> and ' +
+                   '<code>/watch</code> create them</div>';
+    return;
+  }
+  el.innerHTML =
+    jobs.map(j => trigRow(j, j.spec || j.kind)).join('') +
+    watches.map(w => trigRow(w, 'on ' + w.watch_type + ' ' + w.watch_target)).join('');
+  el.querySelectorAll('[data-trig]').forEach(b => b.addEventListener('click', async () => {
+    b.disabled = true;
+    // Same command /schedule on|off runs, so there is one code path for it.
+    await fetch('/api/chat', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text: '/schedule ' + (b.dataset.on ? 'off ' : 'on ') + b.dataset.trig}),
+    }).catch(() => {});
+    setTimeout(loadTriggers, 400);
+  }));
+}
+
+document.getElementById('trigfold').addEventListener('toggle', (e) => {
+  if (e.target.open) loadTriggers();
+});
+
 // ── Plan and goal ──────────────────────────────────────────────────────────
 // An active plan is the agent's current multi-step state — what it thinks it
 // is doing and how far along. It lived behind /plan as printed text, so the
