@@ -1906,15 +1906,17 @@ async function loadSessions() {
   const el = document.getElementById('sesslist');
   el.textContent = '…';
   try {
-    const d = await (await fetch('/api/sessions')).json();
+    // The filter is a server-side search (name, description, tags, summary,
+    // classification — what /resume searches), not a substring match over the
+    // thirty names that happened to be loaded.
+    const q = (document.getElementById('sessfilter').value || '').trim();
+    const d = await (await fetch('/api/sessions?q=' + encodeURIComponent(q))).json();
     const all = d.sessions || [];
     // Keep the header chip / window title in sync with the current session's
     // name after a rename or LLM auto-name (which only reload this list).
     const curSess = all.find(s => s.id === d.current);
     if (curSess) setSessionChip(curSess.id, curSess.name);
-    const q = (document.getElementById('sessfilter').value || '').trim().toLowerCase();
-    const shown = all.filter(s => (showHidden || !s.hidden) &&
-      (!q || (s.name || s.id || '').toLowerCase().includes(q)));
+    const shown = all.filter(s => showHidden || !s.hidden);
     const hiddenN = all.length - all.filter(s => !s.hidden).length;
     if (!shown.length) { el.textContent = q ? 'no sessions match “' + q + '”' : 'none saved'; return; }
     el.innerHTML = shown.map(s => {
@@ -1926,6 +1928,8 @@ async function loadSessions() {
         '<div class="sname">' + esc(s.name || s.id) + '</div>' +
         '<div class="smeta">' + esc(when) + ' · ' + (s.messages || 0) + ' msgs' +
         (s.hidden ? ' · hidden' : '') + '</div>' +
+        // Why this session matched — a name alone rarely says.
+        (q && s.summary ? '<div class="ssum">' + esc(s.summary) + '</div>' : '') +
         '<div class="sess-acts">' +
         (cur ? '' : '<button class="sbtn" data-act="switch" title="Resume this session">⏵</button>') +
         '<button class="sbtn" data-act="rename" title="Rename">✎</button>' +

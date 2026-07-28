@@ -202,6 +202,9 @@ aside.resizing { transition: none; }   /* no lag while dragging */
                     text-overflow: ellipsis; white-space: nowrap; }
 .sess-item .smeta { color: var(--dimmer); font-size: 10.5px; font-family: var(--mono); }
 .sess-item { position: relative; }
+/* Why a searched session matched — its name alone rarely says. */
+.sess-item .ssum { color: var(--dimmer); font-size: 10.5px; margin-top: 2px;
+                   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sess-acts { display: none; gap: 2px; position: absolute; top: 3px; right: 4px; }
 .sess-item:hover .sess-acts { display: flex; }
 .sbtn { background: var(--panel); border: 1px solid var(--border); color: var(--dim);

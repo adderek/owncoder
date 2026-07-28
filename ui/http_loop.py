@@ -220,7 +220,7 @@ _PAGE = r"""<!DOCTYPE html>
   <div class="dsec"><pre id="sessinfo">—</pre></div>
   <details id="sessfold" class="dfold">
     <summary class="dhead">recent sessions</summary>
-    <input id="sessfilter" placeholder="filter by name…" class="sess-filter">
+    <input id="sessfilter" placeholder="search sessions — name, topic, tags…" class="sess-filter">
     <div id="sesslist" class="sess-list">—</div>
   </details>
   <details id="accessfold" class="dfold">
@@ -861,22 +861,31 @@ class _HttpUI:
             return {"ok": False, "msg": f"failed: {exc}"}
         return {"ok": bool(ok), "msg": _strip_rich(str(msg))}
 
-    def sessions_info(self) -> dict:
-        """Recent saved sessions — backs the left-drawer session list."""
+    def sessions_info(self, query: str = "") -> dict:
+        """Recent saved sessions — backs the left-drawer session list.
+
+        With a query, this is the same search /resume runs: name, description,
+        tags, summary and classification, ranked. The drawer filter used to be
+        a substring match over the thirty names already loaded, which could not
+        find a session by what was discussed in it.
+        """
         try:
-            from agent.memory.session import list_sessions
+            from agent.memory.session import list_sessions, search_sessions
+            raw = (search_sessions(query, limit=30) if query.strip()
+                   else list_sessions(limit=30))
             sessions = [
                 {"id": s.get("id", ""),
                  "name": s.get("name") or s.get("short_name") or s.get("id", ""),
                  "updated_at": s.get("updated_at") or "",
                  "messages": s.get("message_count", 0),
+                 "summary": (s.get("description") or s.get("summary") or "")[:160],
                  "hidden": bool(s.get("hidden", False))}
-                for s in list_sessions(limit=30)
+                for s in raw
             ]
         except Exception:
             logger.debug("http ui: list_sessions failed", exc_info=True)
             sessions = []
-        return {"sessions": sessions,
+        return {"sessions": sessions, "query": query,
                 "current": self.session.id if self.session else ""}
 
     def history_info(self, sid: str) -> dict:
@@ -1172,8 +1181,10 @@ def _make_handler(ui: _HttpUI):
                 self._json(ui.modelcalls_info())
             elif self.path == "/api/stats":
                 self._json(ui.stats_info())
-            elif self.path == "/api/sessions":
-                self._json(ui.sessions_info())
+            elif self.path.startswith("/api/sessions"):
+                from urllib.parse import parse_qs, urlparse
+                q = (parse_qs(urlparse(self.path).query).get("q") or [""])[0]
+                self._json(ui.sessions_info(q))
             elif self.path.startswith("/api/history"):
                 from urllib.parse import parse_qs, urlparse
                 sid = (parse_qs(urlparse(self.path).query).get("id") or [""])[0]
