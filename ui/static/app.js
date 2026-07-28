@@ -521,18 +521,22 @@ function handle(ev) {
   } else if (ev.type === 'permission') {
     endStream();
     permissionPrompt(ev);
+    setAttention('wait', '🔒 ' + (ev.question || 'permission required'));
     setActivity('waiting');
     setBusy(true, 'permission — waiting for your decision');
   } else if (ev.type === 'permission_done') {
     resolvePermission(ev.choice);
+    clearAttention();
     setActivity('thinking');
   } else if (ev.type === 'loopguard') {
     endStream();
     loopGuardPrompt(ev);
+    setAttention('wait', '⚠ loop guard — the agent is repeating itself');
     setActivity('waiting');
     setBusy(true, 'loop guard — waiting for your decision');
   } else if (ev.type === 'loopguard_done') {
     resolveLoopGuard(ev.choice);
+    clearAttention();
     setActivity('thinking');
   } else if (ev.type === 'signal') {
     // Keep the raw streamed text as a folded intermediate step; the cleaned
@@ -543,6 +547,7 @@ function handle(ev) {
     endStream();
     setActivity('waiting');
     showAsk(ev.kind, ev.text);
+    setAttention('wait', '⚑ ' + ev.kind + ': ' + (ev.text || ''));
   } else if (ev.type === 'usage') {
     const bits = [ev.text, ev.tiers].filter(Boolean).join('  ·  ');
     const calls = ev.calls || [];
@@ -564,6 +569,7 @@ function handle(ev) {
       busyFlag = true;
       if (liveActivity === 'idle') setActivity('thinking');
     } else {
+      const wasBusy = busyFlag;
       busyFlag = false;
       setActivity('idle');
       // A turn that was stopped/errored mid-tool leaves calls with no result;
@@ -572,6 +578,11 @@ function handle(ev) {
       endStream();   // error/abort path: keep whatever streamed, folded
       endTurn();
       resolveLoopGuard('stop');   // turn over — retire any pending prompt
+      // A pending question outranks "finished": it still needs an answer.
+      // Only a turn that was actually running counts as finished — the server
+      // also reports idle on connect, and that is not news.
+      if (document.getElementById('askbox')) setAttention('wait', null);
+      else if (wasBusy) setAttention('done', 'turn finished');
     }
     if (ev.state !== 'busy' && document.getElementById('askbox'))
       setBusy(false, 'waiting for your answer');
@@ -713,8 +724,89 @@ function setSessionChip(id, name) {
   chip.textContent = label;
   chip.title = 'session: ' + id + (name ? '\nname: ' + name : '') +
                '\nclick for the sessions panel';
-  document.title = 'owncoder' + (name || id ? ' — ' + (name || id) : '');
+  titleBase = 'owncoder' + (name || id ? ' — ' + (name || id) : '');
+  renderTitle();
 }
+
+// ── Attention ──────────────────────────────────────────────────────────────
+// A turn can run for minutes, and the permission / loop-guard prompts DENY or
+// stop on timeout. Someone who tabbed away has no way to know either happened,
+// so the tab itself carries the state: title prefix, favicon colour, and — if
+// they asked for it — a desktop notification.
+let titleBase = 'owncoder';
+let attention = null;          // null | 'wait' (needs an answer) | 'done'
+
+function renderTitle() {
+  document.title = (attention === 'wait' ? '● ' : attention === 'done' ? '✓ ' : '') +
+                   titleBase;
+}
+
+// Drawn rather than shipped as a file: one <link> and no extra request, and
+// the colour can follow the state. Without this the page had no icon at all.
+function faviconSvg(color) {
+  return 'data:image/svg+xml,' + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">' +
+    '<rect width="32" height="32" rx="7" fill="#1c1f26"/>' +
+    '<circle cx="16" cy="16" r="8" fill="' + color + '"/></svg>');
+}
+const FAVICON = {null: '#6aa6ff', wait: '#e0a13a', done: '#4bbf73'};
+function renderFavicon() {
+  const link = document.getElementById('favicon');
+  if (link) link.href = faviconSvg(FAVICON[attention] || FAVICON.null);
+}
+
+// Notifications are opt-in behind the 🔔 button: requesting permission
+// unprompted on first load is the behaviour every site is disliked for.
+function notifyEnabled() {
+  return 'Notification' in window && Notification.permission === 'granted' &&
+         localStorage.getItem('oc-notify') === '1';
+}
+function notify(text) {
+  if (!notifyEnabled()) return;
+  try {
+    const n = new Notification(titleBase, {body: text, tag: 'owncoder', renotify: true});
+    n.onclick = () => { window.focus(); n.close(); };
+  } catch (e) {}
+}
+function renderNotifyBtn() {
+  const b = document.getElementById('notifytoggle');
+  if (!b) return;
+  const on = notifyEnabled();
+  b.classList.toggle('active', on);
+  b.textContent = on ? '🔔' : '🔕';
+  b.title = !('Notification' in window) ? 'Desktop notifications unsupported here'
+    : Notification.permission === 'denied'
+      ? 'Desktop notifications blocked for this site — allow them in the browser'
+      : on ? 'Desktop notifications on — click to mute'
+           : 'Notify me when the agent needs an answer or finishes';
+}
+
+// Away = not looking at this tab. document.hidden alone misses the common
+// case of a visible-but-unfocused window next to an editor.
+function away() {
+  return document.hidden || (document.hasFocus && !document.hasFocus());
+}
+
+function setAttention(kind, text) {
+  if (kind === 'done' && !away()) return;   // they watched it land
+  if (attention === kind) return;
+  attention = kind;
+  renderTitle();
+  renderFavicon();
+  if (kind && away() && text) notify(text);
+}
+function clearAttention() {
+  if (attention === null) return;
+  attention = null;
+  renderTitle();
+  renderFavicon();
+}
+// A finished turn is news only until you look; a pending prompt stays flagged
+// until it is actually answered.
+window.addEventListener('focus', () => { if (attention === 'done') clearAttention(); });
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && attention === 'done') clearAttention();
+});
 
 // Unicode sparkline over bucketed values — nulls (buckets with no calls)
 // render as a gap so a quiet night doesn't read as a throughput collapse.
@@ -1385,6 +1477,35 @@ document.getElementById('layout').addEventListener('click', () => {
 });
 try { setLayout(localStorage.getItem('oc-layout') || 'center'); } catch (e) {}
 
+// Desktop notifications, off until asked for. The click is the user gesture
+// browsers require for requestPermission, so the prompt only ever appears
+// because someone pressed the button.
+document.getElementById('notifytoggle').addEventListener('click', async () => {
+  if (!('Notification' in window)) {
+    row('sys error', null, 'this browser has no notification support');
+    return;
+  }
+  if (notifyEnabled()) {                       // on → mute
+    try { localStorage.setItem('oc-notify', '0'); } catch (e) {}
+    renderNotifyBtn();
+    return;
+  }
+  if (Notification.permission === 'denied') {
+    row('sys', null, 'notifications are blocked for this site — allow them in ' +
+        'the browser, then press 🔕 again');
+    return;
+  }
+  let perm = Notification.permission;
+  if (perm !== 'granted') { try { perm = await Notification.requestPermission(); } catch (e) {} }
+  if (perm !== 'granted') { renderNotifyBtn(); return; }
+  try { localStorage.setItem('oc-notify', '1'); } catch (e) {}
+  renderNotifyBtn();
+  row('sys', null, '🔔 notifications on — you will be told when the agent needs ' +
+      'an answer or finishes a turn');
+});
+renderNotifyBtn();
+renderFavicon();
+
 // Theme cycling, persisted locally. Dark is the default.
 const THEMES = ['dark', 'light', 'solarized-dark', 'solarized-light'];
 const THEME_ICON = {dark: '◐', light: '☀', 'solarized-dark': '🌘', 'solarized-light': '🌕'};
@@ -1849,6 +1970,7 @@ async function send() {
   if (!text) return;
   clearAsk();
   clearRetry();
+  clearAttention();   // they are here and typing
   if (text === '/clear') {   // purely visual — handled client-side
     input.value = ''; input.style.height = 'auto';
     log.innerHTML = '';
