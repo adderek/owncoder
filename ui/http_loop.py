@@ -101,6 +101,62 @@ def _result_preview(result, limit: int = 4000) -> str:
     return result[:limit] + ("…" if len(result) > limit else "")
 
 
+def _tc_field(tc, *path):
+    """Read a tool-call field whether it is a dict or an SDK object."""
+    cur = tc
+    for key in path:
+        if cur is None:
+            return None
+        cur = cur.get(key) if isinstance(cur, dict) else getattr(cur, key, None)
+    return cur
+
+
+def _transcript(messages, result_limit: int = 2000) -> list[dict]:
+    """The conversation as the browser replays it, tool work included.
+
+    A reload used to hand back questions and answers only, so every tool call
+    and its output vanished the moment the page was refreshed — the evidence
+    for an answer outlived by the answer. Results are shortened harder than
+    in the live event: this is a whole session in one response.
+    """
+    out: list[dict] = []
+    for m in messages:
+        role = m.get("role")
+        if role == "user":
+            out.append({"role": "user", "content": m.get("content") or ""})
+        elif role == "assistant":
+            calls = []
+            for tc in (m.get("tool_calls") or []):
+                calls.append({
+                    "id": _tc_field(tc, "id") or "",
+                    "name": _tc_field(tc, "function", "name") or "",
+                    "args": _args_preview(_tc_field(tc, "function", "arguments")),
+                    "args_full": _args_full(_tc_field(tc, "function", "arguments")),
+                })
+            entry = {"role": "assistant", "content": m.get("content") or ""}
+            if calls:
+                entry["tool_calls"] = calls
+            if entry["content"] or calls:
+                out.append(entry)
+        elif role == "tool":
+            out.append({
+                "role": "tool",
+                "id": m.get("tool_call_id") or "",
+                "content": _result_preview(m.get("content"), result_limit),
+                "ok": _tool_ok(m.get("content")),
+            })
+    return out
+
+
+def _tool_ok(result) -> bool:
+    """Same rule the turn engine uses: a JSON envelope with an "error" key."""
+    try:
+        parsed = json.loads(result or "")
+    except Exception:
+        return True
+    return not (isinstance(parsed, dict) and "error" in parsed)
+
+
 class _EventBus:
     """Thread-safe fan-out of JSON events to connected SSE clients."""
 
@@ -680,11 +736,7 @@ class _HttpUI:
 
     def state(self) -> dict:
         info = self.server.get_llm_info()
-        messages = [
-            {"role": m.get("role"), "content": m.get("content") or ""}
-            for m in self.server.get_messages()
-            if m.get("role") in ("user", "assistant")
-        ]
+        messages = _transcript(self.server.get_messages())
         models = {}
         try:
             models = self.server.get_model_configs()
@@ -842,11 +894,7 @@ class _HttpUI:
                 return {"error": f"session '{sid}' not found"}
             name = getattr(session, "name", "") or session.id
             workdir = getattr(session, "working_dir", "") or str(get_working_dir())
-        messages = [
-            {"role": m.get("role"), "content": m.get("content") or ""}
-            for m in msgs
-            if m.get("role") in ("user", "assistant") and (m.get("content") or "").strip()
-        ]
+        messages = _transcript(msgs)
         return {"id": sid, "name": name, "workdir": workdir, "messages": messages}
 
     def qa_info(self, sid: str = "") -> dict:

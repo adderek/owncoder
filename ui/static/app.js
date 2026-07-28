@@ -315,11 +315,14 @@ function endTurn() {
   const bits = [];
   if (t.steps) bits.push(t.steps + (t.steps === 1 ? ' step' : ' steps'));
   if (t.tools) bits.push(t.tools + (t.tools === 1 ? ' tool' : ' tools'));
-  bits.push(secs + 's');
+  // A replayed turn happened whenever it happened; the wall clock of the
+  // replay would be a lie, so it gets counts only.
+  if (!t.replay) bits.push(secs + 's');
   t.details.querySelector('.wmeta').textContent = bits.join(' · ');
-  t.details.querySelector('summary').title =
-    'started ' + fmtClock(t.t0) + '  ·  ended ' + fmtClock(Date.now()) +
-    '  ·  ' + secs + 's';
+  t.details.querySelector('summary').title = t.replay
+    ? 'replayed from the session transcript'
+    : 'started ' + fmtClock(t.t0) + '  ·  ended ' + fmtClock(Date.now()) +
+      '  ·  ' + secs + 's';
   t.details.classList.add('done');
   if (!t.userToggled) t.details.open = false;
 }
@@ -486,6 +489,34 @@ function toolOutput(name, ok, text, ms) {
   body.className = 'toolout' + (ok ? '' : ' fail');
   body.textContent = text;
   d.appendChild(body);
+}
+
+// Replay counterparts of toolCall/toolResult: same fold, but the outcome is
+// already known, so nothing is left pending.
+function replayToolCall(name, args, argsFull) {
+  const d = document.createElement('details');
+  d.className = 'tool';
+  const full = argsFull || args || '';
+  d.innerHTML = '<summary><span class="toolname">⚙ ' + esc(name) +
+    '</span><span class="toolargs">' + esc(args || '') + '</span>' +
+    '<span class="mark pend">●</span></summary>' +
+    (full ? '<div class="body">' + esc(full) + '</div>' : '');
+  // Not metaMount: that routes by busyFlag, which is false while replaying, so
+  // the fold would land beside the work fold instead of inside it.
+  if (turn) { turn.body.appendChild(d); turn.tools++; } else { mount(d); }
+  return d;
+}
+
+function replayToolResult(d, ok, text) {
+  const mark = d.querySelector('.mark');
+  mark.textContent = ok ? '✓' : '✗';
+  mark.className = 'mark ' + (ok ? 'ok' : 'fail');
+  if (text) {
+    const body = document.createElement('div');
+    body.className = 'toolout' + (ok ? '' : ' fail');
+    body.textContent = text;
+    d.appendChild(body);
+  }
 }
 
 function reasoning(text) {
@@ -1696,10 +1727,7 @@ async function previewSession(id) {
       sessionAction({action: 'switch', id}));
     document.getElementById('pb-cond').addEventListener('click', () => condensedView(id));
     document.getElementById('pb-back').addEventListener('click', exitPreview);
-    for (const m of (d.messages || [])) {
-      if (m.role === 'user') row('msg user', null, m.content);
-      else if (m.content) assistantMd(m.content);
-    }
+    replayTranscript(d.messages);
     log.scrollTop = 0;
     input.placeholder = 'Message this session — switches now, or queues until the running turn ends';
     loadSessions();   // re-render list so the previewed item is marked
@@ -1901,6 +1929,38 @@ document.getElementById('sessfold').addEventListener('toggle', (e) => {
 document.getElementById('sessfilter').addEventListener('input', () => loadSessions());
 document.getElementById('sessfilter').addEventListener('click', (e) => e.stopPropagation());
 
+// Replay a transcript from the server: user turns, the tool work each answer
+// rested on, then the answer. Without the tool folds a reload turned a
+// reasoned turn into an assertion — the evidence outlived by the conclusion.
+function replayTranscript(messages) {
+  const folds = {};        // tool_call_id -> the fold awaiting its result
+  let work = null;         // open work fold for the current assistant step
+  for (const m of messages || []) {
+    if (m.role === 'user') {
+      endTurn();
+      work = null;
+      row('msg user', null, m.content);
+    } else if (m.role === 'assistant') {
+      for (const c of (m.tool_calls || [])) {
+        if (!work) { work = beginTurn(); work.replay = true; }
+        folds[c.id] = replayToolCall(c.name, c.args, c.args_full);
+      }
+      if (m.content) {
+        endTurn();
+        work = null;
+        assistantMd(m.content);
+      }
+    } else if (m.role === 'tool') {
+      const d = folds[m.id];
+      if (d) {
+        replayToolResult(d, m.ok !== false, m.content);
+        delete folds[m.id];
+      }
+    }
+  }
+  endTurn();
+}
+
 function applyState(s) {
   document.getElementById('model').textContent = s.model;
   if (s.models && s.models.llm) {
@@ -1926,10 +1986,7 @@ function applyState(s) {
   }
   handle({type: 'tokens', used: s.tokens, ctx: s.ctx_window});
   if (s.io) setIoChip(s.io.in, s.io.out);
-  for (const m of s.messages) {
-    if (m.role === 'user') row('msg user', null, m.content);
-    else if (m.role === 'assistant' && m.content) assistantMd(m.content);
-  }
+  replayTranscript(s.messages);
   busyFlag = s.busy;
   // Fresh view of a turn already in flight: nothing is known about what it is
   // doing, and the watchdog must not count the reconnect gap as a stall.
