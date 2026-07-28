@@ -1971,8 +1971,10 @@ async function send() {
   clearAsk();
   clearRetry();
   clearAttention();   // they are here and typing
+  histPush(text);
   if (text === '/clear') {   // purely visual — handled client-side
     input.value = ''; input.style.height = 'auto';
+    saveDraft();
     log.innerHTML = '';
     turn = null; streamEl = null; thinkEl = null; pendingTools = {};
     return;
@@ -1980,6 +1982,7 @@ async function send() {
   const target = previewing;   // non-null: send to the previewed session
   input.value = '';
   input.style.height = 'auto';
+  saveDraft();
   try {
     const body = target ? {text, session_id: target} : {text};
     const r = await fetch('/api/chat', {
@@ -1994,6 +1997,8 @@ async function send() {
     // status 'switching': the switched event resyncs the view shortly.
   } catch (e) {
     input.value = text;   // don't lose the draft
+    autoGrow();
+    saveDraft();
     row('sys error', null, 'send failed (server unreachable?): ' + e);
   }
 }
@@ -2050,13 +2055,91 @@ function stopTurn(mode) {
 }
 document.getElementById('stop').onclick = () => stopTurn('soft');
 document.getElementById('kill').onclick = () => stopTurn('hard');
-input.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
-});
-input.addEventListener('input', () => {
+// ── Message history and draft ──────────────────────────────────────────────
+// This is a prompt: ↑ recalls what you sent, like every shell. Kept in
+// localStorage so it survives the reload, and shared across sessions — you
+// re-send the same "run the tests" line whichever session you are in.
+const HIST_KEY = 'oc-history';
+const HIST_MAX = 100;
+const DRAFT_KEY = 'oc-draft';
+let history = [];
+let histIdx = -1;         // -1 = editing, not browsing
+let histDraft = '';       // what was typed before browsing started
+
+try { history = JSON.parse(localStorage.getItem(HIST_KEY) || '[]'); } catch (e) {}
+if (!Array.isArray(history)) history = [];
+
+function histPush(text) {
+  if (!text || text === history[history.length - 1]) return;   // no dupe runs
+  history.push(text);
+  if (history.length > HIST_MAX) history = history.slice(-HIST_MAX);
+  try { localStorage.setItem(HIST_KEY, JSON.stringify(history)); } catch (e) {}
+  histIdx = -1;
+}
+
+function histApply(text) {
+  input.value = text;
+  autoGrow();
+  // Caret to the end: the common next action is to edit the tail of the
+  // recalled line, not to retype it.
+  input.setSelectionRange(text.length, text.length);
+}
+
+function histMove(dir) {          // -1 = older, +1 = newer
+  if (!history.length) return;
+  if (histIdx < 0) {
+    if (dir > 0) return;          // already at the newest — nothing to go to
+    histDraft = input.value;
+    histIdx = history.length;
+  }
+  const next = histIdx + dir;
+  if (next >= history.length) {   // past the newest → back to the draft
+    histIdx = -1;
+    histApply(histDraft);
+    return;
+  }
+  histIdx = Math.max(0, next);
+  histApply(history[histIdx]);
+}
+
+// ↑/↓ browse only from the first/last line, so they still move the caret
+// inside a multi-line message.
+function onFirstLine() { return input.value.lastIndexOf('\n', input.selectionStart - 1) < 0; }
+function onLastLine() { return input.value.indexOf('\n', input.selectionStart) < 0; }
+
+function saveDraft() {
+  try {
+    if (input.value) localStorage.setItem(DRAFT_KEY, input.value);
+    else localStorage.removeItem(DRAFT_KEY);
+  } catch (e) {}
+}
+
+function autoGrow() {
   input.style.height = 'auto';
   input.style.height = Math.min(input.scrollHeight, 180) + 'px';
+}
+
+input.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); return; }
+  if (e.key === 'ArrowUp' && histIdx !== 0 && onFirstLine() &&
+      (histIdx >= 0 || !input.value || input.selectionStart === 0)) {
+    e.preventDefault(); histMove(-1);
+  } else if (e.key === 'ArrowDown' && histIdx >= 0 && onLastLine()) {
+    e.preventDefault(); histMove(1);
+  }
 });
+input.addEventListener('input', () => {
+  histIdx = -1;      // typing means you own this text now, not the history
+  autoGrow();
+  saveDraft();
+});
+
+// An unsent draft outlives a reload: closing the tab on a half-written
+// message and losing it is the kind of small betrayal people remember.
+try {
+  const draft = localStorage.getItem(DRAFT_KEY);
+  if (draft) { input.value = draft; autoGrow(); }
+} catch (e) {}
 // Esc closes whichever side drawer is open — mirrors the backdrop-tap close
 // on mobile, useful on desktop too without reaching for the mouse.
 document.addEventListener('keydown', (e) => {
