@@ -536,6 +536,15 @@ details.usage[open] summary { color: var(--dim); }
 details.usage .body { padding: 4px 0 2px 14px; white-space: pre; overflow-x: auto; }
 #model, #tokenwrap { cursor: pointer; }
 #model:hover, #tokenwrap:hover #tokens { color: var(--fg); border-color: var(--accent); }
+/* Drop target for files dragged onto the conversation. Outline only — the
+   chat stays readable underneath, so you can see where you are dropping. */
+#center.dropping::after {
+  content: "drop to attach"; position: absolute; inset: 8px; z-index: 6;
+  display: flex; align-items: center; justify-content: center;
+  border: 2px dashed var(--accent); border-radius: 10px; color: var(--accent);
+  font-size: 13px; background: rgba(0, 0, 0, .35);
+  pointer-events: none;
+}
 #inputrow { display: flex; gap: 8px; padding: 12px 16px; background: var(--panel);
             border-top: 1px solid var(--border); flex-shrink: 0; }
 #inputrow .row { display: flex; gap: 8px; flex: 1; animation: none; }

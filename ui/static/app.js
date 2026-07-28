@@ -2029,14 +2029,58 @@ async function uploadOne(file) {
   input.dispatchEvent(new Event('input'));
   row('sys', null, '📎 uploaded ' + file.name + ' → ' + r.path);
 }
-document.getElementById('attach').onclick = () => document.getElementById('attachfile').click();
-document.getElementById('attachfile').addEventListener('change', async (e) => {
-  const files = Array.from(e.target.files || []);
-  e.target.value = '';   // allow re-selecting the same file later
+async function uploadFiles(files) {
   for (const f of files) {
     try { await uploadOne(f); } catch (err) { row('sys error', null, 'upload failed: ' + err); }
   }
   input.focus();
+}
+document.getElementById('attach').onclick = () => document.getElementById('attachfile').click();
+document.getElementById('attachfile').addEventListener('change', async (e) => {
+  const files = Array.from(e.target.files || []);
+  e.target.value = '';   // allow re-selecting the same file later
+  await uploadFiles(files);
+});
+
+// A pasted screenshot arrives as a nameless blob; give it something readable
+// on disk, since the path is what the agent will be told to open.
+function pastedName(file) {
+  if (file.name) return file.name;
+  const ext = (file.type.split('/')[1] || 'bin').split('+')[0];
+  const t = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  return 'paste-' + t + '.' + ext;
+}
+
+// Ctrl+V a screenshot straight into the box — the single most common way an
+// attachment starts. Text pastes are left alone.
+input.addEventListener('paste', (e) => {
+  const files = Array.from((e.clipboardData || {}).files || []);
+  if (!files.length) return;
+  e.preventDefault();
+  uploadFiles(files.map(f => f.name ? f : new File([f], pastedName(f), {type: f.type})));
+});
+
+// Drop anywhere on the chat column. Guarded on dataTransfer.files so the
+// backlog's own row-reorder drags (left drawer) are never mistaken for one.
+const centerEl = document.getElementById('center');
+function draggingFiles(e) {
+  const t = e.dataTransfer;
+  return !!t && Array.from(t.types || []).indexOf('Files') >= 0;
+}
+centerEl.addEventListener('dragover', (e) => {
+  if (!draggingFiles(e)) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'copy';
+  centerEl.classList.add('dropping');
+});
+centerEl.addEventListener('dragleave', (e) => {
+  if (e.target === centerEl) centerEl.classList.remove('dropping');
+});
+centerEl.addEventListener('drop', (e) => {
+  if (!draggingFiles(e)) return;
+  e.preventDefault();
+  centerEl.classList.remove('dropping');
+  uploadFiles(Array.from(e.dataTransfer.files || []));
 });
 
 document.getElementById('continue').onclick = () => {
