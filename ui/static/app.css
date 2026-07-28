@@ -449,7 +449,11 @@ details.think summary:hover { color: var(--dim); }
 .user { background: var(--user-bg); border: 1px solid var(--user-border); margin-left: 12%;
         white-space: pre-wrap; }
 .assistant { background: var(--panel); border: 1px solid var(--border); margin-right: 6%; }
-.assistant.streaming { border-left: 3px solid var(--warn); white-space: pre-wrap; }
+/* The bubble renders markdown as it streams, so the block elements bring
+   their own spacing; pre-wrap survives only for the oversized-answer path,
+   where the raw text is shown instead. */
+.assistant.streaming { border-left: 3px solid var(--warn); }
+.assistant.streaming > .md { white-space: normal; }
 .assistant .md h1, .assistant .md h2, .assistant .md h3,
 .assistant .md h4, .assistant .md h5, .assistant .md h6 { margin: 10px 0 6px; color: var(--head-fg); }
 .assistant .md h1 { font-size: 18px; } .assistant .md h2 { font-size: 16px; }

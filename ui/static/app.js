@@ -247,20 +247,63 @@ function setBusy(busy, label) {
   renderActivity();
 }
 
+// ── Live markdown ──────────────────────────────────────────────────────────
+// A streamed answer used to arrive as raw text and reflow into markdown only
+// when the turn ended, which made a long code answer unreadable for exactly
+// as long as it took to produce. The raw text is kept aside (it is what the
+// fold keeps, and what renderMd needs) and re-rendered on a timer.
+let streamRaw = '';
+let streamTimer = null;
+const STREAM_RENDER_MS = 120;
+const STREAM_MD_LIMIT = 400000;   // past this, re-rendering costs more than it gives
+
+// A fence still being typed would swallow the rest of the document; close it
+// for the render only, never in the buffer.
+function balancedMd(text) {
+  const fences = (text.match(/```/g) || []).length;
+  return fences % 2 ? text + '\n```' : text;
+}
+
+function renderStream() {
+  if (!streamEl) return;
+  if (streamRaw.length > STREAM_MD_LIMIT) {
+    streamEl.textContent = streamRaw;
+    return;
+  }
+  streamEl.innerHTML = '<div class="md">' + renderMd(balancedMd(streamRaw)) + '</div>';
+}
+
+function scheduleStreamRender() {
+  if (streamTimer) return;
+  streamTimer = setTimeout(() => {
+    streamTimer = null;
+    renderStream();
+    stickScroll();
+  }, STREAM_RENDER_MS);
+}
+
+function stopStreamRender() {
+  if (streamTimer) { clearTimeout(streamTimer); streamTimer = null; }
+}
+
 function endStream() {
+  stopStreamRender();
   if (streamEl) {
     // Re-render the finished stream as markdown (intermediate agent text —
     // stays inside the work fold as a drill-down detail).
-    const text = streamEl.textContent;
+    const text = streamRaw || streamEl.textContent;
     streamEl.classList.remove('streaming');
     streamEl.style.whiteSpace = '';
     streamEl.innerHTML = '<div class="md">' + renderMd(text) + '</div>';
     streamEl = null;
   }
+  streamRaw = '';
   thinkEl = null;
 }
 
 function dropStream() {
+  stopStreamRender();
+  streamRaw = '';
   // Discard the streaming bubble: its raw content is superseded by the
   // cleaned final `response` event (fixes the doubled output).
   if (streamEl) { streamEl.remove(); streamEl = null; }
@@ -599,9 +642,11 @@ function handle(ev) {
       // once the cleaned final response replaces it below the fold.
       streamEl = document.createElement('div');
       streamEl.className = 'msg assistant streaming';
+      streamRaw = '';
       stamp(metaMount(streamEl));   // hover → when the first token landed
     }
-    streamEl.textContent += ev.text;
+    streamRaw += ev.text;
+    scheduleStreamRender();
     lastTokenAt = Date.now();
     stallBudgetMs = 0;   // prefill budget spent; the inter-token fuse is short
     streamEl.classList.remove('paused');
