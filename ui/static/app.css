@@ -315,6 +315,20 @@ aside.resizing { transition: none; }   /* no lag while dragging */
           border-radius: 8px; font-size: 13.5px; animation: fadein .18s ease-out; }
 #askbox .ask-kind { color: var(--warn); font-family: var(--mono); font-size: 12px; }
 #askbox .ask-text { color: var(--fg); }
+/* Find bar — sits above the scrollback rather than floating over it, so it
+   never covers the hit it just scrolled to. */
+#findbar { display: flex; gap: 6px; align-items: center; padding: 6px 16px;
+           background: var(--panel); border-bottom: 1px solid var(--border);
+           flex-shrink: 0; }
+#findbar input { flex: 1; min-width: 0; background: var(--bg); color: var(--fg);
+                 border: 1px solid var(--border); border-radius: 6px;
+                 padding: 4px 8px; font: inherit; font-size: 12px; }
+#findbar input:focus { outline: none; border-color: var(--accent); }
+#findcount { font-family: var(--mono); font-size: 11px; min-width: 46px;
+             text-align: right; }
+mark.findhit { background: var(--sig-bg); color: inherit; border-radius: 2px;
+               box-shadow: 0 0 0 1px var(--sig-border); }
+mark.findhit.cur { background: var(--accent); color: var(--bg); }
 /* Slash palette — pinned above the input like the ask box, scrollable so a
    long list never pushes the message box off screen. */
 #slashbox { max-width: 920px; margin: 0 auto 8px; padding: 4px;

@@ -2306,10 +2306,133 @@ try {
   const draft = localStorage.getItem(DRAFT_KEY);
   if (draft) { input.value = draft; autoGrow(); }
 } catch (e) {}
+// ── Find in conversation ───────────────────────────────────────────────────
+// The browser's own find can't see text inside a collapsed <details>, and a
+// long turn hides most of its detail in exactly those folds. This one opens
+// the fold around the hit it lands on.
+const FIND_MAX = 500;
+let findHits = [];
+let findCur = -1;
+
+function findClear() {
+  // Unwrap in place and stitch the split text nodes back together, so the
+  // next search sees the same DOM it would have seen without this one.
+  log.querySelectorAll('mark.findhit').forEach(m => {
+    const parent = m.parentNode;
+    parent.replaceChild(document.createTextNode(m.textContent), m);
+    parent.normalize();
+  });
+  findHits = [];
+  findCur = -1;
+}
+
+function findMark(needle) {
+  findClear();
+  if (!needle) return;
+  const want = needle.toLowerCase();
+  const walker = document.createTreeWalker(log, NodeFilter.SHOW_TEXT, {
+    acceptNode: (n) => (n.nodeValue && n.nodeValue.toLowerCase().includes(want) &&
+                        !n.parentElement.closest('#findbar')
+                        ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT),
+  });
+  const targets = [];
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) targets.push(n);
+  for (const node of targets) {
+    if (findHits.length >= FIND_MAX) break;
+    const text = node.nodeValue;
+    const frag = document.createDocumentFragment();
+    let at = 0;
+    for (;;) {
+      const hit = text.toLowerCase().indexOf(want, at);
+      if (hit < 0 || findHits.length >= FIND_MAX) break;
+      if (hit > at) frag.appendChild(document.createTextNode(text.slice(at, hit)));
+      const m = document.createElement('mark');
+      m.className = 'findhit';
+      m.textContent = text.substr(hit, want.length);
+      frag.appendChild(m);
+      findHits.push(m);
+      at = hit + want.length;
+    }
+    if (at < text.length) frag.appendChild(document.createTextNode(text.slice(at)));
+    node.parentNode.replaceChild(frag, node);
+  }
+}
+
+function findGo(i) {
+  if (!findHits.length) return;
+  if (findCur >= 0 && findHits[findCur]) findHits[findCur].classList.remove('cur');
+  findCur = (i + findHits.length) % findHits.length;
+  const m = findHits[findCur];
+  m.classList.add('cur');
+  // Open every fold around the hit — the point of having our own find.
+  for (let d = m.closest('details'); d; d = d.parentElement && d.parentElement.closest('details'))
+    d.open = true;
+  m.scrollIntoView({block: 'center'});
+  findStatus();
+}
+
+function findStatus() {
+  const el = document.getElementById('findcount');
+  if (!el) return;
+  el.textContent = !findHits.length ? '0/0'
+    : (findCur + 1) + '/' + findHits.length + (findHits.length >= FIND_MAX ? '+' : '');
+}
+
+function findClose() {
+  const bar = document.getElementById('findbar');
+  if (bar) bar.remove();
+  findClear();
+  input.focus();
+}
+
+function findOpen() {
+  let bar = document.getElementById('findbar');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'findbar';
+    bar.innerHTML =
+      '<input id="findinput" placeholder="Find in conversation…" autocomplete="off">' +
+      '<span id="findcount" class="dim">0/0</span>' +
+      '<button class="sbtn" id="findprev" title="Previous (Shift+Enter)">↑</button>' +
+      '<button class="sbtn" id="findnext" title="Next (Enter)">↓</button>' +
+      '<button class="sbtn" id="findclose" title="Close (Esc)">✕</button>';
+    log.parentElement.insertBefore(bar, log);
+    const fi = bar.querySelector('#findinput');
+    fi.addEventListener('input', () => {
+      findMark(fi.value);
+      findCur = -1;
+      if (findHits.length) findGo(0); else findStatus();
+    });
+    fi.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); findGo(findCur + (e.shiftKey ? -1 : 1)); }
+      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); findClose(); }
+    });
+    bar.querySelector('#findnext').addEventListener('click', () => findGo(findCur + 1));
+    bar.querySelector('#findprev').addEventListener('click', () => findGo(findCur - 1));
+    bar.querySelector('#findclose').addEventListener('click', findClose);
+  }
+  const fi = bar.querySelector('#findinput');
+  // Opening over a selection searches for it: the usual reason to press ⌘F.
+  const sel = String(window.getSelection ? window.getSelection() : '').trim();
+  if (sel && sel.length < 80 && !sel.includes('\n')) fi.value = sel;
+  fi.focus();
+  fi.select();
+  if (fi.value) fi.dispatchEvent(new Event('input'));
+}
+
 // Esc closes whichever side drawer is open — mirrors the backdrop-tap close
 // on mobile, useful on desktop too without reaching for the mouse.
 document.addEventListener('keydown', (e) => {
+  // Ctrl/Cmd+F searches the conversation instead of the rendered page: the
+  // browser's find cannot see into a collapsed fold, and that is where most
+  // of a turn lives. Shift+Ctrl+F is left alone as the way out to it.
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'f') {
+    e.preventDefault();
+    findOpen();
+    return;
+  }
   if (e.key === 'Escape') {
+    if (document.getElementById('findbar')) { findClose(); return; }
     if (document.getElementById('left').classList.contains('open'))
       toggleDrawer('left', 'lefttoggle', false);
     if (document.getElementById('right').classList.contains('open'))
