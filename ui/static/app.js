@@ -2596,6 +2596,39 @@ function findOpen() {
   if (fi.value) fi.dispatchEvent(new Event('input'));
 }
 
+// ── Keyboard help ──────────────────────────────────────────────────────────
+// Every shortcut here was undiscoverable: one tooltip mentioned Ctrl+B and
+// nothing mentioned the rest. "?" (outside the message box) lists them.
+const SHORTCUTS = [
+  ['Enter', 'send  ·  Shift+Enter for a newline'],
+  ['\u2191 / \u2193', 'previous / next message you sent (from the first / last line)'],
+  ['/', 'command palette \u2014 Tab completes, \u2191\u2193 picks'],
+  ['Ctrl+F', 'find in the conversation, folds included'],
+  ['Ctrl+B', 'sessions drawer'],
+  ['Alt+\u2191 / \u2193', 'switch to the previous / next session'],
+  ['1 \u2013 9', 'answer a waiting permission or loop-guard prompt'],
+  ['Esc', 'close the palette, the find bar, or the drawers'],
+  ['?', 'this list'],
+];
+
+function helpClose() {
+  const el = document.getElementById('helpbox');
+  if (el) el.remove();
+}
+
+function helpOpen() {
+  if (document.getElementById('helpbox')) { helpClose(); return; }
+  const el = document.createElement('div');
+  el.id = 'helpbox';
+  el.innerHTML = '<div class="help-card"><div class="help-title">Keyboard</div>' +
+    SHORTCUTS.map(([k, what]) =>
+      '<div class="help-row"><kbd>' + esc(k) + '</kbd><span>' + esc(what) + '</span></div>'
+    ).join('') +
+    '<div class="help-foot">Esc or click anywhere to close</div></div>';
+  el.addEventListener('click', helpClose);
+  document.body.appendChild(el);
+}
+
 // Esc closes whichever side drawer is open — mirrors the backdrop-tap close
 // on mobile, useful on desktop too without reaching for the mouse.
 document.addEventListener('keydown', (e) => {
@@ -2608,6 +2641,7 @@ document.addEventListener('keydown', (e) => {
     return;
   }
   if (e.key === 'Escape') {
+    if (document.getElementById('helpbox')) { helpClose(); return; }
     if (document.getElementById('findbar')) { findClose(); return; }
     if (document.getElementById('left').classList.contains('open'))
       toggleDrawer('left', 'lefttoggle', false);
@@ -2624,6 +2658,11 @@ document.addEventListener('keydown', (e) => {
   if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
     e.preventDefault();
     cycleSession(e.key === 'ArrowUp' ? -1 : 1);
+    return;
+  }
+  if (e.key === '?' && !typing && !e.ctrlKey && !e.metaKey) {
+    e.preventDefault();
+    helpOpen();
     return;
   }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b' && !typing) {

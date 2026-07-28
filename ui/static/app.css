@@ -320,6 +320,19 @@ aside.resizing { transition: none; }   /* no lag while dragging */
 #logtrim { max-width: 920px; margin: 0 auto 8px; padding: 4px 12px;
            color: var(--dimmer); font-size: 11px; font-family: var(--mono);
            border-bottom: 1px dashed var(--border); }
+/* Keyboard help, opened with "?". A plain overlay: it is read once and
+   dismissed, so it gets no chrome beyond the card. */
+#helpbox { position: fixed; inset: 0; z-index: 60; display: flex;
+           align-items: center; justify-content: center; background: rgba(0,0,0,.45); }
+#helpbox .help-card { background: var(--panel); border: 1px solid var(--border);
+                      border-radius: 10px; padding: 14px 18px; min-width: 320px;
+                      max-width: 560px; box-shadow: 0 8px 30px rgba(0,0,0,.4); }
+#helpbox .help-title { color: var(--fg); font-weight: bold; margin-bottom: 10px; }
+#helpbox .help-row { display: flex; gap: 12px; align-items: baseline;
+                     padding: 3px 0; font-size: 12.5px; color: var(--dim); }
+#helpbox kbd { flex-shrink: 0; min-width: 84px; font-family: var(--mono);
+               font-size: 11px; color: var(--accent); }
+#helpbox .help-foot { margin-top: 10px; color: var(--dimmer); font-size: 11px; }
 /* Find bar — sits above the scrollback rather than floating over it, so it
    never covers the hit it just scrolled to. */
 #findbar { display: flex; gap: 6px; align-items: center; padding: 6px 16px;
