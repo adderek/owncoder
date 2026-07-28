@@ -43,6 +43,16 @@ function row(cls, html, text) {
     b.className = 'copy'; b.type = 'button'; b.title = 'Copy message';
     b.textContent = '⧉';
     wrap.appendChild(b);
+    // Your own message, back in the box to fix a typo or change one word and
+    // run again. It loads the draft rather than sending: re-running a turn is
+    // expensive enough that it should take a deliberate Enter.
+    if (cls.indexOf('user') > 0) {
+      const e = document.createElement('button');
+      e.className = 'copy reuse'; e.type = 'button';
+      e.title = 'Edit and send again';
+      e.textContent = '✎';
+      wrap.appendChild(e);
+    }
   }
   log.appendChild(wrap);
   stickScroll();
@@ -82,11 +92,28 @@ log.addEventListener('click', (e) => {
     if (box) copyText(box.innerText, db);
     return;
   }
+  const rb = e.target.closest('.reuse');
+  if (rb) {
+    const msg = rb.parentElement.querySelector('.msg');
+    reuseMessage(msg.innerText);
+    return;
+  }
   const b = e.target.closest('.copy');
   if (!b) return;
   const msg = b.parentElement.querySelector('.msg');
   copyText(msg.innerText, b);
 });
+
+// Put an earlier message back in the box, keeping whatever was already
+// typed — dropping someone's half-written draft to make room would be a
+// worse trade than an extra line to delete.
+function reuseMessage(text) {
+  const cur = input.value.trim();
+  input.value = cur && cur !== text ? cur + '\n' + text : text;
+  input.dispatchEvent(new Event('input'));
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
 
 function assistantMd(text) {
   const d = row('msg assistant', '<div class="md">' + renderMd(text) + '</div>', null);
