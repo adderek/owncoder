@@ -1110,6 +1110,8 @@ def _make_handler(ui: _HttpUI):
                 self._json(ui.diff_info(fp))
             elif self.path == "/api/models":
                 self._json(ui.models_info())
+            elif self.path == "/api/slash":
+                self._json({"commands": _slash_catalog()})
             elif self.path == "/api/grants":
                 self._json(ui.grants_info())
             elif self.path.startswith("/api/todos"):
@@ -1277,6 +1279,35 @@ _NEEDS_LOCAL = "not supported by this server (needs a local in-process agent)"
 def _agent_config(server):
     a = getattr(server, "_agent", None)
     return None if a is None else a.config
+
+
+# Commands the browser cannot run: they act on the terminal itself (tabs,
+# wrapping, the readline prompt) or end the process. `_handle_slash` still
+# answers them with an explanation — they just have no business being offered
+# as completions here.
+_TERMINAL_ONLY = frozenset({
+    "/a", "/q", "/sparse", "/wrap", "/round-summary", "/speech", "/exec",
+    "/apply", "/analyze-asm", "/quit",
+})
+
+
+def _slash_catalog() -> list[dict]:
+    """The slash commands worth completing in the browser.
+
+    One source of truth with the terminal UI: the same table, minus what only
+    makes sense at a terminal. See test_http_slash for the check that every
+    entry is actually handled here.
+    """
+    from agent.ui.slash import _SLASH_COMMANDS
+
+    out = []
+    for primary, aliases, desc, takes_arg in _SLASH_COMMANDS:
+        if primary in _TERMINAL_ONLY:
+            continue
+        out.append({"name": primary, "aliases": list(aliases),
+                    "desc": desc, "arg": bool(takes_arg)})
+    out.sort(key=lambda c: c["name"])
+    return out
 
 
 async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:

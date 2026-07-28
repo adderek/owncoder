@@ -315,6 +315,20 @@ aside.resizing { transition: none; }   /* no lag while dragging */
           border-radius: 8px; font-size: 13.5px; animation: fadein .18s ease-out; }
 #askbox .ask-kind { color: var(--warn); font-family: var(--mono); font-size: 12px; }
 #askbox .ask-text { color: var(--fg); }
+/* Slash palette — pinned above the input like the ask box, scrollable so a
+   long list never pushes the message box off screen. */
+#slashbox { max-width: 920px; margin: 0 auto 8px; padding: 4px;
+            border: 1px solid var(--border); background: var(--panel);
+            border-radius: 8px; max-height: 240px; overflow-y: auto;
+            animation: fadein .12s ease-out; }
+.slash-item { display: flex; gap: 10px; align-items: baseline; padding: 4px 8px;
+              border-radius: 5px; cursor: pointer; font-size: 12px; }
+.slash-item.sel { background: var(--panel2); }
+.slash-item .slash-name { color: var(--accent); font-family: var(--mono);
+                          flex-shrink: 0; min-width: 130px; }
+.slash-item .slash-arg { color: var(--dimmer); }
+.slash-item .slash-desc { color: var(--dim); overflow: hidden;
+                          text-overflow: ellipsis; white-space: nowrap; }
 /* Turn-failed retry bar — pinned above the input like the ask box. The
    force-session bar (kill a wedged turn) reuses the same shape. */
 #retrybox, .retrybox { max-width: 920px; margin: 0 auto 8px; padding: 9px 12px;

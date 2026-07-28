@@ -2099,6 +2099,123 @@ function stopTurn(mode) {
 }
 document.getElementById('stop').onclick = () => stopTurn('soft');
 document.getElementById('kill').onclick = () => stopTurn('hard');
+// ── Slash palette ──────────────────────────────────────────────────────────
+// The placeholder has always promised "/ for commands" while nothing
+// completed them. The catalogue comes from /api/slash — the same table the
+// terminal UI uses, minus what only a terminal can do — and is fetched once.
+let slashCmds = null;
+let slashHits = [];
+let slashSel = 0;
+const SLASH_MAX = 8;
+
+async function loadSlashCmds() {
+  if (slashCmds) return slashCmds;
+  try {
+    const d = await (await fetch('/api/slash')).json();
+    slashCmds = d.commands || [];
+  } catch (e) { slashCmds = []; }
+  return slashCmds;
+}
+
+// Only while the whole message is one unfinished word starting with '/':
+// once there is an argument the command is chosen and the list is noise.
+function slashQuery() {
+  const v = input.value;
+  if (!v.startsWith('/') || /[\s\n]/.test(v)) return null;
+  return v;
+}
+
+// Prefix matches first — typing "/mo" wants /mode and /model at the top, not
+// whatever merely contains "mo".
+function slashRank(q) {
+  const ql = q.toLowerCase();
+  const pre = [], sub = [];
+  for (const c of slashCmds || []) {
+    const names = [c.name].concat(c.aliases || []);
+    if (names.some(n => n.startsWith(ql))) pre.push(c);
+    else if (names.some(n => n.indexOf(ql) >= 0) || c.desc.toLowerCase().indexOf(ql.slice(1)) >= 0)
+      sub.push(c);
+  }
+  return pre.concat(sub).slice(0, SLASH_MAX);
+}
+
+function slashBox() { return document.getElementById('slashbox'); }
+function slashOpen() { return !!slashBox(); }
+
+function slashClose() {
+  const box = slashBox();
+  if (box) box.remove();
+  slashHits = [];
+  slashSel = 0;
+}
+
+function slashRender() {
+  let box = slashBox();
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'slashbox';
+    const inputrow = document.getElementById('inputrow');
+    inputrow.parentElement.insertBefore(box, inputrow);
+  }
+  box.innerHTML = slashHits.map((c, i) =>
+    '<div class="slash-item' + (i === slashSel ? ' sel' : '') + '" data-i="' + i + '">' +
+    '<span class="slash-name">' + esc(c.name) + (c.arg ? ' <span class="slash-arg">…</span>' : '') +
+    '</span><span class="slash-desc">' + esc(c.desc) + '</span></div>').join('');
+  // mousedown, not click: click fires after the textarea has lost focus, and
+  // the blur handler would have closed the list out from under the pointer.
+  box.querySelectorAll('.slash-item').forEach(el => {
+    el.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      slashApply(slashHits[Number(el.dataset.i)]);
+    });
+  });
+}
+
+function slashApply(cmd) {
+  if (!cmd) return;
+  input.value = cmd.name + (cmd.arg ? ' ' : '');
+  slashClose();
+  autoGrow();
+  saveDraft();
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+
+async function slashUpdate() {
+  const q = slashQuery();
+  if (q === null) { slashClose(); return; }
+  await loadSlashCmds();
+  if (slashQuery() === null) return;      // typed on while we were fetching
+  slashHits = slashRank(q);
+  if (!slashHits.length) { slashClose(); return; }
+  slashSel = Math.min(slashSel, slashHits.length - 1);
+  slashRender();
+}
+
+function slashMove(d) {
+  if (!slashHits.length) return;
+  slashSel = (slashSel + d + slashHits.length) % slashHits.length;
+  slashRender();
+}
+
+// Returns true when the palette consumed the key.
+function slashKey(e) {
+  if (!slashOpen()) return false;
+  if (e.key === 'ArrowDown') { slashMove(1); return true; }
+  if (e.key === 'ArrowUp') { slashMove(-1); return true; }
+  if (e.key === 'Tab') { slashApply(slashHits[slashSel]); return true; }
+  if (e.key === 'Escape') { slashClose(); return true; }
+  if (e.key === 'Enter' && !e.shiftKey) {
+    // Enter sends the command you already typed in full; otherwise it
+    // completes the highlighted one, so nothing is sent by surprise.
+    const sel = slashHits[slashSel];
+    if (sel && sel.name !== input.value.trim()) { slashApply(sel); return true; }
+    slashClose();
+    return false;
+  }
+  return false;
+}
+
 // ── Message history and draft ──────────────────────────────────────────────
 // This is a prompt: ↑ recalls what you sent, like every shell. Kept in
 // localStorage so it survives the reload, and shared across sessions — you
@@ -2164,6 +2281,9 @@ function autoGrow() {
 }
 
 input.addEventListener('keydown', (e) => {
+  // The palette owns the arrows, Tab and Esc while it is open; history and
+  // the drawer-closing Esc must not also fire.
+  if (slashKey(e)) { e.preventDefault(); e.stopPropagation(); return; }
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); return; }
   if (e.key === 'ArrowUp' && histIdx !== 0 && onFirstLine() &&
       (histIdx >= 0 || !input.value || input.selectionStart === 0)) {
@@ -2176,7 +2296,9 @@ input.addEventListener('input', () => {
   histIdx = -1;      // typing means you own this text now, not the history
   autoGrow();
   saveDraft();
+  slashUpdate();
 });
+input.addEventListener('blur', () => slashClose());
 
 // An unsent draft outlives a reload: closing the tab on a half-written
 // message and losing it is the kind of small betrayal people remember.
