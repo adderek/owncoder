@@ -69,6 +69,14 @@ function row(cls, html, text) {
   if (html !== null) d.innerHTML = html; else d.textContent = text;
   wrap.appendChild(d);
   if (cls.indexOf('msg') === 0) {
+    // When it happened. Live only: a replayed transcript carries no clock, and
+    // stamping it with the time of the reload would be a plausible lie.
+    if (!replaying) {
+      const t = Date.now();
+      d.dataset.ts = t;
+      d.title = (cls.indexOf('user') > 0 ? 'sent ' : 'answered ') + fmtClock(t) +
+                '  ·  ' + new Date(t).toLocaleDateString();
+    }
     const b = document.createElement('button');
     b.className = 'copy'; b.type = 'button'; b.title = 'Copy message';
     b.textContent = '⧉';
@@ -1964,7 +1972,14 @@ document.getElementById('sessfilter').addEventListener('click', (e) => e.stopPro
 // Replay a transcript from the server: user turns, the tool work each answer
 // rested on, then the answer. Without the tool folds a reload turned a
 // reasoned turn into an assertion — the evidence outlived by the conclusion.
+let replaying = false;
+
 function replayTranscript(messages) {
+  replaying = true;
+  try { replayTranscriptInner(messages); } finally { replaying = false; }
+}
+
+function replayTranscriptInner(messages) {
   const folds = {};        // tool_call_id -> the fold awaiting its result
   let work = null;         // open work fold for the current assistant step
   for (const m of messages || []) {
