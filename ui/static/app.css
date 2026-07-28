@@ -84,15 +84,24 @@ body[data-activity="stalled"] #header::after {
 }
 @keyframes actbreathe { 0%, 100% { opacity: .25; } 50% { opacity: .9; } }
 #header b { color: var(--head-fg); font-size: 15px; letter-spacing: .3px; }
-.chip { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: var(--panel2);
+/* Chips are <button>: they were spans with click handlers, which no keyboard
+   could reach. font/line-height are reset because a button does not inherit
+   them. */
+.chip { font-size: 11px; font-family: inherit; line-height: 1.45;
+        padding: 2px 8px; border-radius: 10px; background: var(--panel2);
         border: 1px solid var(--border); color: var(--dim); white-space: nowrap; }
 .chip.btn { cursor: pointer; }
 .chip.btn:hover { color: var(--fg); border-color: var(--accent); }
+/* One ring for every control, keyboard-only: mouse users never see it, and
+   without it tabbing through the header was invisible. */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 4px; }
 .icon { background: none; border: 1px solid transparent; color: var(--dimmer); font-size: 15px;
         padding: 2px 7px; border-radius: 6px; cursor: pointer; line-height: 1; }
 .icon:hover { color: var(--fg); background: var(--panel2); filter: none; }
 .icon.active { color: var(--accent); border-color: var(--border); background: var(--panel2); }
-#tokenwrap { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+/* Also a <button> (see .chip): stripped back to the bare bar + count. */
+#tokenwrap { display: flex; align-items: center; gap: 6px; margin-left: auto;
+             background: none; border: none; padding: 0; font: inherit; }
 #tokenbar { width: 110px; height: 6px; background: var(--panel2); border-radius: 3px; overflow: hidden; }
 #tokenfill { height: 100%; width: 0; background: var(--accent); border-radius: 3px; transition: width .4s; }
 #tokenfill.hot { background: var(--warn); }

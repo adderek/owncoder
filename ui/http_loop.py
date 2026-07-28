@@ -114,15 +114,15 @@ _PAGE = r"""<!DOCTYPE html>
 <div id="header">
   <button class="icon" id="lefttoggle" title="Sessions panel — Ctrl+B toggles, Alt+↑/↓ switches session" aria-label="Toggle sessions panel">☰</button>
   <b>owncoder</b>
-  <span class="chip" id="model" title="Click to manage models"></span>
-  <span class="chip btn" id="session" title="Current session — click for the sessions panel"></span>
-  <span class="chip btn" id="workdir" title="Project directory (session-scoped) — click to manage access"></span>
-  <div id="statuswrap"><span id="dot"></span><span id="status">idle</span></div>
-  <span class="chip btn" id="layout" title="Cycle chat width: centered / wide / full">center</span>
-  <span class="chip btn" id="condchip" title="Condensed Q/A view — one line per turn, click rows to expand">≣ Q/A</span>
-  <span class="chip btn" id="iostats" title="Session totals: prompt in / completion out / est. USD cost (paid-tier only). Click for per-model split">↑0 ↓0</span>
-  <span class="chip btn" id="bgchip" title="Background jobs running — click to review / kill" style="display:none">⚙0</span>
-  <div id="tokenwrap" title="Click for context buffer breakdown"><div id="tokenbar"><div id="tokenfill"></div></div><span id="tokens"></span></div>
+  <button type="button" class="chip btn" id="model" title="Click to manage models"></button>
+  <button type="button" class="chip btn" id="session" title="Current session — click for the sessions panel"></button>
+  <button type="button" class="chip btn" id="workdir" title="Project directory (session-scoped) — click to manage access"></button>
+  <div id="statuswrap"><span id="dot"></span><span id="status" role="status" aria-live="polite">idle</span></div>
+  <button type="button" class="chip btn" id="layout" title="Cycle chat width: centered / wide / full">center</button>
+  <button type="button" class="chip btn" id="condchip" title="Condensed Q/A view — one line per turn, click rows to expand">≣ Q/A</button>
+  <button type="button" class="chip btn" id="iostats" title="Session totals: prompt in / completion out / est. USD cost (paid-tier only). Click for per-model split">↑0 ↓0</button>
+  <button type="button" class="chip btn" id="bgchip" title="Background jobs running — click to review / kill" style="display:none">⚙0</button>
+  <button type="button" id="tokenwrap" title="Click for context buffer breakdown" aria-label="Context buffer usage — click for the breakdown"><div id="tokenbar"><div id="tokenfill"></div></div><span id="tokens"></span></button>
   <button class="icon" id="notifytoggle" title="Notify me when the agent needs an answer or finishes" aria-label="Toggle desktop notifications">🔕</button>
   <button class="icon" id="themetoggle" title="Theme: dark (click to cycle)" aria-label="Cycle theme">◐</button>
   <button class="icon" id="righttoggle" title="Details panel" aria-label="Toggle details panel">☰</button>
