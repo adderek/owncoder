@@ -31,6 +31,36 @@ let busyFlag = false;
 
 // Markdown rendering (esc / renderMd) lives in md.js, loaded before this file.
 
+// A long session appended rows for hours and never dropped one, so the DOM
+// grew without bound and scrolling, find and re-render all paid for it. Only
+// the browser forgets: the session on disk still holds everything, and a
+// reload replays it (and trims again).
+const LOG_MAX_ROWS = 600;
+let logTrimmed = 0;
+
+function trimLog() {
+  let notice = document.getElementById('logtrim');
+  // The notice is not scrollback, so it does not count towards the cap and is
+  // never the row that gets dropped.
+  let over = log.childElementCount - LOG_MAX_ROWS - (notice ? 1 : 0);
+  if (over <= 0) return;
+  while (over > 0) {
+    const first = log.firstElementChild === notice
+      ? notice.nextElementSibling : log.firstElementChild;
+    if (!first) break;
+    first.remove();
+    logTrimmed++;
+    over--;
+  }
+  if (!notice) {
+    notice = document.createElement('div');
+    notice.id = 'logtrim';
+    log.insertBefore(notice, log.firstChild);
+  }
+  notice.textContent = '⋯ ' + logTrimmed + ' earlier lines dropped from this view — ' +
+                       'reload to replay the session, /export for the full record';
+}
+
 function row(cls, html, text) {
   const wrap = document.createElement('div');
   wrap.className = 'row';
@@ -55,6 +85,7 @@ function row(cls, html, text) {
     }
   }
   log.appendChild(wrap);
+  trimLog();
   stickScroll();
   return d;
 }
@@ -233,6 +264,7 @@ function mount(el) {
   wrap.className = 'row';
   wrap.appendChild(el);
   log.appendChild(wrap);
+  trimLog();
   stickScroll();
   return el;
 }
@@ -1625,6 +1657,7 @@ async function previewSession(id) {
     previewing = id;
     missedLive = 0;
     log.innerHTML = '';
+    logTrimmed = 0;   // the view starts over
     turn = null; streamEl = null; thinkEl = null; pendingTools = {};
     const bar = document.createElement('div');
     bar.id = 'previewbar';
@@ -1696,6 +1729,7 @@ async function condensedView(id) {
     previewing = d.id;
     missedLive = 0;
     log.innerHTML = '';
+    logTrimmed = 0;   // the view starts over
     turn = null; streamEl = null; thinkEl = null; pendingTools = {};
     const bar = document.createElement('div');
     bar.id = 'previewbar';
@@ -1888,6 +1922,7 @@ async function resyncView() {
   try {
     const s = await (await fetch('/api/state')).json();
     log.innerHTML = '';
+    logTrimmed = 0;   // the view starts over
     turn = null; streamEl = null; thinkEl = null; pendingTools = {};
     applyState(s);
     return true;
@@ -2003,6 +2038,7 @@ async function send() {
     input.value = ''; input.style.height = 'auto';
     saveDraft();
     log.innerHTML = '';
+    logTrimmed = 0;   // the view starts over
     turn = null; streamEl = null; thinkEl = null; pendingTools = {};
     return;
   }

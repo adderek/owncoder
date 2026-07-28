@@ -315,6 +315,11 @@ aside.resizing { transition: none; }   /* no lag while dragging */
           border-radius: 8px; font-size: 13.5px; animation: fadein .18s ease-out; }
 #askbox .ask-kind { color: var(--warn); font-family: var(--mono); font-size: 12px; }
 #askbox .ask-text { color: var(--fg); }
+/* Marks where the browser stopped keeping scrollback. Deliberately quiet:
+   it is a fact about this view, not about the session. */
+#logtrim { max-width: 920px; margin: 0 auto 8px; padding: 4px 12px;
+           color: var(--dimmer); font-size: 11px; font-family: var(--mono);
+           border-bottom: 1px dashed var(--border); }
 /* Find bar — sits above the scrollback rather than floating over it, so it
    never covers the hit it just scrolled to. */
 #findbar { display: flex; gap: 6px; align-items: center; padding: 6px 16px;
