@@ -90,6 +90,12 @@ function row(cls, html, text) {
       e.title = 'Edit and send again';
       e.textContent = '✎';
       wrap.appendChild(e);
+    } else if (cls.indexOf('assistant') > 0) {
+      const r = document.createElement('button');
+      r.className = 'copy regen'; r.type = 'button';
+      r.title = 'Discard this answer and ask again';
+      r.textContent = '↻';
+      wrap.appendChild(r);
     }
   }
   log.appendChild(wrap);
@@ -131,6 +137,18 @@ log.addEventListener('click', (e) => {
     if (box) copyText(box.innerText, db);
     return;
   }
+  const gb = e.target.closest('.regen');
+  if (gb) {
+    // Only the newest answer: re-running an older one would leave every turn
+    // after it answering a question that no longer exists.
+    const rows = log.querySelectorAll('.msg.assistant');
+    if (rows[rows.length - 1] !== gb.parentElement.querySelector('.msg')) {
+      row('sys', null, 'only the last answer can be regenerated');
+      return;
+    }
+    regenerate(gb);
+    return;
+  }
   const rb = e.target.closest('.reuse');
   if (rb) {
     const msg = rb.parentElement.querySelector('.msg');
@@ -142,6 +160,28 @@ log.addEventListener('click', (e) => {
   const msg = b.parentElement.querySelector('.msg');
   copyText(msg.innerText, b);
 });
+
+// Ask the same question again on the same history. The server drops the last
+// exchange first: left in place, the model reads its own answer and agrees
+// with it instead of reconsidering.
+async function regenerate(btn) {
+  if (busyFlag) { row('sys', null, 'wait for the running turn to finish'); return; }
+  btn.disabled = true;
+  try {
+    const r = await (await fetch('/api/regenerate', {method: 'POST'})).json();
+    if (!r.ok) { row('sys error', null, 'regenerate: ' + (r.msg || 'failed')); return; }
+    await resyncView();          // the dropped exchange leaves the log too
+    row('sys', null, '↻ asking again');
+    await fetch('/api/chat', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text: r.text}),
+    });
+  } catch (e) {
+    row('sys error', null, 'regenerate failed: ' + e);
+  } finally {
+    btn.disabled = false;
+  }
+}
 
 // Put an earlier message back in the box, keeping whatever was already
 // typed — dropping someone's half-written draft to make room would be a

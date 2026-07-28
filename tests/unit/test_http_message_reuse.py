@@ -21,7 +21,8 @@ class TestButton:
         assert "'copy reuse'" in ROW[i:i + 400]
 
     def test_it_does_not_sit_on_top_of_copy(self):
-        assert ".copy.reuse { right: 34px; }" in APP_CSS
+        # shares the slot with ↻ on answers; a row never carries both
+        assert ".copy.reuse, .copy.regen { right: 34px; }" in APP_CSS
 
 
 class TestBehaviour:

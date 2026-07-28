@@ -469,7 +469,7 @@ details.think summary:hover { color: var(--dim); }
 .row:hover > .copy, .copy:focus-visible { opacity: .85; }
 .copy:hover { color: var(--fg); background: var(--panel2); filter: none; }
 /* Edit-and-send-again, on your own messages only; sits left of the copy. */
-.copy.reuse { right: 34px; }
+.copy.reuse, .copy.regen { right: 34px; }
 .copy:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
 /* Copy affordance on code fences and diff boxes — same look as .copy but
    positioned relative to their own (non-message) container. */

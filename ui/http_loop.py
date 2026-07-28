@@ -977,6 +977,27 @@ class _HttpUI:
         return {"files": _rank_paths(paths, query, self._FILE_HITS_MAX),
                 "root": str(root), "truncated": len(paths) >= self._FILE_LIST_MAX}
 
+    def drop_last_exchange(self) -> dict:
+        """Remove the last user message and everything it produced.
+
+        Regenerating means asking the same question against the same history —
+        so the previous answer, and the tool calls it made, have to go first,
+        or the model just reads its own reply and agrees with it.
+        """
+        msgs = list(self.server.get_messages())
+        cut = None
+        for i in range(len(msgs) - 1, -1, -1):
+            if msgs[i].get("role") == "user":
+                cut = i
+                break
+        if cut is None:
+            return {"ok": False, "msg": "nothing to regenerate"}
+        text = msgs[cut].get("content") or ""
+        if not isinstance(text, str) or not text.strip():
+            return {"ok": False, "msg": "the last message has no text to re-send"}
+        self.server.set_messages(msgs[:cut])
+        return {"ok": True, "text": text, "dropped": len(msgs) - cut}
+
     _SEARCH_HITS_MAX = 50
     _SEARCH_SNIPPET = 160
 
@@ -1526,6 +1547,11 @@ def _make_handler(ui: _HttpUI):
                            {"ok": False, "msg": f"job {jid} not found or not killable"})
             elif self.path == "/api/session":
                 self._json(ui.session_action(payload))
+            elif self.path == "/api/regenerate":
+                if ui.busy:
+                    self._json({"ok": False, "msg": "a turn is running"})
+                else:
+                    self._json(ui.drop_last_exchange())
             elif self.path == "/api/upload":
                 fname = str(payload.get("filename") or "")
                 data = str(payload.get("data") or "")
