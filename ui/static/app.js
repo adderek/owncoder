@@ -399,6 +399,36 @@ function metaRow(cls, text) {
 // the auto-stop deadline. Choice posts to /api/loopguard.
 let lgEl = null;
 let lgTimer = null;
+// Both countdown prompts answer to the keyboard: they expire into a DENY or a
+// stopped turn, and hunting for a small button with the mouse is the slowest
+// way to answer the most time-critical question this UI asks.
+function armPromptKeys(box) {
+  const btns = Array.from(box.querySelectorAll('button'));
+  btns.forEach((b, i) => {
+    if (i < 9) {
+      b.insertAdjacentHTML('afterbegin', '<span class="key">' + (i + 1) + '</span>');
+      b.title = (b.title ? b.title + ' — ' : '') + 'press ' + (i + 1);
+    }
+  });
+  // Focus the first choice so Enter and Tab work without a click, but only
+  // when the message box is not where someone is already typing.
+  if (btns.length && document.activeElement !== input) btns[0].focus();
+}
+
+// Digit shortcuts, guarded so they never eat a keystroke meant for the text.
+document.addEventListener('keydown', (e) => {
+  const box = permEl || lgEl;
+  if (!box || e.ctrlKey || e.metaKey || e.altKey) return;
+  const el = document.activeElement;
+  if (el && (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT')) return;
+  const n = parseInt(e.key, 10);
+  if (!n || n < 1 || n > 9) return;
+  const btn = box.querySelectorAll('button')[n - 1];
+  if (!btn) return;
+  e.preventDefault();
+  btn.click();
+});
+
 function loopGuardPrompt(ev) {
   resolveLoopGuard(null);   // stale prompt (reconnect edge) — clear it
   const d = document.createElement('div');
@@ -419,6 +449,7 @@ function loopGuardPrompt(ev) {
   }));
   mount(d);
   lgEl = d;
+  armPromptKeys(d);
   let left = ev.timeout || 120;
   const note = d.querySelector('.lg-note');
   const tick = () => {
@@ -461,6 +492,7 @@ function permissionPrompt(ev) {
   }));
   mount(d);
   permEl = d;
+  armPromptKeys(d);
   let left = Math.round(ev.timeout || 300);
   const note = d.querySelector('.lg-note');
   const tick = () => {
