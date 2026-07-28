@@ -380,6 +380,9 @@ aside.resizing { transition: none; }   /* no lag while dragging */
 #findbar input:focus { outline: none; border-color: var(--accent); }
 #findcount { font-family: var(--mono); font-size: 11px; min-width: 46px;
              text-align: right; }
+/* What the DOM search could not see — the log keeps only the last 600 rows. */
+#findmore { font-size: 11px; color: var(--dimmer); }
+#findmore.has { color: var(--warn); }
 mark.findhit { background: var(--sig-bg); color: inherit; border-radius: 2px;
                box-shadow: 0 0 0 1px var(--sig-border); }
 mark.findhit.cur { background: var(--accent); color: var(--bg); }

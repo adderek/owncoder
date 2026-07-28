@@ -977,6 +977,52 @@ class _HttpUI:
         return {"files": _rank_paths(paths, query, self._FILE_HITS_MAX),
                 "root": str(root), "truncated": len(paths) >= self._FILE_LIST_MAX}
 
+    _SEARCH_HITS_MAX = 50
+    _SEARCH_SNIPPET = 160
+
+    def search_session(self, query: str, sid: str = "") -> dict:
+        """Find text anywhere in a session, including what the view dropped.
+
+        Ctrl+F walks the DOM, so it can only see the rows the browser still
+        holds — the log is capped at 600. This reads the transcript itself.
+        """
+        q = (query or "").strip()
+        if not q:
+            return {"hits": [], "query": ""}
+        if sid and (self.session is None or sid != self.session.id):
+            from agent.memory.session import load_session
+            session, msgs = load_session(sid)
+            if session is None:
+                return {"error": f"session '{sid}' not found"}
+        else:
+            msgs = self.server.get_messages()
+        low = q.lower()
+        hits = []
+        for i, m in enumerate(msgs):
+            role = m.get("role")
+            if role not in ("user", "assistant", "tool"):
+                continue
+            text = m.get("content") or ""
+            if not isinstance(text, str):
+                continue
+            at = text.lower().find(low)
+            if at < 0:
+                continue
+            half = max(0, self._SEARCH_SNIPPET // 2 - len(q) // 2)
+            start = max(0, at - half)
+            snippet = text[start:start + self._SEARCH_SNIPPET].replace("\n", " ")
+            hits.append({
+                "i": i,
+                "role": role,
+                "snippet": ("…" if start else "") + snippet +
+                           ("…" if start + self._SEARCH_SNIPPET < len(text) else ""),
+                "count": text.lower().count(low),
+            })
+            if len(hits) >= self._SEARCH_HITS_MAX:
+                break
+        return {"hits": hits, "query": q,
+                "truncated": len(hits) >= self._SEARCH_HITS_MAX}
+
     def plan_info(self) -> dict:
         """The active plan and the session goal, structured.
 
@@ -1371,6 +1417,11 @@ def _make_handler(ui: _HttpUI):
                 size = 512 if "512" in self.path else 192
                 self._bytes(_icon_png(size), "image/png",
                             cache="public, max-age=86400")
+            elif self.path.startswith("/api/search"):
+                from urllib.parse import parse_qs, urlparse
+                qs = parse_qs(urlparse(self.path).query)
+                self._json(ui.search_session((qs.get("q") or [""])[0],
+                                             (qs.get("id") or [""])[0]))
             elif self.path.startswith("/api/files"):
                 from urllib.parse import parse_qs, urlparse
                 q = (parse_qs(urlparse(self.path).query).get("q") or [""])[0]

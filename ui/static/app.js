@@ -2857,6 +2857,30 @@ function findStatus() {
     : (findCur + 1) + '/' + findHits.length + (findHits.length >= FIND_MAX ? '+' : '');
 }
 
+// The view keeps the last 600 rows, so the DOM is not the session. Ask the
+// server what else matches and say so — silently finding less than exists is
+// worse than finding nothing.
+let findSeq = 0;
+
+async function findServer(needle) {
+  const foot = document.getElementById('findmore');
+  if (!foot) return;
+  if (!needle) { foot.textContent = ''; foot.classList.remove('has'); return; }
+  const seq = ++findSeq;
+  let d;
+  try { d = await (await fetch('/api/search?q=' + encodeURIComponent(needle))).json(); }
+  catch (e) { return; }
+  if (seq !== findSeq) return;          // a newer keystroke already won
+  const hits = (d.hits || []).length;
+  const shown = findHits.length;
+  if (!hits || hits <= shown) { foot.textContent = ''; foot.classList.remove('has'); return; }
+  foot.textContent = hits + (d.truncated ? '+' : '') + ' message' +
+    (hits === 1 ? '' : 's') + ' match in the full session — ' +
+    (shown ? 'more than this view kept' : 'nothing on screen');
+  foot.classList.add('has');
+  foot.title = (d.hits || []).slice(0, 8).map(h => h.role + ': ' + h.snippet).join('\n\n');
+}
+
 function findClose() {
   const bar = document.getElementById('findbar');
   if (bar) bar.remove();
@@ -2872,6 +2896,7 @@ function findOpen() {
     bar.innerHTML =
       '<input id="findinput" placeholder="Find in conversation…" autocomplete="off">' +
       '<span id="findcount" class="dim">0/0</span>' +
+      '<span id="findmore" class="dim"></span>' +
       '<button class="sbtn" id="findprev" title="Previous (Shift+Enter)">↑</button>' +
       '<button class="sbtn" id="findnext" title="Next (Enter)">↓</button>' +
       '<button class="sbtn" id="findclose" title="Close (Esc)">✕</button>';
@@ -2881,6 +2906,7 @@ function findOpen() {
       findMark(fi.value);
       findCur = -1;
       if (findHits.length) findGo(0); else findStatus();
+      findServer(fi.value.trim());
     });
     fi.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); findGo(findCur + (e.shiftKey ? -1 : 1)); }
