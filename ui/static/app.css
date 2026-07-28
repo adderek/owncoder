@@ -105,6 +105,10 @@ body[data-activity="stalled"] #header::after {
 #tokenbar { width: 110px; height: 6px; background: var(--panel2); border-radius: 3px; overflow: hidden; }
 #tokenfill { height: 100%; width: 0; background: var(--accent); border-radius: 3px; transition: width .4s; }
 #tokenfill.hot { background: var(--warn); }
+/* The crossing of the 75% line, marked once. Opacity only: no movement, and
+   the bar itself keeps its warning colour afterwards. */
+#tokenwrap.crossed #tokenbar { animation: crossed 0.45s ease-in-out 3; }
+@keyframes crossed { 50% { opacity: .35; } }
 /* Only shown while the bar is hot: the remedy, next to the warning. */
 #compact { border-color: var(--warn); color: var(--warn); }
 #compact:hover { color: var(--fg); border-color: var(--warn); }
@@ -476,6 +480,8 @@ body[data-layout="full"] .row { max-width: none; }
      retry bar, the slash palette, the @-file list — including ones added
      later. Opacity stays: the objection is to movement, not to a fade. */
   @keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
+  /* A repeating blink is motion even when nothing travels. */
+  #tokenwrap.crossed #tokenbar { animation: none; }
 }
 .msg { margin-bottom: 12px; padding: 10px 14px; border-radius: 10px;
        word-break: break-word; font-size: 14px; line-height: 1.5; }

@@ -20,18 +20,50 @@ class TestVisibility:
         i = _PAGE.index('id="compact"')
         assert 'style="display:none"' in _PAGE[i:i + 200]
 
-    def test_it_appears_exactly_when_the_bar_goes_hot(self):
+    def _tokens_handler(self):
         i = APP_JS.index("fill.className = pct > 75 ? 'hot' : '';")
-        body = APP_JS[i:i + 400]
-        assert "cb.style.display = pct > 75 ? '' : 'none';" in body
+        return APP_JS[i:APP_JS.index("\n}", i)]
+
+    def test_it_appears_exactly_when_the_bar_goes_hot(self):
+        assert "cb.style.display = pct > 75 ? '' : 'none';" in self._tokens_handler()
 
     def test_the_tooltip_says_how_full_it_is(self):
-        i = APP_JS.index("fill.className = pct > 75 ? 'hot' : '';")
-        assert "Math.round(pct) + '% full" in APP_JS[i:i + 500]
+        assert "Math.round(pct) + '% full" in self._tokens_handler()
 
     def test_it_is_coloured_like_the_warning_it_answers(self):
         i = APP_CSS.index("#compact {")
         assert "var(--warn)" in APP_CSS[i:i + 120]
+
+
+class TestThreshold:
+    """The 75% line is the moment the bar means something."""
+
+    def test_the_crossing_is_marked(self):
+        i = APP_JS.index("const wasHot = fill.classList.contains('hot');")
+        body = APP_JS[i:i + 500]
+        assert "if (pct > 75 && !wasHot)" in body
+        assert "classList.add('crossed')" in body
+
+    def test_staying_hot_does_not_keep_marking(self):
+        """A bar that pulses all session is a bar nobody looks at."""
+        i = APP_JS.index("const wasHot = fill.classList.contains('hot');")
+        assert "!wasHot" in APP_JS[i:i + 400]
+
+    def test_the_mark_expires(self):
+        i = APP_JS.index("classList.add('crossed')")
+        assert "remove('crossed')" in APP_JS[i:i + 200]
+
+    def test_it_blinks_rather_than_moves(self):
+        i = APP_CSS.index("@keyframes crossed")
+        block = APP_CSS[i:APP_CSS.index("}", i + 20)]
+        assert "opacity" in block
+        assert "transform" not in block and "translate" not in block
+
+    def test_a_repeating_blink_still_counts_as_motion(self):
+        """Nothing travels, but it repeats — reduced motion silences it."""
+        block = APP_CSS[APP_CSS.index("@media (prefers-reduced-motion: reduce)"):]
+        i = block.index("#tokenwrap.crossed")
+        assert "animation: none" in block[i:i + 120]
 
 
 class TestAction:

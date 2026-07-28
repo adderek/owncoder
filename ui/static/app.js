@@ -887,7 +887,16 @@ function handle(ev) {
     const pct = ev.ctx ? Math.min(100, 100 * ev.used / ev.ctx) : 0;
     const fill = document.getElementById('tokenfill');
     fill.style.width = pct + '%';
+    const wasHot = fill.classList.contains('hot');
     fill.className = pct > 75 ? 'hot' : '';
+    // Crossing the line is the moment the bar means something. Mark the
+    // crossing, once — a bar that pulses for the rest of the session is a bar
+    // nobody looks at.
+    if (pct > 75 && !wasHot) {
+      const wrap = document.getElementById('tokenwrap');
+      wrap.classList.add('crossed');
+      setTimeout(() => wrap.classList.remove('crossed'), 1800);
+    }
     // A red bar with no next step is just bad news. Past the threshold, offer
     // the thing that fixes it — /compact was a command you had to know.
     const cb = document.getElementById('compact');
