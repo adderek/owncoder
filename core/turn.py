@@ -89,6 +89,7 @@ async def run_turn(
     on_token=None,
     on_tool_call=None,
     on_tool_result=None,
+    on_tool_record=None,
     on_usage=None,
     on_progress=None,
     on_loop_detected=None,
@@ -653,6 +654,22 @@ async def run_turn(
                         on_tool_result(tc.function.name, ok)
                     except Exception:
                         logger.exception("on_tool_result callback failed")
+                # Same record the side-log keeps, handed to the UI live so it
+                # can show what a call actually returned instead of only that
+                # it returned. Result text is the caller's to truncate.
+                if on_tool_record is not None:
+                    try:
+                        on_tool_record({
+                            "turn": turn_index,
+                            "tool_call_id": tc.id,
+                            "tool": tc.function.name,
+                            "arguments": parsed_args[i],
+                            "result": raw_results[i],
+                            "ok": ok,
+                            "duration_ms": round(duration_map.get(i, 0.0), 1),
+                        })
+                    except Exception:
+                        logger.exception("on_tool_record callback failed")
 
             # Error-streak guard: when every tool call in an iteration fails for
             # several iterations in a row (e.g. a rate-limited backend erroring

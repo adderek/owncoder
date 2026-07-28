@@ -82,6 +82,25 @@ class ToolResultEvent:
 
 
 @dataclass
+class ToolRecordEvent:
+    """Full record of one finished tool call: what it was given, what it
+    returned, and how long it took. Separate from ToolResultEvent, which is
+    the cheap ✓/✗ every UI already consumes — this one carries the payload
+    and only travels when someone asked for it."""
+
+    WIRE_TYPE = "tool_record"
+    record: dict
+
+    def to_wire(self) -> dict:
+        return {"v": EVENT_PROTOCOL_VERSION, "type": self.WIRE_TYPE,
+                "record": self.record}
+
+    @classmethod
+    def from_wire(cls, obj: dict) -> "ToolRecordEvent":
+        return cls(record=dict(obj.get("record") or {}))
+
+
+@dataclass
 class PhaseEvent:
     WIRE_TYPE = "phase"
     label: str
@@ -282,7 +301,8 @@ class TurnEndEvent:
 _WIRE_REGISTRY: dict[str, type] = {
     cls.WIRE_TYPE: cls
     for cls in (
-        TokenEvent, ReasoningEvent, ToolCallEvent, ToolResultEvent, PhaseEvent,
+        TokenEvent, ReasoningEvent, ToolCallEvent, ToolResultEvent,
+        ToolRecordEvent, PhaseEvent,
         UsageEvent, ContextSizeEvent, ProgressEvent, TruncationEvent,
         LoopDetectedEvent, TurnDoneEvent, ErrorEvent, SignalEvent, TurnEndEvent,
     )

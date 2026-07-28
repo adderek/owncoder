@@ -487,6 +487,14 @@ details.tool .toolargs { color: var(--dimmer); overflow: hidden; text-overflow: 
 details.tool .mark { margin-left: 4px; }
 details.tool .mark.ok { color: var(--ok); } details.tool .mark.fail { color: var(--err); }
 details.tool .body { padding: 6px 0 2px 16px; white-space: pre-wrap; color: var(--dim); }
+/* What the tool returned. Scrolls in place: a build log must not push the
+   rest of the turn off the screen just because its fold is open. */
+details.tool .toolout { margin: 4px 0 2px 16px; padding: 6px 10px;
+                        border-left: 2px solid var(--border); background: var(--bg);
+                        border-radius: 0 5px 5px 0; color: var(--dim);
+                        white-space: pre-wrap; word-break: break-word;
+                        max-height: 260px; overflow: auto; }
+details.tool .toolout.fail { border-left-color: var(--err); color: var(--err); }
 details.think { margin: 0 0 8px 6px; font-size: 12px; color: var(--dimmer); font-style: italic; }
 details.think summary { cursor: pointer; list-style: none; user-select: none; color: var(--dimmer); }
 details.think summary::before { content: "◦ "; }

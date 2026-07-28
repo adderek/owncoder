@@ -71,6 +71,36 @@ def _args_full(args, limit: int = 4000) -> str:
     return text[:limit] + ("…" if len(text) > limit else "")
 
 
+def _result_preview(result, limit: int = 4000) -> str:
+    """What a tool returned, shortened for the browser.
+
+    Tool output is unbounded — a read_file on a big file, a build log — and it
+    is streamed to every connected client, so the live event carries a head
+    slice. The whole thing stays in the session's tool_calls.jsonl side-log.
+    """
+    if result is None:
+        return ""
+    if not isinstance(result, str):
+        try:
+            result = json.dumps(result, ensure_ascii=False, indent=2)
+        except Exception:
+            result = str(result)
+    # Tool results are usually JSON envelopes; unwrap the common ones so the
+    # fold shows the output rather than a quoted blob of it.
+    try:
+        parsed = json.loads(result)
+        if isinstance(parsed, dict):
+            for key in ("output", "stdout", "content", "text", "result", "error"):
+                if isinstance(parsed.get(key), str):
+                    result = parsed[key]
+                    break
+            else:
+                result = json.dumps(parsed, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+    return result[:limit] + ("…" if len(result) > limit else "")
+
+
 class _EventBus:
     """Thread-safe fan-out of JSON events to connected SSE clients."""
 
@@ -1955,6 +1985,12 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
                      "args": _args_preview(args), "args_full": _args_full(args)}),
                 on_tool_result=lambda name, ok: pub(
                     {"type": "tool_result", "name": name, "ok": ok}),
+                on_tool_record=lambda rec: pub(
+                    {"type": "tool_io", "name": rec.get("tool", ""),
+                     "id": rec.get("tool_call_id", ""),
+                     "ok": bool(rec.get("ok")),
+                     "ms": rec.get("duration_ms", 0),
+                     "text": _result_preview(rec.get("result"))}),
                 on_phase=lambda label, detail="": pub(
                     {"type": "phase", "label": label, "detail": detail}),
                 on_reasoning=lambda tok: pub({"type": "reasoning", "text": tok}),

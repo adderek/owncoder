@@ -23,6 +23,7 @@ class UIServerProtocol(Protocol):
         on_token=None,
         on_tool_call=None,
         on_tool_result=None,
+        on_tool_record=None,
         on_usage=None,
         on_progress=None,
         on_loop_detected=None,

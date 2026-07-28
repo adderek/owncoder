@@ -269,6 +269,7 @@ function mount(el) {
   return el;
 }
 
+
 // While a turn runs, meta-steps mount inside the turn's work fold so the
 // whole "agent working" phase collapses to one line when the answer lands.
 function beginTurn() {
@@ -355,10 +356,19 @@ function toolCall(name, args, argsFull) {
   (pendingTools[name] = pendingTools[name] || []).push(d);
 }
 
+// Folds whose ✓/✗ has landed but whose output has not: the result event and
+// the record carrying the text are published separately, in that order.
+let resolvedTools = {};
+
 function toolResult(name, ok) {
   const list = pendingTools[name];
   const d = list && list.shift();
   if (d) {
+    const q = (resolvedTools[name] = resolvedTools[name] || []);
+    q.push(d);
+    // A backend that never sends the text (older agent, relay bridge) must not
+    // grow this without bound.
+    if (q.length > 20) q.shift();
     const mark = d.querySelector('.mark');
     mark.textContent = ok ? '✓' : '✗';
     mark.className = 'mark ' + (ok ? 'ok' : 'fail');
@@ -466,6 +476,18 @@ function resolvePermission(choice) {
   permEl = null;
 }
 
+// What the tool actually returned. Folded away with everything else, but
+// there: "⚙ read_file ✓" alone never answered the question being asked.
+function toolOutput(name, ok, text, ms) {
+  const q = resolvedTools[name];
+  const d = q && q.shift();
+  if (!d || !text) return;
+  const body = document.createElement('div');
+  body.className = 'toolout' + (ok ? '' : ' fail');
+  body.textContent = text;
+  d.appendChild(body);
+}
+
 function reasoning(text) {
   if (!thinkEl) {
     const d = document.createElement('details');
@@ -534,6 +556,8 @@ function handle(ev) {
     // Back to the model unless other calls of this batch are still running.
     if (!Object.keys(pendingTools).some(n => pendingTools[n].length))
       setActivity('thinking');
+  } else if (ev.type === 'tool_io') {
+    toolOutput(ev.name, ev.ok, ev.text, ev.ms);
   } else if (ev.type === 'phase') {
     // A stall heartbeat is not a new step in the turn: keep the half-finished
     // stream bubble (and its caret) open so the gap is visible where the text
@@ -633,7 +657,7 @@ function handle(ev) {
       setActivity('idle');
       // A turn that was stopped/errored mid-tool leaves calls with no result;
       // drop them so the next turn's activity tracking starts clean.
-      pendingTools = {};
+      pendingTools = {}; resolvedTools = {};
       endStream();   // error/abort path: keep whatever streamed, folded
       endTurn();
       resolveLoopGuard('stop');   // turn over — retire any pending prompt
@@ -1658,7 +1682,7 @@ async function previewSession(id) {
     missedLive = 0;
     log.innerHTML = '';
     logTrimmed = 0;   // the view starts over
-    turn = null; streamEl = null; thinkEl = null; pendingTools = {};
+    turn = null; streamEl = null; thinkEl = null; pendingTools = {}; resolvedTools = {};
     const bar = document.createElement('div');
     bar.id = 'previewbar';
     bar.innerHTML = '⏸ history: <b>' + esc(d.name || id) + '</b> (read-only) ' +
@@ -1730,7 +1754,7 @@ async function condensedView(id) {
     missedLive = 0;
     log.innerHTML = '';
     logTrimmed = 0;   // the view starts over
-    turn = null; streamEl = null; thinkEl = null; pendingTools = {};
+    turn = null; streamEl = null; thinkEl = null; pendingTools = {}; resolvedTools = {};
     const bar = document.createElement('div');
     bar.id = 'previewbar';
     bar.innerHTML = '≣ condensed: <b>' + esc(d.name || d.id) + '</b> (' +
@@ -1923,7 +1947,7 @@ async function resyncView() {
     const s = await (await fetch('/api/state')).json();
     log.innerHTML = '';
     logTrimmed = 0;   // the view starts over
-    turn = null; streamEl = null; thinkEl = null; pendingTools = {};
+    turn = null; streamEl = null; thinkEl = null; pendingTools = {}; resolvedTools = {};
     applyState(s);
     return true;
   } catch (e) {
@@ -2039,7 +2063,7 @@ async function send() {
     saveDraft();
     log.innerHTML = '';
     logTrimmed = 0;   // the view starts over
-    turn = null; streamEl = null; thinkEl = null; pendingTools = {};
+    turn = null; streamEl = null; thinkEl = null; pendingTools = {}; resolvedTools = {};
     return;
   }
   const target = previewing;   // non-null: send to the previewed session

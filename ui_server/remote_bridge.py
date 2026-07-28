@@ -86,6 +86,7 @@ class RemoteBridge:
         on_token=None,
         on_tool_call=None,
         on_tool_result=None,
+        on_tool_record=None,
         on_usage=None,
         on_progress=None,
         on_loop_detected=None,
@@ -151,6 +152,9 @@ class RemoteBridge:
             on_token=pub_token,
             on_tool_call=pub_tool_call,
             on_tool_result=pub_tool_result,
+            # Local-only: the full result text is not worth pushing over the
+            # relay, and remote clients render from their own side-log.
+            on_tool_record=on_tool_record,
             on_usage=pub_usage,
             on_progress=pub_progress,
             on_loop_detected=on_loop_detected,  # bidirectional — stays local

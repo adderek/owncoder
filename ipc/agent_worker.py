@@ -9,6 +9,7 @@ from .messages import (
     TokenEvent,
     ToolCallEvent,
     ToolResultEvent,
+    ToolRecordEvent,
     PhaseEvent,
     UsageEvent,
     ReasoningEvent,
@@ -62,6 +63,9 @@ async def run(
     def _on_tool_result(name: str, ok: bool) -> None:
         send(ToolResultEvent(name, ok))
 
+    def _on_tool_record(record: dict) -> None:
+        send(ToolRecordEvent(record))
+
     def _on_phase(label: str, detail: str = "") -> None:
         send(PhaseEvent(label, detail))
 
@@ -95,6 +99,7 @@ async def run(
             on_token=_on_token,
             on_tool_call=_on_tool_call,
             on_tool_result=_on_tool_result,
+            on_tool_record=_on_tool_record,
             on_usage=_on_usage,
             on_progress=_on_progress,
             on_loop_detected=_on_loop_detected,

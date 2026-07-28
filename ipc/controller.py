@@ -10,6 +10,7 @@ from .messages import (
     TokenEvent,
     ToolCallEvent,
     ToolResultEvent,
+    ToolRecordEvent,
     PhaseEvent,
     UsageEvent,
     ReasoningEvent,
@@ -35,6 +36,7 @@ async def run_turn_ipc(
     on_token=None,
     on_tool_call=None,
     on_tool_result=None,
+    on_tool_record=None,
     on_usage=None,
     on_progress=None,
     on_loop_detected=None,
@@ -95,6 +97,8 @@ async def run_turn_ipc(
                 _safe_call(on_tool_call, event.name, event.args)
             elif isinstance(event, ToolResultEvent):
                 _safe_call(on_tool_result, event.name, event.ok)
+            elif isinstance(event, ToolRecordEvent):
+                _safe_call(on_tool_record, event.record)
             elif isinstance(event, PhaseEvent):
                 _safe_call(on_phase, event.label, event.detail)
             elif isinstance(event, UsageEvent):
