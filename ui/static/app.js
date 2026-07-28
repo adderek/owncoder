@@ -2532,6 +2532,22 @@ document.getElementById('trigfold').addEventListener('toggle', (e) => {
 const STEP_MARK = {pending: '·', in_progress: '▶', completed: '✓',
                    failed: '✗', skipped: '—', blocked: '⚠'};
 
+// The fold re-renders wholesale, so the one step that moved looks exactly
+// like the four that did not. Remember the last statuses and mark the
+// difference — on the changed row only; flashing the panel on every poll
+// would be noise, and noise is what makes people stop looking.
+let planSeen = null;
+
+function planChanged(steps) {
+  const now = {};
+  steps.forEach(st => { now[st.id] = st.status; });
+  const changed = planSeen === null ? []
+    : steps.filter(st => planSeen[st.id] && planSeen[st.id] !== st.status)
+           .map(st => st.id);
+  planSeen = now;
+  return changed;
+}
+
 async function loadPlan() {
   let d;
   try { d = await (await fetch('/api/plan')).json(); }
@@ -2555,10 +2571,12 @@ async function loadPlan() {
             esc(d.goal) + '</div>';
   }
   if (!plan) {
+    planSeen = null;      // next plan starts fresh, not "everything changed"
     html += '<div class="plan-none">no active plan — <code>/plan new &lt;goal&gt;</code></div>';
     el.innerHTML = html;
     return;
   }
+  const changed = planChanged(plan.steps);
   html += '<div class="plan-head">' + esc(plan.goal) + '</div>' +
     '<div class="plan-meta">' + esc(plan.id) + ' · ' + esc(plan.status) + ' · ' +
     plan.done + '/' + plan.total + ' steps</div>' +
@@ -2568,13 +2586,20 @@ async function loadPlan() {
       if (st.deps.length) bits.push('needs ' + st.deps.join(', '));
       if (st.assigned_to) bits.push('@' + st.assigned_to);
       return '<div class="plan-step s-' + esc(st.status) +
-        (st.id === plan.current ? ' current' : '') + '">' +
+        (st.id === plan.current ? ' current' : '') +
+        '" data-step="' + esc(st.id) + '">' +
         '<span class="ps-mark">' + (STEP_MARK[st.status] || '?') + '</span>' +
         '<span class="ps-text">' + esc(st.description) +
         (bits.length ? '<span class="ps-meta"> · ' + esc(bits.join(' · ')) + '</span>' : '') +
         '</span></div>';
     }).join('');
   el.innerHTML = html;
+  for (const id of changed) {
+    const row = el.querySelector('.plan-step[data-step="' + id + '"]');
+    if (!row) continue;
+    row.classList.add('step-moved');
+    setTimeout(() => row.classList.remove('step-moved'), 1600);
+  }
 }
 
 document.getElementById('planchip').addEventListener('click', () => {

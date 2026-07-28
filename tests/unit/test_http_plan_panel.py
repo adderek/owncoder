@@ -104,6 +104,30 @@ class TestPanel:
         i = APP_JS.index("ev.type === 'state'")
         assert "if (wasBusy) loadPlan();" in APP_JS[i:APP_JS.index("ev.type === 'switched'")]
 
+    def test_only_the_step_that_moved_is_highlighted(self):
+        """The fold re-renders wholesale; flashing all of it would be noise."""
+        i = APP_JS.index("function planChanged(")
+        body = APP_JS[i:i + 600]
+        assert "planSeen[st.id] !== st.status" in body
+        assert "planSeen === null ? []" in body      # first render marks nothing
+
+    def test_a_new_plan_does_not_read_as_all_changed(self):
+        i = APP_JS.index("async function loadPlan()")
+        body = APP_JS[i:i + 1600]
+        assert "planSeen = null;" in body
+
+    def test_the_highlight_expires(self):
+        i = APP_JS.index("classList.add('step-moved')")
+        assert "remove('step-moved')" in APP_JS[i:i + 200]
+
+    def test_the_highlight_does_not_move_anything(self):
+        """Colour only, so it needs no reduced-motion exemption."""
+        css = (Path(__file__).resolve().parents[2] / "ui" / "static" / "app.css"
+               ).read_text(encoding="utf-8")
+        i = css.index("@keyframes stepmoved")
+        block = css[i:css.index("\n}", i)]
+        assert "transform" not in block and "translate" not in block
+
     def test_the_step_status_marks_match_the_terminal_renderer(self):
         import inspect
 

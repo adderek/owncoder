@@ -261,6 +261,13 @@ aside.resizing { transition: none; }   /* no lag while dragging */
 .plan-step .ps-mark { flex-shrink: 0; font-family: var(--mono); color: var(--dimmer); }
 .plan-step .ps-meta { color: var(--dimmer); font-size: 10.5px; }
 .plan-step.current { background: var(--panel2); color: var(--fg); }
+/* The step that just moved, for as long as it takes to notice. Colour only —
+   nothing shifts, so it needs no reduced-motion exemption. */
+.plan-step.step-moved { animation: stepmoved 1.6s ease-out; }
+@keyframes stepmoved {
+  0% { background: var(--accent); color: var(--bg); }
+  100% { background: transparent; }
+}
 .plan-step.s-completed { opacity: .6; }
 .plan-step.s-completed .ps-mark { color: var(--ok); }
 .plan-step.s-in_progress .ps-mark { color: var(--warn); }
