@@ -304,6 +304,18 @@ aside.resizing { transition: none; }   /* no lag while dragging */
            margin-bottom: 8px; }
 .cond-files { margin-top: 8px; font-size: 12px; color: var(--dim); }
 .diffbtn { font-family: var(--mono); font-size: 11.5px; }
+/* What a live turn changed, under its work fold. Names are buttons: each one
+   opens the same diff box the condensed view uses. */
+.files-changed { display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+                 margin: 0 0 10px 2px; font-size: 11.5px; }
+.files-changed .fc-label { color: var(--dimmer); font-size: 11px; }
+.files-changed .fc-file { background: var(--panel2); color: var(--dim);
+                          border: 1px solid var(--border); border-radius: 5px;
+                          padding: 1px 7px; font-family: var(--mono);
+                          font-size: 11px; cursor: pointer; }
+.files-changed .fc-file:hover { color: var(--fg); border-color: var(--accent); }
+.files-changed .fc-file.open { color: var(--accent); border-color: var(--accent); }
+.files-changed .diff-box { flex-basis: 100%; }
 .diff-box { margin-top: 6px; padding: 8px; background: var(--panel2);
             border: 1px solid var(--border); border-radius: 6px;
             font-family: var(--mono); font-size: 12px; overflow-x: auto;

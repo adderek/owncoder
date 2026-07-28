@@ -336,7 +336,7 @@ function beginTurn() {
   });
   mount(d);
   turn = {details: d, body: d.querySelector('.wbody'),
-          tools: 0, steps: 0, t0: Date.now(), userToggled: false};
+          tools: 0, steps: 0, files: [], t0: Date.now(), userToggled: false};
   d.querySelector('summary').title = 'started ' + fmtClock(turn.t0);
   return turn;
 }
@@ -376,6 +376,7 @@ function endTurn() {
       '  ·  ' + secs + 's';
   t.details.classList.add('done');
   if (!t.userToggled) t.details.open = false;
+  if (t.files.length) mount(filesStrip(t.files));
 }
 
 // Every step inside the work fold (phase lines, tool folds, reasoning, signals)
@@ -397,6 +398,47 @@ function stamp(el, t) {
   return el;
 }
 
+// Which files a tool call touched. The same three tools and the same argument
+// shapes the agent tracks server-side (agent/core/agent.py) — read here from
+// the arguments already on the wire, so a live turn and a replayed one agree
+// without another event type.
+const MUTATING_TOOLS = ['write_file', 'patch_file', 'edit_file'];
+
+function toolPaths(name, argsFull) {
+  if (MUTATING_TOOLS.indexOf(name) < 0 || !argsFull) return [];
+  let parsed;
+  try { parsed = JSON.parse(argsFull); } catch (e) { return []; }
+  if (!parsed || typeof parsed !== 'object') return [];
+  if (name === 'edit_file') {
+    return (parsed.chunks || []).map(c => (c && c.path) || '').filter(Boolean);
+  }
+  return parsed.path ? [parsed.path] : [];
+}
+
+function noteFiles(name, argsFull) {
+  if (!turn) return;
+  for (const p of toolPaths(name, argsFull)) {
+    if (turn.files.indexOf(p) < 0) turn.files.push(p);
+  }
+}
+
+// Pinned under the work fold: what the turn changed, each name opening the
+// diff. The diff viewer and /api/diff already existed — they were reachable
+// only from the condensed Q/A view, so a live turn never said what it wrote.
+function filesStrip(files) {
+  const wrap = document.createElement('div');
+  wrap.className = 'files-changed';
+  wrap.innerHTML = '<span class="fc-label">' + files.length +
+    (files.length === 1 ? ' file changed' : ' files changed') + '</span>' +
+    files.map(f => '<button class="fc-file" type="button" data-file="' + esc(f) +
+      '" title="Show the diff for ' + esc(f) + '">' + esc(f) + '</button>').join('');
+  wrap.querySelectorAll('.fc-file').forEach(b => b.addEventListener('click', () => {
+    b.classList.toggle('open');
+    toggleDiff(wrap, b.dataset.file);
+  }));
+  return wrap;
+}
+
 function toolCall(name, args, argsFull) {
   const d = document.createElement('details');
   d.className = 'tool';
@@ -407,6 +449,7 @@ function toolCall(name, args, argsFull) {
     (full ? '<div class="body">' + esc(full) + '</div>' : '');
   stamp(metaMount(d));   // stamp after mount: the fold (turn.t0) may start here
   if (turn) turn.tools++;
+  noteFiles(name, argsFull);
   (pendingTools[name] = pendingTools[name] || []).push(d);
 }
 
@@ -587,6 +630,7 @@ function replayToolCall(name, args, argsFull) {
   // Not metaMount: that routes by busyFlag, which is false while replaying, so
   // the fold would land beside the work fold instead of inside it.
   if (turn) { turn.body.appendChild(d); turn.tools++; } else { mount(d); }
+  noteFiles(name, argsFull);
   return d;
 }
 
