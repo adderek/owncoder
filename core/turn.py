@@ -271,7 +271,16 @@ async def run_turn(
         _notify_ctx(token_est)
         budget = health_adjusted_budget(
             config, confidence_monitor.signal() if confidence_monitor else None)
-        if token_est > budget:
+        _defer, _defer_why = (
+            prompt_cache.defer_for_cache(config, messages, token_est, budget)
+            if token_est > budget else (False, ""))
+        if _defer:
+            # Opt-in: hold the compaction while the provider's prompt cache is
+            # still warm, so the rewrite does not throw a live cache away.
+            logger.info("Pre-flight: %d tokens over budget %d, deferring compaction (%s)",
+                        token_est, budget, _defer_why)
+            _phase("compact_deferred", _defer_why)
+        elif token_est > budget:
             logger.warning("Pre-flight: estimated %d tokens exceeds budget %d, compacting...", token_est, budget)
             _phase("compact", f"{token_est}→budget {budget}")
             messages = await compact(messages, config, client, facts_store=facts_store, turn_index=turn_index, project_memory_store=project_memory_store, session_id=session_id)

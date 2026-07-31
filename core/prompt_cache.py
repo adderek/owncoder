@@ -175,6 +175,81 @@ def check_prefix_stable(api_messages: list[dict], config: "Config") -> bool:
     return False
 
 
+def cached_prefix_intact(api_messages: list[dict], config: "Config") -> bool:
+    """Read-only counterpart to check_prefix_stable: is a live cache being kept?
+
+    Unlike check_prefix_stable this records nothing, so it can be asked outside
+    the request path. False when no prefix has been seen for this endpoint yet —
+    a cache that does not exist cannot be lost.
+    """
+    if not api_messages:
+        return False
+    key = f"{getattr(config.llm, 'base_url', '')}||{getattr(config.llm, 'model', '')}"
+    previous = _prefix_sigs.get(key)
+    return previous is not None and previous == prefix_signature(api_messages)
+
+
+#: How far over the compaction budget a deferral may run before compacting
+#: anyway. The budget is itself well below the context ceiling, so a modest
+#: overshoot is affordable; this is what stops a permanently-warm cache from
+#: deferring compaction forever.
+_DEFER_MAX_OVERSHOOT = 1.15
+
+#: Fraction of the output reserve a deferral may borrow. Overshooting the
+#: budget necessarily eats into the room set aside for the model's reply — the
+#: budget is the window minus that reserve — so the relative overshoot above is
+#: not a sufficient guard on its own: with a small max_output_tokens, 1.15x of
+#: the budget lands past the end of the window. Keeping half the reserve
+#: intact bounds it in terms of the thing actually at risk.
+_DEFER_RESERVE_BORROW = 0.5
+
+
+def defer_for_cache(config: "Config", messages: list[dict],
+                    token_est: int, budget: int) -> tuple[bool, str]:
+    """Should a due compaction wait for the prompt cache to expire first?
+
+    On providers that bill cached input tokens at a fraction of the normal rate
+    (DeepSeek, Anthropic, OpenAI), compaction is expensive twice over: it costs
+    an LLM call, and it rewrites the message prefix, so the next request re-pays
+    full price for the whole thing. If the cache is warm and still intact, the
+    same compaction done after it expires costs nothing extra.
+
+    Returns (defer, reason). Deferral requires all of:
+      - llm.defer_compaction_for_cache is on (off by default: it trades context
+        headroom for money, and only paid providers benefit),
+      - cache tracking is on and the endpoint's cache is warm,
+      - the prefix that cache holds is still intact,
+      - the overshoot is small enough to be safe.
+    """
+    if not getattr(config.llm, "defer_compaction_for_cache", False):
+        return False, ""
+    ttl = int(getattr(config.llm, "cache_ttl", 0) or 0)
+    if ttl <= 0:
+        return False, ""
+    # Overflow safety first: a deferral must never be the reason a turn blows
+    # the context window, whatever the cache is worth.
+    if budget <= 0 or token_est > budget * _DEFER_MAX_OVERSHOOT:
+        return False, "overshoot too large"
+    from agent.core.context_budget import effective_ctx_window, _PROMPT_OVERHEAD
+    ctx = effective_ctx_window(config)
+    max_out = int(getattr(config.llm, "max_output_tokens", 0) or 0)
+    reserve = min(max_out, ctx // 2)
+    if token_est > ctx - int(reserve * _DEFER_RESERVE_BORROW) - _PROMPT_OVERHEAD:
+        return False, "would eat the output reserve"
+    from agent.core.cache_tracker import check_cache
+    warm, remaining, _msg = check_cache(
+        getattr(config.llm, "base_url", ""), getattr(config.llm, "model", ""), ttl)
+    if not warm:
+        return False, "cache cold"
+    # Normalisation is the expensive check, so it runs last and only once every
+    # cheaper reason to say no has been ruled out. The recorded signature comes
+    # from the normalised request, so the comparison has to use the same shape.
+    from agent.core.turn_setup import normalize_api_messages
+    if not cached_prefix_intact(normalize_api_messages(messages), config):
+        return False, "prefix already changed"
+    return True, f"cache warm {remaining}s"
+
+
 def reset() -> None:
     """Forget recorded prefixes (tests, session switch)."""
     _prefix_sigs.clear()

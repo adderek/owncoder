@@ -15,6 +15,15 @@ class LLMConfig:
     auto_detect_ctx: bool = True  # query server for actual context size on startup
     compaction_threshold: float = 0.75
     compaction_message_threshold: int = 0
+    # Hold a due compaction back while the endpoint's prompt cache is still warm
+    # and intact (core/prompt_cache.py defer_for_cache). Compaction rewrites the
+    # message prefix, so doing it while the cache is live throws that cache away
+    # and the next request re-pays full price for the whole prompt; waiting for
+    # the cache to expire makes the same compaction free. Off by default — it
+    # trades context headroom for money, and only providers that discount cached
+    # input tokens benefit. Needs cache_ttl > 0. Note this pulls the opposite way
+    # from the health-reactive budget in core/context_budget.py.
+    defer_compaction_for_cache: bool = False
     max_output_tokens: int = 4096
     max_iterations: int | None = None  # cap on tool-call rounds per user turn (None/0 = unlimited)
     goal: str | None = None            # completion condition; prefix "$" for shell check
