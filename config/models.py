@@ -244,6 +244,16 @@ class CheckpointsConfig:
     """
     persist: bool = True
     max_age_days: float = 7.0   # drop journal entries older than this (0 = keep forever)
+    # Create a checkpoint automatically every N successful edits, so a rollback
+    # point exists without the user having remembered to run /checkpoint new.
+    # 0 disables auto-checkpointing (manual checkpoints still work).
+    auto_interval: int = 5
+    # Revert to the newest auto checkpoint when a turn dies with an error.
+    # Off by default: rolling files back is destructive and the edits made
+    # before a failure are often still wanted. When off, the turn-error note
+    # names the checkpoint so the user can roll back deliberately.
+    # Never fires on Ctrl-C / cancellation — that is a stop, not a failure.
+    auto_rollback_on_error: bool = False
 
 
 @dataclass

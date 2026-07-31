@@ -703,6 +703,47 @@ class Agent:
         except Exception:
             logger.debug("update_stats failed", exc_info=True)
 
+    def _checkpoint_note_for_failed_turn(self, exc: BaseException) -> str:
+        """Handle file edits left behind by a turn that died. Returns a note or "".
+
+        With ``[checkpoints] auto_rollback_on_error`` the newest auto checkpoint
+        is restored, so the next turn starts from a clean tree. It is off by
+        default because reverting files is destructive and half-finished edits
+        are often still wanted — so the default is to *name* the rollback point
+        and let the user decide.
+
+        Cancellation is never a failure: Ctrl-C and a stop button mean "stop
+        doing things", not "undo what you did".
+        """
+        import asyncio as _asyncio
+        if isinstance(exc, (KeyboardInterrupt, _asyncio.CancelledError)):
+            return ""
+        try:
+            from agent.core import checkpoint as _cp
+            cp = _cp.latest_auto_checkpoint()
+            if cp is None:
+                return ""
+            pending = _cp.edits_since(cp.id)
+            if not pending:
+                return ""
+            if not getattr(self.config.checkpoints, "auto_rollback_on_error", False):
+                return (f"[turn failed after {pending} file edit(s). They are still on disk; "
+                        f"revert them with /checkpoint rollback {cp.id} ('{cp.label}').]")
+            res = _cp.rollback_to(cp.id)
+            if res.get("error"):
+                return f"[turn failed; auto-rollback to {cp.id} failed: {res['error']}]"
+            note = (f"[turn failed — auto-rolled back to checkpoint {cp.id}: "
+                    f"{len(res['restored'])} file(s) restored, "
+                    f"{len(res['deleted'])} removed. Retry from this clean state.]")
+            logger.warning("checkpoints: auto-rollback to %s after turn error (%s)",
+                           cp.id, type(exc).__name__)
+            if res.get("errors"):
+                note += f"  (partial: {res['errors']})"
+            return note
+        except Exception:
+            logger.debug("checkpoint note for failed turn failed", exc_info=True)
+            return ""
+
     async def chat(
         self,
         user_input: str,
@@ -922,10 +963,13 @@ class Agent:
                 stop_event=stop_event,
                 excluded_tools=_excluded or None,
             )
-        except BaseException:
+        except BaseException as _turn_exc:
             # Roll back the user message so the next turn doesn't start with
             # consecutive user messages (which causes a 400 deadloop).
             self.messages = self.messages[:pre_turn_len]
+            _note = self._checkpoint_note_for_failed_turn(_turn_exc)
+            if _note:
+                self.messages.append({"role": "system", "content": _note})
             raise
         finally:
             self._turn_busy = False

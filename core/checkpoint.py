@@ -40,24 +40,33 @@ class Checkpoint:
     seq: int                       # journal length captured at creation
     ts: float = field(default_factory=time.time)
     files: int = 0                 # distinct files touched up to creation
+    auto: bool = False             # created by the every-N-edits timer, not by hand
 
 
 _checkpoints: dict[str, Checkpoint] = {}
 _ckpt_counter = 0
 
-# Config for the persistence mirror. None → memory only (the pre-S5 behavior,
-# and what every test that does not opt in gets).
+# Config. None → no config attached (what every test that does not opt in gets):
+# memory only, and no auto-checkpointing.
 _config = None
+# Whether the persistence mirror is on. Separate from _config because
+# auto-checkpointing needs the config even when [checkpoints] persist is off.
+_persist = False
+
+# Successful edits since the last auto checkpoint.
+_edits_since_auto = 0
 
 
 def reset() -> None:
     """Clear the in-memory journal + checkpoints. Does NOT touch the store."""
-    global _seq, _ckpt_counter, _config
+    global _seq, _ckpt_counter, _config, _persist, _edits_since_auto
     _journal.clear()
     _checkpoints.clear()
     _seq = 0
     _ckpt_counter = 0
     _config = None
+    _persist = False
+    _edits_since_auto = 0
 
 
 def setup(config) -> None:
@@ -66,13 +75,14 @@ def setup(config) -> None:
     Called from the tools layer's setup() after reset(), so a fresh session
     starts from what is on disk rather than from nothing.
     """
-    global _config, _seq, _ckpt_counter
+    global _config, _persist, _seq, _ckpt_counter
     from agent.core import checkpoint_store as store
 
     reset()
+    _config = config          # attached even without persistence: auto-checkpointing needs it
     if not store.enabled(config):
         return
-    _config = config
+    _persist = True
     try:
         store.prune(config)
         journal, checkpoints = store.load(config)
@@ -89,6 +99,7 @@ def setup(config) -> None:
             seq=int(item.get("seq", 0)),
             ts=float(item.get("ts") or time.time()),
             files=int(item.get("files", 0)),
+            auto=bool(item.get("auto", False)),
         )
         _checkpoints[cp.id] = cp
     # Keep generated ids unique against restored ones instead of restarting at
@@ -102,7 +113,7 @@ def setup(config) -> None:
 
 
 def _persisted() -> bool:
-    return _config is not None
+    return _config is not None and _persist
 
 
 def _save_checkpoints() -> None:
@@ -110,7 +121,8 @@ def _save_checkpoints() -> None:
         return
     from agent.core import checkpoint_store as store
     store.save_checkpoints(_config, [
-        {"id": c.id, "label": c.label, "seq": c.seq, "ts": c.ts, "files": c.files}
+        {"id": c.id, "label": c.label, "seq": c.seq, "ts": c.ts, "files": c.files,
+         "auto": c.auto}
         for c in list_checkpoints()
     ])
 
@@ -124,9 +136,38 @@ def journal_record(path: str, before: str | None) -> None:
     if _persisted():
         from agent.core import checkpoint_store as store
         store.append_entry(_config, entry, before)
+    _maybe_auto_checkpoint()
 
 
-def create_checkpoint(label: str = "") -> Checkpoint:
+def _auto_interval() -> int:
+    """[checkpoints] auto_interval, or 0 when no config is attached."""
+    cfg = getattr(_config, "checkpoints", None) if _config is not None else None
+    try:
+        return max(0, int(getattr(cfg, "auto_interval", 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _maybe_auto_checkpoint() -> None:
+    """Create a checkpoint every N successful edits.
+
+    A rollback point is only useful if it exists *before* things go wrong, and
+    users reliably forget to run `/checkpoint new` first. Cheap to make: a
+    checkpoint is a marker at the current journal length, not a copy.
+    """
+    global _edits_since_auto
+    interval = _auto_interval()
+    if interval <= 0:
+        return
+    _edits_since_auto += 1
+    if _edits_since_auto < interval:
+        return
+    _edits_since_auto = 0
+    cp = create_checkpoint(f"auto after {interval} edits", auto=True)
+    logger.info("checkpoints: auto checkpoint %s at %d edits", cp.id, _seq)
+
+
+def create_checkpoint(label: str = "", auto: bool = False) -> Checkpoint:
     global _ckpt_counter
     _ckpt_counter += 1
     cid = f"cp{_ckpt_counter}"
@@ -135,10 +176,28 @@ def create_checkpoint(label: str = "") -> Checkpoint:
         label=label.strip() or cid,
         seq=_seq,
         files=len({e["path"] for e in _journal}),
+        auto=auto,
     )
     _checkpoints[cid] = cp
     _save_checkpoints()
     return cp
+
+
+def latest_auto_checkpoint() -> Checkpoint | None:
+    """Newest auto checkpoint with edits after it, or None."""
+    autos = [c for c in list_checkpoints() if c.auto and c.seq < _seq]
+    return autos[-1] if autos else None
+
+
+def edits_since(checkpoint_id: str) -> int:
+    cp = _checkpoints.get(checkpoint_id)
+    return 0 if cp is None else sum(1 for e in _journal if e["seq"] > cp.seq)
+
+
+def rollback_last_auto() -> dict | None:
+    """Revert to the newest auto checkpoint. None when there is nothing to undo."""
+    cp = latest_auto_checkpoint()
+    return None if cp is None else rollback_to(cp.id)
 
 
 def list_checkpoints() -> list[Checkpoint]:
@@ -180,6 +239,8 @@ def rollback_to(checkpoint_id: str) -> dict:
             errors.append(f"{path}: {e}")
 
     # Trim journal + drop checkpoints created after this one.
+    global _edits_since_auto
+    _edits_since_auto = 0        # the edits that were counting toward one are gone
     _journal[:] = [e for e in _journal if e["seq"] <= cp.seq]
     for cid in [c.id for c in _checkpoints.values() if c.seq > cp.seq]:
         _checkpoints.pop(cid, None)
@@ -218,7 +279,8 @@ def run_checkpoint_command(arg: str) -> str:
             return "No checkpoints. Use /checkpoint new [label] before a risky change."
         lines = [f"Checkpoints ({len(cps)}):"]
         for c in cps:
-            lines.append(f"  {c.id}: {c.label}  ({c.files} files touched)")
+            tag = " [auto]" if c.auto else ""
+            lines.append(f"  {c.id}: {c.label}{tag}  ({c.files} files touched)")
         return "\n".join(lines)
 
     if sub in ("new", "create", "add"):
