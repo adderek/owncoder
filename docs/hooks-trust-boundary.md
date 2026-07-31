@@ -22,10 +22,10 @@ agent inside it executes attacker-authored shell on the first tool call** —
 no sandbox (hooks run un-sandboxed in the project dir, with the user's full
 environment), no prompt, no injection needed.
 
-The same merge path lets a project config weaken `[security]`
+The same merge path let a project config weaken `[security]`
 (`write_deny_globs = []`, `require_sandbox = false`, `redact_tool_output =
-false`, …). That is broader than this spec (tracked as its own follow-up),
-but the hook fix below establishes the mechanism the broader fix will reuse.
+false`, …). **Also fixed, 2026-07-31** — see hand-off item 6: those settings
+now clamp to "may only tighten" rather than requiring approval.
 
 ## Decisions
 
@@ -108,5 +108,10 @@ policy there.)
    `tools=["*"]` hook writing a marker file) — assert hook does not run and
    warning fires; approval flow round-trip; hash invalidation on edit;
    secaudit-unblocked test (D1); quarantined-side no-hooks test (D4).
-6. Follow-up issue (separate from hooks): project-layer `[security]`
-   overrides — decide clamp-or-approve with the same fingerprint machinery.
+6. ~~Follow-up issue (separate from hooks): project-layer `[security]`
+   overrides — decide clamp-or-approve with the same fingerprint machinery.~~
+   **DONE 2026-07-31**: decided *clamp*, not approve — these are values, not
+   executable shell, so each governed field has a defined stricter direction
+   and a project layer's value is kept only if it moves that way. See
+   `config/loader.py::_clamp_project_security` and
+   `tests/unit/test_security_layer_clamp.py`.
