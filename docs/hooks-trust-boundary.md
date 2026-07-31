@@ -1,6 +1,11 @@
 # Hook trust-boundary spec (S4)
 
-Status: **decided** — implementation steps at the end are PLAN_NORMAL-class.
+Status: **implemented** (2026-07-31). D1–D4 are in the code:
+`security/hook_trust.py` (fingerprint + approval store + `/hooks`),
+`config/loader.py::_stamp_hook_origin` (origin tagging), `core/hooks.py`
+(`_matching` trust filter, quarantined bypass, `_attribute` prefix + redaction).
+Tests: `tests/unit/test_hook_trust.py`. Item 6 below (project-layer `[security]`
+overrides) is still open.
 
 Scope: `core/hooks.py` (pre_tool / post_tool shell hooks) and the trust level
 of the config layers that can define them. Written against the current code,
@@ -8,7 +13,7 @@ which — unlike the assumption in PLAN_STRONG — already ships *active* hooks:
 a `block=true` pre_tool hook denies the call on non-zero exit, and post_tool
 output surfaces as a transient note.
 
-## Finding 0 (live vulnerability, fix first)
+## Finding 0 (live vulnerability — FIXED 2026-07-31)
 
 `cli/main.py` loads `<project_root>/agent.toml` as a config layer, and the
 `hooks` section is merged from every layer. Therefore **cloning a hostile

@@ -76,6 +76,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/watch", [], "event watches: list | add <file|url|cmd|pid> <target> :: <prompt> [:: <name>] | rm | on/off", True),
     ("/credpool", ["/creds"], "credential pool: list|status | add <service> <domain> <username> <password> | remove <service>", True),
     ("/permissions", ["/perms"], "tool permissions: list | add <allow|ask|deny> <tool> [match] | default <verdict> | clear", True),
+    ("/hooks", [], "shell hooks: list | approve <n> | revoke <n|digest>", True),
     ("/notify", [], "notification channels  [on | off | status]", True),
     ("/model", [], "switch active model  [<entry> | role=<entry> | role=? | refresh]", True),
     ("/models", [], "model entries: table + toggles  [table | enable <name> | disable <name>]", False),

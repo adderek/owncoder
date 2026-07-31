@@ -418,6 +418,10 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                 from agent.security.permissions import run_permissions_command
                 console.print(run_permissions_command(agent.config, arg))
 
+            elif cmd == "/hooks":
+                from agent.security.hook_trust import run_hooks_command
+                console.print(run_hooks_command(agent.config, arg))
+
             elif cmd == "/models":
                 from agent.ui.slash import _render_models_table, handle_models_toggle
                 toggled = handle_models_toggle(agent.config, arg)

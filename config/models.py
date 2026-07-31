@@ -1064,6 +1064,10 @@ class HookConfig:
       stdout/stderr is returned to the model as the error. Ignored for post_tool
       (post hooks are advisory; their output surfaces as a note).
     timeout_s: kill the hook after this long (non-zero exit → block if set).
+    origin: which config layer defined this hook. Stamped by the loader, never
+      read from the file itself — a project config claiming origin = "user" would
+      trust itself. "project" hooks come from a cloned repo and stay inert until
+      approved by fingerprint (security/hook_trust.py, docs/hooks-trust-boundary.md).
     """
     event: str = "post_tool"
     tools: list = field(default_factory=lambda: ["*"])
@@ -1071,6 +1075,7 @@ class HookConfig:
     block: bool = False
     timeout_s: float = 30.0
     name: str = ""
+    origin: str = "user"
 
 
 @dataclass

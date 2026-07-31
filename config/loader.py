@@ -397,6 +397,22 @@ def _coerce_diagnostics_checkers(config: Config) -> None:
     )
 
 
+def _stamp_hook_origin(data: dict, origin: str) -> None:
+    """Tag each raw [[hooks.entries]] mapping with the trust level of its file.
+
+    Runs per layer, before the merge, because the merge replaces the entries list
+    wholesale and afterwards there is no way to tell which file an entry came from.
+    The value is written unconditionally: a project config that sets
+    `origin = "user"` must not be able to trust itself.
+    """
+    hooks = data.get("hooks")
+    if not isinstance(hooks, dict):
+        return
+    for entry in hooks.get("entries") or []:
+        if isinstance(entry, dict):
+            entry["origin"] = origin
+
+
 def _coerce_hooks(config: Config) -> None:
     """Convert hooks.entries dicts (TOML [[hooks.entries]] / YAML list) to HookConfig."""
     from agent.config.models import HookConfig
@@ -595,6 +611,7 @@ def load_config(extra_path: Path | list[Path] | None = None) -> Config:
                     file=sys.stderr,
                 )
                 sys.exit(1)
+            _stamp_hook_origin(data, "project" if p in project_paths else "user")
             raw_data.append(data)
             perm_layers.append((data, p in project_paths))
             loaded_layers.append(str(p))

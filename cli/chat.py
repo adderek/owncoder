@@ -361,6 +361,17 @@ def cmd_chat(args, config):
         except Exception:
             logger.debug("scheduler start failed", exc_info=True)
 
+    # Unapproved project hooks: a cloned repo's agent.toml can ship shell that
+    # would run un-sandboxed on the first tool call. They are inert until
+    # approved; say so once, at the point the user can act on it.
+    try:
+        from agent.security.hook_trust import session_warning
+        _hw = session_warning(agent.config)
+        if _hw:
+            console.print(f"[red]{_hw}[/red]")
+    except Exception:
+        logger.debug("hook trust warning failed", exc_info=True)
+
     # Tamper check: warn if sealed skills/config drifted, or pinned weights moved.
     try:
         from agent.security.integrity import warn_if_tampered

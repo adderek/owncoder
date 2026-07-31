@@ -311,6 +311,10 @@ class SlashHandlerMixin:
             from agent.security.permissions import run_permissions_command
             self._write_sys(_escape(run_permissions_command(self._server._agent.config, arg)))
 
+        elif cmd == "/hooks":
+            from agent.security.hook_trust import run_hooks_command
+            self._write_sys(_escape(run_hooks_command(self._server._agent.config, arg)))
+
         elif cmd == "/save":
             if arg.strip():
                 from agent.memory.session import _sanitize_short_name

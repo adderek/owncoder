@@ -12,6 +12,13 @@ shell, run in the project directory with tool context in the environment:
 A blocking pre_tool hook that exits non-zero denies the call; its output is
 returned to the model as the error. post_tool hooks are advisory: they run in
 the background and their output (on non-zero exit) surfaces as a transient note.
+
+Trust: hooks defined by a *project* config (a cloned repo's agent.toml) are
+untrusted and stay inert until approved by fingerprint — see
+security/hook_trust.py and docs/hooks-trust-boundary.md (D3). Hook output is data
+crossing into the model's context, so it carries an attribution prefix and goes
+through the same redaction pass as tool output (D2). The quarantined side of
+ultrasecure mode fires no hooks at all (D4).
 """
 from __future__ import annotations
 
@@ -33,16 +40,29 @@ _RESULT_ENV_CAP = 8_000   # keep TOOL_RESULT out of ARG_MAX / huge env territory
 def _matching(config: "Config | None", event: str, tool: str) -> list["HookConfig"]:
     if config is None:
         return []
+    # D4: the quarantined ask_internet broker never fires hooks. Its inputs are
+    # hostile by construction, and hooks are privileged-side shell — letting a
+    # quarantined event trigger one would tunnel straight through the boundary.
+    if getattr(config, "runtime_quarantined", False):
+        return []
     hooks = getattr(config, "hooks", None)
     if hooks is None or not getattr(hooks, "enabled", True):
         return []
+    from agent.security import hook_trust
     out = []
     for h in getattr(hooks, "entries", []) or []:
         if getattr(h, "event", "") != event or not getattr(h, "command", "").strip():
             continue
         globs = getattr(h, "tools", None) or ["*"]
-        if any(fnmatch.fnmatch(tool, g) for g in globs):
-            out.append(h)
+        if not any(fnmatch.fnmatch(tool, g) for g in globs):
+            continue
+        # D3: an unapproved project-layer hook is skipped, not run. The user is
+        # told once per session (session_warning) rather than per tool call.
+        if not hook_trust.is_trusted(h):
+            logger.warning("hook skipped (project config, unapproved): %s",
+                           getattr(h, "command", "")[:80])
+            continue
+        out.append(h)
     return out
 
 
@@ -94,6 +114,27 @@ async def _run(hook: "HookConfig", env: dict, cwd: str | None) -> tuple[int, str
     return proc.returncode if proc.returncode is not None else -1, text
 
 
+def _attribute(config: "Config | None", event: str, hook: "HookConfig", out: str) -> str:
+    """Mark hook output as hook output, and redact it (D2).
+
+    The text is about to cross into the model's context. It carries the hook's
+    identity so the model weighs it as environment feedback rather than
+    instruction, and passes through the tool-output redaction so a hook that cats
+    a secret file cannot paste the secret into the conversation.
+    """
+    label = getattr(hook, "name", "") or getattr(hook, "command", "")[:40]
+    text = f"[hook {event}:{label}] {out}"
+    # Redact the composed string, not just the output: an unnamed hook is labelled
+    # by its command text, which can itself carry a secret.
+    if config is None or getattr(getattr(config, "security", None), "redact_tool_output", True):
+        try:
+            from agent.security.redaction import redact
+            text = redact(text, config)
+        except Exception:
+            logger.debug("hook output redaction failed (ignored)", exc_info=True)
+    return text
+
+
 async def run_pre_tool(config: "Config | None", tool: str, args: dict) -> tuple[bool, str]:
     """Run pre_tool hooks for *tool*. Returns (allow, message).
 
@@ -110,7 +151,8 @@ async def run_pre_tool(config: "Config | None", tool: str, args: dict) -> tuple[
         if code != 0 and getattr(h, "block", False):
             msg = out or f"pre_tool hook '{label}' exited {code}"
             logger.info("hook blocked %s: %s", tool, msg)
-            return False, f"blocked by hook '{label}': {msg}"
+            return False, _attribute(config, "pre_tool", h,
+                                     f"blocked this call: {msg}")
         if code != 0:
             logger.info("pre_tool hook '%s' exited %d (non-blocking): %s",
                         label, code, out[:200])
@@ -128,7 +170,7 @@ async def run_post_tool(config: "Config | None", tool: str, args: dict,
     notes: list[str] = []
     for h in hooks:
         code, out = await _run(h, env, cwd)
-        label = getattr(h, "name", "") or h.command[:40]
         if code != 0:
-            notes.append(f"post_tool hook '{label}' (exit {code}): {out[:300]}")
+            notes.append(_attribute(config, "post_tool", h,
+                                    f"exit {code}: {out[:300]}"))
     return notes
