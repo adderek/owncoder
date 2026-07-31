@@ -29,7 +29,7 @@ from .turn_guards import MUTATING_TOOLS
 from .turn_setup import normalize_api_messages, select_tools
 from .loop_detector import LoopDetector
 from .confidence import ConfidenceMonitor
-from .context_budget import input_token_budget
+from .context_budget import health_adjusted_budget
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
@@ -269,7 +269,8 @@ async def run_turn(
 
         token_est = _count_tokens_approx(messages)
         _notify_ctx(token_est)
-        budget = input_token_budget(config)
+        budget = health_adjusted_budget(
+            config, confidence_monitor.signal() if confidence_monitor else None)
         if token_est > budget:
             logger.warning("Pre-flight: estimated %d tokens exceeds budget %d, compacting...", token_est, budget)
             _phase("compact", f"{token_est}→budget {budget}")
@@ -401,7 +402,9 @@ async def run_turn(
                 if _count_tokens_approx(messages) >= old_count:
                     messages = _truncate_large_messages(messages, budget)
                 token_est = _count_tokens_approx(messages)
-                budget = input_token_budget(config)
+                budget = health_adjusted_budget(
+                    config,
+                    confidence_monitor.signal() if confidence_monitor else None)
                 if token_est > budget:
                     messages = _truncate_large_messages(messages, budget)
                 continue
@@ -774,9 +777,11 @@ async def run_turn(
                 conf_sig = confidence_monitor.should_intervene()
                 if conf_sig.triggered:
                     logger.warning(
-                        "confidence_guard: non-convergence score=%.2f err=%.0f%% null=%.0f%% dup=%.0f%%",
+                        "confidence_guard: non-convergence score=%.2f err=%.0f%% null=%.0f%% "
+                        "dup=%.0f%% calls/iter=%.1f tok/iter=%.0f",
                         conf_sig.score, conf_sig.error_rate * 100,
                         conf_sig.null_rate * 100, conf_sig.dup_rate * 100,
+                        conf_sig.tool_call_rate, conf_sig.token_usage_rate,
                     )
                     _phase("confidence_guard", f"score={conf_sig.score:.2f}")
                     if side_log is not None:
@@ -788,6 +793,9 @@ async def run_turn(
                                 "error_rate": conf_sig.error_rate,
                                 "null_rate": conf_sig.null_rate,
                                 "dup_rate": conf_sig.dup_rate,
+                                "tool_call_rate": conf_sig.tool_call_rate,
+                                "token_usage_rate": conf_sig.token_usage_rate,
+                                "waste_rate": round(conf_sig.waste_rate, 3),
                             })
                         except Exception as _e:
                             logger.warning("side_log append failed (confidence_guard): %s", _e)

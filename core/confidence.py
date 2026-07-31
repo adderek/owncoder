@@ -33,6 +33,21 @@ class ConfidenceSignal:
     null_rate: float      # fraction of recent results that were empty/null
     dup_rate: float       # fraction of recent results that were identical to a prior one
     triggered: bool       # True when score < threshold
+    # Session-health rates. Unlike the three above they are not fractions and
+    # do not feed the score — they describe *cost*, not confusion, and are read
+    # by the context budget (see core/context_budget.health_adjusted_budget).
+    tool_call_rate: float = 0.0    # tool calls per completed iteration
+    token_usage_rate: float = 0.0  # approx result tokens per completed iteration
+
+    @property
+    def waste_rate(self) -> float:
+        """Fraction of recent results that bought nothing: empty or repeated.
+
+        Errors are excluded — an error message is short and usually tells the
+        model something actionable. A duplicate full-file read is what quietly
+        fills the window.
+        """
+        return min(1.0, self.null_rate + self.dup_rate)
 
 
 class ConfidenceMonitor:
@@ -67,6 +82,13 @@ class ConfidenceMonitor:
         self._seen_hashes: set[str] = set()
         self._iters_since_last: int = 999  # starts past cooldown
 
+        # Cost accounting, per completed iteration rather than per result: what
+        # the turn is spending, as opposed to whether it is making progress.
+        self._calls_this_iter: int = 0
+        self._tokens_this_iter: int = 0
+        self._calls_per_iter: list[int] = []
+        self._tokens_per_iter: list[int] = []
+
     def observe_result(self, result_text: str, is_error: bool) -> None:
         """Record one tool call result. Call once per tool call."""
         h = _result_hash(result_text)
@@ -78,6 +100,10 @@ class ConfidenceMonitor:
         self._dups.append(is_dup)
         self._seen_hashes.add(h)
 
+        self._calls_this_iter += 1
+        # 4 chars ≈ 1 token, the same approximation the turn's budget uses.
+        self._tokens_this_iter += len(result_text) // 4
+
         # Keep only last `window` entries.
         if len(self._errors) > self.window:
             self._errors = self._errors[-self.window:]
@@ -87,11 +113,30 @@ class ConfidenceMonitor:
     def tick_iter(self) -> None:
         """Call once per tool-call iteration (after all results processed)."""
         self._iters_since_last += 1
+        self._calls_per_iter.append(self._calls_this_iter)
+        self._tokens_per_iter.append(self._tokens_this_iter)
+        self._calls_this_iter = 0
+        self._tokens_this_iter = 0
+        if len(self._calls_per_iter) > self.window:
+            self._calls_per_iter = self._calls_per_iter[-self.window:]
+            self._tokens_per_iter = self._tokens_per_iter[-self.window:]
+
+    def _cost_rates(self) -> tuple[float, float]:
+        """(tool calls, result tokens) per completed iteration."""
+        iters = len(self._calls_per_iter)
+        if iters == 0:
+            return 0.0, 0.0
+        return (sum(self._calls_per_iter) / iters,
+                sum(self._tokens_per_iter) / iters)
 
     def signal(self) -> ConfidenceSignal:
+        calls_rate, tokens_rate = self._cost_rates()
         n = len(self._errors)
         if n == 0:
-            return ConfidenceSignal(score=1.0, error_rate=0.0, null_rate=0.0, dup_rate=0.0, triggered=False)
+            return ConfidenceSignal(score=1.0, error_rate=0.0, null_rate=0.0,
+                                    dup_rate=0.0, triggered=False,
+                                    tool_call_rate=round(calls_rate, 2),
+                                    token_usage_rate=round(tokens_rate, 1))
 
         error_rate = sum(self._errors) / n
         null_rate = sum(self._nulls) / n
@@ -117,6 +162,8 @@ class ConfidenceMonitor:
             null_rate=round(null_rate, 3),
             dup_rate=round(dup_rate, 3),
             triggered=triggered,
+            tool_call_rate=round(calls_rate, 2),
+            token_usage_rate=round(tokens_rate, 1),
         )
 
     def should_intervene(self) -> ConfidenceSignal:
@@ -136,6 +183,8 @@ class ConfidenceMonitor:
             parts.append(f"null/empty results {sig.null_rate:.0%}")
         if sig.dup_rate > 0.3:
             parts.append(f"duplicate results {sig.dup_rate:.0%}")
+        if sig.tool_call_rate >= 4:
+            parts.append(f"{sig.tool_call_rate:.0f} tool calls per round")
         detail = ", ".join(parts) or f"score {sig.score:.2f}"
         return (
             f"[confidence-guard: non-convergence detected ({detail}). "

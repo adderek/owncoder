@@ -220,3 +220,33 @@ def input_token_budget(config) -> int:
     max_out = int(getattr(getattr(config, "llm", None), "max_output_tokens", 0) or 0)
     reserve = min(max_out, ctx // 2)
     return max(1024, ctx - reserve - _PROMPT_OVERHEAD)
+
+
+# --- health-reactive budget -------------------------------------------------
+# A turn whose tool results are mostly empty or repeated is filling the window
+# with text that bought nothing. Tightening the budget in that state makes the
+# turn shed the junk sooner instead of carrying it to the context ceiling.
+
+#: waste_rate below this leaves the budget alone — some repetition is normal.
+_WASTE_FLOOR = 0.5
+#: Most the budget may be tightened by, at waste_rate 1.0. Deliberately modest:
+#: tightening pulls compaction forward, which costs an LLM call and (on
+#: providers with a prompt cache) invalidates the cached prefix.
+_MAX_TIGHTEN = 0.25
+
+
+def health_adjusted_budget(config, signal=None) -> int:
+    """input_token_budget(), tightened when the turn is wasting context.
+
+    *signal* is a ConfidenceSignal (or None to skip the adjustment). Scales
+    linearly from no change at waste_rate 0.5 to -25% at 1.0.
+    """
+    budget = input_token_budget(config)
+    waste = float(getattr(signal, "waste_rate", 0.0) or 0.0) if signal is not None else 0.0
+    if waste <= _WASTE_FLOOR:
+        return budget
+    over = (waste - _WASTE_FLOOR) / (1.0 - _WASTE_FLOOR)
+    tightened = int(budget * (1.0 - _MAX_TIGHTEN * min(1.0, over)))
+    logger.debug("context budget tightened %d -> %d (waste_rate %.2f)",
+                 budget, tightened, waste)
+    return max(1024, tightened)
