@@ -389,6 +389,106 @@ def _merge_permissions(config: Config, layers: list[tuple[dict, bool]]) -> None:
         config.permissions.rules = [r for layer in reversed(collected) for r in layer]
 
 
+# [security] fields a project layer may set, and which direction is stricter.
+# Anything not listed here is ignored when it comes from a project config: an
+# unclassified knob has no defined "safer" direction, and guessing on a security
+# setting is how a hostile repo gets a foothold. See docs/hooks-trust-boundary.md
+# (hand-off item 6) — same trust boundary as [[hooks.entries]], clamped rather
+# than approved, because these are values rather than executable shell.
+_SEC_SAFER_TRUE = ("require_sandbox", "redact_tool_output", "airgap",
+                   "guard_tool_injection")
+_SEC_SAFER_FALSE = ("follow_symlinks", "allow_legacy_shell")
+_SEC_SAFER_LOWER = ("cpu_seconds", "wall_seconds", "rss_mb", "nproc",
+                    "fsize_mb", "nofile")
+#: Allow-lists: a project may only take entries away.
+_SEC_SAFER_SUBSET = ("env_allow", "argv_allow")
+#: Deny-lists: a project may only add entries. None means "use the built-in
+#: defaults", which is why they are resolved before comparing — otherwise
+#: `write_deny_globs = []` reads as a change from None and slips through.
+_SEC_SAFER_SUPERSET = ("env_deny_patterns", "write_deny_globs", "read_deny_globs")
+
+
+def _resolved_deny_globs(field: str, value):
+    """A deny-glob list with None replaced by the built-in defaults."""
+    if value is not None:
+        return list(value)
+    try:
+        from agent.security import fs as _fs
+        if field == "write_deny_globs":
+            return list(_fs._DEFAULT_WRITE_DENY_GLOBS)
+        if field == "read_deny_globs":
+            return list(_fs._DEFAULT_READ_DENY_GLOBS)
+    except Exception:
+        pass
+    return []
+
+
+def _security_narrows(field: str, current, value) -> bool:
+    """Is *value* at least as strict as *current* for *field*?"""
+    if field in _SEC_SAFER_TRUE:
+        return bool(value) >= bool(current)
+    if field in _SEC_SAFER_FALSE:
+        return bool(value) <= bool(current)
+    if field in _SEC_SAFER_LOWER:
+        try:
+            return float(value) <= float(current)
+        except (TypeError, ValueError):
+            return False
+    if field == "network":
+        return value == "off"
+    if field in _SEC_SAFER_SUBSET:
+        return set(value or []) <= set(current or [])
+    if field in _SEC_SAFER_SUPERSET:
+        return set(value or []) >= set(_resolved_deny_globs(field, current))
+    return False
+
+
+_SEC_GOVERNED = (_SEC_SAFER_TRUE + _SEC_SAFER_FALSE + _SEC_SAFER_LOWER
+                 + _SEC_SAFER_SUBSET + _SEC_SAFER_SUPERSET + ("network",))
+
+
+def _clamp_project_security(config: Config, data: dict) -> list[str]:
+    """Drop [security] keys from a project layer that would weaken the agent.
+
+    Same threat as the hook trust boundary: `<project_root>/agent.toml` ships
+    with a clone, so a hostile repo could set `require_sandbox = false`,
+    `write_deny_globs = []` or `redact_tool_output = false` and disarm the
+    protections before the first tool call. A project layer keeps the power to
+    make the agent *more* careful in its own tree, and loses the power to make
+    it less.
+
+    Values rather than shell, so these clamp instead of requiring approval —
+    there is nothing to execute, and a rejected value has a safe fallback.
+
+    Called on the raw layer *before* it is merged, so the surviving keys go
+    through the ordinary merge and later env overrides still win. The comparison
+    baseline is the config merged so far, which at this point holds the user
+    layers: project files sort last in the search order.
+
+    Mutates *data* in place. Returns rejections as validation issues, so
+    AGENT_CONFIG_STRICT still aborts on a repo config that tries to disarm the
+    agent.
+    """
+    section = data.get("security")
+    if not isinstance(section, dict):
+        return []
+    issues: list[str] = []
+    for field, value in list(section.items()):
+        if field not in _SEC_GOVERNED:
+            issues.append(
+                f"[security] {field} from a project config is ignored — only "
+                f"settings with a defined stricter direction may come from a repo")
+            section.pop(field)
+            continue
+        if not _security_narrows(field, getattr(config.security, field, None), value):
+            issues.append(
+                f"[security] {field} = {value!r} from a project config is "
+                f"ignored — it would weaken {field}; project configs may only "
+                f"tighten security")
+            section.pop(field)
+    return issues
+
+
 def _coerce_diagnostics_checkers(config: Config) -> None:
     """Convert diagnostics.checkers dicts ([[diagnostics.checkers]]) to dataclasses."""
     from agent.config.models import DiagnosticsCheckerConfig
@@ -593,6 +693,7 @@ def load_config(extra_path: Path | list[Path] | None = None) -> Config:
         project_paths.update(extra_path)
 
     raw_data: list[dict] = []
+    security_issues: list[str] = []
     perm_layers: list[tuple[dict, bool]] = []
     loaded_layers: list[str] = []
     for p in search_paths:
@@ -611,7 +712,12 @@ def load_config(extra_path: Path | list[Path] | None = None) -> Config:
                     file=sys.stderr,
                 )
                 sys.exit(1)
-            _stamp_hook_origin(data, "project" if p in project_paths else "user")
+            _is_project = p in project_paths
+            _stamp_hook_origin(data, "project" if _is_project else "user")
+            if _is_project:
+                # Clamp before merging: surviving keys then merge normally, and
+                # env overrides (applied after the loop) still get the last word.
+                security_issues.extend(_clamp_project_security(config, data))
             raw_data.append(data)
             perm_layers.append((data, p in project_paths))
             loaded_layers.append(str(p))
@@ -649,7 +755,7 @@ def load_config(extra_path: Path | list[Path] | None = None) -> Config:
     from agent.security.permissions import validate as _validate_permissions
     _validate_permissions(config)   # malformed policy must not start a session
     from .validate import validate_config, report_issues
-    report_issues(validate_config(config))
+    report_issues(security_issues + validate_config(config))
     return config
 
 
