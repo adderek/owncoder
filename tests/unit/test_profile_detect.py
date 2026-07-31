@@ -4,6 +4,7 @@ from __future__ import annotations
 from agent.config import Config, ModelEntry
 from agent.config.profile_detect import (
     detect,
+    maybe_start_embed_server,
     run_startup_profile_check,
     suggest_mode,
     _format_report,
@@ -138,3 +139,108 @@ class TestRunStartupCheck:
         out = capsys.readouterr().out
         assert "profile check:" in out
         assert "model-mode set to free-cloud" in out
+
+
+class TestEmbedAutostart:
+    def test_off_does_nothing(self, capsys):
+        cfg = _cfg()
+        cfg.rag.embed_server_command = "/bin/true"
+        cfg.rag.embed_server_autostart = "off"
+        maybe_start_embed_server(cfg, interactive=True)
+        assert capsys.readouterr().out == ""
+
+    def test_no_launcher_prints_how_to_configure(self, capsys):
+        cfg = _cfg()
+        cfg.rag.embed_server_command = ""
+        maybe_start_embed_server(cfg, interactive=True)
+        out = capsys.readouterr().out
+        assert "rag.embed_server_command" in out
+        assert "agent embed --start" in out
+
+    def test_pinned_device_starts_unattended(self, monkeypatch, capsys):
+        cfg = _cfg()
+        cfg.rag.embed_server_command = "/bin/true"
+        cfg.rag.embed_server_autostart = "gpu"
+        calls: list[str] = []
+
+        def fake_start(config, device):
+            calls.append(device)
+            return "embeddings server up"
+
+        monkeypatch.setattr("agent.rag.embed_server.start", fake_start)
+        maybe_start_embed_server(cfg, interactive=False)
+        assert calls == ["gpu"]
+        assert "embeddings server up" in capsys.readouterr().out
+
+    def test_ask_prompts_and_uses_answer(self, monkeypatch, capsys):
+        cfg = _cfg()
+        cfg.rag.embed_server_command = "/bin/true"
+        calls: list[str] = []
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda *_: "gpu")
+        monkeypatch.setattr(
+            "agent.rag.embed_server.start",
+            lambda config, device: calls.append(device) or "ok",
+        )
+        maybe_start_embed_server(cfg, interactive=True)
+        assert calls == ["gpu"]
+
+    def test_ask_empty_answer_uses_configured_device(self, monkeypatch):
+        cfg = _cfg()
+        cfg.rag.embed_server_command = "/bin/true"
+        cfg.rag.embed_server_device = "cpu"
+        calls: list[str] = []
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda *_: "")
+        monkeypatch.setattr(
+            "agent.rag.embed_server.start",
+            lambda config, device: calls.append(device) or "ok",
+        )
+        maybe_start_embed_server(cfg, interactive=True)
+        assert calls == ["cpu"]
+
+    def test_ask_declined(self, monkeypatch):
+        cfg = _cfg()
+        cfg.rag.embed_server_command = "/bin/true"
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda *_: "no")
+        monkeypatch.setattr(
+            "agent.rag.embed_server.start",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not start")),
+        )
+        maybe_start_embed_server(cfg, interactive=True)
+
+    def test_non_interactive_ask_skips(self, monkeypatch, capsys):
+        cfg = _cfg()
+        cfg.rag.embed_server_command = "/bin/true"
+        monkeypatch.setattr(
+            "agent.rag.embed_server.start",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not start")),
+        )
+        maybe_start_embed_server(cfg, interactive=False)
+        assert capsys.readouterr().out == ""
+
+    def test_launcher_failure_does_not_raise(self, monkeypatch, capsys):
+        cfg = _cfg()
+        cfg.rag.embed_server_command = "/bin/true"
+        cfg.rag.embed_server_autostart = "cpu"
+        monkeypatch.setattr(
+            "agent.rag.embed_server.start",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        maybe_start_embed_server(cfg, interactive=False)
+        assert "start failed: boom" in capsys.readouterr().out
+
+    def test_startup_check_offers_when_embeddings_down(self, monkeypatch, capsys):
+        cfg = _cfg()
+        cfg.agent.startup_profile = "auto"
+        cfg.rag.embed_server_command = "/bin/true"
+        cfg.rag.embed_server_autostart = "cpu"
+        monkeypatch.setattr(
+            "agent.config.profile_detect._default_probe",
+            _probe_only("api.deepseek.com"),
+        )
+        monkeypatch.setattr("agent.rag.embed_server.start",
+                            lambda config, device: f"started {device}")
+        run_startup_profile_check(cfg, interactive=False)
+        assert "started cpu" in capsys.readouterr().out

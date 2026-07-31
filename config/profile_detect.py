@@ -187,11 +187,65 @@ def _format_report(report: ProfileReport) -> str:
     return "\n".join(lines)
 
 
+def maybe_start_embed_server(config: "Config", interactive: bool) -> None:
+    """Offer to start the local embeddings server when none answered.
+
+    Driven by ``config.rag.embed_server_autostart``: "ask" (prompt on a tty),
+    "cpu"/"gpu" (start unattended on that device), "off" (warn only). Starting
+    needs ``rag.embed_server_command`` — without it this only prints how to set
+    it, since the agent does not bundle an inference server.
+    """
+    setting = (getattr(config.rag, "embed_server_autostart", "ask") or "ask").lower()
+    if setting == "off":
+        return
+    if not (getattr(config.rag, "embed_server_command", "") or "").strip():
+        print(
+            "  ! no embeddings launcher configured — set rag.embed_server_command "
+            'to a script that starts an OpenAI-compatible embeddings server on '
+            "the embeddings entry's base_url (called with one argument, "
+            '"cpu" or "gpu"), then: agent embed --start',
+            flush=True,
+        )
+        return
+
+    if setting in ("cpu", "gpu"):
+        device = setting
+    elif interactive and sys.stdin.isatty():
+        default = (getattr(config.rag, "embed_server_device", "cpu") or "cpu").lower()
+        try:
+            raw = input(
+                f"start local embeddings server? [{default}] (cpu|gpu|no): "
+            ).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return
+        if raw in ("n", "no", "off"):
+            return
+        device = raw or default
+        if device not in ("cpu", "gpu"):
+            print(f"unknown device {device!r} — not starting", flush=True)
+            return
+    else:
+        return  # non-interactive "ask": the warning above is all we do
+
+    print(f"  starting embeddings server [{device}] — model load can take ~30s …",
+          flush=True)
+    try:
+        from agent.rag import embed_server
+        print("  " + embed_server.start(config, device), flush=True)
+    except Exception as e:  # launcher problems must not block the session
+        logger.warning("embeddings server start failed", exc_info=True)
+        print(f"  embeddings server start failed: {e}", flush=True)
+
+
 def run_startup_profile_check(config: "Config", interactive: bool) -> None:
     """Detect endpoint availability, print the report, pick a profile.
 
     ``config.agent.startup_profile``: "ask" (prompt when tty), "auto"
-    (apply suggestion silently), "off" (skip entirely).
+    (apply suggestion silently), "off" (skip entirely — including the
+    embeddings offer below).
+
+    When no embeddings endpoint answered, ``maybe_start_embed_server`` offers
+    to bring the local one up before the profile prompt.
     """
     setting = getattr(config.agent, "startup_profile", "ask")
     if setting == "off":
@@ -203,6 +257,9 @@ def run_startup_profile_check(config: "Config", interactive: bool) -> None:
         return
 
     print(_format_report(report), flush=True)
+
+    if not report.embeddings_ok:
+        maybe_start_embed_server(config, interactive)
 
     chosen = report.suggested
     if interactive and setting == "ask" and sys.stdin.isatty():

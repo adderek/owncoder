@@ -28,6 +28,7 @@ _ALLOWED: list[tuple[str, set[str]]] = [
                           "paid-cloud", "manual", "any"}),         # config/registry.py
     ("agent.startup_profile", {"ask", "auto", "off"}),             # config/profile_detect.py
     ("rag.embed_server_device", {"cpu", "gpu"}),                   # rag/embed_server.py
+    ("rag.embed_server_autostart", {"ask", "cpu", "gpu", "off"}),  # config/profile_detect.py
     ("agent.think_level", {"off", "low", "normal", "med", "medium",
                            "high", "max"}),                        # core/prompts.py THINK_LEVELS
     ("security.network", {"off", "on"}),                           # tools/shell/main.py

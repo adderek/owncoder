@@ -72,6 +72,12 @@ class RAGConfig:
     # script receives one argument: "cpu" or "gpu". "" disables the launcher.
     embed_server_command: str = ""
     embed_server_device: str = "cpu"  # default when --gpu/--cpu not given
+    # Startup behaviour when no embeddings endpoint answers (config/profile_detect.py):
+    #   "ask" — prompt for cpu/gpu/no on an interactive tty (default)
+    #   "cpu" / "gpu" — start on that device without asking
+    #   "off" — never start, just warn
+    # Needs embed_server_command; without it the check only prints how to set it.
+    embed_server_autostart: str = "ask"
     # Per-file byte cap for generic text files (binary-sniffed; code files exempt).
     text_max_bytes: int = 256 * 1024
 
