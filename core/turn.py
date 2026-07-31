@@ -29,6 +29,7 @@ from .turn_guards import MUTATING_TOOLS
 from .turn_setup import normalize_api_messages, select_tools
 from .loop_detector import LoopDetector
 from .confidence import ConfidenceMonitor
+from .context_budget import input_token_budget
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
@@ -268,7 +269,7 @@ async def run_turn(
 
         token_est = _count_tokens_approx(messages)
         _notify_ctx(token_est)
-        budget = max(1, config.llm.ctx_window - config.llm.max_output_tokens - 500)
+        budget = input_token_budget(config)
         if token_est > budget:
             logger.warning("Pre-flight: estimated %d tokens exceeds budget %d, compacting...", token_est, budget)
             _phase("compact", f"{token_est}→budget {budget}")
@@ -400,7 +401,7 @@ async def run_turn(
                 if _count_tokens_approx(messages) >= old_count:
                     messages = _truncate_large_messages(messages, budget)
                 token_est = _count_tokens_approx(messages)
-                budget = max(1, config.llm.ctx_window - config.llm.max_output_tokens - 500)
+                budget = input_token_budget(config)
                 if token_est > budget:
                     messages = _truncate_large_messages(messages, budget)
                 continue

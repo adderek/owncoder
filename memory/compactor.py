@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from agent.memory.facts_store import FactsStore, FactsRound
 
 from agent.memory.smart_compactor import EntityProtector as _EntityProtector
+from agent.core.context_budget import effective_ctx_window as _ctx
 
 
 class CompactionError(Exception):
@@ -217,11 +218,11 @@ async def _analyze_transcript(
     # ctx_window minus those) for the deep draft.
     output_budget = max(
         config.token_limits.compactor_analyze_min,
-        int(config.llm.ctx_window * 0.35),
+        int(_ctx(config) * 0.35),
     )
     input_budget = max(
         1024,
-        config.llm.ctx_window - output_budget - 500,
+        _ctx(config) - output_budget - 500,
     )
     user_text = _fit_to_budget("\n\n".join(user_parts), input_budget)
 
@@ -275,7 +276,7 @@ async def _synthesize_summary(
         {
             "role": "user",
             "content": "Knowledge draft to compress:\n\n"
-            + _fit_to_budget(knowledge_draft, int(config.llm.ctx_window * 0.6)),
+            + _fit_to_budget(knowledge_draft, int(_ctx(config) * 0.6)),
         },
     ]
 
@@ -439,7 +440,7 @@ async def compact(
     """
     if len(messages) <= keep_last * 2:
         token_est = _count_tokens_approx(messages)
-        budget = int(config.llm.ctx_window * config.llm.compaction_threshold)
+        budget = int(_ctx(config) * config.llm.compaction_threshold)
         if token_est > budget:
             return _truncate_tool_results_in(messages, max_chars=budget * 2)
         return messages

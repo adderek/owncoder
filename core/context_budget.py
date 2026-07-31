@@ -180,3 +180,43 @@ class ContextBudget:
             BudgetTier.DANGER: "red",
             BudgetTier.CRITICAL: "rgb(255,0,0) reverse",
         }.get(t, "white")
+
+
+# --- config-derived budgets -------------------------------------------------
+# ctx_window == 0 means "auto" (probe has not filled it in yet, or the probe
+# failed). Callers that subtract an output reserve from it produced degenerate
+# budgets (e.g. 0 - 8192 - 500 -> clamped to 1), which made every turn look
+# over-budget and compact/truncate pointlessly on every iteration.
+
+DEFAULT_CTX_WINDOW = 32768   # conservative stand-in for an unprobed window
+_PROMPT_OVERHEAD = 500       # room for the system/tool preamble the estimate misses
+
+_warned_auto_ctx = False
+
+
+def effective_ctx_window(config) -> int:
+    """config.llm.ctx_window, or a conservative default when it is 0/auto."""
+    global _warned_auto_ctx
+    ctx = int(getattr(getattr(config, "llm", None), "ctx_window", 0) or 0)
+    if ctx > 0:
+        return ctx
+    if not _warned_auto_ctx:
+        _warned_auto_ctx = True
+        logger.warning(
+            "ctx_window is 0 (auto/unprobed) for model '%s' — assuming %d; "
+            "set it explicitly in agent.toml or run the model probe",
+            getattr(getattr(config, "llm", None), "model", "?"), DEFAULT_CTX_WINDOW,
+        )
+    return DEFAULT_CTX_WINDOW
+
+
+def input_token_budget(config) -> int:
+    """Tokens usable by the prompt: window minus output reserve and overhead.
+
+    The output reserve is clamped to half the window so a misconfigured
+    max_output_tokens >= ctx_window cannot drive the budget to ~0.
+    """
+    ctx = effective_ctx_window(config)
+    max_out = int(getattr(getattr(config, "llm", None), "max_output_tokens", 0) or 0)
+    reserve = min(max_out, ctx // 2)
+    return max(1024, ctx - reserve - _PROMPT_OVERHEAD)
