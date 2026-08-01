@@ -176,6 +176,47 @@ def _tc_field(tc, *path):
     return cur
 
 
+def _attach_changesets(sid: str, messages: list[dict]) -> None:
+    """Hang each round's changeset on the assistant message that ended it.
+
+    A replayed session has to say what each round changed, the same as a live
+    one. The obvious mapping — the Nth user message is turn N — is wrong:
+    history compaction rewrites the message array while QA-log turn ids keep
+    counting, so the two drift apart exactly in the long sessions where replay
+    matters. Instead each A-record is matched to the assistant message carrying
+    its response text, scanning forward so ordering is preserved and a repeated
+    answer cannot bind to an earlier round's message.
+
+    A turn whose message did not survive compaction simply gets no changeset,
+    which is the honest outcome: better a missing file list than one attached
+    to the wrong round.
+    """
+    try:
+        from agent.memory.qa_log import read_history_sync
+        records = list(read_history_sync(sid))
+    except Exception:
+        logger.debug("http ui: changeset attach failed to read qa log", exc_info=True)
+        return
+
+    cursor = 0
+    for tid, _q, a in records:
+        content = (a.get("content") or "").strip()
+        if not content:
+            continue
+        for i in range(cursor, len(messages)):
+            entry = messages[i]
+            if entry.get("role") != "assistant":
+                continue
+            if (entry.get("content") or "").strip() != content:
+                continue
+            from agent.core.changeset import from_a_data, to_json
+            cs = from_a_data(a)
+            if cs:
+                entry["changeset"] = to_json(cs)
+            cursor = i + 1
+            break
+
+
 def _transcript(messages, result_limit: int = 2000) -> list[dict]:
     """The conversation as the browser replays it, tool work included.
 
@@ -1180,6 +1221,7 @@ class _HttpUI:
             name = getattr(session, "name", "") or session.id
             workdir = getattr(session, "working_dir", "") or str(get_working_dir())
         messages = _transcript(msgs)
+        _attach_changesets(sid, messages)
         return {"id": sid, "name": name, "workdir": workdir, "messages": messages}
 
     def qa_info(self, sid: str = "") -> dict:
@@ -1199,8 +1241,13 @@ class _HttpUI:
                 return {"error": f"session '{sid}' not found"}
             name = s.name or s.short_name or ""
         from agent.memory.qa_log import read_history_sync
+        from agent.core.changeset import from_a_data as _changeset_from_a_data
         turns = []
         for tid, q, a in read_history_sync(sid):
+            # from_a_data reads the new "changeset" key when present and falls
+            # back to the old "modified_files" list (which can hold either bare
+            # path strings or {path, added, removed} dicts) — one parse instead
+            # of reimplementing that fallback here.
             turns.append({
                 "turn": tid,
                 "q": q.get("content") or "",
@@ -1208,7 +1255,7 @@ class _HttpUI:
                 "a": a.get("content") or "",
                 "as": a.get("summary_a") or "",
                 "tools": len(a.get("tool_calls") or []),
-                "files": a.get("modified_files") or [],
+                "files": [f.path for f in _changeset_from_a_data(a).files],
                 "duration": a.get("duration") or 0,
             })
         return {"id": sid, "name": name, "turns": turns}
@@ -1234,6 +1281,43 @@ class _HttpUI:
             return {"path": path, "diff": out}
         except Exception as exc:
             return {"path": path, "diff": "", "error": str(exc)}
+
+    def changeset_info(self, turn: str, file_path: str, sid: str = "") -> dict:
+        """The stored diff for one file in one round — backs the click-to-expand
+        rows under a turn's changeset tiers.
+
+        Unlike diff_info this reads the persisted A-record via
+        core.changeset.from_a_data, not the working tree: the diff for turn 3
+        must not change just because turn 7 edited the same file again.
+        """
+        from agent.core import changeset as _cs
+        try:
+            turn_id = int(turn)
+        except (TypeError, ValueError):
+            return {"error": "invalid turn"}
+        path = (file_path or "").strip()
+        if not path:
+            return {"error": "invalid path"}
+        sid = sid or (self.session.id if self.session is not None else "")
+        if not sid:
+            return {"error": "no active session"}
+        from agent.memory.qa_log import read_history_sync
+        a_data = None
+        for tid, _q, a in read_history_sync(sid):
+            if tid == turn_id:
+                a_data = a
+                break
+        if a_data is None:
+            return {"error": f"turn {turn_id} not found"}
+        cs_obj = _cs.from_a_data(a_data)
+        fc = next((f for f in cs_obj.files if f.path == path), None)
+        if fc is None:
+            return {"error": f"'{path}' was not changed in turn {turn_id}"}
+        from agent.memory.session import get_session_full_dir
+        spill_dir = Path(get_session_full_dir(sid)) / "changesets" / str(turn_id)
+        diff = _cs.load_diff(fc, spill_dir)
+        return {"path": fc.path, "diff": diff or "", "status": fc.status,
+                "binary": fc.binary, "truncated": fc.truncated}
 
     # Attachments land on disk under this dir (relative to the session's
     # workdir) rather than going inline to the LLM — the turn engine's
@@ -1556,6 +1640,13 @@ def _make_handler(ui: _HttpUI):
                 from urllib.parse import parse_qs, urlparse
                 fp = (parse_qs(urlparse(self.path).query).get("file") or [""])[0]
                 self._json(ui.diff_info(fp))
+            elif self.path.startswith("/api/changeset"):
+                from urllib.parse import parse_qs, urlparse
+                qs = parse_qs(urlparse(self.path).query)
+                turn = (qs.get("turn") or [""])[0]
+                fp = (qs.get("file") or [""])[0]
+                sid = (qs.get("id") or [""])[0]
+                self._json(ui.changeset_info(turn, fp, sid))
             elif self.path == "/manifest.webmanifest":
                 self._bytes(_MANIFEST.encode(), "application/manifest+json")
             elif self.path in ("/icon-192.png", "/icon-512.png"):
@@ -2507,6 +2598,7 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
 
             # Run the turn as a task so /api/stop mode=hard can cancel it
             # outright (e.g. when the model deadloops).
+            from agent.core.changeset import to_json as _changeset_to_json
             chat_task = asyncio.ensure_future(server.chat(
                 text,
                 session_id=ui.session.id if ui.session else "",
@@ -2530,6 +2622,11 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
                 on_user_message=_on_user_message,
                 on_loop_detected=_on_loop_detected,
                 on_signal=lambda sig, clean: _on_signal(sig),
+                # Fired once at round end with the round's changeset — the
+                # browser renders it directly instead of re-deriving the
+                # changed-file list from tool-call arguments client-side.
+                on_changeset=lambda cs: pub(
+                    {"type": "changeset", **_changeset_to_json(cs)}),
                 source="http",
             ))
             ui.chat_task = chat_task
