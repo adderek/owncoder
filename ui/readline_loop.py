@@ -11,7 +11,7 @@ from rich.markup import escape as _rich_escape
 
 from agent.ui.render import _render_context_report, _delatex
 from agent.ui.spinner import _run_spinner, _fmt_tps
-from agent.ui.colors import _hex_to_ansi
+from agent.ui.colors import _hex_to_ansi, readline_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -264,7 +264,7 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
     _fold_seq = 0
     _open_fold: "str | None" = None
 
-    prompt_esc = _hex_to_ansi(t.prompt)
+    prompt_esc = readline_prompt(_hex_to_ansi(t.prompt), ">") + " "
     console.print(
         f"[bold {t.agent_color}]local-code-agent[/bold {t.agent_color}]  [dim]{_llm_cfg['model']}  {_llm_cfg['ctx_window']} ctx[/dim]"
     )
@@ -289,7 +289,7 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
             )
         else:
             try:
-                user_input = input(f"{prompt_esc}>\033[0m ").strip()
+                user_input = input(prompt_esc).strip()
             except (EOFError, KeyboardInterrupt):
                 pending = server.pending_background_count()
                 if pending:
