@@ -179,3 +179,103 @@ def test_split_diff_never_splits_inside_a_line():
     diff = "diff --git a/a b/a\n" + "".join(f"+line{i}\n" for i in range(200))
     for chunk in _split_diff(diff, 300):
         assert chunk.endswith("\n")
+
+
+# ── model listing (-m with no value) ──────────────────────────────────────
+
+def test_bare_m_flag_lists_models_instead_of_erroring():
+    """`agent commit -m` used to die with 'expected one argument'."""
+    from agent.cli.main import build_parser
+
+    parser = build_parser()
+    assert parser.parse_args(["commit", "-m"]).model == "__list__"
+    assert parser.parse_args(["commit", "-m", "gpu-gemma4"]).model == "gpu-gemma4"
+    assert parser.parse_args(["commit"]).model is None
+    assert parser.parse_args(["commit", "-m"]).probe is True
+    assert parser.parse_args(["commit", "-m", "--no-probe"]).probe is False
+
+
+class _Entry:
+    def __init__(self, model, base_url, tags=()):
+        self.model = model
+        self.base_url = base_url
+        self.api_key = ""
+        self.tags = list(tags)
+        self.tokens_per_sec = 0.0
+
+
+class _Registry:
+    def __init__(self, entries):
+        self._entries = entries
+
+    def names(self):
+        return list(self._entries)
+
+    def get(self, name):
+        return self._entries.get(name)
+
+
+def _listing(monkeypatch, entries, live, probe=True):
+    """Render the table with a stubbed probe; return the printed text."""
+    import agent.cli.commit as mod
+    from rich.console import Console
+
+    monkeypatch.setattr(mod, "_probe_endpoints", lambda registry, timeout=2: live)
+    console = Console(width=200, force_terminal=False, no_color=True)
+    with console.capture() as cap:
+        mod._print_model_list(console, _Registry(entries), [], probe=probe)
+    return cap.get()
+
+
+def test_listing_marks_a_served_model_live(monkeypatch):
+    entries = {"remote": _Entry("27b-q8", "http://192.168.31.42:8081/v1")}
+    out = _listing(monkeypatch, entries,
+                   {"http://192.168.31.42:8081/v1": {"Qwen3.6-27b-q8_0.gguf"}})
+    assert "✓" in out
+
+
+def test_listing_names_what_a_one_model_server_has_loaded(monkeypatch):
+    """The :8081 box serves one gguf at a time — say which, don't just say ✗."""
+    entries = {"remote": _Entry("coder-next-ud-iq4_xs", "http://192.168.31.42:8081/v1")}
+    out = _listing(monkeypatch, entries,
+                   {"http://192.168.31.42:8081/v1": {"/models/gguf/Qwen3.6-27B-Q8_0.gguf"}})
+    assert "~" in out
+    assert "loaded:" in out
+    assert "Qwen3.6-27B-Q8_0.gguf" in out, "the path must be shortened to a basename"
+
+
+def test_listing_calls_a_multi_preset_endpoint_a_router(monkeypatch):
+    entries = {"remote": _Entry("missing-model", "http://192.168.31.42:8081/v1")}
+    out = _listing(monkeypatch, entries,
+                   {"http://192.168.31.42:8081/v1": {"a.gguf", "b.gguf"}})
+    assert "router:" in out
+
+
+def test_listing_reports_an_unreachable_endpoint(monkeypatch):
+    entries = {"local": _Entry("qwen", "http://localhost:8081/v1")}
+    out = _listing(monkeypatch, entries, {"http://localhost:8081/v1": None})
+    assert "✗" in out and "unreachable" in out
+
+
+def test_no_probe_drops_the_availability_columns(monkeypatch):
+    entries = {"local": _Entry("qwen", "http://localhost:8081/v1")}
+    out = _listing(monkeypatch, entries, {}, probe=False)
+    assert "endpoint serves" not in out and "unreachable" not in out
+
+
+def test_probe_queries_each_endpoint_once(monkeypatch):
+    """Entries sharing a base_url must cost one GET, not one each."""
+    import agent.cli.commit as mod
+
+    calls: list[str] = []
+
+    def fake_list(base_url, api_key="", timeout=3):
+        calls.append(base_url)
+        return {"x"}
+
+    monkeypatch.setattr("agent.config.model_probe.list_endpoint_models", fake_list)
+    entries = {f"e{i}": _Entry(f"m{i}", "http://192.168.31.42:8081/v1") for i in range(5)}
+    entries["other"] = _Entry("m", "http://192.168.31.42:8083/v1")
+    result = mod._probe_endpoints(_Registry(entries))
+    assert sorted(calls) == ["http://192.168.31.42:8081/v1", "http://192.168.31.42:8083/v1"]
+    assert set(result) == set(calls)

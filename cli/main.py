@@ -204,10 +204,14 @@ def build_parser() -> argparse.ArgumentParser:
     commit_p = sub.add_parser("commit", help="Generate and apply a commit message for a subrepo")
     commit_p.add_argument("path", nargs="?", default=".",
                           help="Path to git repo (default: current directory)")
-    commit_p.add_argument("-m", "--model", type=str, help="Override model name (primary + summarization)")
+    commit_p.add_argument("-m", "--model", type=str, nargs="?", const="__list__", default=None,
+                          help="-m alone: list available models (with live availability); "
+                               "-m NAME: override model name (primary + summarization)")
     commit_p.add_argument("-s", "-ms", "--summarizer-model", dest="summarizer_model",
                           nargs="?", const="__list__", default=None,
                           help="-s alone: list available models; -s NAME: use that model for summarization")
+    commit_p.add_argument("--no-probe", dest="probe", action="store_false", default=True,
+                          help="When listing models, skip the /models availability probe")
     commit_p.add_argument("-c", "--chunk-size", type=str, default="50%",
                           help="Chunk size (integer chars or percentage, e.g. '12000' or '50%%'); default: 50%% of context window")
     commit_p.add_argument("-y", "--yes", action="store_true",
@@ -387,8 +391,13 @@ def main() -> None:
             cmd_sessions(args, config)
         elif args.command == "commit":
             from agent.cli.commit import cmd_commit
-            if getattr(args, "model", None):
-                config.llm.model = args.model
+            _model = getattr(args, "model", None)
+            if _model == "__list__":
+                # Listing only — no LLM call, so skip the reachability probe.
+                cmd_commit(args, config)
+                return
+            if _model:
+                config.llm.model = _model
             check_reachability(config)
             cmd_commit(args, config)
         elif args.command == "prompts":

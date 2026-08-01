@@ -256,17 +256,46 @@ def _pick_fast_entry(registry, gpu_pool: list[str]):
     return best_name, best_entry
 
 
-def _print_model_list(console, registry, gpu_pool: list[str]) -> None:
+def _probe_endpoints(registry, timeout: int = 2) -> dict[str, "set[str] | None"]:
+    """GET /models once per unique base_url, in parallel.
+
+    Returns base_url → set of live model ids, or None when unreachable. Pure
+    metadata: no completion is requested, so probing costs no tokens.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from agent.config.model_probe import list_endpoint_models
+
+    targets: dict[str, str] = {}  # base_url → api_key
+    for name in registry.names():
+        entry = registry.get(name)
+        if entry is not None and entry.base_url:
+            targets.setdefault(entry.base_url, getattr(entry, "api_key", "") or "")
+    if not targets:
+        return {}
+    with ThreadPoolExecutor(max_workers=min(16, len(targets))) as pool:
+        results = pool.map(
+            lambda kv: (kv[0], list_endpoint_models(kv[0], kv[1], timeout=timeout)),
+            list(targets.items()),
+        )
+        return dict(results)
+
+
+def _print_model_list(console, registry, gpu_pool: list[str], probe: bool = True) -> None:
     from rich.table import Table
     from agent.metrics.model_stats import load_stats
     stats = load_stats()
-    table = Table(title="Available model entries", show_lines=False)
-    table.add_column("name", style="cyan")
-    table.add_column("model")
+    live = _probe_endpoints(registry) if probe else {}
+    table = Table(title="Available model entries", show_lines=False, box=None,
+                  pad_edge=False, collapse_padding=True)
+    table.add_column("name", style="cyan", no_wrap=True)
+    table.add_column("model", no_wrap=True)
+    if probe:
+        table.add_column("live", justify="center", no_wrap=True)
+        table.add_column("endpoint serves", style="dim")
     table.add_column("tags", style="dim")
-    table.add_column("tps (measured)", justify="right")
-    table.add_column("tps (config)", justify="right")
-    table.add_column("gpu", justify="center")
+    table.add_column("tps", justify="right", no_wrap=True)
+    table.add_column("cfg", justify="right", no_wrap=True)
+    table.add_column("gpu", justify="center", no_wrap=True)
     for name in registry.names():
         entry = registry.get(name)
         rec = stats.get(name, {})
@@ -274,8 +303,44 @@ def _print_model_list(console, registry, gpu_pool: list[str]) -> None:
         declared = f"{_fmt_tps(entry.tokens_per_sec)}" if entry.tokens_per_sec > 0 else "-"
         gpu_mark = "✓" if name in gpu_pool else ""
         tags = ", ".join(entry.tags) if entry.tags else ""
-        table.add_row(name, entry.model or name, tags, measured, declared, gpu_mark)
+        cells = [name, entry.model or name]
+        if probe:
+            cells.extend(_live_cells(entry, live))
+        cells.extend([tags, measured, declared, gpu_mark])
+        table.add_row(*cells)
     console.print(table)
+    if probe:
+        console.print(
+            "[dim]live: ✓ served now · ~ endpoint up but serving something else "
+            "('router:' can autoload, 'loaded:' is a one-model server needing a "
+            "manual swap) · ✗ endpoint unreachable. "
+            "Probe is a /models GET — no tokens spent.[/dim]"
+        )
+
+
+def _live_cells(entry, live: dict) -> tuple[str, str]:
+    """Return (live marker, short description of what the endpoint serves)."""
+    if not entry.base_url:
+        return "", ""
+    ids = live.get(entry.base_url)
+    if ids is None:
+        return "[red]✗[/red]", "[red]unreachable[/red]"
+    from agent.config.model_probe import model_in_server
+    if model_in_server(entry.model or "", ids):
+        return "[green]✓[/green]", ""
+    # Endpoint answers but does not advertise this entry's model. A one-model
+    # llama-server lists only the loaded gguf (so this entry needs a manual
+    # swap); a router lists every preset it can autoload.
+    shown = ", ".join(sorted(_short_id(i) for i in ids)[:3]) or "(none)"
+    if len(ids) > 3:
+        shown += f", +{len(ids) - 3}"
+    kind = "loaded" if len(ids) == 1 else "router"
+    return "[yellow]~[/yellow]", f"{kind}: {shown}"
+
+
+def _short_id(model_id: str) -> str:
+    """Basename of a gguf-path model id; ids that are plain names pass through."""
+    return model_id.rsplit("/", 1)[-1]
 
 
 def cmd_commit(args, config):
@@ -288,10 +353,11 @@ def cmd_commit(args, config):
     registry = make_registry(config)
     gpu_pool: list[str] = config.concurrency.gpu_pool
 
-    # -m with no value → list models and exit
+    # -m or -s with no value → list models and exit
     summ_override = getattr(args, "summarizer_model", None)
-    if summ_override == "__list__":
-        _print_model_list(console, registry, gpu_pool)
+    if summ_override == "__list__" or getattr(args, "model", None) == "__list__":
+        _print_model_list(console, registry, gpu_pool,
+                          probe=getattr(args, "probe", True))
         return
 
     path = Path(args.path)
