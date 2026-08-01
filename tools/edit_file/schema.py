@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from agent.core import revisions
 from agent.tools import register
 from agent.tools.rules import get_rules
 
@@ -22,6 +23,7 @@ def _build_schema() -> dict:
         "anchor_sha256": {"type": "string", "description": "sha256 (hex) of anchor for integrity check."},
         "expect_removed": {"type": "integer", "description": "Self-check: lines in anchor."},
         "expect_added": {"type": "integer", "description": "Self-check: lines in replacement."},
+        "expect_rev": {"type": "string", "description": revisions.ARG_DESCRIPTION},
     }
 
     props: dict = {
@@ -46,6 +48,13 @@ def _build_schema() -> dict:
         "replacement": {
             "type": "string",
             "description": "Alt to chunks: replacement text (use with path+anchor).",
+        },
+        "expect_rev": {
+            "type": "string",
+            "description": (
+                "Default expect_rev for every chunk that does not carry its own. "
+                + revisions.ARG_DESCRIPTION
+            ),
         },
     }
     required: list[str] = []  # either chunks[] OR flat path+anchor+replacement — both valid

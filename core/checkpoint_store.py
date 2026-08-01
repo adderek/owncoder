@@ -105,7 +105,7 @@ def _record(directory: Path, entry: dict, before: str | None) -> dict:
     readers and old files stay shape-compatible."""
     record = {"seq": entry["seq"], "path": entry["path"], "ts": entry.get("ts") or time.time()}
     record["blob"] = write_blob(directory, before) if before is not None else None
-    for key in ("actor", "after_sha"):
+    for key in ("actor", "after_sha", "pinned"):
         if entry.get(key) is not None:
             record[key] = entry[key]
     return record
@@ -177,6 +177,7 @@ def load(config: "Config") -> tuple[list[dict], list[dict]]:
                 "actor": record.get("actor"),
                 "before_sha": record.get("blob"),
                 "after_sha": record.get("after_sha"),
+                "pinned": record.get("pinned"),
             })
     journal.sort(key=lambda e: e["seq"])
 

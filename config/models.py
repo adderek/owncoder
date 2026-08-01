@@ -115,6 +115,24 @@ class SummarizationConfig:
 
 
 @dataclass
+class RevisionsConfig:
+    """``expect_rev`` compare-and-swap on the mutating file tools.
+
+    See agent/core/revisions.py. ``mode`` is staged because turning this on hard
+    breaks every prompt that does not know about the argument yet:
+
+        off      the argument is ignored
+        warn     a missing pin is fine; a *wrong* pin still refuses the write
+        require  every mutating call must carry a pin
+
+    ``handles`` mints short ids (``r7``) alongside the sha at read time, for
+    models that carry three tokens more reliably than sixty-four hex characters.
+    """
+    mode: str = "off"        # "off" | "warn" | "require"
+    handles: bool = True
+
+
+@dataclass
 class ToolsConfig:
     allow_shell: bool = True
     shell_timeout: int = 30
@@ -124,6 +142,7 @@ class ToolsConfig:
     search_parents: bool = True
     refactor_hint_min_lines: int = 400   # file must be at least this many lines
     refactor_hint_min_edits: int = 4     # agent must have edited it at least this many times
+    revisions: RevisionsConfig = field(default_factory=RevisionsConfig)
 
 
 @dataclass

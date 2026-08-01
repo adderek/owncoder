@@ -31,6 +31,7 @@ _ALLOWED: list[tuple[str, set[str]]] = [
     ("rag.embed_server_autostart", {"ask", "cpu", "gpu", "off"}),  # config/profile_detect.py
     ("agent.think_level", {"off", "low", "normal", "med", "medium",
                            "high", "max"}),                        # core/prompts.py THINK_LEVELS
+    ("tools.revisions.mode", {"off", "warn", "require"}),          # core/revisions.py
     ("security.network", {"off", "on"}),                           # tools/shell/main.py
     ("security.sandbox_backend", {"auto", "bwrap", "firejail", "none"}),  # security/runner.py
     ("recovery.prompt_mode", {"ask", "auto_recover", "auto_skip"}),  # planning/recovery.py

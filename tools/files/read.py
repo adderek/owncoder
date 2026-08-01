@@ -20,6 +20,12 @@ def _format_size(bytes_val: int) -> str:
     return f"{bytes_val:.0f}TB"
 
 
+def _with_rev(result: dict, path: str, fpath: Path, text: str) -> dict:
+    """Tag a read result with the file's revision, for quoting back as expect_rev."""
+    from agent.core import revisions
+    return revisions.annotate_read(result, path, fpath, content=text)
+
+
 def _count_lines_fast(fpath: Path) -> int:
     """Count lines without reading full file into memory."""
     with open(fpath, "rb") as f:
@@ -109,10 +115,10 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
     if start_line is None and end_line is None and total > 500:
         head_lines = lines[:READ_WINDOW_LINES]
         numbered = "\n".join(f"{i + 1}:{l}" for i, l in enumerate(head_lines))
-        return {
+        return _with_rev({
             "content": _make_header(1, READ_WINDOW_LINES) + "\n" + numbered,
             "metadata": {"total_lines": total, "file_size": filesize},
-        }
+        }, path, fpath, text)
 
     past_eof = False
     clamped = False
@@ -147,7 +153,7 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
                     f"File has syntax error: {e}. It was recently modified. Use undo_file to revert."
                 )
 
-    return result
+    return _with_rev(result, path, fpath, text)
 
 
 @register(

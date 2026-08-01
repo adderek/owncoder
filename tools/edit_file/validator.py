@@ -165,6 +165,15 @@ def _validate_chunk(
         original = fpath.read_text(encoding="utf-8", errors="replace")
         file_cache[path] = (fpath, original)
 
+    # The pin is checked against the very bytes this chunk is validated against,
+    # so a mismatch is refused before any chunk of this call is applied.
+    from agent.core import revisions
+    rev_error = revisions.check(path, fpath, chunk.get("expect_rev"), content=original)
+    if rev_error is not None:
+        return None, err("rev_mismatch", rev_error["error"],
+                         **{k: v for k, v in rev_error.items()
+                            if k not in ("error", "kind", "path")})
+
     total_lines = original.count("\n") + (0 if original.endswith("\n") else 1)
     if not original:
         total_lines = 0

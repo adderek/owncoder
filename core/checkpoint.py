@@ -172,13 +172,18 @@ def sha_text(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8", "surrogatepass")).hexdigest()
 
 
-def journal_record(path: str, before: str | None, after_sha: str | None = None) -> None:
+def journal_record(path: str, before: str | None, after_sha: str | None = None,
+                   pinned: str | None = None) -> None:
     """Record one successful edit. ``before`` None means the file was created.
 
     *after_sha* is the digest of what the edit left on disk; the caller supplies
     it because it has just written the content and would otherwise force a
     re-read. None when the caller could not determine it — detection downstream
     treats that as "unknown", never as "unchanged".
+
+    *pinned* records what the write asserted about the revision it edited —
+    ``"pinned"``, or ``"any"`` for an explicit opt-out (see core/revisions.py).
+    None when revision checking was off, which is not the same as opting out.
     """
     global _seq
     _seq += 1
@@ -190,6 +195,7 @@ def journal_record(path: str, before: str | None, after_sha: str | None = None) 
         "actor": actor(),
         "before_sha": sha_text(before) if before is not None else None,
         "after_sha": after_sha,
+        "pinned": pinned,
     }
     _journal.append(entry)
     if _persisted():

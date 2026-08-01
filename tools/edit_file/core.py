@@ -45,6 +45,7 @@ def edit_file(
     replacement: str | None = None,
     match_mode: str | None = None,
     on_chunk_fail: str | None = None,
+    expect_rev: str | None = None,
 ) -> dict:
     from agent.tools.files import _resolve, _log_edit, _undo_stack
 
@@ -65,6 +66,13 @@ def edit_file(
                     "or flat path + anchor + replacement.",
         }
     
+    # A top-level expect_rev is the default for chunks that do not carry one:
+    # the common case is several chunks in one file, all pinned to one revision.
+    if expect_rev is not None:
+        for ch in chunks:
+            if isinstance(ch, dict):
+                ch.setdefault("expect_rev", expect_rev)
+
     # Apply top-level range_hint into chunks that lack one.
     # (path and replacement are now explicit params, handled by the flat-args path above)
     # range_hint is left for a future signature expansion.
@@ -150,7 +158,10 @@ def edit_file(
         if rules.config.dry_run:
             continue
         fpath.write_text(content, encoding="utf-8")
-        _log_edit("edit_file", path, "ok")
+        _log_edit("edit_file", path, "ok",
+                  expect_rev=next((c.get("expect_rev") for c in chunks
+                                   if isinstance(c, dict) and c.get("path") == path
+                                   and c.get("expect_rev")), None))
         if ec.post_check_cmd:
             post_checks[path] = _run_post_check(ec.post_check_cmd, fpath, ec.post_check_timeout)
 

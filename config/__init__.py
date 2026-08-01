@@ -6,6 +6,7 @@ from .models import (
     RAGConfig,
     AsmAnalysisConfig,
     ToolsConfig,
+    RevisionsConfig,
     ThemeConfig,
     UIConfig,
     CompilePromptsConfig,
@@ -43,7 +44,7 @@ def make_registry(config: Config) -> ModelRegistry:
 
 __all__ = [
     "LLMConfig", "EmbeddingsConfig", "AgentConfig", "RAGConfig", "AsmAnalysisConfig",
-    "ToolsConfig", "ThemeConfig", "UIConfig", "CompilePromptsConfig",
+    "ToolsConfig", "RevisionsConfig", "ThemeConfig", "UIConfig", "CompilePromptsConfig",
     "LoopGuardConfig", "VerifyConfig", "LogsConfig", "TokenLimitsConfig", "ToolCompactionConfig",
     "SecurityConfig", "PlanningConfig", "RecoveryConfig", "WebSearchConfig", "OutputStoreConfig", "TurnSignalsConfig", "ModelEntry", "AEIConfig", "Config",
     "load_config", "check_reachability",

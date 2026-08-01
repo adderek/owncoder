@@ -24,6 +24,12 @@ def setup(config: "Config") -> None:
         _ckpt_setup(config)
     except Exception:
         pass
+    # expect_rev enforcement level + a fresh (never durable) handle registry.
+    try:
+        from agent.core import revisions as _revisions
+        _revisions.setup(config)
+    except Exception:
+        logging.debug("revisions: setup failed; expect_rev stays off", exc_info=True)
     # Keep the security harness synchronised with the working directory the
     # tools layer is using. Without this, a second setup() (common in tests
     # that iterate through tmp_paths) leaves the security policy pinned to
@@ -117,7 +123,8 @@ def _post_write_stats(path: str) -> dict:
     return stats
 
 
-def _log_edit(tool: str, path: str, outcome: str, **extra) -> None:
+def _log_edit(tool: str, path: str, outcome: str, expect_rev: str | None = None,
+              **extra) -> None:
     single = outcome == "ok" and path not in ("<multi>",)
     stats = _post_write_stats(path) if single else {}
     # Journal successful single-file edits for checkpoint/rollback. The undo
@@ -125,7 +132,9 @@ def _log_edit(tool: str, path: str, outcome: str, **extra) -> None:
     if single:
         try:
             from agent.core.checkpoint import journal_record
-            journal_record(path, _undo_stack.get(path), stats.get("after_sha"))
+            from agent.core.revisions import journal_note
+            journal_record(path, _undo_stack.get(path), stats.get("after_sha"),
+                           pinned=journal_note(expect_rev))
         except Exception:
             pass
     try:

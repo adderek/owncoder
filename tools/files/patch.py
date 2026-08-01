@@ -49,7 +49,9 @@ def _apply_unified_diff(original: str, patch: str) -> str:
                 pass
 
 
-def patch_file(path: str, unified_diff: str) -> dict:
+def patch_file(path: str, unified_diff: str, expect_rev: str | None = None) -> dict:
+    from agent.core import revisions
+
     fpath = _resolve(path)
 
     rules = get_rules()
@@ -67,6 +69,11 @@ def patch_file(path: str, unified_diff: str) -> dict:
         return {"error": f"File not found: {path}"}
 
     original = fpath.read_text(encoding="utf-8", errors="replace")
+    # Hash what we are about to patch, not a second read of the same file.
+    rev_error = revisions.check(path, fpath, expect_rev, content=original)
+    if rev_error is not None:
+        _log_edit("patch_file", path, "rev_mismatch", expect_rev=expect_rev)
+        return rev_error
     _undo_stack[path] = original
 
     try:
@@ -80,5 +87,5 @@ def patch_file(path: str, unified_diff: str) -> dict:
         return {"error": f"Patch failed: {error_msg}"}
 
     fpath.write_text(patched, encoding="utf-8")
-    _log_edit("patch_file", path, "ok")
+    _log_edit("patch_file", path, "ok", expect_rev=expect_rev)
     return {"ok": path}

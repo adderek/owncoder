@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from agent.core import revisions
 from agent.tools import register
 from agent.tools.rules import get_rules
 from .paths import _resolve, _working_dir, _undo_stack, _log_edit
@@ -14,12 +15,13 @@ from .paths import _resolve, _working_dir, _undo_stack, _log_edit
             "properties": {
                 "path": {"type": "string", "description": "File path to write"},
                 "content": {"type": "string", "description": "New file content. Escape double quotes inside the string as \\\""},
+                "expect_rev": {"type": "string", "description": revisions.ARG_DESCRIPTION},
             },
             "required": ["path", "content"],
         },
     },
 )
-def write_file(path: str, content: str) -> dict:
+def write_file(path: str, content: str, expect_rev: str | None = None) -> dict:
     import difflib
 
     fpath = _resolve(path)
@@ -33,6 +35,10 @@ def write_file(path: str, content: str) -> dict:
     size_ok, size_msg = rules.check_write_size(content)
     if not size_ok:
         return {"error": size_msg}
+    rev_error = revisions.check(path, fpath, expect_rev)
+    if rev_error is not None:
+        _log_edit("write_file", path, "rev_mismatch", expect_rev=expect_rev)
+        return rev_error
     if rules.config.dry_run:
         return {"dry_run": True, "path": path, "would_write": f"{len(content)} bytes"}
     if is_new and rules.config.confirm_create:
@@ -90,5 +96,5 @@ def write_file(path: str, content: str) -> dict:
     if is_new:
         rules.note_file_created()
 
-    _log_edit("write_file", path, "ok")
+    _log_edit("write_file", path, "ok", expect_rev=expect_rev)
     return {"ok": path, "diff": diff_summary}
