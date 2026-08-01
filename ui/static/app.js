@@ -27,6 +27,8 @@ let streamEl = null;      // assistant bubble being streamed into
 let thinkEl = null;       // open reasoning fold being streamed into
 let pendingTools = {};    // name -> [tool detail elements awaiting result]
 let turn = null;          // active work fold: {details, body, tools, steps, t0, userToggled}
+let lastTurn = null;      // the round before it, still open until this one starts
+let foldJournal = 'on_next_round';  // from /api/state; see _HttpUI._fold_journal
 let busyFlag = false;
 
 // Markdown rendering (esc / renderMd) lives in md.js, loaded before this file.
@@ -366,18 +368,27 @@ function mount(el) {
 // whole "agent working" phase collapses to one line when the answer lands.
 function beginTurn() {
   if (turn) return turn;
+  // The previous round is no longer the current one: fold its journal away,
+  // unless the user opened it by hand — a manual toggle always wins.
+  if (lastTurn && foldJournal === 'on_next_round' && !lastTurn.userToggled) {
+    lastTurn.details.open = false;
+  }
   const d = document.createElement('details');
   d.className = 'work';
   d.open = true;
   d.innerHTML = '<summary><span class="wspin"></span>' +
     '<span class="wlabel working">working</span>' +
     '<span class="wmeta"></span></summary><div class="wbody"></div>';
-  d.querySelector('summary').addEventListener('click', () => {
-    if (turn && turn.details === d) turn.userToggled = true;
-  });
   mount(d);
   turn = {details: d, body: d.querySelector('.wbody'),
-          tools: 0, steps: 0, files: [], t0: Date.now(), userToggled: false};
+          tools: 0, steps: 0, changeset: null, t0: Date.now(), userToggled: false};
+  // Bound to the turn record, not to whichever turn happens to be active: the
+  // old handler compared against the live `turn`, so a click on an already
+  // finished round never registered and its fold state was not respected.
+  const rec = turn;
+  d.querySelector('summary').addEventListener('click', () => {
+    rec.userToggled = true;
+  });
   d.querySelector('summary').title = 'started ' + fmtClock(turn.t0);
   return turn;
 }
@@ -416,8 +427,12 @@ function endTurn() {
     : 'started ' + fmtClock(t.t0) + '  ·  ended ' + fmtClock(Date.now()) +
       '  ·  ' + secs + 's';
   t.details.classList.add('done');
-  if (!t.userToggled) t.details.open = false;
-  if (t.files.length) mount(filesStrip(t.files));
+  // The round that just ended is still the current one — its journal is the
+  // freshest thing on screen, so by default it stays open until the next round
+  // starts (see beginTurn). "immediately" folds it here instead.
+  if (!t.userToggled && foldJournal === 'immediately') t.details.open = false;
+  lastTurn = t;
+  if (t.changeset) mount(renderChangeset(t.changeset));
 }
 
 // Every step inside the work fold (phase lines, tool folds, reasoning, signals)
@@ -439,44 +454,99 @@ function stamp(el, t) {
   return el;
 }
 
-// Which files a tool call touched. The same three tools and the same argument
-// shapes the agent tracks server-side (agent/core/agent.py) — read here from
-// the arguments already on the wire, so a live turn and a replayed one agree
-// without another event type.
-const MUTATING_TOOLS = ['write_file', 'patch_file', 'edit_file'];
-
-function toolPaths(name, argsFull) {
-  if (MUTATING_TOOLS.indexOf(name) < 0 || !argsFull) return [];
-  let parsed;
-  try { parsed = JSON.parse(argsFull); } catch (e) { return []; }
-  if (!parsed || typeof parsed !== 'object') return [];
-  if (name === 'edit_file') {
-    return (parsed.chunks || []).map(c => (c && c.path) || '').filter(Boolean);
-  }
-  return parsed.path ? [parsed.path] : [];
+// What the turn changed, as sent by the server (core.changeset.Changeset,
+// core/changeset.py:to_json) on the `changeset` event — the single
+// authoritative parse of which files a round touched, replacing a client-side
+// re-derivation from tool-call arguments that used to drift out of sync with
+// the server's own list of file-mutating tool names.
+function csHeadline(cs) {
+  const files = cs.files || [];
+  const n = files.length;
+  let head = n.toLocaleString() + (n === 1 ? ' file changed' : ' files changed');
+  const added = files.reduce((s, f) => s + (f.added || 0), 0);
+  const removed = files.reduce((s, f) => s + (f.removed || 0), 0);
+  if (added || removed) head += ', +' + added.toLocaleString() + ' -' + removed.toLocaleString();
+  if (cs.truncated) head += ' (diffs truncated)';
+  return head;
 }
 
-function noteFiles(name, argsFull) {
-  if (!turn) return;
-  for (const p of toolPaths(name, argsFull)) {
-    if (turn.files.indexOf(p) < 0) turn.files.push(p);
+// A file changed by somebody other than this agent while the round ran —
+// rebuilt client-side from foreign_actors so the warning survives even for
+// history read back before this field existed server-side is not asked to.
+function csForeignNote(f) {
+  if (!f.foreign_edit) return '';
+  if (f.foreign_actors && f.foreign_actors.length) {
+    return 'also edited by ' + f.foreign_actors.map(esc).join(', ');
   }
+  return 'changed outside any agent (user or external tool); diff shown is ' +
+         'this agent&#39;s edit only';
 }
 
-// Pinned under the work fold: what the turn changed, each name opening the
-// diff. The diff viewer and /api/diff already existed — they were reachable
-// only from the condensed Q/A view, so a live turn never said what it wrote.
-function filesStrip(files) {
+// Fills a file row's diff box: inline when the round already carried the
+// text, otherwise a lazy fetch of the stored per-round diff (never the
+// working tree — /api/diff answers a different question, see toggleDiff).
+function csLoadDiff(f, turnId, box) {
+  if (f.diff != null) {
+    box.innerHTML = f.diff.trim() ? renderDiff(f.diff) : '<i>no diff</i>';
+    return;
+  }
+  if (f.binary) { box.innerHTML = '<i>binary file</i>'; return; }
+  if (!f.diff_ref) { box.innerHTML = '<i>no diff</i>'; return; }
+  box.textContent = 'loading diff…';
+  fetch('/api/changeset?turn=' + encodeURIComponent(turnId) +
+        '&file=' + encodeURIComponent(f.path))
+    .then(r => r.json())
+    .then(d => { box.innerHTML = d.error ? esc(d.error)
+      : (d.diff && d.diff.trim() ? renderDiff(d.diff) : '<i>no diff</i>'); })
+    .catch(e => { box.textContent = 'diff failed: ' + e; });
+}
+
+// One file row: name + churn in the summary, a foreign-edit warning when
+// present, and the diff behind the fold. `eager` expands it immediately —
+// used for the `inline` tier, where the whole point is to show the diff.
+function csFileRow(f, turnId, eager) {
+  const d = document.createElement('details');
+  d.className = 'cs-file' + (f.foreign_edit ? ' cs-foreign' : '');
+  const stat = f.binary ? 'binary' : ('+' + (f.added || 0) + ' -' + (f.removed || 0));
+  const note = csForeignNote(f);
+  d.innerHTML = '<summary>' + esc(f.path) +
+    ' <span class="cs-stat">' + esc(stat) + '</span></summary>' +
+    (note ? '<div class="cs-warn">⚠ ' + note + '</div>' : '') +
+    '<div class="diff-box cs-diff-box"></div>';
+  const box = d.querySelector('.cs-diff-box');
+  let loaded = false;
+  d.addEventListener('toggle', () => {
+    if (d.open && !loaded) { loaded = true; csLoadDiff(f, turnId, box); }
+  });
+  if (eager) { d.open = true; loaded = true; csLoadDiff(f, turnId, box); }
+  return d;
+}
+
+// Pinned under the work fold: three tiers of disclosure, chosen server-side
+// by core.changeset.pick_tier from the size of the round's change.
+//   inline — few files, small diffs: shown expanded
+//   list   — one row per file, each unfolding to its diff
+//   count  — one summary line, unfolding to the file list, then to a diff
+function renderChangeset(cs) {
+  const files = cs.files || [];
+  const headline = csHeadline(cs);
   const wrap = document.createElement('div');
   wrap.className = 'files-changed';
-  wrap.innerHTML = '<span class="fc-label">' + files.length +
-    (files.length === 1 ? ' file changed' : ' files changed') + '</span>' +
-    files.map(f => '<button class="fc-file" type="button" data-file="' + esc(f) +
-      '" title="Show the diff for ' + esc(f) + '">' + esc(f) + '</button>').join('');
-  wrap.querySelectorAll('.fc-file').forEach(b => b.addEventListener('click', () => {
-    b.classList.toggle('open');
-    toggleDiff(wrap, b.dataset.file);
-  }));
+  if (cs.tier === 'count') {
+    const outer = document.createElement('details');
+    outer.className = 'cs-summary';
+    const summary = document.createElement('summary');
+    summary.textContent = headline;
+    outer.appendChild(summary);
+    for (const f of files) outer.appendChild(csFileRow(f, cs.turn_id, false));
+    wrap.appendChild(outer);
+    return wrap;
+  }
+  const label = document.createElement('span');
+  label.className = 'fc-label';
+  label.textContent = headline;
+  wrap.appendChild(label);
+  for (const f of files) wrap.appendChild(csFileRow(f, cs.turn_id, cs.tier === 'inline'));
   return wrap;
 }
 
@@ -490,7 +560,6 @@ function toolCall(name, args, argsFull) {
     (full ? '<div class="body">' + esc(full) + '</div>' : '');
   stamp(metaMount(d));   // stamp after mount: the fold (turn.t0) may start here
   if (turn) turn.tools++;
-  noteFiles(name, argsFull);
   (pendingTools[name] = pendingTools[name] || []).push(d);
 }
 
@@ -671,7 +740,6 @@ function replayToolCall(name, args, argsFull) {
   // Not metaMount: that routes by busyFlag, which is false while replaying, so
   // the fold would land beside the work fold instead of inside it.
   if (turn) { turn.body.appendChild(d); turn.tools++; } else { mount(d); }
-  noteFiles(name, argsFull);
   return d;
 }
 
@@ -737,6 +805,10 @@ function handle(ev) {
     streamEl.classList.remove('paused');
     setActivity('streaming');
     stickScroll();
+  } else if (ev.type === 'changeset') {
+    // Fires once at round end, before `response` — stash it on the open work
+    // fold so endTurn() renders it under that round, not the next one.
+    if (turn) turn.changeset = ev;
   } else if (ev.type === 'response') {
     dropStream();
     endTurn();
@@ -1942,7 +2014,7 @@ async function previewSession(id) {
     missedLive = 0;
     log.innerHTML = '';
     logTrimmed = 0;   // the view starts over
-    turn = null; streamEl = null; thinkEl = null; pendingTools = {}; resolvedTools = {};
+    turn = null; lastTurn = null; streamEl = null; thinkEl = null; pendingTools = {}; resolvedTools = {};
     const bar = document.createElement('div');
     bar.id = 'previewbar';
     bar.innerHTML = '⏸ history: <b>' + esc(d.name || id) + '</b> (read-only) ' +
@@ -2011,7 +2083,7 @@ async function condensedView(id) {
     missedLive = 0;
     log.innerHTML = '';
     logTrimmed = 0;   // the view starts over
-    turn = null; streamEl = null; thinkEl = null; pendingTools = {}; resolvedTools = {};
+    turn = null; lastTurn = null; streamEl = null; thinkEl = null; pendingTools = {}; resolvedTools = {};
     const bar = document.createElement('div');
     bar.id = 'previewbar';
     bar.innerHTML = '≣ condensed: <b>' + esc(d.name || d.id) + '</b> (' +
@@ -2188,6 +2260,10 @@ function replayTranscriptInner(messages) {
         folds[c.id] = replayToolCall(c.name, c.args, c.args_full);
       }
       if (m.content) {
+        // The server hangs the round's changeset on the assistant message that
+        // ended it; endTurn() mounts whatever the turn carries, so a replayed
+        // round shows the same file list as a live one.
+        if (turn && m.changeset) turn.changeset = m.changeset;
         endTurn();
         work = null;
         assistantMd(m.content);
@@ -2244,9 +2320,10 @@ function applyState(s) {
 async function resyncView() {
   try {
     const s = await (await fetch('/api/state')).json();
+    if (s.fold_journal) foldJournal = s.fold_journal;
     log.innerHTML = '';
     logTrimmed = 0;   // the view starts over
-    turn = null; streamEl = null; thinkEl = null; pendingTools = {}; resolvedTools = {};
+    turn = null; lastTurn = null; streamEl = null; thinkEl = null; pendingTools = {}; resolvedTools = {};
     applyState(s);
     return true;
   } catch (e) {
@@ -2284,6 +2361,7 @@ function connect() {
 async function init() {
   try {
     const s = await (await fetch('/api/state')).json();
+    if (s.fold_journal) foldJournal = s.fold_journal;
     applyState(s);
   } catch (e) {
     statusEl.textContent = 'server unreachable — retrying…';
@@ -2362,7 +2440,7 @@ async function send() {
     saveDraft();
     log.innerHTML = '';
     logTrimmed = 0;   // the view starts over
-    turn = null; streamEl = null; thinkEl = null; pendingTools = {}; resolvedTools = {};
+    turn = null; lastTurn = null; streamEl = null; thinkEl = null; pendingTools = {}; resolvedTools = {};
     return;
   }
   const target = previewing;   // non-null: send to the previewed session

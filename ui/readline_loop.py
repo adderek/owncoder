@@ -7,6 +7,8 @@ import traceback
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from rich.markup import escape as _rich_escape
+
 from agent.ui.render import _render_context_report, _delatex
 from agent.ui.spinner import _run_spinner, _fmt_tps
 from agent.ui.colors import _hex_to_ansi
@@ -25,7 +27,147 @@ def _find_loop_guard_stop(messages: list[dict]) -> str | None:
 if TYPE_CHECKING:
     from agent.core.agent import Agent
     from agent.config import ThemeConfig
+    from agent.core.changeset import Changeset, FileChange
     from agent.ui_server import UIServerProtocol
+
+
+# ── Changeset display (readline UI) ──────────────────────────────────────────
+#
+# `core/changeset.py` builds *what* changed; everything here is *how it looks
+# on a plain scrollback* — a readline terminal cannot fold, so a round's
+# changeset either prints inline at its collected tier (below) or waits for
+# `/changes` to pull it up one file at a time. Kept as small, pure,
+# module-level functions (not nested in `simple_loop`) so they are testable
+# without driving the whole interactive loop.
+
+def _changeset_config(config):
+    """The ``[ui.changeset]`` section, or None if config has no ``ui``."""
+    return getattr(getattr(config, "ui", None), "changeset", None)
+
+
+def changeset_enabled(config) -> bool:
+    cfg = _changeset_config(config)
+    return bool(getattr(cfg, "enabled", True)) if cfg is not None else True
+
+
+def session_rollup_enabled(config) -> bool:
+    cfg = _changeset_config(config)
+    return bool(getattr(cfg, "session_rollup", True)) if cfg is not None else True
+
+
+def format_changeset_block(cs: "Changeset | None", theme, *, tier: str | None = None) -> list[str]:
+    """Rich-markup lines for the end-of-round block, colored to match the rest
+    of the readline UI: dim for the summary, warning color for a foreign-edit
+    note. Empty when there is nothing to show."""
+    from agent.core.changeset import render_text
+    if not cs:
+        return []
+    out = []
+    for line in render_text(cs, tier=tier):
+        color = theme.warning if line.lstrip().startswith("!") else theme.text_dim
+        out.append(f"[{color}]{_rich_escape(line)}[/{color}]")
+    return out
+
+
+def format_changeset_file_list(cs: "Changeset | None", theme) -> list[str]:
+    """Numbered file rows (1-based) so ``/changes <n>`` can address one of them."""
+    if not cs:
+        return []
+    lines = [f"[{theme.text_dim}]{_rich_escape(cs.headline())}[/{theme.text_dim}]"]
+    for i, f in enumerate(cs.files, 1):
+        mark = {"added": "+", "deleted": "-"}.get(f.status, "~")
+        stat = "binary" if f.binary else f"+{f.added:,} -{f.removed:,}"
+        row = f"  {i}. {mark} {f.path}  {stat}"
+        lines.append(f"[{theme.text_dim}]{_rich_escape(row)}[/{theme.text_dim}]")
+        note = f.note()
+        if note:
+            lines.append(f"[{theme.warning}]{_rich_escape('       ! ' + note)}[/{theme.warning}]")
+    return lines
+
+
+def format_changeset_file_diff(
+    cs: "Changeset | None", index: int, spill_dir=None
+) -> tuple[bool, list[str]]:
+    """(ok, lines) for ``/changes <n>``. ``ok`` is False for an out-of-range or
+    empty changeset; ``lines`` is then a single helpful message."""
+    if not cs or not cs.files:
+        return False, ["No changeset available yet — nothing changed last round."]
+    if index < 1 or index > len(cs.files):
+        return False, [f"No file #{index} — pick 1-{len(cs.files)} (see /changes)."]
+    from agent.core.changeset import load_diff
+    f = cs.files[index - 1]
+    lines = [f"{f.path}  +{f.added} -{f.removed}"]
+    note = f.note()
+    if note:
+        lines.append(f"! {note}")
+    if f.binary:
+        lines.append("(binary file, no diff)")
+        return True, lines
+    diff = load_diff(f, spill_dir)
+    if diff is None:
+        lines.append("(diff not available)")
+    else:
+        lines.extend(diff.rstrip("\n").splitlines())
+    return True, lines
+
+
+def merge_changesets(changesets: "list[Changeset]") -> "Changeset":
+    """Aggregate a session's worth of round changesets into one, by path.
+
+    A path touched in more than one round is counted once, with its added/
+    removed churn summed across rounds. Diff text is not merged (the rollup is
+    a file list, not a stack of diffs — drill into a single round's changeset
+    for that). Foreign-edit notes and actors accumulate across rounds too.
+    """
+    from agent.core.changeset import Changeset, FileChange, pick_tier, Limits
+
+    merged: dict[str, FileChange] = {}
+    first_status: dict[str, str] = {}
+    order: list[str] = []
+    for cs in changesets:
+        if not cs:
+            continue
+        for f in cs.files:
+            if f.path not in merged:
+                merged[f.path] = FileChange(path=f.path, status=f.status, binary=f.binary)
+                first_status[f.path] = f.status
+                order.append(f.path)
+            m = merged[f.path]
+            m.added += f.added
+            m.removed += f.removed
+            # Status is measured from the session start, not from the last
+            # round: a file created in round 1 and edited in round 5 is still
+            # "added" as far as the session is concerned.
+            if f.status == "deleted":
+                m.status = "deleted"
+            elif first_status[f.path] == "added":
+                m.status = "added"
+            else:
+                m.status = f.status
+            m.binary = f.binary
+            if f.foreign_edit:
+                m.foreign_edit = True
+                for actor in f.foreign_actors:
+                    if actor not in m.foreign_actors:
+                        m.foreign_actors.append(actor)
+
+    files = [merged[p] for p in order]
+    files.sort(key=lambda f: (-f.churn, f.path))
+    tier = pick_tier(len(files), sum(f.churn for f in files), Limits())
+    return Changeset(files=files, tier=tier)
+
+
+def changeset_spill_dir(session, cs: "Changeset | None"):
+    """Where this round's oversized diffs were spilled, mirroring
+    ``Agent._changeset_spill_dir`` (private to core/agent.py, so recomputed
+    here rather than reached into)."""
+    if session is None or cs is None:
+        return None
+    try:
+        from agent.memory.session import get_session_full_dir
+        return Path(get_session_full_dir(session.id)) / "changesets" / str(cs.turn_id)
+    except Exception:
+        return None
 
 
 def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
@@ -57,6 +199,7 @@ def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
   [{c}]/speech[/{c}]             speech-to-text input status
   [{c}]/security[/{c}] [scan|diff|triage|selfaudit|report|baseline|airgap|integrity|weights|sbom|taint|evolve|knowledge|verify|full|review] [path]  local security audit
   [{c}]/exec <command>[/{c}]      run an OS command and show output
+  [{c}]/changes [n|session][/{c}]  last round's changed files; n=diff for file n; session=running rollup
   [{c}]/apply [file][/{c}]       write last code block to file (bypass tool calling)
   [{c}]/undo [file][/{c}]        restore last pre-write snapshot of a file
   [{c}]/export [file][/{c}]      export conversation as markdown
@@ -132,6 +275,9 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
     from agent.core.prompt_loop import PromptLoop
     p_loop = PromptLoop()
     loop_feed: str | None = None   # next /loop iteration's prompt
+
+    _last_changeset = None          # core.changeset.Changeset for the last round
+    _session_changesets: list = []  # every round's changeset so far, for /changes session
 
     while True:
         if loop_feed is not None:
@@ -472,6 +618,51 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                         console.print(f"[red]{r['error']}[/red]")
                     else:
                         console.print(f"[green]Restored {target}[/green]")
+
+            elif cmd == "/changes":
+                if not changeset_enabled(agent.config):
+                    console.print(
+                        f"[{t.warning}]Changeset summaries are off "
+                        f"(config.ui.changeset.enabled = false).[/{t.warning}]"
+                    )
+                else:
+                    a = arg.strip()
+                    if not a:
+                        lines = format_changeset_file_list(_last_changeset, t)
+                        if not lines:
+                            hint = ("" if not _session_changesets
+                                    else "  Use /changes session for the whole session.")
+                            console.print(
+                                f"[{t.text_dim}]Nothing changed in the last round.{hint}"
+                                f"[/{t.text_dim}]")
+                        else:
+                            for line in lines:
+                                console.print(line)
+                    elif a.lower() == "session":
+                        if not session_rollup_enabled(agent.config):
+                            console.print(
+                                f"[{t.warning}]Session rollup is off "
+                                f"(config.ui.changeset.session_rollup = false).[/{t.warning}]"
+                            )
+                        else:
+                            rollup = merge_changesets(_session_changesets)
+                            lines = format_changeset_file_list(rollup, t)
+                            if not lines:
+                                console.print(f"[{t.text_dim}]Nothing changed yet this session.[/{t.text_dim}]")
+                            else:
+                                for line in lines:
+                                    console.print(line)
+                    elif a.lstrip("-").isdigit():
+                        ok, dlines = format_changeset_file_diff(
+                            _last_changeset, int(a), changeset_spill_dir(session, _last_changeset)
+                        )
+                        if not ok:
+                            console.print(f"[{t.warning}]{dlines[0]}[/{t.warning}]")
+                        else:
+                            for line in dlines:
+                                console.print(f"[{t.text_dim}]{_escape(line)}[/{t.text_dim}]")
+                    else:
+                        console.print(f"[{t.warning}]Usage: /changes [n|session][/{t.warning}]")
 
             elif cmd == "/exec":
                 if not arg.strip():
@@ -895,6 +1086,17 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
         else:
             console.print(f"[{t.warning}]No response from model.[/{t.warning}]")
 
+        # What the round changed — the readline UI's only file-change signal
+        # (Textual/HTTP have their own file lists; this one has none without
+        # this block). /changes drills further into it since plain scrollback
+        # cannot fold.
+        _last_changeset = getattr(agent, "last_changeset", None)
+        if _last_changeset:
+            _session_changesets.append(_last_changeset)
+        if changeset_enabled(agent.config):
+            for line in format_changeset_block(_last_changeset, t):
+                console.print(line)
+
         # Post-turn usage summary (persists after the spinner clears).
         s = server.stats()
         if s and s.get("calls", 0) > 0:
@@ -936,7 +1138,8 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
 
         if _open_fold is not None:
             from agent.ui import term_folds
-            term_folds.fold_end(_open_fold, summary=_mc or "done", status="success")
+            _fold_summary = _last_changeset.headline() if _last_changeset else (_mc or "done")
+            term_folds.fold_end(_open_fold, summary=_fold_summary, status="success")
             _open_fold = None
 
         # /loop continuation: count the iteration, wait the interval

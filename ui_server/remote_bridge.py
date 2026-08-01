@@ -95,6 +95,7 @@ class RemoteBridge:
         on_context_size=None,
         on_user_message=None,
         on_signal=None,
+        on_changeset=None,
         source: str = "remote",
     ) -> str:
         def pub_token(tok: str) -> None:
@@ -163,6 +164,9 @@ class RemoteBridge:
             on_context_size=pub_context_size,
             on_user_message=on_user_message,
             on_signal=pub_signal,
+            # Local-only, like on_tool_record: the diff text is not worth
+            # pushing over the relay; a remote client reads it from /api/changeset.
+            on_changeset=on_changeset,
             source=source,
         )
         self._emit(TurnEndEvent(response))

@@ -23,40 +23,121 @@ def _fmt_tps(v: float) -> str:
     return s.lstrip("0") or "0"
 
 
-def _compute_file_diffs(paths: "list[str]") -> "list[dict]":
-    """Run git diff --numstat for the given paths and return [{path, added, removed}].
+def _changeset_of(app):
+    """The core.changeset.Changeset the agent produced for the round just
+    finished, or None.
 
-    Returns entries even if git is unavailable (added/removed = 0).
+    Source of truth is core/checkpoint.py's edit journal (see core/changeset.py),
+    not ``git diff`` — the journal gives exact per-round attribution, including
+    newly created files and foreign edits, which git cannot. Not every server
+    exposes ``last_changeset`` (a relay-backed server may not), so this looks
+    at the server first and falls back to the wrapped agent, returning None
+    rather than raising when neither has it.
     """
-    import subprocess
-    if not paths:
+    server = getattr(app, "_server", None)
+    if server is None:
+        return None
+    cs = getattr(server, "last_changeset", None)
+    if cs is not None:
+        return cs
+    return getattr(getattr(server, "_agent", None), "last_changeset", None)
+
+
+def changeset_file_dict(fc, turn_id: int = 0) -> dict:
+    """Plain-dict view of one core.changeset.FileChange.
+
+    Click-map storage (``_chat_file_lines``) and the modal screens in
+    textual_widgets.py work off this shape rather than the dataclass, so a
+    restored/legacy entry (already a dict) and a live one look the same to
+    them. ``turn_id`` rides along so a spilled (oversized) diff can be found
+    again later from the session's changesets directory.
+    """
+    from dataclasses import asdict
+    d = asdict(fc)
+    d["note"] = fc.note()
+    d["turn_id"] = turn_id
+    return d
+
+
+def _file_row_markup(t, fc) -> str:
+    mark = {"added": "+", "deleted": "-"}.get(fc.status, "~")
+    if fc.binary:
+        stat = "[dim]binary[/dim]"
+    else:
+        parts = []
+        if fc.added:
+            parts.append(f"[{t.success}]+{fc.added}[/{t.success}]")
+        if fc.removed:
+            parts.append(f"[{t.error}]-{fc.removed}[/{t.error}]")
+        stat = " ".join(parts) if parts else "[dim]0[/dim]"
+    trunc = "  [dim](diff too large)[/dim]" if fc.truncated else ""
+    return f"📄 {mark} {_escape(fc.path)}  {stat}{trunc}"
+
+
+def _file_note_markup(t, fc) -> "str | None":
+    """A foreign_edit's warning, in the theme's warning colour — visible, not
+    silently dropped, since it means someone other than the agent wrote the
+    file too."""
+    note = fc.note()
+    if not note:
+        return None
+    return f"  [{t.warning}]⚠ {_escape(note)}[/{t.warning}]"
+
+
+def _changeset_sys_lines(t, cs) -> "list[str]":
+    """Plain colourised lines for the sys-view log, honouring the changeset's
+    tier the same way the chat log does: count → headline only, list →
+    headline + rows, inline → headline + rows + diffs."""
+    if not cs:
         return []
-    try:
-        result = subprocess.run(
-            ["git", "diff", "--numstat", "--"] + paths,
-            capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode != 0:
-            # git not available or no changes; return paths with zero stats
-            return [{"path": p, "added": 0, "removed": 0} for p in paths]
-        stats: dict[str, dict] = {p: {"path": p, "added": 0, "removed": 0} for p in paths}
-        for line in result.stdout.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split("\t")
-            if len(parts) == 3:
-                a, r, fpath = parts
-                a_int = int(a) if a != "-" else 0
-                r_int = int(r) if r != "-" else 0
-                # Match by basename or full path
-                for p in paths:
-                    if fpath == p or fpath.endswith(p) or p.endswith(fpath):
-                        stats[p] = {"path": p, "added": a_int, "removed": r_int}
-                        break
-        return list(stats.values())
-    except Exception:
-        return [{"path": p, "added": 0, "removed": 0} for p in paths]
+    head = _escape(cs.headline()) + (" (diffs truncated)" if cs.truncated else "")
+    lines = [f"[{t.text_dim}]{head}[/{t.text_dim}]"]
+    if cs.tier == "count":
+        return lines
+    for fc in cs.files:
+        lines.append(f"  {_file_row_markup(t, fc)}")
+        note = _file_note_markup(t, fc)
+        if note:
+            lines.append(note)
+        if cs.tier == "inline" and fc.diff:
+            lines.extend(f"    {_escape(l)}" for l in fc.diff.rstrip("\n").splitlines())
+    return lines
+
+
+def write_changeset_rows(app, _cw, chat_log, cs) -> None:
+    """Write *cs* to the chat log via *_cw*, tiered, registering click targets.
+
+    Shared by the live end-of-turn write (event_mixin._turn_write_chat) and by
+    history re-render (view_mixin._render_full_turn), so a restored turn looks
+    identical to how it looked live. ``count`` writes only the headline and
+    registers it in ``app._chat_changeset_lines`` (click → file list); ``list``
+    adds one row per file registered in ``app._chat_file_lines`` (click →
+    diff); ``inline`` also writes each file's diff, already fully visible.
+    """
+    if not cs:
+        return
+    t = app._t
+    if not hasattr(app, "_chat_changeset_lines"):
+        app._chat_changeset_lines = {}
+    header = cs.headline() + (" (diffs truncated)" if cs.truncated else "")
+    before = len(chat_log.lines)
+    _cw(f"  [{t.text_dim}]{header}[/{t.text_dim}]")
+    if cs.tier == "count":
+        for li in range(before, len(chat_log.lines)):
+            app._chat_changeset_lines[li] = cs
+        return
+    for fc in cs.files:
+        row_before = len(chat_log.lines)
+        _cw(f"  {_file_row_markup(t, fc)}")
+        note = _file_note_markup(t, fc)
+        if note:
+            _cw(note)
+        entry = changeset_file_dict(fc, cs.turn_id)
+        for li in range(row_before, len(chat_log.lines)):
+            app._chat_file_lines[li] = entry
+        if cs.tier == "inline" and fc.diff:
+            for l in fc.diff.rstrip("\n").splitlines():
+                _cw(f"    {_escape(l)}")
 
 
 class EventHandlerMixin:
@@ -140,29 +221,6 @@ class EventHandlerMixin:
             stats["ok"] += 1
         else:
             stats["err"] += 1
-
-    def _render_file_diffs(self) -> list[str]:
-        """Return one line per modified file with +N/-M stats (clickable in chat)."""
-        if not self._modified_files:
-            return []
-        t = self._t
-        lines = []
-        for entry in self._modified_files:
-            if isinstance(entry, str):
-                lines.append(f"📄 {_escape(entry)}")
-                continue
-            path = entry.get("path", "")
-            added = entry.get("added", 0)
-            removed = entry.get("removed", 0)
-            stats = ""
-            if added:
-                stats += f"[{t.success}]+{added}[/{t.success}]"
-            if removed:
-                stats += f"[{t.error}]-{removed}[/{t.error}]"
-            if not stats:
-                stats = "[dim]0[/dim]"
-            lines.append(f"📄 {_escape(path)} {stats}")
-        return lines
 
     def _render_tool_summary(self) -> str:
         t = self._t
@@ -282,24 +340,16 @@ class EventHandlerMixin:
         if event.state in (WorkerState.SUCCESS, WorkerState.ERROR):
             if getattr(self, "_bell_on_input_request", True):
                 self.bell()
-        # Compute diff stats for modified files (convert list[str] → list[dict]).
-        if self._modified_files:
-            raw_paths = [f if isinstance(f, str) else f.get("path", "") for f in self._modified_files]
-            raw_paths = [p for p in raw_paths if p]
-            self._modified_files = _compute_file_diffs(raw_paths)
-            # Write file change summary to sys view
-            t = self._t
-            file_lines = []
-            for entry in self._modified_files:
-                if isinstance(entry, str):
-                    file_lines.append(f"  {_escape(entry)}")
-                    continue
-                p = entry.get("path", "")
-                a = entry.get("added", 0)
-                r = entry.get("removed", 0)
-                stat = f"[{t.success}]+{a}[/{t.success}] [{t.error}]-{r}[/{t.error}]" if (a or r) else ""
-                file_lines.append(f"  {_escape(p)} {stat}")
-            self._write_sys(f"[{t.text_dim}]Files changed ({len(self._modified_files)}):[/{t.text_dim}]\n" + "\n".join(file_lines), switch_tab=False)
+        # Read the changeset the agent already produced for this round (source
+        # of truth: core/checkpoint.py's edit journal, bounded to the round —
+        # see core/changeset.py). Not every server exposes one (a relay-backed
+        # server may not), so this degrades to showing nothing rather than
+        # crashing or falling back to a `git diff` that would report every
+        # uncommitted change instead of just this round's.
+        cs = _changeset_of(self)
+        self._last_changeset = cs
+        if cs:
+            self._write_sys("\n".join(_changeset_sys_lines(t, cs)), switch_tab=False)
 
     def _turn_extract_response(self, event) -> "tuple[str | None, bool, bool]":
         from textual.worker import WorkerState
@@ -383,19 +433,10 @@ class EventHandlerMixin:
           from agent.ui.render import _delatex
           t = self._t
           chat_log = self.query_one("#chat-log", self._wt.ConversationView)
-          file_lines = self._render_file_diffs()
           if self._last_tool_calls:
               tool_part = self._render_tool_summary()
               self._write_chat(f"  {tool_part}")
-          if file_lines:
-              for idx, line_text in enumerate(file_lines):
-                  before = len(chat_log.lines)
-                  self._write_chat(f"  {line_text}")
-                  after = len(chat_log.lines)
-                  entry = self._modified_files[idx] if idx < len(self._modified_files) else None
-                  if entry is not None:
-                      for li in range(before, after):
-                          self._chat_file_lines[li] = entry
+          write_changeset_rows(self, self._write_chat, chat_log, getattr(self, "_last_changeset", None))
           if response:
               if empty_response:
                   self._write_chat(

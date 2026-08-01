@@ -171,6 +171,26 @@ class ThemeConfig:
 
 
 @dataclass
+class ChangesetConfig:
+    """Per-round file-change summary: disclosure thresholds and how it is folded.
+
+    The int fields mirror ``core.changeset.Limits`` — see
+    :func:`agent.core.changeset.limits_from_config` for the fallback used when
+    this section is absent.
+    """
+    enabled: bool = True
+    inline_max_files: int = 3
+    inline_max_lines: int = 80
+    list_max_files: int = 50
+    max_diff_bytes: int = 262144
+    max_total_bytes: int = 4194304
+    context_lines: int = 3
+    fold_journal: str = "on_next_round"  # "on_next_round" | "immediately" | "never"
+    session_rollup: bool = True
+    prose_summary: str = "off"  # "off" | "background" | "always"
+
+
+@dataclass
 class UIConfig:
     mode: str = "textual"  # "textual" | "simple" | "http"
     http_host: str = "127.0.0.1"  # http mode bind address ("0.0.0.0" exposes on LAN)
@@ -192,6 +212,7 @@ class UIConfig:
     chat_restore_expand_last: int = 3  # on resume, render last N turns in full; older turns fold to one line (0 = fold all)
     tilix_folds: bool = False  # emit OSC-777 fold escapes around each round (patched tilix only; simple/readline UI)
     theme: ThemeConfig = field(default_factory=ThemeConfig)
+    changeset: ChangesetConfig = field(default_factory=ChangesetConfig)
 
 
 @dataclass

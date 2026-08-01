@@ -99,13 +99,24 @@ def read_blob(directory: Path, digest: str) -> str | None:
         return None
 
 
+def _record(directory: Path, entry: dict, before: str | None) -> dict:
+    """One journal line. ``blob`` is the pre-image digest and doubles as
+    ``before_sha``; ``actor``/``after_sha`` are omitted when unset so old
+    readers and old files stay shape-compatible."""
+    record = {"seq": entry["seq"], "path": entry["path"], "ts": entry.get("ts") or time.time()}
+    record["blob"] = write_blob(directory, before) if before is not None else None
+    for key in ("actor", "after_sha"):
+        if entry.get(key) is not None:
+            record[key] = entry[key]
+    return record
+
+
 def append_entry(config: "Config", entry: dict, before: str | None) -> None:
     """Persist one journal entry. Never raises — journaling is best-effort."""
     try:
         directory = root(config)
         directory.mkdir(parents=True, exist_ok=True)
-        record = {"seq": entry["seq"], "path": entry["path"], "ts": entry.get("ts") or time.time()}
-        record["blob"] = write_blob(directory, before) if before is not None else None
+        record = _record(directory, entry, before)
         line = json.dumps(record, ensure_ascii=False) + "\n"
         fd = os.open(directory / _JOURNAL, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
         try:
@@ -157,8 +168,16 @@ def load(config: "Config") -> tuple[list[dict], list[dict]]:
                 before = read_blob(directory, str(digest))
                 if before is None:
                     continue
-            journal.append({"seq": int(record["seq"]), "path": str(record["path"]),
-                            "before": before, "ts": record.get("ts")})
+            journal.append({
+                "seq": int(record["seq"]), "path": str(record["path"]),
+                "before": before, "ts": record.get("ts"),
+                # Absent on lines written before these fields existed: unknown
+                # actor / unknown post-state, which downstream must not read as
+                # "me" or "unchanged".
+                "actor": record.get("actor"),
+                "before_sha": record.get("blob"),
+                "after_sha": record.get("after_sha"),
+            })
     journal.sort(key=lambda e: e["seq"])
 
     checkpoints: list[dict] = []
@@ -180,14 +199,10 @@ def rewrite_journal(config: "Config", journal: list[dict]) -> None:
     try:
         directory = root(config)
         with _exclusive(directory):
-            lines = []
-            for entry in journal:
-                before = entry.get("before")
-                lines.append(json.dumps({
-                    "seq": entry["seq"], "path": entry["path"],
-                    "ts": entry.get("ts") or time.time(),
-                    "blob": write_blob(directory, before) if before is not None else None,
-                }, ensure_ascii=False))
+            lines = [
+                json.dumps(_record(directory, entry, entry.get("before")), ensure_ascii=False)
+                for entry in journal
+            ]
             tmp = directory / (_JOURNAL + ".tmp")
             tmp.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
             tmp.replace(directory / _JOURNAL)
