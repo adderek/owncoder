@@ -27,6 +27,8 @@ let streamEl = null;      // assistant bubble being streamed into
 let thinkEl = null;       // open reasoning fold being streamed into
 let pendingTools = {};    // name -> [tool detail elements awaiting result]
 let turn = null;          // active work fold: {details, body, tools, steps, t0, userToggled}
+let lastTurn = null;      // the round before it, still open until this one starts
+let foldJournal = 'on_next_round';  // from /api/state; see _HttpUI._fold_journal
 let busyFlag = false;
 
 // Markdown rendering (esc / renderMd) lives in md.js, loaded before this file.
@@ -366,18 +368,27 @@ function mount(el) {
 // whole "agent working" phase collapses to one line when the answer lands.
 function beginTurn() {
   if (turn) return turn;
+  // The previous round is no longer the current one: fold its journal away,
+  // unless the user opened it by hand — a manual toggle always wins.
+  if (lastTurn && foldJournal === 'on_next_round' && !lastTurn.userToggled) {
+    lastTurn.details.open = false;
+  }
   const d = document.createElement('details');
   d.className = 'work';
   d.open = true;
   d.innerHTML = '<summary><span class="wspin"></span>' +
     '<span class="wlabel working">working</span>' +
     '<span class="wmeta"></span></summary><div class="wbody"></div>';
-  d.querySelector('summary').addEventListener('click', () => {
-    if (turn && turn.details === d) turn.userToggled = true;
-  });
   mount(d);
   turn = {details: d, body: d.querySelector('.wbody'),
           tools: 0, steps: 0, changeset: null, t0: Date.now(), userToggled: false};
+  // Bound to the turn record, not to whichever turn happens to be active: the
+  // old handler compared against the live `turn`, so a click on an already
+  // finished round never registered and its fold state was not respected.
+  const rec = turn;
+  d.querySelector('summary').addEventListener('click', () => {
+    rec.userToggled = true;
+  });
   d.querySelector('summary').title = 'started ' + fmtClock(turn.t0);
   return turn;
 }
@@ -416,7 +427,11 @@ function endTurn() {
     : 'started ' + fmtClock(t.t0) + '  ·  ended ' + fmtClock(Date.now()) +
       '  ·  ' + secs + 's';
   t.details.classList.add('done');
-  if (!t.userToggled) t.details.open = false;
+  // The round that just ended is still the current one — its journal is the
+  // freshest thing on screen, so by default it stays open until the next round
+  // starts (see beginTurn). "immediately" folds it here instead.
+  if (!t.userToggled && foldJournal === 'immediately') t.details.open = false;
+  lastTurn = t;
   if (t.changeset) mount(renderChangeset(t.changeset));
 }
 
@@ -1999,7 +2014,7 @@ async function previewSession(id) {
     missedLive = 0;
     log.innerHTML = '';
     logTrimmed = 0;   // the view starts over
-    turn = null; streamEl = null; thinkEl = null; pendingTools = {}; resolvedTools = {};
+    turn = null; lastTurn = null; streamEl = null; thinkEl = null; pendingTools = {}; resolvedTools = {};
     const bar = document.createElement('div');
     bar.id = 'previewbar';
     bar.innerHTML = '⏸ history: <b>' + esc(d.name || id) + '</b> (read-only) ' +
@@ -2068,7 +2083,7 @@ async function condensedView(id) {
     missedLive = 0;
     log.innerHTML = '';
     logTrimmed = 0;   // the view starts over
-    turn = null; streamEl = null; thinkEl = null; pendingTools = {}; resolvedTools = {};
+    turn = null; lastTurn = null; streamEl = null; thinkEl = null; pendingTools = {}; resolvedTools = {};
     const bar = document.createElement('div');
     bar.id = 'previewbar';
     bar.innerHTML = '≣ condensed: <b>' + esc(d.name || d.id) + '</b> (' +
@@ -2305,9 +2320,10 @@ function applyState(s) {
 async function resyncView() {
   try {
     const s = await (await fetch('/api/state')).json();
+    if (s.fold_journal) foldJournal = s.fold_journal;
     log.innerHTML = '';
     logTrimmed = 0;   // the view starts over
-    turn = null; streamEl = null; thinkEl = null; pendingTools = {}; resolvedTools = {};
+    turn = null; lastTurn = null; streamEl = null; thinkEl = null; pendingTools = {}; resolvedTools = {};
     applyState(s);
     return true;
   } catch (e) {
@@ -2345,6 +2361,7 @@ function connect() {
 async function init() {
   try {
     const s = await (await fetch('/api/state')).json();
+    if (s.fold_journal) foldJournal = s.fold_journal;
     applyState(s);
   } catch (e) {
     statusEl.textContent = 'server unreachable — retrying…';
@@ -2423,7 +2440,7 @@ async function send() {
     saveDraft();
     log.innerHTML = '';
     logTrimmed = 0;   // the view starts over
-    turn = null; streamEl = null; thinkEl = null; pendingTools = {}; resolvedTools = {};
+    turn = null; lastTurn = null; streamEl = null; thinkEl = null; pendingTools = {}; resolvedTools = {};
     return;
   }
   const target = previewing;   // non-null: send to the previewed session

@@ -328,3 +328,82 @@ class TestReplayMountsIt:
         body = APP_JS[i:i + 1200]
         assert "if (turn && m.changeset) turn.changeset = m.changeset;" in body
         assert body.index("turn.changeset = m.changeset") < body.index("endTurn();\n        work = null;")
+
+
+class TestJournalFoldsWhenTheNextRoundStarts:
+    """A finished round's journal should stay readable until it is stale.
+
+    The work fold used to collapse the moment the round ended, hiding the
+    freshest thing on screen. It now stays open until the next round begins,
+    and a round the user opened by hand is never folded for them.
+    """
+
+    BEGIN = APP_JS[APP_JS.index("function beginTurn("):APP_JS.index("function metaMount(")]
+    END = APP_JS[APP_JS.index("function endTurn("):APP_JS.index("function endTurn(") + 1400]
+
+    def test_the_round_that_just_ended_is_left_open_by_default(self):
+        assert "foldJournal === 'immediately'" in self.END
+        assert "if (!t.userToggled) t.details.open = false;" not in self.END
+
+    def test_the_previous_round_folds_when_a_new_one_starts(self):
+        assert "foldJournal === 'on_next_round'" in self.BEGIN
+        assert "lastTurn.details.open = false" in self.BEGIN
+
+    def test_a_round_the_user_opened_is_never_folded_for_them(self):
+        assert "!lastTurn.userToggled" in self.BEGIN
+
+    def test_never_mode_folds_nothing(self):
+        """Neither branch fires, so no auto-fold path can run."""
+        for block in (self.BEGIN, self.END):
+            assert "'never'" not in block
+
+    def test_the_click_handler_binds_to_its_own_turn(self):
+        """It compared against the live `turn`, so a click on an already
+        finished round never registered as a manual toggle."""
+        assert "if (turn && turn.details === d) turn.userToggled = true;" not in APP_JS
+        assert "rec.userToggled = true;" in self.BEGIN
+
+    def test_rebuilding_the_log_drops_the_stale_turn_reference(self):
+        assert APP_JS.count("turn = null; lastTurn = null;") == 4
+
+    def test_the_mode_comes_from_the_server(self):
+        assert "if (s.fold_journal) foldJournal = s.fold_journal;" in APP_JS
+
+
+def _ui_with_config(mode=None):
+    """_make_ui's server is a bare object(); _fold_journal reads the agent's
+    config off it, so give it just enough to walk."""
+    from agent.config import Config
+    cfg = Config()
+    if mode is not None:
+        cfg.ui.changeset.fold_journal = mode
+    ui = _make_ui()
+    ui.server = type("S", (), {"_agent": type("A", (), {"config": cfg})()})()
+    return ui
+
+
+class TestFoldJournalSetting:
+    def test_it_defaults_to_holding_the_round_open(self):
+        assert _ui_with_config()._fold_journal() == "on_next_round"
+
+    @pytest.mark.parametrize("mode", ["on_next_round", "immediately", "never"])
+    def test_each_valid_mode_is_served(self, mode):
+        assert _ui_with_config(mode)._fold_journal() == mode
+
+    def test_an_unknown_mode_falls_back_instead_of_reaching_the_browser(self):
+        assert _ui_with_config("sideways")._fold_journal() == "on_next_round"
+
+    def test_a_server_with_no_agent_still_answers(self):
+        assert _make_ui()._fold_journal() == "on_next_round"
+
+
+class TestReconnectKeepsTheFileLists:
+    def test_the_state_payload_attaches_per_round_changesets(self):
+        """/api/state replays the transcript after a reconnect, so it needs the
+        same attachment the preview pane gets — this was missed when replay was
+        first restored, leaving reconnects without file lists."""
+        import inspect
+        from agent.ui.http_loop import _HttpUI
+
+        src = inspect.getsource(_HttpUI.state)
+        assert "_attach_changesets(self.session.id, messages)" in src

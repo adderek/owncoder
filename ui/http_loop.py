@@ -864,6 +864,11 @@ class _HttpUI:
     def state(self) -> dict:
         info = self.server.get_llm_info()
         messages = _transcript(self.server.get_messages())
+        # This payload rebuilds the whole view after a reconnect, so it replays
+        # the transcript exactly as the preview pane does and needs the same
+        # per-round file lists.
+        if self.session is not None:
+            _attach_changesets(self.session.id, messages)
         models = {}
         try:
             models = self.server.get_model_configs()
@@ -886,11 +891,21 @@ class _HttpUI:
                 if self.session else ""),
             "messages": messages,
             "models": models,
+            "fold_journal": self._fold_journal(),
             "io": {"in": stats.get("input_tokens", 0),
                    "out": stats.get("output_tokens", 0),
                    "calls": stats.get("calls", 0),
                    "cost_usd": self._cost_usd()},
         }
+
+    def _fold_journal(self) -> str:
+        """When a round's work fold auto-collapses: "on_next_round" (the
+        default — it stays open until the next round starts), "immediately"
+        (on round end) or "never"."""
+        cfg = _agent_config(self.server)
+        mode = getattr(getattr(getattr(cfg, "ui", None), "changeset", None),
+                       "fold_journal", "on_next_round")
+        return mode if mode in ("on_next_round", "immediately", "never") else "on_next_round"
 
     def _cost_usd(self) -> float:
         try:
