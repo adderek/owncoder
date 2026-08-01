@@ -33,6 +33,13 @@ RELAY_BACKOFF_MAX_S = 60
 # bounded so a malicious relay can't exhaust memory.
 RELAY_MAX_FRAME_BYTES = 256 * 1024
 
+# Frames the relay itself broadcasts to every peer. They carry no user content,
+# are never encrypted, and belong to no single consumer — so a client must skip
+# them rather than judge them as peer traffic. ``presence`` in particular has a
+# ``v`` field holding a roster revision counter, which readers have mistaken for
+# a protocol version.
+_RELAY_CONTROL_TYPES = frozenset({"presence", "hello"})
+
 
 @runtime_checkable
 class Channel(Protocol):
@@ -202,6 +209,11 @@ class RelayChannel:
             except ValueError:
                 continue
             if not isinstance(data, dict):
+                continue
+            # Relay housekeeping, not peer traffic: the roster is broadcast to
+            # everyone and carries no user content, so it is never encrypted and
+            # must not be mistaken for a plaintext message below.
+            if data.get("type") in _RELAY_CONTROL_TYPES:
                 continue
             if self._e2e is not None:
                 # E2E mode: only encrypted envelopes accepted — a plaintext

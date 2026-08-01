@@ -64,14 +64,19 @@ def is_control(obj: dict) -> bool:
 
 
 def parse_control(raw: str | dict) -> ControlMsg:
-    """Rebuild a ControlMsg. Raises on wrong version / non-control / no action."""
+    """Rebuild a ControlMsg. Raises on non-control / wrong version / no action."""
     obj = json.loads(raw) if isinstance(raw, str) else raw
+    # Type first, then version. The relay carries frames this parser does not
+    # own — notify's presence roster among them — and "v" does not mean the same
+    # thing in all of them: a presence frame's "v" is a roster revision counter,
+    # so checking it first reported a foreign frame as an unsupported protocol
+    # version, with a number that climbed as peers joined and left.
+    if not is_control(obj):
+        raise ValueError(f"not a control frame: type={obj.get('type')!r}")
     v = obj.get("v")
     if v != EVENT_PROTOCOL_VERSION:
         raise ValueError(f"unsupported control version {v!r} "
                          f"(expected {EVENT_PROTOCOL_VERSION})")
-    if not is_control(obj):
-        raise ValueError(f"not a control frame: type={obj.get('type')!r}")
     action = obj.get("action")
     if not action:
         raise ValueError("control frame missing action")
@@ -106,8 +111,14 @@ class ControlDispatcher:
         self._on_answer = on_answer
         self._on_chat = on_chat
 
-    async def handle(self, raw: str | dict) -> ControlMsg:
-        msg = parse_control(raw)
+    async def handle(self, raw: str | dict) -> "ControlMsg | None":
+        """Act on a control frame. Returns None for a frame this handler does
+        not own — the relay is a shared channel, so seeing someone else's frame
+        is normal traffic, not an error worth a traceback."""
+        obj = json.loads(raw) if isinstance(raw, str) else raw
+        if not is_control(obj):
+            return None
+        msg = parse_control(obj)
         if msg.action == "inject":
             self._server.inject(msg.text)
         elif msg.action == "stop":

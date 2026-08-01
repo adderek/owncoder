@@ -169,3 +169,69 @@ def test_missing_e2e_key_disables_channel(relay, tmp_path):
     broker = NotifyBroker(cfg)
     # fail closed: requested e2e without key → no channel, not plaintext
     assert broker.enabled is False
+
+
+# ── relay housekeeping is not peer traffic ────────────────────────────────────
+
+class _FakeWS:
+    """Yields raw frames to RelayChannel._pump_in, then stops."""
+    def __init__(self, frames):
+        self._frames = frames
+
+    def __aiter__(self):
+        async def gen():
+            for f in self._frames:
+                yield f
+        return gen()
+
+
+def _channel_with_e2e(on_answer):
+    from agent.notify.channels import RelayChannel
+    cfg = NotifyChannelConfig(name="android")
+    return RelayChannel(cfg, TOKEN, on_answer=on_answer, e2e=E2EBox(E2E_SECRET))
+
+
+class TestRosterFramesUnderE2E:
+    """The relay broadcasts its roster to every peer. It carries no user
+    content and is never encrypted, so judging it as peer traffic logged a
+    downgrade warning on every join/leave — burying the case the warning
+    exists for."""
+
+    def test_a_presence_frame_is_skipped_without_warning(self, caplog):
+        got = []
+        ch = _channel_with_e2e(lambda d: got.append(d))
+        presence = json.dumps({"type": "presence", "v": 11, "peers": {}})
+
+        asyncio.run(ch._pump_in(_FakeWS([presence])))
+
+        assert got == []
+        assert "plaintext message dropped" not in caplog.text
+
+    def test_a_hello_frame_is_skipped_too(self, caplog):
+        ch = _channel_with_e2e(lambda d: None)
+        hello = json.dumps({"type": "hello", "role": "client", "v": 1})
+
+        asyncio.run(ch._pump_in(_FakeWS([hello])))
+
+        assert "plaintext message dropped" not in caplog.text
+
+    def test_an_actual_plaintext_message_is_still_dropped_and_warned(self, caplog):
+        """The warning must survive for what it was written for."""
+        got = []
+        ch = _channel_with_e2e(lambda d: got.append(d))
+        plain = json.dumps({"type": "answer", "id": "q1", "choice": "yes"})
+
+        with caplog.at_level("WARNING"):
+            asyncio.run(ch._pump_in(_FakeWS([plain])))
+
+        assert got == []
+        assert "plaintext message dropped" in caplog.text
+
+    def test_an_encrypted_answer_still_arrives(self):
+        got = []
+        ch = _channel_with_e2e(lambda d: got.append(d))
+        env = E2EBox(E2E_SECRET).encrypt({"type": "answer", "id": "q1", "choice": "yes"})
+
+        asyncio.run(ch._pump_in(_FakeWS([json.dumps(env)])))
+
+        assert [d["choice"] for d in got] == ["yes"]
