@@ -71,5 +71,72 @@ class TestRegistryIntegration:
         assert pid == rec.project_id
 
 
+class TestSubmitReview:
+    def test_remote_project_refused_no_http(self, monkeypatch):
+        """Remote/unreachable projects must be refused without any HTTP call."""
+        registry = ProjectRegistry()
+        registry.apply_presence({"peers": {
+            "peer-1": {"project_id": "rp1", "label": "remote-proj", "host": "otherhost"}
+        }})
+        rec = registry.get("rp1")
+        assert rec is not None and rec.host != "local"
+
+        handler = _RouterHandler.__new__(_RouterHandler)
+        handler.registry = registry
+        handler.project_secret = ""
+        out = {}
+        handler._json = lambda obj, code=200: out.setdefault("json", obj) or obj
+
+        called = {"n": 0}
+
+        def _no_call(*a, **k):
+            called["n"] += 1
+            raise AssertionError("must not call urlopen for remote project")
+
+        import agent.ui_server.router as mod
+        monkeypatch.setattr(mod.urllib.request, "urlopen", _no_call)
+
+        handler._submit_review(rec.project_id)
+        assert "error" in out["json"]
+        assert called["n"] == 0
+
+    def test_local_project_submits_clean_chat_url(self, monkeypatch):
+        """Local project: prompt must POST to /api/chat WITHOUT ?project= query."""
+        registry = ProjectRegistry()
+        rec = registry.register_local("/tmp/test-proj", pid=12345, port=8180)
+        handler = _RouterHandler.__new__(_RouterHandler)
+        handler.registry = registry
+        handler.project_secret = "s3cret"
+
+        seen = {}
+
+        def fake_urlopen(req, timeout=None):
+            seen["url"] = req.full_url
+            seen["secret"] = req.get_header("X-Project-Secret")
+            seen["body"] = req.data
+
+            class _Resp:
+                status = 200
+
+                def read(self):
+                    return b'{"ok": true, "injected": false}'
+
+            return _Resp()
+
+        import agent.ui_server.router as mod
+        monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
+
+        out = {}
+        handler._json = lambda obj, code=200: out.setdefault("json", obj) or obj
+        handler._submit_review(rec.project_id)
+
+        assert "?project=" not in seen["url"]
+        assert seen["url"].startswith(f"http://127.0.0.1:{rec.port}/api/chat")
+        assert seen["secret"] == "s3cret"
+        body = json.loads(seen["body"])
+        assert "MULTI_PROJECT_PLAN" in body["text"]
+        assert out["json"]["ok"] is True
+
+
 # Minimal import to make pytest happy about the Path reference above.
 from pathlib import Path

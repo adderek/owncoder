@@ -46,15 +46,41 @@ _ROOT_PAGE = """<!DOCTYPE html>
   .badge.remote { background: #1a2a3a; color: #7dcfff; }
   .badge.dead { background: #3a1a1a; color: #f7768e; }
   .empty { color: #565f89; padding: 20px 0; }
+  .btn { background: #2ac3de; color: #1a1b26; border: 0; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 0.8em; }
+  .btn:disabled { background: #3b4261; color: #565f89; cursor: not-allowed; }
+  .btn.remote { background: #3b4261; color: #565f89; cursor: not-allowed; }
+  #review-note { color: #9ece6a; font-size: 0.85em; margin-top: 8px; min-height: 1.2em; }
 </style>
 </head>
 <body>
 <h1>owncoder — projects</h1>
 <table>
-<thead><tr><th>Project</th><th>Status</th><th>Host</th><th></th></tr></thead>
+<thead><tr><th>Project</th><th>Status</th><th>Host</th><th></th><th>Review</th></tr></thead>
 <tbody>{{projects}}</tbody>
 </table>
+<p id="review-note"></p>
 <p style="color:#565f89; margin-top:24px;">Start projects with <code>owncoder chat --ui http</code> in each directory.</p>
+<script>
+function reviewProject(pid, btn, label) {
+  btn.disabled = true;
+  var note = document.getElementById('review-note');
+  note.textContent = 'Sending review request to "' + label + '"…';
+  fetch('/api/review?project=' + encodeURIComponent(pid), {method: 'POST'})
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      if (j.ok) {
+        note.textContent = 'Review queued for "' + label + '". Handoff instructions will appear in that project\'s UI when the agent finishes.';
+      } else {
+        note.textContent = 'Review failed for "' + label + '": ' + (j.error || 'unknown');
+        btn.disabled = false;
+      }
+    })
+    .catch(function(e){
+      note.textContent = 'Review request error: ' + e;
+      btn.disabled = false;
+    });
+}
+</script>
 </body>
 </html>"""
 
@@ -167,12 +193,19 @@ class _RouterHandler(BaseHTTPRequestHandler):
             url = f"http://127.0.0.1:{rec.port}/" if rec.port else ""
             badge = "remote" if rec.host != "local" else ("local" if rec.port else "dead")
             link = f'<a href="{url}">open</a>' if url else "—"
+            reviewable = rec.host == "local" and rec.port
+            if reviewable:
+                btn = (f'<button class="btn" onclick="reviewProject('
+                       f"'{rec.project_id}', this, '{rec.label}')\">Review plan</button>")
+            else:
+                btn = '<button class="btn remote" disabled title="remote/unreachable">Review plan</button>'
             rows += (
                 f'<tr>'
                 f'<td>{rec.label}</td>'
                 f'<td><span class="badge {badge}">{badge}</span></td>'
                 f'<td>{rec.host}</td>'
                 f'<td>{link}</td>'
+                f'<td>{btn}</td>'
                 f'</tr>'
             )
         body = _ROOT_PAGE.replace("{{projects}}", rows or "<tr><td colspan='4'>no projects</td></tr>")
@@ -184,12 +217,58 @@ class _RouterHandler(BaseHTTPRequestHandler):
 
     # ── POST ──────────────────────────────────────────────────────────────
 
+    _REVIEW_PROMPT = (
+        "Run the plan review workflow: read the newest MULTI_PROJECT_PLAN*.md "
+        "in this project, review it against the actual code (verify each step "
+        "and claim is consistent with the source; list blockers, gaps and "
+        "security issues with file:line evidence), then output the review "
+        "handoff instructions the user should pass to other agents (owncoder, "
+        "claude code, gemini cli, hermes) for independent review, plus a "
+        "deferred human-review checklist. Write your verdict to "
+        "REVIEW_<tool>.md and a REVIEW_HANDOFF.md per the plan-review skill."
+    )
+
+    def _submit_review(self, pid: str) -> None:
+        """Queue the review prompt on the target project's agent via /api/chat.
+
+        Builds a clean URL (no ?project= query) because the project's
+        http_loop matches /api/chat by exact path. Resolves pid ONLY through
+        the registry (anti-SSRF). Remote/unreachable projects are refused.
+        """
+        rec = self.registry.get(pid)
+        if rec is None:
+            self._json({"error": f"project not found: {pid}"}, 404)
+            return
+        if rec.host != "local" or not rec.port:
+            self._json({"error": f"project not reviewable (remote/unreachable): {rec.label}"}, 422)
+            return
+        payload = json.dumps({"text": self._REVIEW_PROMPT}).encode()
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{rec.port}/api/chat", data=payload, method="POST")
+        req.add_header("Content-Type", "application/json")
+        if self.project_secret:
+            req.add_header("X-Project-Secret", self.project_secret)
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                self._json(resp.read().decode("utf-8", errors="replace"))
+        except urllib.error.HTTPError as exc:
+            err = exc.read().decode("utf-8", errors="replace") if exc.fp else str(exc)
+            self._json({"error": err}, exc.code or 502)
+        except (OSError, ValueError) as exc:
+            self._json({"error": f"project unreachable: {rec.label}"}, 502)
+
     def do_POST(self):
         if not self._check_auth():
             return
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length > 0 else None
-        if self.path.startswith("/api/"):
+        if self.path.startswith("/api/review"):
+            pid = self._project_id_from_path(self.path)
+            if pid:
+                self._submit_review(pid)
+            else:
+                self._json({"error": "missing ?project="}, 400)
+        elif self.path.startswith("/api/"):
             pid = self._project_id_from_path(self.path)
             if pid:
                 self._proxy(pid, "POST", body)
