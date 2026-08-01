@@ -61,6 +61,18 @@ def project_id(workdir: str, host_id: str | None = None) -> str:
     return hashlib.sha256(f"{canonical}\x00{h}".encode("utf-8")).hexdigest()[:16]
 
 
+def workdir_hash(workdir: str, host_id: str | None = None) -> str:
+    """Opaque handle for a workdir, safe to publish in presence frames.
+
+    Salted with the host id (and a domain separator, so it never collides with
+    `project_id` for the same inputs) — a peer receiving it learns that two
+    announcements refer to the same directory, not what the directory is.
+    """
+    h = host_id or load_host_id()
+    canonical = os.path.realpath(workdir)
+    return hashlib.sha256(f"workdir\x00{h}\x00{canonical}".encode("utf-8")).hexdigest()[:32]
+
+
 def _pid_alive(pid: int) -> bool:
     import errno
 

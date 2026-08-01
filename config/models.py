@@ -823,6 +823,14 @@ class UIServerConfig:
     relay_token_file: str = ""
     e2e_key_file: str = ""
     name: str = "agent-ui"
+    # Expose this working dir as a project in the relay roster, so a remote
+    # router can list and reach it (MULTI_PROJECT_PLAN §4.4). Opt-in per
+    # project by design (§7.3): one relay token means every peer on the hub
+    # sees every announced project, so announcing is never automatic.
+    expose_project: bool = False
+    # Human label shown for this project on remote hosts. The raw path is never
+    # published, so an empty label falls back to `name`.
+    project_label: str = ""
 
 
 @dataclass

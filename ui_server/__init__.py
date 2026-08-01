@@ -80,6 +80,8 @@ def build_ui_server(agent: "Agent") -> Any:
     dispatcher = ControlDispatcher(inner, on_chat=_on_remote_chat)
     link = RelayLink(cfg.relay_url, token, name=cfg.name,
                      on_frame=dispatcher.handle, e2e=e2e)
+    if getattr(cfg, "expose_project", False):
+        _announce_project(link, agent, cfg)
     # Expose the link for agent→agent delegation (the `delegate` tool reaches it).
     try:
         from agent.coord import peer
@@ -88,3 +90,23 @@ def build_ui_server(agent: "Agent") -> Any:
         logger.debug("ui_server: peer link registration failed", exc_info=True)
     logger.info("ui_server: remote streaming to %s", cfg.relay_url)
     return RemoteBridge(inner, link.send_frame)
+
+
+def _announce_project(link, agent: "Agent", cfg) -> None:
+    """Publish this agent's working dir as a relay project (opt-in, §4.4).
+
+    Best-effort: a failure here must never break remote streaming, so the link
+    stays up and the project simply does not appear in the roster.
+    """
+    try:
+        from .registry import load_host_id, project_id, workdir_hash
+
+        workdir = getattr(getattr(agent.config, "tools", None), "working_dir", ".")
+        host_id = load_host_id()
+        link.set_project(
+            project_id(workdir, host_id),
+            cfg.project_label or cfg.name,
+            workdir_hash(workdir, host_id),
+        )
+    except Exception:  # pragma: no cover - announcement is best-effort
+        logger.debug("ui_server: project announcement failed", exc_info=True)

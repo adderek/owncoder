@@ -36,6 +36,16 @@ Routing:
   Addressed agent→client frames are not added to the replay buffer (they target
   a specific live client, not every reconnecting one).
 
+Presence / roster:
+  Every named peer appears in a roster the hub broadcasts to all peers on each
+  join/leave:  {"type": "presence", "v": <bumped>, "peers": {name: {...}}}.
+  A peer MAY additionally claim a project by sending, right after hello,
+  {"type": "presence", "action": "join", "project": {"project_id", "label",
+  "workdir_hash"}} — merged into its roster entry ("leave" clears it). The hub
+  consumes these frames instead of routing them. No raw working dir crosses the
+  wire. A peer that never sends one is not a project and is invisible to the
+  project router, but keeps working exactly as before (versioning).
+
 Abuse limits (per connection / per role):
   - max concurrent connections per role (--max-agents / --max-clients)
   - token-bucket message rate limit (--msg-rate / --msg-burst)
@@ -75,6 +85,12 @@ DEFAULT_MAX_CLIENTS = 16
 DEFAULT_MSG_RATE = 20.0    # sustained messages/sec per connection
 DEFAULT_MSG_BURST = 40     # bucket capacity
 DEFAULT_MAX_MSG_BYTES = 256 * 1024
+
+# Project fields a peer may publish in a presence frame, and the length each is
+# clamped to — the roster is broadcast to every peer, so a peer must not be able
+# to inflate it with megabyte labels.
+_PRESENCE_FIELDS = ("project_id", "label", "workdir_hash")
+PRESENCE_MAX_FIELD_LEN = 128
 
 
 class _TokenBucket:
@@ -171,6 +187,8 @@ class RelayHub:
                     logger.warning("relay: rate limit — closing %s %s", role, _peer(ws))
                     await ws.close(CLOSE_TOO_MANY, "rate limit")
                     break
+                if self._apply_presence(ws, raw):
+                    continue  # roster frame — consumed by the hub, never routed
                 await self._route(role, ws, raw)
         except Exception as exc:
             logger.debug("relay: connection ended: %s", exc)
@@ -223,6 +241,37 @@ class RelayHub:
         name = raw_name if isinstance(raw_name, str) else ""
         return role, name, peer_v
 
+    def _apply_presence(self, ws, raw: str) -> bool:
+        """Consume a peer's project presence frame. True if it was one.
+
+        Frame (agent → hub, sent right after hello and on every project change):
+            {"type": "presence", "action": "join"|"leave", "project": {...}}
+        The project record carries {project_id, label, workdir_hash} only — the
+        raw working dir never travels the wire (§4.4). The record is merged into
+        the sender's roster entry so one roster frame describes both identity
+        (name/role) and project. A peer that never sends this frame stays in the
+        roster without project fields, so the router simply does not see it as a
+        project — no crash, no disconnect (presence versioning, §4.4).
+        """
+        parsed = _presence_project(raw)
+        if parsed is None:
+            return False
+        action, project = parsed
+        name = self._names.get(ws)
+        if name is None:
+            return True  # anonymous peer cannot own a roster entry; frame dropped
+        entry = self._roster.setdefault(name, {})
+        if action == "join":
+            if not project:
+                return True  # malformed record — ignore, keep the peer connected
+            entry.update(project)
+        else:  # leave: keep the peer, drop only its project identity
+            for key in _PRESENCE_FIELDS:
+                entry.pop(key, None)
+        self._presence_version += 1
+        self._broadcast_presence()
+        return True
+
     def _broadcast_presence(self) -> None:
         """Send current roster to all connected peers as a presence frame."""
         raw = json.dumps({
@@ -272,6 +321,35 @@ class RelayHub:
                 if dead_name is not None and self._roster.pop(dead_name, None) is not None:
                     self._presence_version += 1
                     self._broadcast_presence()
+
+
+def _presence_project(raw: str) -> "tuple[str, dict] | None":
+    """Parse a peer's presence frame into (action, project), or None.
+
+    Returns None for every other frame, so routing is untouched. A presence
+    frame with a malformed "project" yields an empty dict: the hub keeps the
+    connection (versioning rule) and simply records no project.
+    """
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or data.get("type") != "presence":
+        return None
+    action = data.get("action")
+    if action not in ("join", "leave"):
+        return None  # not a peer frame (e.g. the hub's own roster broadcast)
+    project = data.get("project")
+    if not isinstance(project, dict):
+        return action, {}
+    clean = {}
+    for key in _PRESENCE_FIELDS:
+        value = project.get(key)
+        if isinstance(value, str) and value:
+            clean[key] = value[:PRESENCE_MAX_FIELD_LEN]
+    if not clean.get("project_id"):
+        return action, {}  # a project without an id cannot be addressed
+    return action, clean
 
 
 def _routing_to(raw: str) -> "str | None":

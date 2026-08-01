@@ -46,6 +46,23 @@ class RelayLink:
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=RELAY_QUEUE_MAX)
         self._task: asyncio.Task | None = None
         self._dropped = 0
+        self._project: dict | None = None
+
+    # ── project presence ────────────────────────────────────────────────────
+
+    def set_project(self, project_id: str, label: str, workdir_hash: str) -> None:
+        """Publish this link as a project in the relay roster (opt-in).
+
+        Sent as a presence frame right after every hello, so a reconnect
+        re-announces the project. Only the opaque triple travels the wire — the
+        working dir stays local (MULTI_PROJECT_PLAN §4.4). Unset (the default)
+        means the agent is not exposed as a project at all.
+        """
+        self._project = {
+            "project_id": project_id,
+            "label": label,
+            "workdir_hash": workdir_hash,
+        }
 
     # ── outbound ────────────────────────────────────────────────────────────
 
@@ -124,6 +141,13 @@ class RelayLink:
                         "type": "hello", "role": "agent", "v": NOTIFY_PROTOCOL_VERSION,
                         "token": self._token, "name": self._name,
                     }))
+                    if self._project is not None:
+                        # Plaintext by design: the hub routes and rosters on it,
+                        # so it cannot ride inside the e2e envelope.
+                        await ws.send(json.dumps({
+                            "type": "presence", "action": "join",
+                            "project": self._project,
+                        }))
                     backoff = 1
                     pumps = (
                         asyncio.create_task(self._pump_out(ws)),
