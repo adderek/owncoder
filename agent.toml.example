@@ -299,6 +299,18 @@ round_summary    = true           # show gray Q/A summary line after each turn
 reasoning_fold   = "end_of_round" # "immediate" | "end_of_round" | "never"
 show_active_models = "auto"       # status-bar live model breakdown: "auto" (when >1 model or subagents run) | "always" | "off"
 
+[ui.changeset]
+enabled          = true
+inline_max_files = 3
+inline_max_lines = 80
+list_max_files   = 50
+max_diff_bytes   = 262144
+max_total_bytes  = 4194304
+context_lines    = 3
+fold_journal     = "on_next_round" # "on_next_round" | "immediately" | "never"
+session_rollup   = true
+prose_summary    = "off"           # "off" | "background" | "always"
+
 [ui.theme]
 bg             = "#0C0C0C"
 panel_bg       = "#141414"

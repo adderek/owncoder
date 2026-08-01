@@ -110,6 +110,7 @@ class LocalUIServer:
         on_context_size=None,
         on_user_message=None,
         on_signal=None,
+        on_changeset=None,
         source: str = "terminal",
     ) -> str:
         from agent.core.turn_signals import parse_signal
@@ -140,6 +141,7 @@ class LocalUIServer:
                     on_reasoning=on_reasoning,
                     on_context_size=on_context_size,
                     on_user_message=on_user_message,
+                    on_changeset=on_changeset,
                     stop_event=self._stop_event,
                     source=source,
                 )

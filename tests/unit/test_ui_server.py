@@ -77,6 +77,7 @@ async def test_local_ui_server_chat_all_callbacks():
         "on_context_size": MagicMock(),
         "on_user_message": MagicMock(),
         "on_tool_record": MagicMock(),
+        "on_changeset": MagicMock(),
     }
 
     await server.chat("test", session_id="s1", **cbs)

@@ -45,12 +45,16 @@ class QALogger:
         modified_files: Optional[List[str]] = None,
         model_calls: Optional[List[Dict[str, Any]]] = None,
         duration: Optional[float] = None,
+        changeset: Optional[Dict[str, Any]] = None,
     ) -> Path:
         """Saves the agent's response (A). Returns the written file path.
 
         *model_calls* is the round's per-call detail ([{role, model, tier, t}])
         and *duration* the round wall time in seconds — both restored by the
-        Textual chat view so the clickable round-stats line survives resume."""
+        Textual chat view so the clickable round-stats line survives resume.
+        *changeset* is the round's serialized core.changeset.Changeset (see
+        ``to_json``); ``modified_files`` stays populated alongside it for
+        backward compatibility with sessions written before this field."""
         timestamp = datetime.now(timezone.utc).isoformat()
         filename = f"A-{timestamp.replace(':', '-')}.json"
         data = {
@@ -62,6 +66,7 @@ class QALogger:
             "modified_files": modified_files or [],
             "model_calls": model_calls or [],
             "duration": duration or 0.0,
+            "changeset": changeset or {},
         }
         await asyncio.to_thread(self._write_json, self._get_a_dir(), filename, data)
         return self._get_a_dir() / filename

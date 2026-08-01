@@ -32,6 +32,7 @@ class UIServerProtocol(Protocol):
         on_context_size=None,
         on_user_message=None,
         on_signal=None,
+        on_changeset=None,
         source: str = "terminal",
     ) -> str:
         """Send a user message; stream events via callbacks; return full response.
@@ -40,6 +41,10 @@ class UIServerProtocol(Protocol):
         signal.kind: next_step | ask_user | request_feedback | request_review |
                      done | consult_crows | blocked
         signal.payload: signal text content.
+
+        on_changeset(changeset) — called once at round end with the round's
+        core.changeset.Changeset (what files it touched). Local-only: not
+        mirrored over the relay wire.
         """
         ...
 

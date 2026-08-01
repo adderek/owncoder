@@ -12,6 +12,7 @@ from agent.tools import get_schemas
 from .prompts import _build_system_prompt, load_base_rules, HARD_RULES_MARKER
 from agent import prompt_compiler as _prompt_compiler
 from .turn import _post_turn_capture_and_summarize, run_turn
+from .changeset import open_window as _changeset_open_window, paths_from_tool_call
 from agent.ipc.controller import run_turn_ipc
 from agent.security.airgap import is_local_url
 
@@ -84,6 +85,7 @@ class Agent:
         self._similar_sessions_injected: bool = False
         self._project_memory_store = None  # project-level MemoryStore for session indexing
         self._last_turn_time: float = 0.0
+        self.last_changeset = None  # core.changeset.Changeset for the last round
         self._turn_busy: bool = False  # True while a turn runs (scheduler defers)
         self._idle_compact_task: asyncio.Task | None = None
         self._active_step_skills: list[str] = []
@@ -703,6 +705,53 @@ class Agent:
         except Exception:
             logger.debug("update_stats failed", exc_info=True)
 
+    def _changeset_spill_dir(self, turn_id: int) -> "Path | None":
+        """Where oversized diffs for this round go, or None when there is no
+        session to hang them off (a one-shot run keeps them in memory)."""
+        if not self._session_id:
+            return None
+        try:
+            from pathlib import Path
+            from agent.memory.session import get_session_full_dir
+            return Path(get_session_full_dir(self._session_id)) / "changesets" / str(turn_id)
+        except Exception:
+            logger.debug("changeset: no spill dir for session %s", self._session_id,
+                         exc_info=True)
+            return None
+
+    def _collect_changeset(self, turn_id: int, since_seq: int):
+        """The round's changeset. Never raises — a summary is not worth a turn."""
+        from agent.core import changeset as _cs
+        if not getattr(self.config.ui.changeset, "enabled", True):
+            return _cs.Changeset(turn_id=turn_id)
+        try:
+            return _cs.collect(
+                since_seq,
+                working_dir=self.config.tools.working_dir,
+                limits=_cs.limits_from_config(self.config),
+                turn_id=turn_id,
+                spill_dir=self._changeset_spill_dir(turn_id),
+            )
+        except Exception:
+            logger.exception("changeset: collection failed (round summary skipped)")
+            return _cs.Changeset(turn_id=turn_id)
+
+    def _changeset_prose_mode(self) -> str:
+        """"off" | "background" | "always" from [ui.changeset], read defensively
+        so a missing/odd config value degrades to "off" rather than raising."""
+        raw = getattr(getattr(self.config.ui, "changeset", None), "prose_summary", "off")
+        return str(raw or "off").lower()
+
+    async def _apply_changeset_prose(self, cs) -> None:
+        """"always" mode: compute the one-line intent summary and set it on
+        *cs* before it's persisted. Never raises — a summary is not worth a
+        round."""
+        from agent.core.changeset_prose import summarize as _cs_summarize
+        try:
+            cs.prose = await _cs_summarize(self.config, cs)
+        except Exception:
+            logger.exception("changeset: prose summary failed (round unaffected)")
+
     def _checkpoint_note_for_failed_turn(self, exc: BaseException) -> str:
         """Handle file edits left behind by a turn that died. Returns a note or "".
 
@@ -757,6 +806,7 @@ class Agent:
         on_phase=None,
         on_reasoning=None,
         on_context_size=None,
+        on_changeset=None,
         stop_event: asyncio.Event | None = None,
         source: str = "terminal",
     ) -> str:
@@ -804,24 +854,17 @@ class Agent:
 
         _turn_tool_calls: list[str] = []
         _turn_modified_files: list[str] = []
+        # Journal position before the round: bounds the edits that belong to it.
+        # Taken here rather than at the first edit so a round that starts with a
+        # concurrent agent already writing still measures from its own start.
+        _changeset_seq = _changeset_open_window()
         original_on_tool_call = on_tool_call
 
         def _tracking_on_tool_call(name: str, args: str) -> None:
             _turn_tool_calls.append(name)
-            if name in ("write_file", "patch_file", "edit_file"):
-                try:
-                    parsed = json.loads(args) if isinstance(args, str) else args
-                    if name == "edit_file":
-                        for ch in (parsed.get("chunks") or []):
-                            p = ch.get("path", "") if isinstance(ch, dict) else ""
-                            if p and p not in _turn_modified_files:
-                                _turn_modified_files.append(p)
-                    else:
-                        path = parsed.get("path", "")
-                        if path and path not in _turn_modified_files:
-                            _turn_modified_files.append(path)
-                except Exception:
-                    pass
+            for p in paths_from_tool_call(name, args):
+                if p not in _turn_modified_files:
+                    _turn_modified_files.append(p)
             if original_on_tool_call is not None:
                 original_on_tool_call(name, args)
 
@@ -987,7 +1030,29 @@ class Agent:
             _round_detail = []
             _round_duration = 0.0
 
+        # What the round changed, collected before anything else can move the
+        # working tree. Cheap (a blob read and a file read per changed path) and
+        # necessarily eager: the pre-images are pinned to the journal window,
+        # so deferring this would measure the wrong thing.
+        _changeset = self._collect_changeset(turn_id, _changeset_seq)
+        self.last_changeset = _changeset
+
+        # Optional one-line "intent" prose on top of the diffstat — a model
+        # call, so it is opt-in (config.ui.changeset.prose_summary) and never
+        # blocks the round except in "always" mode, which awaits it here so
+        # it lands in the same A record written just below.
+        _prose_mode = self._changeset_prose_mode()
+        if _prose_mode == "always" and _changeset:
+            await self._apply_changeset_prose(_changeset)
+
+        if on_changeset is not None and _changeset:
+            try:
+                on_changeset(_changeset)
+            except Exception:
+                logger.exception("on_changeset callback failed")
+
         if self._qa_logger is not None:
+            from agent.core.changeset import to_json as _changeset_to_json
             task = asyncio.create_task(
                 _post_turn_capture_and_summarize(
                     self._qa_logger,
@@ -1000,12 +1065,27 @@ class Agent:
                     on_summarized=self.on_turn_summarized,
                     model_calls=_round_detail,
                     duration=_round_duration,
+                    changeset=_changeset_to_json(_changeset) if _changeset else None,
                 )
             )
             self._pending_bg_tasks.add(task)
             task.add_done_callback(self._pending_bg_tasks.discard)
             from agent.core import background
             background.register_task(task, f"qa-summary turn {turn_id}", "post-turn")
+
+            if _prose_mode == "background" and _changeset:
+                from agent.core.changeset_prose import summarize_and_persist as _cs_summarize_and_persist
+
+                async def _prose_bg(_cs=_changeset, _tid=turn_id, _logger=self._qa_logger):
+                    try:
+                        await _cs_summarize_and_persist(self.config, _cs, _logger, _tid)
+                    except Exception:
+                        logger.exception("changeset: background prose summary failed")
+
+                prose_task = asyncio.create_task(_prose_bg())
+                self._pending_bg_tasks.add(prose_task)
+                prose_task.add_done_callback(self._pending_bg_tasks.discard)
+                background.register_task(prose_task, f"changeset-prose turn {turn_id}", "post-turn")
 
         idle_sec = self.config.token_limits.idle_compaction_seconds
         if idle_sec > 0:

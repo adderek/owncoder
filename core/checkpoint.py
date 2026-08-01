@@ -26,9 +26,17 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Append-only journal of edits. Each entry: {seq, path, before}.
-#   before is the file content prior to the edit, or None if the edit created
-#   the file (so rollback knows to delete it).
+# Append-only journal of edits. Each entry:
+#   {seq, path, before, ts, actor, before_sha, after_sha}
+#   before      content prior to the edit, or None if the edit created the file
+#               (so rollback knows to delete it)
+#   actor       which agent process made the edit (coord.presence.agent_id());
+#               None on entries written before this field existed
+#   before_sha  sha256 of *before* — also the content-addressed blob id
+#   after_sha   sha256 of the content this edit left on disk
+# The two hashes turn the journal into a verifiable revision chain per path:
+# consecutive edits to one file satisfy entry[n].after_sha == entry[n+1].before_sha,
+# and a break in that chain means somebody else wrote the file in between.
 _journal: list[dict] = []
 _seq = 0
 
@@ -127,11 +135,62 @@ def _save_checkpoints() -> None:
     ])
 
 
-def journal_record(path: str, before: str | None) -> None:
-    """Record one successful edit. ``before`` None means the file was created."""
+def current_seq() -> int:
+    """Journal position now. Snapshot it to bound a window of edits (a round)."""
+    return _seq
+
+
+def journal_entries(since_seq: int = 0) -> list[dict]:
+    """Copies of the journal entries after *since_seq*, oldest first.
+
+    Copies, because callers walk this to build a changeset and must not be able
+    to mutate the rollback record.
+    """
+    return [dict(e) for e in _journal if e["seq"] > since_seq]
+
+
+_actor_id: str | None = None
+
+
+def actor() -> str | None:
+    """Stable id of this agent process, for attributing edits. None if unavailable."""
+    global _actor_id
+    if _actor_id is None:
+        try:
+            from agent.coord.presence import agent_id
+            _actor_id = agent_id()
+        except Exception:
+            logger.debug("checkpoints: no actor id available", exc_info=True)
+            return None
+    return _actor_id
+
+
+def sha_text(content: str) -> str:
+    """Digest used for every revision id. Must match checkpoint_store.write_blob,
+    so a *before* hash doubles as the id of the blob holding that pre-image."""
+    import hashlib
+    return hashlib.sha256(content.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def journal_record(path: str, before: str | None, after_sha: str | None = None) -> None:
+    """Record one successful edit. ``before`` None means the file was created.
+
+    *after_sha* is the digest of what the edit left on disk; the caller supplies
+    it because it has just written the content and would otherwise force a
+    re-read. None when the caller could not determine it — detection downstream
+    treats that as "unknown", never as "unchanged".
+    """
     global _seq
     _seq += 1
-    entry = {"seq": _seq, "path": path, "before": before, "ts": time.time()}
+    entry = {
+        "seq": _seq,
+        "path": path,
+        "before": before,
+        "ts": time.time(),
+        "actor": actor(),
+        "before_sha": sha_text(before) if before is not None else None,
+        "after_sha": after_sha,
+    }
     _journal.append(entry)
     if _persisted():
         from agent.core import checkpoint_store as store
