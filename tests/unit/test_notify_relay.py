@@ -93,6 +93,17 @@ async def test_addressed_agent_to_agent(relay):
     phone = await _connect(relay, name="phone")
     await asyncio.sleep(0.05)
 
+    # Drain presence frames produced by join broadcasts so they don't
+    # pollute the addressed-routing assertions below.
+    for ws in (daily, proj, other, phone):
+        while True:
+            try:
+                msg = json.loads(await asyncio.wait_for(ws.recv(), 0.1))
+                if msg.get("type") != "presence":
+                    break
+            except asyncio.TimeoutError:
+                break
+
     frame = {"type": "control", "action": "chat", "text": "fix the bug",
              "to": "current-project"}
     await daily.send(json.dumps(frame))
@@ -105,6 +116,12 @@ async def test_addressed_agent_to_agent(relay):
             await asyncio.wait_for(ws.recv(), 0.3)
     # addressed frames are not replayed to a late client
     late = await _connect(relay, name="late")
+    # Drain `late`s own presence frame from the join broadcast.
+    try:
+        msg = json.loads(await asyncio.wait_for(late.recv(), 0.2))
+        assert msg.get("type") == "presence"
+    except asyncio.TimeoutError:
+        pass
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(late.recv(), 0.3)
 
@@ -116,6 +133,15 @@ async def test_addressed_no_match_dropped(relay):
     daily = await _connect(relay, role="agent", name="daily")
     proj = await _connect(relay, role="agent", name="current-project")
     await asyncio.sleep(0.05)
+    # Drain presence frames so the timeout assertion below is meaningful.
+    for ws in (daily, proj):
+        while True:
+            try:
+                msg = json.loads(await asyncio.wait_for(ws.recv(), 0.1))
+                if msg.get("type") != "presence":
+                    break
+            except asyncio.TimeoutError:
+                break
     await daily.send(json.dumps({"to": "ghost", "type": "control", "action": "chat"}))
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(proj.recv(), 0.3)

@@ -128,6 +128,8 @@ class RelayHub:
         self._clients: set = set()
         self._names: dict = {}  # ws -> hello "name" (for addressed routing)
         self._replay: deque = deque(maxlen=replay_size)
+        self._roster: dict[str, dict] = {}       # name -> metadata (role, v, since)
+        self._presence_version: int = 0          # bumped on every join/leave
         self._max_agents = max_agents
         self._max_clients = max_clients
         self._msg_rate = msg_rate
@@ -138,7 +140,7 @@ class RelayHub:
         auth = await self._auth(ws)
         if auth is None:
             return
-        role, name = auth
+        role, name, peer_v = auth
         peers, cap = (
             (self._agents, self._max_agents) if role == "agent"
             else (self._clients, self._max_clients)
@@ -151,6 +153,9 @@ class RelayHub:
         peers.add(ws)
         if name:
             self._names[ws] = name
+            self._roster[name] = {"role": role, "v": peer_v, "since": time.time()}
+            self._presence_version += 1
+            self._broadcast_presence()
         bucket = _TokenBucket(self._msg_rate, self._msg_burst)
         try:
             if role == "client":
@@ -171,9 +176,12 @@ class RelayHub:
             logger.debug("relay: connection ended: %s", exc)
         finally:
             peers.discard(ws)
-            self._names.pop(ws, None)
+            name = self._names.pop(ws, None)
+            if name is not None and self._roster.pop(name, None) is not None:
+                self._presence_version += 1
+                self._broadcast_presence()
 
-    async def _auth(self, ws) -> "tuple[str, str] | None":
+    async def _auth(self, ws) -> "tuple[str, str, object] | None":
         try:
             raw = await asyncio.wait_for(ws.recv(), timeout=HELLO_TIMEOUT_S)
             hello = json.loads(raw)
@@ -213,7 +221,28 @@ class RelayHub:
             return None
         raw_name = hello.get("name")
         name = raw_name if isinstance(raw_name, str) else ""
-        return role, name
+        return role, name, peer_v
+
+    def _broadcast_presence(self) -> None:
+        """Send current roster to all connected peers as a presence frame."""
+        raw = json.dumps({
+            "type": "presence",
+            "v": self._presence_version,
+            "peers": {
+                name: meta
+                for name, meta in self._roster.items()
+            },
+        })
+        # Presence / roster is a project-discovery frame consumed by the router,
+        # which connects as a CLIENT (MULTI_PROJECT_PLAN §4.4). So it must reach
+        # all peers (agents + clients). Consumers that don't understand the
+        # frame type are expected to skip it (versioned protocol), not crash.
+        for ws in list(self._agents | self._clients):
+            try:
+                # fire-and-forget: schedule, don't await (called from sync contexts)
+                asyncio.ensure_future(ws.send(raw))
+            except Exception:
+                pass
 
     async def _route(self, sender_role: str, sender_ws, raw: str) -> None:
         to = _routing_to(raw)
@@ -239,7 +268,10 @@ class RelayHub:
                 # transient list in the addressed case).
                 self._agents.discard(peer)
                 self._clients.discard(peer)
-                self._names.pop(peer, None)
+                dead_name = self._names.pop(peer, None)
+                if dead_name is not None and self._roster.pop(dead_name, None) is not None:
+                    self._presence_version += 1
+                    self._broadcast_presence()
 
 
 def _routing_to(raw: str) -> "str | None":
