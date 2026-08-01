@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agent.config import Config
 
 
 def _find_project_root(start_dir: Path, search_parents: bool) -> Path | None:
@@ -14,6 +19,53 @@ def _find_project_root(start_dir: Path, search_parents: bool) -> Path | None:
             break
         curr = curr.parent
     return None
+
+
+def _resolve_project(args) -> tuple[Path | None, "Config"]:
+    """Find the project root and load that project's config.
+
+    Without ``--working-dir`` the search starts at the cwd (unchanged
+    behaviour). With it, the search starts at the canonicalized flag path,
+    so the flag also decides which ``agent.toml`` is loaded — different
+    model, different grants, different ``.agent/``.
+    """
+    from agent.config import load_config, ToolsConfig
+    from agent.config.loader import CONFIG_FILENAMES
+
+    working_dir = getattr(args, "working_dir", None)
+    start = Path.cwd()
+    if working_dir:
+        start = Path(os.path.realpath(os.path.expanduser(working_dir)))
+        if not start.is_dir():
+            print(f"Error: --working-dir is not a directory: {working_dir}")
+            sys.exit(1)
+
+    project_root = None
+    if args.command != "init":
+        temp_tools = ToolsConfig()
+        project_root = _find_project_root(start, temp_tools.search_parents)
+        if project_root is None:
+            where = str(start) if working_dir else "Current directory"
+            print(f"Error: {where} (and parents) is not a valid agent project.")
+            print("Please run 'agent init' in the desired project directory.")
+            sys.exit(1)
+
+    if args.config:
+        config = load_config(Path(args.config))
+    else:
+        project_cfgs = [
+            p for name in CONFIG_FILENAMES
+            if project_root and (p := project_root / name).exists()
+        ]
+        config = load_config(project_cfgs or None)
+
+    if project_root:
+        config.tools.working_dir = str(project_root)
+    elif working_dir:
+        # `init`: no root to find yet, but the flag still says where to work.
+        config.tools.working_dir = str(start)
+
+    return project_root, config
 
 
 def _friendly_error(exc: Exception) -> str:
@@ -52,6 +104,12 @@ def build_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(prog="agent", description="Local code agent")
     parser.add_argument("--config", type=str, help="Path to agent.toml")
+    parser.add_argument("--working-dir", type=str, metavar="PATH",
+                        help="Work in this project directory instead of the "
+                             "current one. Also decides which agent.toml is "
+                             "loaded (model, grants, .agent/). No runtime "
+                             "switching: for several projects, run one UI per "
+                             "directory.")
     parser.add_argument("--ultrasecure", action="store_true",
                         help="Run in ultrasecure mode: the agent reaches the "
                              "internet only via a quarantined subagent broker "
@@ -239,31 +297,11 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
-    from agent.config import load_config, check_reachability, Config, ToolsConfig
+    from agent.config import check_reachability
     from agent.memory.session import configure as configure_sessions
     from agent.cli.logging_setup import _write_exception_dump, _setup_logging
 
-    project_root = None
-    if args.command != "init":
-        temp_tools = ToolsConfig()
-        project_root = _find_project_root(Path.cwd(), temp_tools.search_parents)
-        if project_root is None:
-            print("Error: Current directory (and parents) is not a valid agent project.")
-            print("Please run 'agent init' in the desired project directory.")
-            sys.exit(1)
-
-    if args.config:
-        config = load_config(Path(args.config))
-    else:
-        from agent.config.loader import CONFIG_FILENAMES
-        project_cfgs = [
-            p for name in CONFIG_FILENAMES
-            if project_root and (p := project_root / name).exists()
-        ]
-        config = load_config(project_cfgs or None)
-
-    if project_root:
-        config.tools.working_dir = str(project_root)
+    project_root, config = _resolve_project(args)
 
     if getattr(args, "ultrasecure", False):
         config.agent.mode = "ultrasecure"
