@@ -1616,6 +1616,26 @@ def _make_handler(ui: _HttpUI):
     return Handler
 
 
+def _write_project_pidfile_if_enabled(agent, port: int) -> str | None:
+    """Write a per-project pidfile (0600) so the multi-project router
+    can discover this process.
+
+    Enabled when AGENT_PROJECT_PIDFILE_DIR is set in the environment, or
+    when the router is controlling this process (AGENT_ROUTER_MANAGED=1).
+    Returns the pidfile path or None.
+    """
+    if not os.environ.get("AGENT_PROJECT_PIDFILE_DIR") and not os.environ.get("AGENT_ROUTER_MANAGED"):
+        return None
+    try:
+        from agent.ui_server.router import _write_project_pidfile
+        workdir = getattr(agent.config.tools, "working_dir", os.getcwd())
+        pidfile_dir = os.environ.get("AGENT_PROJECT_PIDFILE_DIR")
+        return _write_project_pidfile(workdir, port, pidfile_dir=pidfile_dir)
+    except Exception:
+        logger.debug("http ui: project pidfile write failed", exc_info=True)
+        return None
+
+
 def _bind_server(handler, host: str, port: int) -> ThreadingHTTPServer:
     """Bind requested port; walk forward a little if it's taken."""
     last_exc: OSError | None = None
@@ -2257,6 +2277,9 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
     port = int(getattr(cfg, "http_port", 8180))
     httpd = _bind_server(_make_handler(ui), host, port)
     actual_port = httpd.server_address[1]
+
+    # Write a project pidfile so the router can discover this project process.
+    _pidfile = _write_project_pidfile_if_enabled(agent, actual_port)
     threading.Thread(target=httpd.serve_forever, daemon=True, name="http-ui").start()
 
     shown_host = "127.0.0.1" if host in ("0.0.0.0", "") else host
@@ -2529,5 +2552,11 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
         pub({"type": "sys", "text": "server shutting down"})
         httpd.shutdown()
         httpd.server_close()
+        # Clean up the project pidfile so the router drops this project.
+        try:
+            if _pidfile:
+                os.unlink(_pidfile)
+        except OSError:
+            pass
         console.print("[dim]HTTP UI stopped.[/dim]")
     return ui.session
