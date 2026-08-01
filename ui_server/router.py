@@ -250,7 +250,13 @@ class _RouterHandler(BaseHTTPRequestHandler):
             req.add_header("X-Project-Secret", self.project_secret)
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
-                self._json(resp.read().decode("utf-8", errors="replace"))
+                raw = resp.read().decode("utf-8", errors="replace")
+                try:
+                    # Relay the project's own JSON object; re-encoding the raw
+                    # string would hand the client a JSON string, not an object.
+                    self._json(json.loads(raw))
+                except ValueError:
+                    self._json({"ok": True, "response": raw})
         except urllib.error.HTTPError as exc:
             err = exc.read().decode("utf-8", errors="replace") if exc.fp else str(exc)
             self._json({"error": err}, exc.code or 502)

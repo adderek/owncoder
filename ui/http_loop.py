@@ -364,6 +364,7 @@ _PAGE = r"""<!DOCTYPE html>
   <textarea id="input" rows="1" placeholder="Message… (Enter to send, Shift+Enter for newline, / for commands)"></textarea>
   <button id="send">Send</button>
   <button id="continue" class="inert" title="Nudge the agent to keep going (sends 'continue')">▶ Continue</button>
+  <button id="heal" title="Something is going wrong? Have the agent stop and diagnose itself: root cause, fix, durable rule. Runs in this session.">⚕ Heal</button>
   <button id="stop" title="Soft stop: finish current iteration, then stop">Stop</button>
   <button id="kill" title="Hard stop: abort the turn immediately (may leave the last exchange incomplete)">Kill</button>
 </div></div>
@@ -1417,6 +1418,58 @@ class _HttpUI:
             pass
         return out
 
+    # ── on-demand heal ────────────────────────────────────────────────────
+    def _heal_signals(self, focus: str = "") -> tuple[str, dict]:
+        from agent.core.self_heal import heal_request
+        config = _agent_config(self.server)
+        try:
+            messages = self.server.get_messages()
+        except Exception:
+            messages = []
+        sid = self.session.id if self.session else ""
+        return heal_request(config, sid, messages, focus)
+
+    def heal_info(self) -> dict:
+        """What a heal would work from — lets the browser show the evidence
+        (and its size) before the user spends a turn on it."""
+        from agent.core.self_heal import summary_line, format_evidence
+        try:
+            prompt, signals = self._heal_signals()
+        except Exception:
+            logger.debug("http ui: heal signal collection failed", exc_info=True)
+            return {"ok": False, "summary": "signal collection failed",
+                    "counts": {}, "suspects": [], "evidence": "", "busy": self.busy}
+        return {
+            "ok": True,
+            "summary": summary_line(signals),
+            "counts": signals.get("counts", {}),
+            "suspects": signals.get("suspects", []),
+            "evidence": format_evidence(signals),
+            "prompt_chars": len(prompt),
+            "busy": self.busy,
+        }
+
+    def heal_action(self, payload: dict) -> dict:
+        """Run the introspection prompt in the *current* session.
+
+        Deliberately the same submit path a typed prompt takes: the user stays
+        on the session view and watches the diagnosis stream in, and a heal
+        asked for mid-turn is injected into the running turn rather than
+        queued behind the failure that prompted it.
+        """
+        from agent.core.self_heal import summary_line
+        focus = str(payload.get("focus") or "")
+        try:
+            prompt, signals = self._heal_signals(focus)
+        except Exception:
+            logger.exception("http ui: heal failed")
+            return {"ok": False, "msg": "heal failed to collect signals"}
+        injected = self.submit(prompt)
+        self.bus.publish({"type": "sys", "text": "self-heal: " + summary_line(signals)})
+        return {"ok": True, "injected": injected,
+                "summary": summary_line(signals),
+                "counts": signals.get("counts", {})}
+
 
 def _make_handler(ui: _HttpUI):
     class Handler(BaseHTTPRequestHandler):
@@ -1525,6 +1578,8 @@ def _make_handler(ui: _HttpUI):
                 self._json(ui.models_info())
             elif self.path == "/api/slash":
                 self._json({"commands": _slash_catalog()})
+            elif self.path == "/api/heal":
+                self._json(ui.heal_info())
             elif self.path == "/api/grants":
                 self._json(ui.grants_info())
             elif self.path.startswith("/api/todos"):
@@ -1630,6 +1685,8 @@ def _make_handler(ui: _HttpUI):
                 fname = str(payload.get("filename") or "")
                 data = str(payload.get("data") or "")
                 self._json(ui.upload_file(fname, data))
+            elif self.path == "/api/heal":
+                self._json(ui.heal_action(payload))
             elif self.path == "/api/grants":
                 self._json(ui.grant_action(payload))
             elif self.path == "/api/todo":
@@ -1980,6 +2037,16 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
         from agent.tools import get_schemas
         names = [s["function"]["name"] for s in get_schemas()]
         pub({"type": "sys", "text": "tools: " + "  ".join(names)})
+    elif cmd == "/heal":
+        # "why" shows the evidence without spending a turn on it.
+        if arg.strip().lower() in ("why", "show", "status"):
+            info = ui.heal_info()
+            pub({"type": "sys", "text": info.get("summary", "") + "\n\n"
+                 + (info.get("evidence") or "")})
+        else:
+            res = ui.heal_action({"focus": arg})
+            pub({"type": "sys", "error": not res.get("ok"),
+                 "text": res.get("summary") or res.get("msg") or ""})
     elif cmd == "/skills":
         cfg = _agent_config(server)
         if cfg is None:

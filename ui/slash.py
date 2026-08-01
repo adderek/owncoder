@@ -80,6 +80,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/notify", [], "notification channels  [on | off | status]", True),
     ("/model", [], "switch active model  [<entry> | role=<entry> | role=? | refresh]", True),
     ("/models", [], "model entries: table + toggles  [table | enable <name> | disable <name>]", False),
+    ("/heal", ["/introspect", "/diagnose"], "self-diagnose this session's failures and fix the root cause  [<what you observed> | why]", True),
     ("/recoveries", [], "list pending crash-recovery records", False),
     ("/resummarize", [], "re-summarize Q/A entries with stale or missing summaries  [--force]", True),
     ("/idea", [], "ideas: <title> | add [--type T] [--tags t] [--priority N] <title> [| body] | show <id> | update <id> k=v | done <id> | reject <id>", True),

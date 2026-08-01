@@ -2458,6 +2458,29 @@ document.getElementById('continue').onclick = () => {
     body: JSON.stringify({text: 'continue'}),
   }).catch(e => row('sys error', null, 'continue failed to send: ' + e));
 };
+// ── On-demand heal ─────────────────────────────────────────────────────────
+// The user sees the trouble before the agent does (looping tool errors, an
+// escalation that failed the same way). This asks for a diagnosis in the
+// current session, so the answer lands in the transcript being watched. The
+// preview first: a heal costs a turn, and the evidence summary is what tells
+// the user whether it is worth one.
+document.getElementById('heal').onclick = () => {
+  fetch('/api/heal').then(r => r.json()).then(info => {
+    const summary = info.summary || 'no signals recorded';
+    const focus = prompt(
+      'Self-diagnosis — the agent will stop and look for the root cause.\n\n' +
+      'Evidence: ' + summary + '\n\n' +
+      'What did you observe? (optional, Enter to send as-is; Cancel aborts)', '');
+    if (focus === null) return;
+    fetch('/api/heal', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({focus}),
+    }).then(r => r.json()).then(res => {
+      if (!res.ok) row('sys error', null, 'heal failed: ' + (res.msg || ''));
+    }).catch(e => row('sys error', null, 'heal failed to send: ' + e));
+  }).catch(e => row('sys error', null, 'heal signals unavailable: ' + e));
+};
+
 function stopTurn(mode) {
   fetch('/api/stop', {
     method: 'POST',

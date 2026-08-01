@@ -252,6 +252,23 @@ class SlashHandlerMixin:
             names = [s["function"]["name"] for s in get_schemas()]
             self._write_sys("Tools: " + "  ".join(names))
 
+        elif cmd in ("/heal", "/introspect", "/diagnose"):
+            from agent.core.self_heal import heal_request, summary_line, format_evidence
+            _cfg = self._server._agent.config
+            _sid = getattr(self._session, "id", "") if self._session else ""
+            prompt, signals = heal_request(
+                _cfg, _sid, self._server.get_messages(),
+                "" if arg.strip().lower() in ("why", "show", "status") else arg)
+            if arg.strip().lower() in ("why", "show", "status"):
+                self._write_sys(_escape(summary_line(signals) + "\n\n"
+                                        + format_evidence(signals)))
+            else:
+                self._write_sys(f"[{t.text_dim}]self-heal: "
+                                f"{_escape(summary_line(signals))}[/{t.text_dim}]")
+                # Same path voice/remote prompts take: starts or steers a turn
+                # in this session, so the diagnosis lands in the transcript.
+                self._server.submit_external_prompt(prompt, source="heal")
+
         elif cmd == "/skills":
             from agent.skills import run_skills_command
             self._write_sys(_escape(run_skills_command(self._server._agent.config, arg)))

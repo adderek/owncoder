@@ -112,7 +112,10 @@ class TestSubmitReview:
 
         def fake_urlopen(req, timeout=None):
             seen["url"] = req.full_url
-            seen["secret"] = req.get_header("X-Project-Secret")
+            # urllib normalizes header names via str.capitalize() on add_header.
+            seen["secret"] = next(
+                (v for k, v in req.headers.items()
+                 if k.lower() == "x-project-secret"), None)
             seen["body"] = req.data
 
             class _Resp:
@@ -120,6 +123,12 @@ class TestSubmitReview:
 
                 def read(self):
                     return b'{"ok": true, "injected": false}'
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *exc):
+                    return False
 
             return _Resp()
 
