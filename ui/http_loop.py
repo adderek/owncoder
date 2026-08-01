@@ -217,6 +217,21 @@ def _attach_changesets(sid: str, messages: list[dict]) -> None:
             break
 
 
+def _attach_session_rollup(messages: list[dict], rollup: "dict | None") -> None:
+    """Hang the session total on the last round that has a changeset.
+
+    Only the last one: the rollup is the session as it stands now, and printed
+    under an earlier round it would claim a total that was not true when that
+    round ended.
+    """
+    if not rollup:
+        return
+    for entry in reversed(messages):
+        if entry.get("changeset"):
+            entry["changeset"]["rollup"] = rollup
+            return
+
+
 def _transcript(messages, result_limit: int = 2000) -> list[dict]:
     """The conversation as the browser replays it, tool work included.
 
@@ -869,6 +884,7 @@ class _HttpUI:
         # per-round file lists.
         if self.session is not None:
             _attach_changesets(self.session.id, messages)
+            _attach_session_rollup(messages, self.session_rollup())
         models = {}
         try:
             models = self.server.get_model_configs()
@@ -897,6 +913,40 @@ class _HttpUI:
                    "calls": stats.get("calls", 0),
                    "cost_usd": self._cost_usd()},
         }
+
+    def session_rollup(self, cs=None) -> "dict | None":
+        """Session totals for the changeset footer, or None when off/empty.
+
+        *cs* is the round that just finished, folded in before the total is
+        read; the accumulator (core.changeset.SessionRollup) seeds itself from
+        the QA log, so a page opened against a resumed session shows the whole
+        session and not just the rounds it watched arrive.
+        """
+        from agent.core.changeset import (
+            SessionRollup, rollup_json, session_rollup_enabled)
+        try:
+            cfg = _agent_config(self.server)
+            if cfg is not None and not session_rollup_enabled(cfg):
+                return None
+            sid = self.session.id if self.session else ""
+            rollup = getattr(self, "_rollup", None)
+            if rollup is None or rollup.session_id != sid:
+                rollup = SessionRollup(sid)
+                self._rollup = rollup
+            rollup.add(cs)
+            return rollup_json(rollup.changeset())
+        except Exception:
+            logger.debug("http ui: session rollup failed", exc_info=True)
+            return None
+
+    def changeset_event(self, cs) -> dict:
+        """The `changeset` SSE frame for a finished round, rollup included."""
+        from agent.core.changeset import to_json
+        payload = {"type": "changeset", **to_json(cs)}
+        rollup = self.session_rollup(cs)
+        if rollup:
+            payload["rollup"] = rollup
+        return payload
 
     def _fold_journal(self) -> str:
         """When a round's work fold auto-collapses: "on_next_round" (the
@@ -1305,34 +1355,15 @@ class _HttpUI:
         core.changeset.from_a_data, not the working tree: the diff for turn 3
         must not change just because turn 7 edited the same file again.
         """
-        from agent.core import changeset as _cs
+        from agent.core.changeset import stored_diff
         try:
             turn_id = int(turn)
         except (TypeError, ValueError):
             return {"error": "invalid turn"}
-        path = (file_path or "").strip()
-        if not path:
-            return {"error": "invalid path"}
         sid = sid or (self.session.id if self.session is not None else "")
-        if not sid:
-            return {"error": "no active session"}
-        from agent.memory.qa_log import read_history_sync
-        a_data = None
-        for tid, _q, a in read_history_sync(sid):
-            if tid == turn_id:
-                a_data = a
-                break
-        if a_data is None:
-            return {"error": f"turn {turn_id} not found"}
-        cs_obj = _cs.from_a_data(a_data)
-        fc = next((f for f in cs_obj.files if f.path == path), None)
-        if fc is None:
-            return {"error": f"'{path}' was not changed in turn {turn_id}"}
-        from agent.memory.session import get_session_full_dir
-        spill_dir = Path(get_session_full_dir(sid)) / "changesets" / str(turn_id)
-        diff = _cs.load_diff(fc, spill_dir)
-        return {"path": fc.path, "diff": diff or "", "status": fc.status,
-                "binary": fc.binary, "truncated": fc.truncated}
+        # The lookup itself lives in core/changeset.py: a remote UI asks for the
+        # same diff over the relay, and one answer means one behaviour.
+        return stored_diff(sid, turn_id, file_path)
 
     # Attachments land on disk under this dir (relative to the session's
     # workdir) rather than going inline to the LLM — the turn engine's
@@ -2613,7 +2644,6 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
 
             # Run the turn as a task so /api/stop mode=hard can cancel it
             # outright (e.g. when the model deadloops).
-            from agent.core.changeset import to_json as _changeset_to_json
             chat_task = asyncio.ensure_future(server.chat(
                 text,
                 session_id=ui.session.id if ui.session else "",
@@ -2640,8 +2670,7 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
                 # Fired once at round end with the round's changeset — the
                 # browser renders it directly instead of re-deriving the
                 # changed-file list from tool-call arguments client-side.
-                on_changeset=lambda cs: pub(
-                    {"type": "changeset", **_changeset_to_json(cs)}),
+                on_changeset=lambda cs: pub(ui.changeset_event(cs)),
                 source="http",
             ))
             ui.chat_task = chat_task

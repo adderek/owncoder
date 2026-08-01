@@ -324,6 +324,43 @@ def load_diff(cs_file: FileChange, spill_dir: "str | Path | None") -> str | None
         return None
 
 
+def stored_diff(session_id: str, turn_id: int, path: str) -> dict:
+    """The diff one round captured for one file, read back from the session.
+
+    Answers a different question from ``git diff``: this is what turn 3 wrote,
+    which must not change because turn 7 edited the same file again. Backs both
+    the browser's ``/api/changeset`` and the relay's diff-on-demand reply, so
+    the two cannot drift. Returns ``{"error": …}`` rather than raising.
+    """
+    path = (path or "").strip()
+    if not path:
+        return {"error": "invalid path"}
+    if not session_id:
+        return {"error": "no active session"}
+    try:
+        turn_id = int(turn_id)
+    except (TypeError, ValueError):
+        return {"error": "invalid turn"}
+    try:
+        from agent.memory.qa_log import read_history_sync
+        a_data = next((a for tid, _q, a in read_history_sync(session_id) if tid == turn_id), None)
+    except Exception:
+        logger.debug("changeset: stored_diff could not read qa log", exc_info=True)
+        return {"error": "session log unreadable"}
+    if a_data is None:
+        return {"error": f"turn {turn_id} not found"}
+    fc = next((f for f in from_a_data(a_data).files if f.path == path), None)
+    if fc is None:
+        return {"error": f"'{path}' was not changed in turn {turn_id}"}
+    try:
+        from agent.memory.session import get_session_full_dir
+        spill_dir = Path(get_session_full_dir(session_id)) / "changesets" / str(turn_id)
+    except Exception:
+        spill_dir = None
+    return {"path": fc.path, "diff": load_diff(fc, spill_dir) or "",
+            "status": fc.status, "binary": fc.binary, "truncated": fc.truncated}
+
+
 def render_text(cs: Changeset, *, tier: str | None = None, indent: str = "  ") -> list[str]:
     """Plain lines for the terminal UIs. No markup — callers add their own.
 
@@ -374,6 +411,188 @@ def from_json(data: dict) -> Changeset:
         truncated=bool(data.get("truncated")),
         prose=str(data.get("prose") or ""),
     )
+
+
+def merge_changesets(changesets: "list[Changeset]") -> Changeset:
+    """Aggregate a session's worth of round changesets into one, by path.
+
+    A path touched in more than one round is counted once, with its added/
+    removed churn summed across rounds. Diff text is not merged (the rollup is
+    a file list, not a stack of diffs — drill into a single round's changeset
+    for that). Foreign-edit notes and actors accumulate across rounds too.
+
+    Lives here rather than in a UI module because all three UIs render the
+    rollup and must agree on what it says.
+    """
+    merged: dict[str, FileChange] = {}
+    first_status: dict[str, str] = {}
+    order: list[str] = []
+    for cs in changesets:
+        if not cs:
+            continue
+        for f in cs.files:
+            if f.path not in merged:
+                merged[f.path] = FileChange(path=f.path, status=f.status, binary=f.binary)
+                first_status[f.path] = f.status
+                order.append(f.path)
+            m = merged[f.path]
+            m.added += f.added
+            m.removed += f.removed
+            # Status is measured from the session start, not from the last
+            # round: a file created in round 1 and edited in round 5 is still
+            # "added" as far as the session is concerned.
+            if f.status == "deleted":
+                m.status = "deleted"
+            elif first_status[f.path] == "added":
+                m.status = "added"
+            else:
+                m.status = f.status
+            m.binary = f.binary
+            if f.foreign_edit:
+                m.foreign_edit = True
+                for actor in f.foreign_actors:
+                    if actor not in m.foreign_actors:
+                        m.foreign_actors.append(actor)
+
+    files = [merged[p] for p in order]
+    files.sort(key=lambda f: (-f.churn, f.path))
+    tier = pick_tier(len(files), sum(f.churn for f in files), Limits())
+    return Changeset(files=files, tier=tier)
+
+
+def session_changesets(session_id: str) -> list[Changeset]:
+    """Every round's changeset for *session_id*, rebuilt from the QA log.
+
+    Reading the log rather than an in-memory list is what makes a *resumed*
+    session roll up the whole session instead of only the rounds since the UI
+    started. Returns [] (never raises) when the log is unreadable — a missing
+    rollup is a cosmetic loss, not a reason to break a round.
+    """
+    try:
+        from agent.memory.qa_log import read_history_sync
+        records = list(read_history_sync(session_id))
+    except Exception:
+        logger.debug("changeset: could not read qa log for %r", session_id, exc_info=True)
+        return []
+    out: list[Changeset] = []
+    for _tid, _q, a in records:
+        cs = from_a_data(a if isinstance(a, dict) else {})
+        if cs:
+            out.append(cs)
+    return out
+
+
+def session_rollup(session_id: str, extra: "list[Changeset] | None" = None) -> Changeset:
+    """The whole session's changeset: the QA log plus rounds not yet in it.
+
+    *extra* carries live rounds the caller already holds (the round that just
+    finished is written to the log at turn end, so it may or may not be there
+    yet). A round present in both is taken once — matched on ``turn_id``, with
+    an untagged (turn_id 0) extra always kept, since it cannot be matched.
+    """
+    rounds = session_changesets(session_id) if session_id else []
+    seen = {cs.turn_id for cs in rounds if cs.turn_id}
+    for cs in (extra or []):
+        if not cs:
+            continue
+        if cs.turn_id and cs.turn_id in seen:
+            continue
+        if cs.turn_id:
+            seen.add(cs.turn_id)
+        rounds.append(cs)
+    return merge_changesets(rounds)
+
+
+class SessionRollup:
+    """A session's rounds, accumulated once and merged on demand.
+
+    Every UI needs the same two things: the rounds already on disk (so a
+    resumed session rolls up the whole session) and the rounds it has watched
+    since (which reach it before the log does). This holds both, reads the log
+    exactly once — a round end must not re-read every A-record in a long
+    session — and drops a round it has already seen, matched on ``turn_id``.
+    """
+
+    def __init__(self, session_id: str = "") -> None:
+        self.session_id = session_id
+        self._rounds: list[Changeset] = []
+        self._seen: set[int] = set()
+        self._loaded = False
+
+    def _load(self) -> None:
+        if self._loaded:
+            return
+        self._loaded = True                     # set first: a failed read is final
+        if self.session_id:
+            for cs in session_changesets(self.session_id):
+                self._take(cs)
+
+    def _take(self, cs: "Changeset | None") -> None:
+        if not cs:
+            return
+        # A UI may offer the same round twice (two views of one turn). turn_id
+        # catches that for a tagged round; identity catches an untagged one.
+        if any(r is cs for r in self._rounds):
+            return
+        if cs.turn_id:
+            if cs.turn_id in self._seen:
+                return
+            self._seen.add(cs.turn_id)
+        self._rounds.append(cs)
+
+    def add(self, cs: "Changeset | None") -> None:
+        """Record a round the UI just watched finish."""
+        self._load()                            # log rounds first, so they sort earlier
+        self._take(cs)
+
+    def changeset(self) -> Changeset:
+        self._load()
+        return merge_changesets(self._rounds)
+
+    def line(self) -> str:
+        return rollup_line(self.changeset())
+
+    def __bool__(self) -> bool:
+        return bool(self.changeset())
+
+
+def rollup_line(cs: "Changeset | None") -> str:
+    """One-line session total, worded identically in every UI. "" when empty."""
+    if not cs:
+        return ""
+    return "session: " + cs.headline()
+
+
+def rollup_json(cs: "Changeset | None") -> dict | None:
+    """Wire form of a rollup for the browser UI: the line plus its numbers."""
+    if not cs:
+        return None
+    return {
+        "line": rollup_line(cs),
+        "files": cs.file_count,
+        "added": cs.total_added,
+        "removed": cs.total_removed,
+    }
+
+
+# ── config toggles ───────────────────────────────────────────────────────────
+#
+# Read defensively: a bare/stub config (tests, older config files) must produce
+# the default rather than an AttributeError.
+
+def _changeset_config(config):
+    """The ``[ui.changeset]`` section, or None if config has no ``ui``."""
+    return getattr(getattr(config, "ui", None), "changeset", None)
+
+
+def changeset_enabled(config) -> bool:
+    cfg = _changeset_config(config)
+    return bool(getattr(cfg, "enabled", True)) if cfg is not None else True
+
+
+def session_rollup_enabled(config) -> bool:
+    cfg = _changeset_config(config)
+    return bool(getattr(cfg, "session_rollup", True)) if cfg is not None else True
 
 
 def from_a_data(a_data: dict) -> Changeset:

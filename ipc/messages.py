@@ -279,6 +279,93 @@ class SignalEvent:
 
 
 @dataclass
+class ChangesetEvent:
+    """What a round changed — metadata only, no diff text.
+
+    A core.changeset.Changeset carries the full unified diff of every file it
+    touched, which is exactly what should not cross a link on every round. The
+    wire form is the file list and its numbers (path, +N/-M, status, foreign
+    edits, tier); a client that wants a diff asks for one file's diff with the
+    ``changeset_diff`` control action, mirroring the local ``/api/changeset``.
+
+    Compatibility: this is a *new* type, so no version bump. A peer that does
+    not know it must ignore it — the relay is a shared channel where an
+    unrecognised frame is normal traffic (ViewModel.apply_frame already drops
+    it; the Android client routes only known event types). A relay session
+    against an older build therefore degrades to the previous behaviour: no
+    changeset events at all.
+    """
+
+    WIRE_TYPE = "changeset"
+    changeset: dict
+
+    # Kept per file. Anything else (notably "diff" and "diff_ref") is dropped.
+    FILE_FIELDS = ("path", "added", "removed", "status", "binary",
+                   "truncated", "foreign_edit", "foreign_actors")
+
+    @classmethod
+    def from_changeset(cls, cs: Any) -> "ChangesetEvent":
+        """Build the metadata-only wire payload from a core Changeset."""
+        from dataclasses import asdict
+        files = []
+        for f in getattr(cs, "files", ()) or ():
+            d = asdict(f)
+            files.append({k: d[k] for k in cls.FILE_FIELDS if k in d})
+        return cls({
+            "turn_id": getattr(cs, "turn_id", 0),
+            "tier": getattr(cs, "tier", "count"),
+            "truncated": bool(getattr(cs, "truncated", False)),
+            "prose": getattr(cs, "prose", ""),
+            "files": files,
+        })
+
+    def to_wire(self) -> dict:
+        return {"v": EVENT_PROTOCOL_VERSION, "type": self.WIRE_TYPE,
+                "changeset": self.changeset}
+
+    @classmethod
+    def from_wire(cls, obj: dict) -> "ChangesetEvent":
+        return cls(changeset=dict(obj.get("changeset") or {}))
+
+
+@dataclass
+class ChangesetDiffEvent:
+    """One file's stored diff, sent in reply to a ``changeset_diff`` request.
+
+    Diffs travel only when a client asks for one, which is the whole point of
+    keeping ChangesetEvent metadata-only. ``error`` carries the reason when the
+    turn or the path is not in the session's log; ``diff`` is then empty.
+    """
+
+    WIRE_TYPE = "changeset_diff"
+    turn_id: int
+    path: str
+    diff: str = ""
+    status: str = ""
+    binary: bool = False
+    truncated: bool = False
+    error: str = ""
+
+    def to_wire(self) -> dict:
+        return {"v": EVENT_PROTOCOL_VERSION, "type": self.WIRE_TYPE,
+                "turn_id": self.turn_id, "path": self.path, "diff": self.diff,
+                "status": self.status, "binary": self.binary,
+                "truncated": self.truncated, "error": self.error}
+
+    @classmethod
+    def from_wire(cls, obj: dict) -> "ChangesetDiffEvent":
+        return cls(
+            turn_id=int(obj.get("turn_id") or 0),
+            path=obj.get("path", ""),
+            diff=obj.get("diff", ""),
+            status=obj.get("status", ""),
+            binary=bool(obj.get("binary")),
+            truncated=bool(obj.get("truncated")),
+            error=obj.get("error", ""),
+        )
+
+
+@dataclass
 class TurnEndEvent:
     """Lightweight end-of-turn marker for remote consumers.
 
@@ -305,6 +392,7 @@ _WIRE_REGISTRY: dict[str, type] = {
         ToolRecordEvent, PhaseEvent,
         UsageEvent, ContextSizeEvent, ProgressEvent, TruncationEvent,
         LoopDetectedEvent, TurnDoneEvent, ErrorEvent, SignalEvent, TurnEndEvent,
+        ChangesetEvent, ChangesetDiffEvent,
     )
 }
 

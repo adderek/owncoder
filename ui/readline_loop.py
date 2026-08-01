@@ -40,19 +40,16 @@ if TYPE_CHECKING:
 # module-level functions (not nested in `simple_loop`) so they are testable
 # without driving the whole interactive loop.
 
-def _changeset_config(config):
-    """The ``[ui.changeset]`` section, or None if config has no ``ui``."""
-    return getattr(getattr(config, "ui", None), "changeset", None)
-
-
-def changeset_enabled(config) -> bool:
-    cfg = _changeset_config(config)
-    return bool(getattr(cfg, "enabled", True)) if cfg is not None else True
-
-
-def session_rollup_enabled(config) -> bool:
-    cfg = _changeset_config(config)
-    return bool(getattr(cfg, "session_rollup", True)) if cfg is not None else True
+# Config toggles, the merge and the rollup wording all live in core/changeset.py
+# — three UIs render them and must agree — and are re-exported here so callers
+# (and tests) that already import them from the readline module keep working.
+from agent.core.changeset import (  # noqa: E402
+    changeset_enabled,
+    merge_changesets,
+    rollup_line,
+    session_rollup,
+    session_rollup_enabled,
+)
 
 
 def format_changeset_block(cs: "Changeset | None", theme, *, tier: str | None = None) -> list[str]:
@@ -109,52 +106,6 @@ def format_changeset_file_diff(
     else:
         lines.extend(diff.rstrip("\n").splitlines())
     return True, lines
-
-
-def merge_changesets(changesets: "list[Changeset]") -> "Changeset":
-    """Aggregate a session's worth of round changesets into one, by path.
-
-    A path touched in more than one round is counted once, with its added/
-    removed churn summed across rounds. Diff text is not merged (the rollup is
-    a file list, not a stack of diffs — drill into a single round's changeset
-    for that). Foreign-edit notes and actors accumulate across rounds too.
-    """
-    from agent.core.changeset import Changeset, FileChange, pick_tier, Limits
-
-    merged: dict[str, FileChange] = {}
-    first_status: dict[str, str] = {}
-    order: list[str] = []
-    for cs in changesets:
-        if not cs:
-            continue
-        for f in cs.files:
-            if f.path not in merged:
-                merged[f.path] = FileChange(path=f.path, status=f.status, binary=f.binary)
-                first_status[f.path] = f.status
-                order.append(f.path)
-            m = merged[f.path]
-            m.added += f.added
-            m.removed += f.removed
-            # Status is measured from the session start, not from the last
-            # round: a file created in round 1 and edited in round 5 is still
-            # "added" as far as the session is concerned.
-            if f.status == "deleted":
-                m.status = "deleted"
-            elif first_status[f.path] == "added":
-                m.status = "added"
-            else:
-                m.status = f.status
-            m.binary = f.binary
-            if f.foreign_edit:
-                m.foreign_edit = True
-                for actor in f.foreign_actors:
-                    if actor not in m.foreign_actors:
-                        m.foreign_actors.append(actor)
-
-    files = [merged[p] for p in order]
-    files.sort(key=lambda f: (-f.churn, f.path))
-    tier = pick_tier(len(files), sum(f.churn for f in files), Limits())
-    return Changeset(files=files, tier=tier)
 
 
 def changeset_spill_dir(session, cs: "Changeset | None"):
@@ -645,7 +596,11 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                                 f"(config.ui.changeset.session_rollup = false).[/{t.warning}]"
                             )
                         else:
-                            rollup = merge_changesets(_session_changesets)
+                            # QA log first, live rounds second: a resumed
+                            # session then rolls up the whole session rather
+                            # than only the rounds since it was reloaded.
+                            sid = getattr(session, "id", "") if session else ""
+                            rollup = session_rollup(sid, _session_changesets)
                             lines = format_changeset_file_list(rollup, t)
                             if not lines:
                                 console.print(f"[{t.text_dim}]Nothing changed yet this session.[/{t.text_dim}]")

@@ -86,3 +86,41 @@ class TestControlDispatcher:
         raw["action"] = "teleport"
         with pytest.raises(ValueError, match="unknown control action"):
             asyncio.run(ControlDispatcher(_Server()).handle(raw))
+
+
+class TestChangesetFramesOnTheSharedChannel:
+    """The changeset event is a *new* wire type (ipc/messages.ChangesetEvent).
+
+    Adding one is only safe while every consumer ignores what it does not know:
+    the relay is shared, so a peer sees frames addressed to nobody in
+    particular. These pin that a changeset frame is inert everywhere it is not
+    wanted, which is also what makes a relay session against an older build
+    degrade to "no changeset events" instead of erroring.
+    """
+
+    def _changeset_frame(self) -> dict:
+        from agent.core.changeset import Changeset, FileChange
+        from agent.ipc.messages import ChangesetEvent
+        cs = Changeset(turn_id=3, files=[FileChange(path="a.py", added=2)])
+        return ChangesetEvent.from_changeset(cs).to_wire()
+
+    def test_the_control_parser_rejects_it_as_the_wrong_type(self):
+        with pytest.raises(ValueError, match="not a control frame"):
+            parse_control(self._changeset_frame())
+
+    def test_the_control_dispatcher_ignores_it_rather_than_raising(self):
+        handler = ControlDispatcher(_Server())
+        assert asyncio.run(handler.handle(self._changeset_frame())) is None
+
+    def test_a_consumer_that_does_not_know_the_type_drops_it_silently(self):
+        """What an older build does: decode fails, the stream carries on."""
+        from agent.ui_server.view_model import ViewModel
+        vm = ViewModel()
+        unknown = json.dumps({"v": 1, "type": "changeset_from_the_future", "x": 1})
+        assert vm.apply_frame(unknown) is False
+        assert vm.transcript == [] and vm.status.error is None
+
+    def test_a_changeset_frame_is_folded_by_a_build_that_knows_it(self):
+        from agent.ui_server.view_model import ViewModel
+        vm = ViewModel()
+        assert vm.apply_frame(json.dumps(self._changeset_frame())) is True

@@ -77,7 +77,28 @@ def build_ui_server(agent: "Agent") -> Any:
         prompt = f"[delegated by {frm}] {text}" if frm else text
         inner.submit_external_prompt(prompt, source="remote")
 
-    dispatcher = ControlDispatcher(inner, on_chat=_on_remote_chat)
+    # A changeset event carries metadata only (no diff text — see
+    # ipc/messages.ChangesetEvent), so a client that wants one file's diff asks
+    # for it here. Same source as the local /api/changeset: the round's stored
+    # diff, not the working tree.
+    def _on_changeset_diff(turn: int, path: str) -> None:
+        from agent.core.changeset import stored_diff
+        from agent.ipc.messages import ChangesetDiffEvent
+        from agent.ipc.wire import encode_event
+        try:
+            info = stored_diff(getattr(bridge, "session_id", ""), turn, path)
+            link.send_frame(encode_event(ChangesetDiffEvent(
+                turn_id=turn, path=path,
+                diff=info.get("diff", ""), status=info.get("status", ""),
+                binary=bool(info.get("binary")),
+                truncated=bool(info.get("truncated")),
+                error=info.get("error", ""),
+            )))
+        except Exception:
+            logger.debug("ui_server: changeset diff request failed", exc_info=True)
+
+    dispatcher = ControlDispatcher(inner, on_chat=_on_remote_chat,
+                                   on_changeset_diff=_on_changeset_diff)
     link = RelayLink(cfg.relay_url, token, name=cfg.name,
                      on_frame=dispatcher.handle, e2e=e2e)
     if getattr(cfg, "expose_project", False):
@@ -89,7 +110,11 @@ def build_ui_server(agent: "Agent") -> Any:
     except Exception:  # pragma: no cover - delegation is best-effort
         logger.debug("ui_server: peer link registration failed", exc_info=True)
     logger.info("ui_server: remote streaming to %s", cfg.relay_url)
-    return RemoteBridge(inner, link.send_frame)
+    # Bound after the dispatcher on purpose: _on_changeset_diff closes over
+    # `bridge` to read the session a turn last ran under, and only runs once a
+    # frame arrives — long after this returns.
+    bridge = RemoteBridge(inner, link.send_frame)
+    return bridge
 
 
 def _announce_project(link, agent: "Agent", cfg) -> None:

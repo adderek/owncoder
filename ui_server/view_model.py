@@ -6,9 +6,9 @@ wiring raw callbacks its own way. Feed decoded ipc events into `apply()`; read
 
 Pure and synchronous: no I/O, no async, no framework types — trivially testable
 and reusable across clients. It folds the *display* event set (token, reasoning,
-tool call/result, phase, progress, usage, context size, signal, turn end,
-error). Loop-detected is intentionally not folded here (it is a bidirectional
-decision, handled out of band).
+tool call/result, phase, progress, usage, context size, signal, changeset, turn
+end, error). Loop-detected is intentionally not folded here (it is a
+bidirectional decision, handled out of band).
 """
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ from agent.ipc.messages import (
     SignalEvent,
     TurnEndEvent,
     ErrorEvent,
+    ChangesetEvent,
 )
 
 
@@ -41,6 +42,9 @@ class TranscriptEntry:
     role: str                    # "user" | "assistant"
     text: str = ""
     tools: list[ToolEntry] = field(default_factory=list)
+    # What the round changed, as sent by ChangesetEvent: file list and churn,
+    # no diff text. None for a user entry, or a round that changed nothing.
+    changeset: dict | None = None
 
 
 @dataclass
@@ -65,6 +69,7 @@ class ViewModel:
         self._assistant_buf: str = ""
         self._reasoning_buf: str = ""
         self._turn_tools: list[ToolEntry] = []
+        self._turn_changeset: dict | None = None
 
     # ── input ────────────────────────────────────────────────────────────────
 
@@ -76,6 +81,7 @@ class ViewModel:
         self._assistant_buf = ""
         self._reasoning_buf = ""
         self._turn_tools = []
+        self._turn_changeset = None
 
     # ── event fold ───────────────────────────────────────────────────────────
 
@@ -119,6 +125,11 @@ class ViewModel:
             self.pending_signal = event
             if event.clean_response and not self._assistant_buf:
                 self._assistant_buf = event.clean_response
+        elif isinstance(event, ChangesetEvent):
+            # Metadata only (no diff text): what the round changed, for the
+            # turn about to be finalized. A client asks for a file's diff
+            # separately, with the changeset_diff control action.
+            self._turn_changeset = event.changeset
         elif isinstance(event, TurnEndEvent):
             self._finalize_turn(event.response)
         elif isinstance(event, ErrorEvent):
@@ -155,9 +166,11 @@ class ViewModel:
         self.last_response = response
         self.transcript.append(TranscriptEntry(
             role="assistant", text=text, tools=list(self._turn_tools),
+            changeset=self._turn_changeset,
         ))
         self.status.phase = ""
         self.status.phase_detail = ""
         self._assistant_buf = ""
         self._reasoning_buf = ""
         self._turn_tools = []
+        self._turn_changeset = None

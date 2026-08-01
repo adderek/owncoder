@@ -43,8 +43,10 @@ class UIServerProtocol(Protocol):
         signal.payload: signal text content.
 
         on_changeset(changeset) — called once at round end with the round's
-        core.changeset.Changeset (what files it touched). Local-only: not
-        mirrored over the relay wire.
+        core.changeset.Changeset (what files it touched). Mirrored over the
+        relay as a ChangesetEvent carrying the metadata only — the diff text
+        stays local, and a remote client asks for one file's diff with the
+        `changeset_diff` control action.
         """
         ...
 

@@ -6,8 +6,8 @@ with the versioned ipc codec and hands the frame to a send_frame sink — a rela
 channel, an SSE writer, a test buffer. The caller's own callbacks still fire,
 so the local TUI keeps rendering while a remote client mirrors the same stream.
 
-Outbound only (agent → client). Inbound control (user messages, answers, stop)
-is handled separately by the control-frame layer. The bidirectional
+Outbound only (agent → client). Inbound control (user messages, answers, stop,
+a request for one file's diff) is handled separately by the control-frame layer. The bidirectional
 loop-detected decision still flows through the inner server's own
 on_loop_detected (local), not the frame stream — see ipc/wire.py.
 """
@@ -26,6 +26,7 @@ from agent.ipc.messages import (
     ContextSizeEvent,
     SignalEvent,
     TurnEndEvent,
+    ChangesetEvent,
 )
 from agent.ipc.wire import encode_event
 
@@ -41,6 +42,10 @@ class RemoteBridge:
     def __init__(self, inner: Any, send_frame: SendFrame) -> None:
         self._inner = inner
         self._send = send_frame
+        # Last session a turn ran under. The inner server does not hold one
+        # (the UI owns it), so this is how an inbound request for a stored
+        # changeset diff knows which session's log to read.
+        self.session_id: str = ""
         self._buf_kind: str | None = None  # "token" | "reasoning"
         self._buf: list[str] = []
         self._buf_len = 0
@@ -98,6 +103,9 @@ class RemoteBridge:
         on_changeset=None,
         source: str = "remote",
     ) -> str:
+        if session_id:
+            self.session_id = session_id
+
         def pub_token(tok: str) -> None:
             self._buffer_stream("token", tok)
             if on_token:
@@ -138,6 +146,14 @@ class RemoteBridge:
             if on_context_size:
                 on_context_size(n)
 
+        def pub_changeset(cs: Any) -> None:
+            # Metadata only — the diff text stays here. A remote client that
+            # wants one asks for it with the `changeset_diff` control action
+            # (ui_server/__init__.py), the wire twin of local /api/changeset.
+            self._emit(ChangesetEvent.from_changeset(cs))
+            if on_changeset:
+                on_changeset(cs)
+
         def pub_signal(signal: Any, clean_response: str) -> None:
             self._emit(SignalEvent(
                 kind=getattr(signal, "kind", ""),
@@ -164,9 +180,7 @@ class RemoteBridge:
             on_context_size=pub_context_size,
             on_user_message=on_user_message,
             on_signal=pub_signal,
-            # Local-only, like on_tool_record: the diff text is not worth
-            # pushing over the relay; a remote client reads it from /api/changeset.
-            on_changeset=on_changeset,
+            on_changeset=pub_changeset,
             source=source,
         )
         self._emit(TurnEndEvent(response))

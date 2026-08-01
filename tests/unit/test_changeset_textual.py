@@ -169,3 +169,89 @@ class TestGitShellOutIsGone:
     def test_compute_file_diffs_no_longer_exists(self):
         assert not hasattr(em, "_compute_file_diffs")
         assert "_compute_file_diffs" not in dir(em)
+
+
+class _Server:
+    """Enough of a UIServer for the rollup helper: it reaches through
+    ``_server._agent.config`` for the ui.changeset section."""
+
+    def __init__(self, config=None):
+        self._agent = type("A", (), {"config": config})()
+
+
+class _Session:
+    def __init__(self, sid):
+        self.id = sid
+
+
+class _Config:
+    def __init__(self, session_rollup=True):
+        section = type("S", (), {"enabled": True, "session_rollup": session_rollup})()
+        self.ui = type("U", (), {"changeset": section})()
+
+
+class TestSessionRollupFooter:
+    """The session total pinned under a round's changeset block.
+
+    The readline UI has had ``/changes session`` since the feature shipped;
+    this is the same merge (core.changeset.merge_changesets) rendered as a
+    footer, so all three UIs say the same thing.
+    """
+
+    def _app(self, config=None, sid="s1", last=None):
+        app = _FakeApp()
+        app._server = _Server(config if config is not None else _Config())
+        app._session = _Session(sid)
+        app._last_changeset = last
+        return app
+
+    def test_the_rollup_reads_the_session_log_not_just_this_round(self, monkeypatch):
+        """A resumed session must roll up rounds it never watched live."""
+        history = [(1, {}, {"turn_id": 1, "changeset": {
+            "turn_id": 1, "files": [{"path": "old.py", "added": 10}]}})]
+        monkeypatch.setattr("agent.memory.qa_log.read_history_sync", lambda sid: history)
+        app = self._app(last=Changeset(turn_id=2, files=[FileChange(path="new.py", added=1)]))
+        assert em.session_rollup_line(app) == "session: 2 files changed, +11 -0"
+
+    def test_the_footer_is_written_under_the_block(self, monkeypatch):
+        monkeypatch.setattr("agent.memory.qa_log.read_history_sync", lambda sid: [])
+        cs = Changeset(turn_id=1, files=[FileChange(path="a.py", added=1)], tier="list")
+        app = self._app(last=cs)
+        log = _FakeChatLog()
+        em.write_changeset_rows(app, log.lines.append, log, cs, em.session_rollup_line(app))
+        assert "session: 1 file changed, +1 -0" in log.lines[-1]
+
+    def test_a_count_tier_block_still_gets_the_footer(self, monkeypatch):
+        """count returns early after the headline — the footer must survive it."""
+        monkeypatch.setattr("agent.memory.qa_log.read_history_sync", lambda sid: [])
+        cs = Changeset(turn_id=1, files=[FileChange(path="a.py", added=1)], tier="count")
+        app = self._app(last=cs)
+        log = _FakeChatLog()
+        em.write_changeset_rows(app, log.lines.append, log, cs, "session: 1 file changed")
+        assert "session: 1 file changed" in log.lines[-1]
+
+    def test_history_re_render_gets_no_footer(self):
+        """A rollup under an old round would state a total that was not true
+        when that round ended, so replay passes none."""
+        cs = Changeset(turn_id=1, files=[FileChange(path="a.py", added=1)], tier="list")
+        log = _write(_FakeApp(), cs)
+        assert not any("session:" in line for line in log.lines)
+
+    def test_the_config_toggle_silences_it(self, monkeypatch):
+        monkeypatch.setattr("agent.memory.qa_log.read_history_sync", lambda sid: [])
+        app = self._app(config=_Config(session_rollup=False),
+                        last=Changeset(turn_id=1, files=[FileChange(path="a.py", added=1)]))
+        assert em.session_rollup_line(app) == ""
+
+    def test_a_round_offered_twice_is_counted_once(self, monkeypatch):
+        monkeypatch.setattr("agent.memory.qa_log.read_history_sync", lambda sid: [])
+        app = self._app(last=Changeset(turn_id=1, files=[FileChange(path="a.py", added=3)]))
+        assert em.session_rollup_line(app) == em.session_rollup_line(app)
+        assert em.session_rollup_line(app) == "session: 1 file changed, +3 -0"
+
+    def test_an_unreadable_log_costs_the_footer_not_the_round(self, monkeypatch):
+        def _boom(sid):
+            raise OSError("gone")
+        monkeypatch.setattr("agent.memory.qa_log.read_history_sync", _boom)
+        app = self._app(last=Changeset(turn_id=1, files=[FileChange(path="a.py", added=1)]))
+        assert em.session_rollup_line(app) == "session: 1 file changed, +1 -0"

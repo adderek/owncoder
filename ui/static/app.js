@@ -527,9 +527,22 @@ function csFileRow(f, turnId, eager) {
 //   inline — few files, small diffs: shown expanded
 //   list   — one row per file, each unfolding to its diff
 //   count  — one summary line, unfolding to the file list, then to a diff
+// The session total, pinned under the round's block (server-side
+// core.changeset.SessionRollup, so it counts rounds from before this page was
+// opened too). Absent when the rollup is switched off or nothing changed yet.
+function csRollup(cs) {
+  if (!cs.rollup || !cs.rollup.line) return null;
+  const el = document.createElement('div');
+  el.className = 'cs-rollup';
+  el.textContent = cs.rollup.line;
+  el.title = 'every file this session has touched, churn summed';
+  return el;
+}
+
 function renderChangeset(cs) {
   const files = cs.files || [];
   const headline = csHeadline(cs);
+  const rollup = csRollup(cs);
   const wrap = document.createElement('div');
   wrap.className = 'files-changed';
   if (cs.tier === 'count') {
@@ -540,6 +553,7 @@ function renderChangeset(cs) {
     outer.appendChild(summary);
     for (const f of files) outer.appendChild(csFileRow(f, cs.turn_id, false));
     wrap.appendChild(outer);
+    if (rollup) wrap.appendChild(rollup);
     return wrap;
   }
   const label = document.createElement('span');
@@ -547,6 +561,7 @@ function renderChangeset(cs) {
   label.textContent = headline;
   wrap.appendChild(label);
   for (const f of files) wrap.appendChild(csFileRow(f, cs.turn_id, cs.tier === 'inline'));
+  if (rollup) wrap.appendChild(rollup);
   return wrap;
 }
 

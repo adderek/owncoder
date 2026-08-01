@@ -128,51 +128,16 @@ class TestChangesFileDiff:
         assert any("binary" in l for l in lines)
 
 
-class TestMergeChangesets:
-    def test_a_path_touched_twice_is_counted_once_with_summed_churn(self):
-        round1 = Changeset(files=[_fc("a.py", added=3, removed=1), _fc("b.py", added=2)])
-        round2 = Changeset(files=[_fc("a.py", added=1, removed=2), _fc("c.py", removed=4)])
-        merged = merge_changesets([round1, round2])
-        paths = [f.path for f in merged.files]
-        assert paths.count("a.py") == 1
-        a = next(f for f in merged.files if f.path == "a.py")
-        assert (a.added, a.removed) == (4, 3)
-        assert set(paths) == {"a.py", "b.py", "c.py"}
+class TestReExports:
+    """The merge and the config toggles moved to core/changeset.py when the
+    other two UIs started rendering the same rollup. They stay importable from
+    here — this module is what a reader looking for the readline UI opens."""
 
-    def test_empty_list_merges_to_an_empty_changeset(self):
-        merged = merge_changesets([])
-        assert merged.file_count == 0
-
-    def test_a_file_created_then_edited_is_still_added_for_the_session(self):
-        """Status is measured from the session start, not from the last round."""
-        round1 = Changeset(files=[_fc("a.py", added=3, status="added")])
-        round2 = Changeset(files=[_fc("a.py", added=1, status="modified")])
-        assert merge_changesets([round1, round2]).files[0].status == "added"
-
-    def test_a_file_deleted_in_a_later_round_reads_as_deleted(self):
-        round1 = Changeset(files=[_fc("a.py", added=3, status="added")])
-        round2 = Changeset(files=[_fc("a.py", removed=3, status="deleted")])
-        assert merge_changesets([round1, round2]).files[0].status == "deleted"
-
-    def test_foreign_actors_accumulate_across_rounds(self):
-        round1 = Changeset(files=[_fc("a.py", added=1, foreign_edit=True, foreign_actors=["x"])])
-        round2 = Changeset(files=[_fc("a.py", added=1, foreign_edit=True, foreign_actors=["y"])])
-        merged = merge_changesets([round1, round2])
-        a = merged.files[0]
-        assert a.foreign_edit
-        assert set(a.foreign_actors) == {"x", "y"}
-
-
-class TestFeatureToggles:
-    def test_session_rollup_toggle(self):
-        assert session_rollup_enabled(_Config(_Section(session_rollup=True)))
-        assert not session_rollup_enabled(_Config(_Section(session_rollup=False)))
-
-    def test_missing_ui_section_defaults_to_enabled(self):
-        class _Bare:
-            pass
-        assert changeset_enabled(_Bare())
-        assert session_rollup_enabled(_Bare())
+    def test_the_readline_module_still_exposes_the_shared_helpers(self):
+        from agent.core import changeset as core
+        assert merge_changesets is core.merge_changesets
+        assert changeset_enabled is core.changeset_enabled
+        assert session_rollup_enabled is core.session_rollup_enabled
 
 
 class TestChangesetSpillDir:

@@ -104,7 +104,34 @@ def _changeset_sys_lines(t, cs) -> "list[str]":
     return lines
 
 
-def write_changeset_rows(app, _cw, chat_log, cs) -> None:
+def session_rollup_line(app) -> str:
+    """``session: 7 files changed, +120 -33`` for the whole session, or "".
+
+    Pinned under the round's changeset block so the answer to "what has this
+    session done so far" does not require scrolling back through every round.
+    The rounds come from ``core.changeset.SessionRollup``, which reads the QA
+    log — a session resumed from disk therefore rolls up the rounds it never
+    watched live, not just the ones since the reload. Empty when the rollup is
+    switched off (``ui.changeset.session_rollup``) or nothing changed yet.
+    """
+    from agent.core.changeset import SessionRollup, session_rollup_enabled
+    try:
+        cfg = getattr(getattr(getattr(app, "_server", None), "_agent", None), "config", None)
+        if cfg is not None and not session_rollup_enabled(cfg):
+            return ""
+        sid = getattr(getattr(app, "_session", None), "id", "") or ""
+        rollup = getattr(app, "_session_rollup", None)
+        if rollup is None or rollup.session_id != sid:
+            rollup = SessionRollup(sid)
+            app._session_rollup = rollup
+        rollup.add(getattr(app, "_last_changeset", None))
+        return rollup.line()
+    except Exception:
+        logger.debug("textual ui: session rollup failed", exc_info=True)
+        return ""
+
+
+def write_changeset_rows(app, _cw, chat_log, cs, rollup: str = "") -> None:
     """Write *cs* to the chat log via *_cw*, tiered, registering click targets.
 
     Shared by the live end-of-turn write (event_mixin._turn_write_chat) and by
@@ -113,6 +140,10 @@ def write_changeset_rows(app, _cw, chat_log, cs) -> None:
     registers it in ``app._chat_changeset_lines`` (click → file list); ``list``
     adds one row per file registered in ``app._chat_file_lines`` (click →
     diff); ``inline`` also writes each file's diff, already fully visible.
+
+    *rollup* is the session-total footer line (see session_rollup_line). The
+    live path passes one; history re-render does not, since a rollup printed
+    under an old round would state a total that was not true when it ended.
     """
     if not cs:
         return
@@ -125,6 +156,8 @@ def write_changeset_rows(app, _cw, chat_log, cs) -> None:
     if cs.tier == "count":
         for li in range(before, len(chat_log.lines)):
             app._chat_changeset_lines[li] = cs
+        if rollup:
+            _cw(f"  [{t.text_dim}]{_escape(rollup)}[/{t.text_dim}]")
         return
     for fc in cs.files:
         row_before = len(chat_log.lines)
@@ -138,6 +171,8 @@ def write_changeset_rows(app, _cw, chat_log, cs) -> None:
         if cs.tier == "inline" and fc.diff:
             for l in fc.diff.rstrip("\n").splitlines():
                 _cw(f"    {_escape(l)}")
+    if rollup:
+        _cw(f"  [{t.text_dim}]{_escape(rollup)}[/{t.text_dim}]")
 
 
 class EventHandlerMixin:
@@ -436,7 +471,9 @@ class EventHandlerMixin:
           if self._last_tool_calls:
               tool_part = self._render_tool_summary()
               self._write_chat(f"  {tool_part}")
-          write_changeset_rows(self, self._write_chat, chat_log, getattr(self, "_last_changeset", None))
+          write_changeset_rows(self, self._write_chat, chat_log,
+                               getattr(self, "_last_changeset", None),
+                               session_rollup_line(self))
           if response:
               if empty_response:
                   self._write_chat(

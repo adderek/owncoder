@@ -12,6 +12,7 @@ a single hello negotiation covers both directions:
     {"v": 1, "type": "control", "action": "stop"}
     {"v": 1, "type": "control", "action": "inject",  "text": "also update docs"}
     {"v": 1, "type": "control", "action": "set",     "key": "autonomy", "arg": "brisk"}
+    {"v": 1, "type": "control", "action": "changeset_diff", "turn": 3, "path": "a.py"}
 
 `ControlDispatcher.handle` applies inject/stop/set against a UIServer and routes
 answers to a supplied sink. `chat` is returned for the loop owner to run (it is
@@ -43,13 +44,15 @@ _SET_METHODS = {
 
 @dataclass
 class ControlMsg:
-    action: str                 # chat | answer | stop | inject | set
+    action: str                 # chat | answer | stop | inject | set | changeset_diff
     text: str = ""
     id: str = ""                # answer: the question id
     choice: str = ""            # answer: chosen option
     key: str = ""               # set: knob name
     arg: str = ""               # set: knob value
     frm: str = ""               # chat: originating peer's name (self-asserted)
+    turn: int = 0               # changeset_diff: which round's stored diff
+    path: str = ""              # changeset_diff: which file in that round
 
 
 def build_control(action: str, **fields: Any) -> str:
@@ -80,6 +83,10 @@ def parse_control(raw: str | dict) -> ControlMsg:
     action = obj.get("action")
     if not action:
         raise ValueError("control frame missing action")
+    try:
+        turn = int(obj.get("turn") or 0)
+    except (TypeError, ValueError):
+        turn = 0
     return ControlMsg(
         action=action,
         text=obj.get("text", ""),
@@ -88,6 +95,8 @@ def parse_control(raw: str | dict) -> ControlMsg:
         key=obj.get("key", ""),
         arg=obj.get("arg", ""),
         frm=obj.get("from", ""),
+        turn=turn,
+        path=obj.get("path", ""),
     )
 
 
@@ -98,7 +107,9 @@ class ControlDispatcher:
     question (e.g. the notify broker). `on_chat(text, frm)` is invoked for a
     `chat` action so the loop owner can start a turn (`frm` is the originating
     peer's self-asserted name, "" for a plain client); if omitted, `chat` is
-    ignored. Returns the parsed ControlMsg so callers can observe what happened.
+    ignored. `on_changeset_diff(turn, path)` answers a request for one file's
+    stored diff (the changeset event carries metadata only). Returns the parsed
+    ControlMsg so callers can observe what happened.
     """
 
     def __init__(
@@ -106,10 +117,12 @@ class ControlDispatcher:
         server: Any,
         on_answer: Callable[[str, str, str], Any] | None = None,
         on_chat: Callable[[str], Awaitable[Any] | Any] | None = None,
+        on_changeset_diff: Callable[[int, str], Awaitable[Any] | Any] | None = None,
     ) -> None:
         self._server = server
         self._on_answer = on_answer
         self._on_chat = on_chat
+        self._on_changeset_diff = on_changeset_diff
 
     async def handle(self, raw: str | dict) -> "ControlMsg | None":
         """Act on a control frame. Returns None for a frame this handler does
@@ -132,6 +145,14 @@ class ControlDispatcher:
             method_name = _SET_METHODS.get(msg.key)
             if method_name is not None:
                 getattr(self._server, method_name)(msg.arg)
+        elif msg.action == "changeset_diff":
+            # Unhandled when no sink is wired (a build without the remote
+            # changeset feature): the client simply never gets a reply, which
+            # is the same as talking to an agent that predates the action.
+            if self._on_changeset_diff is not None:
+                res = self._on_changeset_diff(msg.turn, msg.path)
+                if hasattr(res, "__await__"):
+                    await res
         elif msg.action == "chat":
             if self._on_chat is not None:
                 res = self._on_chat(msg.text, msg.frm)

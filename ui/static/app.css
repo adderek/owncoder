@@ -364,6 +364,10 @@ aside.resizing { transition: none; }   /* no lag while dragging */
 .files-changed { display: flex; flex-direction: column; gap: 3px;
                  margin: 0 0 10px 2px; font-size: 11.5px; }
 .files-changed .fc-label { color: var(--dimmer); font-size: 11px; }
+/* Session total under the round's block — dimmer than the round's own
+   headline so the round stays the thing being read. */
+.files-changed .cs-rollup { color: var(--dimmer); font-size: 10.5px;
+                            opacity: .85; margin-top: 2px; }
 .files-changed .cs-summary > summary { color: var(--dimmer); font-size: 11px;
                                         cursor: pointer; }
 .files-changed .cs-summary > summary::-webkit-details-marker { display: none; }

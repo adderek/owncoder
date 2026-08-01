@@ -407,3 +407,82 @@ class TestReconnectKeepsTheFileLists:
 
         src = inspect.getsource(_HttpUI.state)
         assert "_attach_changesets(self.session.id, messages)" in src
+
+
+class TestSessionRollup:
+    """The session total under a round's block, the browser's half of the
+    rollup the readline UI serves as `/changes session`. Server-computed so all
+    three UIs agree on the wording and on which rounds count."""
+
+    def _ui(self, session_id="s-roll", session_rollup=True):
+        from agent.config import Config
+        from agent.memory.session import Session
+        cfg = Config()
+        cfg.ui.changeset.session_rollup = session_rollup
+        ui = _make_ui(Session(id=session_id))
+        ui.server = type("S", (), {"_agent": type("A", (), {"config": cfg})()})()
+        return ui
+
+    def test_it_counts_rounds_from_the_log_the_page_never_saw(self, tmp_path, monkeypatch):
+        """A page opened against a resumed session shows the whole session."""
+        monkeypatch.setattr(session_mod, "_session_dir", tmp_path)
+        _capture("s-roll", 1, changeset=_changeset(files=[_file("old.py", added=10)]))
+        rollup = self._ui().session_rollup()
+        assert rollup["line"] == "session: 1 file changed, +10 -0"
+
+    def test_the_live_round_is_folded_in(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(session_mod, "_session_dir", tmp_path)
+        _capture("s-roll", 1, changeset=_changeset(files=[_file("old.py", added=10)]))
+        from agent.core.changeset import Changeset, FileChange
+        live = Changeset(turn_id=2, files=[FileChange(path="new.py", added=1)])
+        assert self._ui().session_rollup(live)["files"] == 2
+
+    def test_a_round_already_in_the_log_is_not_double_counted(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(session_mod, "_session_dir", tmp_path)
+        _capture("s-roll", 1, changeset=_changeset(files=[_file("a.py", added=10)]))
+        from agent.core.changeset import Changeset, FileChange
+        same = Changeset(turn_id=1, files=[FileChange(path="a.py", added=10)])
+        assert self._ui().session_rollup(same)["added"] == 10
+
+    def test_the_changeset_event_carries_it(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(session_mod, "_session_dir", tmp_path)
+        _capture("s-roll", 1, changeset=_changeset(files=[_file("a.py", added=2)]))
+        from agent.core.changeset import Changeset, FileChange
+        cs = Changeset(turn_id=2, files=[FileChange(path="b.py", added=1)])
+        event = self._ui().changeset_event(cs)
+        assert event["type"] == "changeset"
+        assert [f["path"] for f in event["files"]] == ["b.py"]     # the round
+        assert event["rollup"]["files"] == 2                        # the session
+
+    def test_the_config_toggle_leaves_it_off_the_event(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(session_mod, "_session_dir", tmp_path)
+        from agent.core.changeset import Changeset, FileChange
+        cs = Changeset(turn_id=1, files=[FileChange(path="a.py", added=1)])
+        assert "rollup" not in self._ui(session_rollup=False).changeset_event(cs)
+
+    def test_replay_hangs_it_on_the_last_round_only(self):
+        messages = [
+            {"role": "assistant", "content": "one", "changeset": {"files": [{"path": "a.py"}]}},
+            {"role": "assistant", "content": "two", "changeset": {"files": [{"path": "b.py"}]}},
+        ]
+        http_loop._attach_session_rollup(messages, {"line": "session: 2 files changed"})
+        assert "rollup" not in messages[0]["changeset"]
+        assert messages[1]["changeset"]["rollup"]["line"] == "session: 2 files changed"
+
+    def test_no_rollup_changes_nothing(self):
+        messages = [{"role": "assistant", "changeset": {"files": []}}]
+        http_loop._attach_session_rollup(messages, None)
+        assert "rollup" not in messages[0]["changeset"]
+
+
+class TestRollupRendering:
+    def test_the_browser_renders_the_footer_under_both_layouts(self):
+        body = APP_JS[APP_JS.index("function renderChangeset("):]
+        body = body[:body.index("function toolCall(")]
+        assert body.count("wrap.appendChild(rollup)") == 2   # count tier + list/inline
+
+    def test_it_is_skipped_when_the_server_sent_none(self):
+        assert "if (!cs.rollup || !cs.rollup.line) return null;" in APP_JS
+
+    def test_it_is_styled_dimmer_than_the_round_headline(self):
+        assert ".files-changed .cs-rollup" in APP_CSS
