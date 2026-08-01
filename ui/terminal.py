@@ -728,6 +728,10 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                 self._set_terminal_title(f"{icon} {s} agent — {label}{self._session_title_suffix()}")
 
         def _begin_chat(self, user_text: str) -> None:
+            # A new round starting means the previous one is no longer
+            # "current" — auto-fold it (unless the user pinned it open).
+            # See view_mixin._auto_fold_before_new_round.
+            self._auto_fold_before_new_round()
             self._hide_rating_bar()
             self._switch_to_chat()
             chat_log = self.query_one("#chat-log", ConversationView)

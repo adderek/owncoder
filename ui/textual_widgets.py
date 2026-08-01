@@ -93,20 +93,17 @@ def build_widget_classes(t) -> SimpleNamespace:
                 text = text[: limit - 1] + "…"
         return text
 
-    def _dedup_files(files: list) -> list:
-        """Dedup modified_files (dict {path,added,removed} or str) by path,
-        keeping the first entry. dict.fromkeys() crashes on dict entries
-        (unhashable), so both the turn-detail render and its click handler must
-        use this — and produce the SAME order so button indices stay aligned."""
-        seen: set = set()
-        out = []
-        for f in files or []:
-            key = f.get("path", "") if isinstance(f, dict) else str(f)
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(f)
-        return out
+    def _dedup_files(a_data: dict) -> list:
+        """Files changed in this turn, as core.changeset.FileChange objects.
+
+        Reads through changeset.from_a_data, which prefers the record's own
+        ``changeset`` key (exact per-file diff, foreign-edit flags) and falls
+        back to the legacy ``modified_files`` list (old sessions have only
+        that) — deduping by path itself. Both the turn-detail render and its
+        click handler must call this and get the SAME order so button
+        indices stay aligned, which from_a_data already guarantees."""
+        from agent.core.changeset import from_a_data
+        return from_a_data(a_data or {}).files
 
     # ── bars ─────────────────────────────────────────────────────────────────
 
@@ -410,6 +407,8 @@ def build_widget_classes(t) -> SimpleNamespace:
             line_idx = int(self.scroll_offset.y) + int(event.y)
             if line_idx in getattr(self.app, "_chat_model_lines", {}):
                 tip = "Click: model-call detail for this round"
+            elif line_idx in getattr(self.app, "_chat_changeset_lines", {}):
+                tip = "Click: file list for this round"
             elif line_idx in getattr(self.app, "_chat_file_lines", {}):
                 tip = "Click: diff for this file"
             else:
@@ -430,15 +429,20 @@ def build_widget_classes(t) -> SimpleNamespace:
         def on_click(self, event) -> None:
             line_idx = int(self.scroll_offset.y) + int(event.y)
 
+            # "count" tier headline → the file list, which itself unfolds to
+            # a diff per file (ChangesetFilesScreen → FileDiffScreen).
+            changeset_lines = getattr(self.app, "_chat_changeset_lines", {})
+            if line_idx in changeset_lines:
+                self.app.push_screen(
+                    self.app._wt.ChangesetFilesScreen(changeset_lines[line_idx])
+                )
+                return
+
             # Check if this line is a clickable file diff entry.
             file_lines = getattr(self.app, "_chat_file_lines", {})
             if line_idx in file_lines:
-                entry = file_lines[line_idx]
-                path = entry.get("path", "") if isinstance(entry, dict) else entry
-                added = entry.get("added", 0) if isinstance(entry, dict) else 0
-                removed = entry.get("removed", 0) if isinstance(entry, dict) else 0
                 self.app.push_screen(
-                    self.app._wt.FileDiffScreen(path, added, removed)
+                    self.app._wt.FileDiffScreen(file_lines[line_idx])
                 )
                 return
 
@@ -1125,12 +1129,11 @@ def build_widget_classes(t) -> SimpleNamespace:
             tid = self._q_data.get("turn_id") or self._a_data.get("turn_id") or (self._ordinal + 1)
 
             tools = self._a_data.get("tool_calls") or []
-            files = self._a_data.get("modified_files") or []
             # Normalize: stored as strings (names) or dicts; extract name only for dedup.
             tool_names = list(dict.fromkeys(
                 (n if isinstance(n, str) else n.get("name", "?")) for n in tools
             ))
-            files = _dedup_files(files)
+            files = _dedup_files(self._a_data)
 
             with Vertical(id="turn-detail-dialog"):
                 yield Static(
@@ -1158,20 +1161,16 @@ def build_widget_classes(t) -> SimpleNamespace:
                             )
                     if files:
                         yield Static(f"[{t.text_dim}]Files (click for diff):[/{t.text_dim}]", markup=True)
-                        for fidx, fentry in enumerate(files):
-                            if isinstance(fentry, dict):
-                                fp = fentry.get("path", "")
-                                fa = fentry.get("added", 0)
-                                fr = fentry.get("removed", 0)
-                                stat = f" +{fa}/-{fr}" if (fa or fr) else ""
-                            else:
-                                fp = str(fentry)
-                                stat = ""
+                        for fidx, fc in enumerate(files):
+                            stat = f" +{fc.added}/-{fc.removed}" if (fc.added or fc.removed) else ""
                             yield Button(
-                                f"📄 {_escape(fp)}{stat}",
+                                f"📄 {_escape(fc.path)}{stat}",
                                 id=f"file-btn-{fidx}",
                                 classes="tool-call-btn",
                             )
+                            note = fc.note()
+                            if note:
+                                yield Static(f"[{t.warning}]⚠ {_escape(note)}[/{t.warning}]", markup=True)
                 if self._has_reasoning():
                     yield Static(f"[{t.text_dim}]Reasoning:[/{t.text_dim}]", markup=True)
                     yield Button("🧠 thinking", id="reasoning-btn", classes="tool-call-btn")
@@ -1222,17 +1221,12 @@ def build_widget_classes(t) -> SimpleNamespace:
                     self.app.push_screen(ToolCallDetailScreen(tool_name, tid, self._session_dir))
             if btn_id.startswith("file-btn-"):
                 idx = int(btn_id[len("file-btn-"):])
-                files = _dedup_files(self._a_data.get("modified_files") or [])
+                files = _dedup_files(self._a_data)
                 if idx < len(files):
-                    fentry = files[idx]
-                    if isinstance(fentry, dict):
-                        fp = fentry.get("path", "")
-                        fa = fentry.get("added", 0)
-                        fr = fentry.get("removed", 0)
-                    else:
-                        fp = str(fentry)
-                        fa = fr = 0
-                    self.app.push_screen(FileDiffScreen(fp, fa, fr))
+                    from agent.ui.event_mixin import changeset_file_dict
+                    turn_id = self._a_data.get("turn_id") or 0
+                    entry = changeset_file_dict(files[idx], turn_id)
+                    self.app.push_screen(FileDiffScreen(entry))
 
         def on_key(self, event) -> None:
             if event.key in ("escape", "q"):
@@ -1444,7 +1438,14 @@ def build_widget_classes(t) -> SimpleNamespace:
                 self.dismiss()
 
     class FileDiffScreen(ModalScreen):
-        """Modal showing git diff for a modified file."""
+        """Modal showing the diff for one changed file.
+
+        *entry* is a plain dict — see event_mixin.changeset_file_dict — carrying
+        the exact diff the changeset captured for this round (or a diff_ref to
+        a spilled one). Only a legacy record with no captured diff at all (an
+        old session's bare ``modified_files`` list) falls back to running
+        ``git diff``, which is best-effort and may show more than this round.
+        """
 
         CSS = """
         FileDiffScreen {
@@ -1469,53 +1470,151 @@ def build_widget_classes(t) -> SimpleNamespace:
         }
         """
 
-        def __init__(self, file_path: str, added: int = 0, removed: int = 0) -> None:
+        def __init__(self, entry: dict) -> None:
             super().__init__()
-            self._file_path = file_path
-            self._added = added
-            self._removed = removed
+            self._entry = entry or {}
 
         def _get_diff(self) -> str:
+            diff = self._entry.get("diff")
+            if diff:
+                return diff
+            diff_ref = self._entry.get("diff_ref")
+            if diff_ref:
+                text = self._load_spilled(diff_ref)
+                if text:
+                    return text
             import subprocess
+            path = self._entry.get("path", "")
             try:
                 result = subprocess.run(
-                    ["git", "diff", "--", self._file_path],
+                    ["git", "diff", "--", path],
                     capture_output=True, text=True, timeout=5,
                 )
                 if result.returncode == 0 and result.stdout.strip():
                     return result.stdout
                 # Try staged diff too
                 result = subprocess.run(
-                    ["git", "diff", "--cached", "--", self._file_path],
+                    ["git", "diff", "--cached", "--", path],
                     capture_output=True, text=True, timeout=5,
                 )
                 if result.returncode == 0 and result.stdout.strip():
                     return result.stdout
             except Exception:
                 pass
-            return f"[dim]No diff available for {_escape(self._file_path)}[/dim]"
+            return f"[dim]No diff available for {_escape(path)}[/dim]"
+
+        def _load_spilled(self, diff_ref: str) -> "str | None":
+            session = getattr(self.app, "_session", None)
+            if session is None:
+                return None
+            try:
+                from agent.core.changeset import load_diff, FileChange
+                from agent.memory.session import get_session_full_dir
+                turn_id = self._entry.get("turn_id") or 0
+                spill_dir = get_session_full_dir(session.id) / "changesets" / str(turn_id)
+                fake = FileChange(path=self._entry.get("path", ""), diff_ref=diff_ref)
+                return load_diff(fake, spill_dir)
+            except Exception:
+                return None
 
         def compose(self):
             from textual.containers import Vertical, ScrollableContainer
             from textual.widgets import Button, Static
             from rich.markup import escape as _esc
 
+            path = self._entry.get("path", "")
+            added = self._entry.get("added", 0) or 0
+            removed = self._entry.get("removed", 0) or 0
+            note = self._entry.get("note", "") or ""
             diff_text = self._get_diff()
             stat = ""
-            if self._added or self._removed:
-                stat = f"  [{t.success}]+{self._added}[/{t.success}] [{t.error}]-{self._removed}[/{t.error}]"
+            if added or removed:
+                stat = f"  [{t.success}]+{added}[/{t.success}] [{t.error}]-{removed}[/{t.error}]"
 
             with Vertical(id="diff-dialog"):
                 yield Static(
-                    f"[bold]📄 {_esc(self._file_path)}[/bold]{stat}",
+                    f"[bold]📄 {_esc(path)}[/bold]{stat}",
                     markup=True,
                 )
+                if note:
+                    yield Static(f"[{t.warning}]⚠ {_esc(note)}[/{t.warning}]", markup=True)
                 with ScrollableContainer(id="diff-body"):
                     yield Static(diff_text, markup=False)
                 yield Button("Close  [ESC]", id="diff-close")
 
         def on_button_pressed(self, event) -> None:
             self.dismiss()
+
+        def on_key(self, event) -> None:
+            if event.key in ("escape", "q"):
+                self.dismiss()
+
+    class ChangesetFilesScreen(ModalScreen):
+        """Modal file list for a round's changeset.
+
+        This is the ``count`` tier's unfold target: the chat log shows only
+        the headline, a click here opens this list, and clicking a file here
+        opens its diff (FileDiffScreen) — the same two-step disclosure the
+        ``list`` tier's rows give directly.
+        """
+
+        CSS = """
+        ChangesetFilesScreen {
+            align: center middle;
+        }
+        #cs-files-dialog {
+            width: 90%;
+            max-width: 100;
+            height: auto;
+            max-height: 80%;
+            border: solid $accent;
+            background: $surface;
+            padding: 1 2;
+        }
+        #cs-files-body {
+            max-height: 30;
+            overflow-y: auto;
+            margin-bottom: 1;
+        }
+        #cs-files-close {
+            width: 100%;
+        }
+        """
+
+        def __init__(self, cs) -> None:
+            super().__init__()
+            self._cs = cs
+
+        def compose(self):
+            from textual.containers import Vertical, ScrollableContainer
+            from textual.widgets import Button, Static
+
+            with Vertical(id="cs-files-dialog"):
+                yield Static(f"[bold]{_escape(self._cs.headline())}[/bold]", markup=True)
+                with ScrollableContainer(id="cs-files-body"):
+                    for idx, fc in enumerate(self._cs.files):
+                        stat = f" +{fc.added}/-{fc.removed}" if (fc.added or fc.removed) else ""
+                        yield Button(
+                            f"📄 {_escape(fc.path)}{stat}",
+                            id=f"cs-file-btn-{idx}",
+                            classes="tool-call-btn",
+                        )
+                        note = fc.note()
+                        if note:
+                            yield Static(f"[{t.warning}]⚠ {_escape(note)}[/{t.warning}]", markup=True)
+                yield Button("Close  [ESC]", id="cs-files-close")
+
+        def on_button_pressed(self, event) -> None:
+            btn_id = event.button.id or ""
+            if btn_id == "cs-files-close":
+                self.dismiss()
+                return
+            if btn_id.startswith("cs-file-btn-"):
+                idx = int(btn_id[len("cs-file-btn-"):])
+                if 0 <= idx < len(self._cs.files):
+                    from agent.ui.event_mixin import changeset_file_dict
+                    entry = changeset_file_dict(self._cs.files[idx], self._cs.turn_id)
+                    self.app.push_screen(FileDiffScreen(entry))
 
         def on_key(self, event) -> None:
             if event.key in ("escape", "q"):
@@ -2283,6 +2382,7 @@ def build_widget_classes(t) -> SimpleNamespace:
         PermissionScreen=PermissionScreen,
         ToolCallDetailScreen=ToolCallDetailScreen,
         FileDiffScreen=FileDiffScreen,
+        ChangesetFilesScreen=ChangesetFilesScreen,
         ModelCallsScreen=ModelCallsScreen,
         ModelsScreen=ModelsScreen,
         EffortChip=EffortChip,

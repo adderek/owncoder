@@ -90,6 +90,9 @@ class ViewMixin:
             expand_last = 3
         n = len(self._chat_qa_data)
         self._chat_folded = set(range(max(0, n - expand_last)))
+        # Fresh session load: no turn has been touched by hand yet. Reset
+        # (not merge) so a session switch never carries stale pins forward.
+        self._chat_fold_pinned = set()
         self._chat_restored_count = n
         self._chat_resume_marker = resume_marker
         self._rerender_chat()
@@ -104,6 +107,7 @@ class ViewMixin:
         self._chat_user_lines = []
         self._chat_model_lines = {}
         self._chat_file_lines = {}
+        self._chat_changeset_lines = {}
         self._chat_line_to_ordinal = []
         folded = getattr(self, "_chat_folded", set())
         marker_after = (getattr(self, "_chat_restored_count", 0) - 1
@@ -148,16 +152,12 @@ class ViewMixin:
         _cw(f"[{t.text_dim}]▾[/{t.text_dim}] [bold {t.user_color}]You:[/bold {t.user_color}] {_escape(q)}")
         for name in a_d.get("tool_calls") or []:
             _cw(f"[{t.tool_color}]  {_ti(name)} {name}[/{t.tool_color}]")
-        for entry in a_d.get("modified_files") or []:
-            if isinstance(entry, str):
-                entry = {"path": entry, "added": 0, "removed": 0}
-            p = entry.get("path", "")
-            add, rem = entry.get("added", 0), entry.get("removed", 0)
-            stat = f" [rgb(56,142,60)]+{add}[/] [rgb(198,40,40)]-{rem}[/]" if (add or rem) else ""
-            before = len(chat_log.lines)
-            _cw(f"  [{t.tool_color}]✎ {_escape(p)}[/{t.tool_color}]{stat}")
-            for li in range(before, len(chat_log.lines)):
-                self._chat_file_lines[li] = entry
+        # Restored turns render identically to live ones: from_a_data prefers
+        # the record's own "changeset" key (exact diffs, foreign-edit flags)
+        # and falls back to the legacy "modified_files" list for old sessions.
+        from agent.core.changeset import from_a_data
+        from agent.ui.event_mixin import write_changeset_rows
+        write_changeset_rows(self, _cw, chat_log, from_a_data(a_d))
         a = (a_d.get("content") or "").strip()
         if a:
             _cw(f"[bold {t.agent_color}]Agent:[/bold {t.agent_color}]")
@@ -177,18 +177,69 @@ class ViewMixin:
                 self._chat_model_lines[li] = payload
 
     def _toggle_chat_fold(self, ordinal: int) -> None:
-        """Fold/unfold one turn and re-render. No-op while a turn is streaming."""
+        """Fold/unfold one turn and re-render. No-op while a turn is streaming.
+
+        A manual toggle pins the turn: auto-fold (see ``_auto_fold_turn``)
+        will never touch it again, in either direction, until the session
+        is restored fresh."""
         if getattr(self, "_agent_running", False):
             return
         if not (0 <= ordinal < len(getattr(self, "_chat_qa_data", []))):
             return
         if not hasattr(self, "_chat_folded"):
             self._chat_folded = set()
+        if not hasattr(self, "_chat_fold_pinned"):
+            self._chat_fold_pinned = set()
+        self._chat_fold_pinned.add(ordinal)
         if ordinal in self._chat_folded:
             self._chat_folded.discard(ordinal)
         else:
             self._chat_folded.add(ordinal)
         self._rerender_chat()
+
+    def _fold_journal_mode(self) -> str:
+        """``config.ui.changeset.fold_journal``, read defensively — a bare or
+        partial config (e.g. in tests, or an old config predating this
+        setting) must still yield the documented default rather than raise."""
+        try:
+            cfg = getattr(getattr(self._server, "_agent", None), "config", None)
+            changeset_cfg = getattr(getattr(cfg, "ui", None), "changeset", None)
+            return getattr(changeset_cfg, "fold_journal", None) or "on_next_round"
+        except Exception:
+            return "on_next_round"
+
+    def _auto_fold_turn(self, ordinal: int) -> None:
+        """Fold turn *ordinal* unless the user pinned it (see
+        ``_toggle_chat_fold``) or it is already folded. Re-renders through
+        the same path a manual toggle uses — no second rendering route."""
+        if not (0 <= ordinal < len(getattr(self, "_chat_qa_data", []))):
+            return
+        if ordinal in getattr(self, "_chat_fold_pinned", set()):
+            return
+        if not hasattr(self, "_chat_folded"):
+            self._chat_folded = set()
+        if ordinal in self._chat_folded:
+            return
+        self._chat_folded.add(ordinal)
+        self._rerender_chat()
+
+    def _auto_fold_finished_round(self) -> None:
+        """Call once a round has just been appended to ``_chat_qa_data``
+        (see ``_append_qa_turn``). Only ``fold_journal == "immediately"``
+        acts here; the default "on_next_round" instead waits for
+        ``_auto_fold_before_new_round``, and "never" never folds."""
+        if self._fold_journal_mode() != "immediately":
+            return
+        self._auto_fold_turn(len(getattr(self, "_chat_qa_data", [])) - 1)
+
+    def _auto_fold_before_new_round(self) -> None:
+        """Call when a new round begins, before it is appended to
+        ``_chat_qa_data`` — so ``_chat_qa_data[-1]`` is still the round that
+        just became "previous". Only ``fold_journal == "on_next_round"``
+        (the default) acts here."""
+        if self._fold_journal_mode() != "on_next_round":
+            return
+        self._auto_fold_turn(len(getattr(self, "_chat_qa_data", [])) - 1)
 
     # ── per-session UI state (active tab, …) ────────────────────────────────
 
@@ -300,17 +351,12 @@ class ViewMixin:
         if tools:
             from agent.ui.render import tool_icon as _ti
             action_bits.append(", ".join(f"{_ti(n)} {n}" for n in tools[:4]))
-        if self._modified_files:
+        cs = getattr(self, "_last_changeset", None)
+        if cs:
             file_parts = []
-            for entry in self._modified_files[:4]:
-                if isinstance(entry, str):
-                    file_parts.append(entry)
-                else:
-                    p = entry.get("path", "")
-                    a = entry.get("added", 0)
-                    r = entry.get("removed", 0)
-                    stat = f"+{a}/-{r}" if (a or r) else ""
-                    file_parts.append(f"{p} ({stat})" if stat else p)
+            for fc in cs.files[:4]:
+                stat = f"+{fc.added}/-{fc.removed}" if (fc.added or fc.removed) else ""
+                file_parts.append(f"{fc.path} ({stat})" if stat else fc.path)
             action_bits.append("✎ " + " ".join(file_parts))
         action = " · ".join(action_bits)
         if action and a:
@@ -328,15 +374,23 @@ class ViewMixin:
         try:
             turn_id = self._server.get_turn_id()
             q_data = {"turn_id": turn_id, "content": user_text}
+            cs = getattr(self, "_last_changeset", None)
             a_data = {
                 "turn_id": turn_id,
                 "content": response or "",
                 "tool_calls": list(self._last_tool_calls),
                 "modified_files": [
-                    f if isinstance(f, dict) else {"path": f, "added": 0, "removed": 0}
-                    for f in self._modified_files
+                    {"path": fc.path, "added": fc.added, "removed": fc.removed}
+                    for fc in (cs.files if cs else [])
                 ],
             }
+            # Carry the full changeset too (diffs, foreign-edit flags) so a
+            # fold/unfold re-render of this turn later in the same session
+            # looks identical to how it looked live — see
+            # view_mixin._render_full_turn / event_mixin.write_changeset_rows.
+            if cs:
+                from agent.core.changeset import to_json as _cs_to_json
+                a_data["changeset"] = _cs_to_json(cs)
             # Round stats so fold/unfold re-renders keep the clickable line.
             try:
                 from agent.metrics import model_calls as _mcm
@@ -348,6 +402,7 @@ class ViewMixin:
             if not hasattr(self, "_chat_qa_data"):
                 self._chat_qa_data = []
             self._chat_qa_data.append((q_data, a_data))
+            self._auto_fold_finished_round()
             self.query_one("#q-log", self._wt.QView).add_turn(turn_id, q_data, a_data)
             self.query_one("#a-log", self._wt.AView).add_turn(turn_id, q_data, a_data)
             self.query_one("#sparse-log", self._wt.SparseView).add_turn(turn_id, q_data, a_data)
