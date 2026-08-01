@@ -272,6 +272,7 @@ _PAGE = r"""<!DOCTYPE html>
   <b>owncoder</b>
   <button type="button" class="chip btn" id="model" title="Click to manage models"></button>
   <button type="button" class="chip btn" id="session" title="Current session — click for the sessions panel"></button>
+  <button type="button" class="chip btn" id="sesscopy" title="Copy the current session ID to the clipboard" aria-label="Copy session ID">⧉</button>
   <button type="button" class="chip btn" id="workdir" title="Project directory (session-scoped) — click to manage access"></button>
   <div id="statuswrap"><span id="dot"></span><span id="status" role="status" aria-live="polite">idle</span></div>
   <button type="button" class="chip btn" id="layout" title="Cycle chat width: centered / wide / full">center</button>
@@ -288,7 +289,7 @@ _PAGE = r"""<!DOCTYPE html>
 <div id="main">
 <div id="backdrop"></div>
 <aside id="left"><div class="aside-inner">
-  <div class="ptitle">Sessions <button class="sbtn" id="sessnew" title="Start a fresh session">＋ new</button></div>
+  <div class="ptitle">Sessions <button class="sbtn" id="sessnew" title="Start a fresh session">＋ new</button><button class="sbtn" id="sesscopyid" title="Copy the current session ID to the clipboard">⧉ id</button></div>
   <div class="dsec"><pre id="sessinfo">—</pre></div>
   <details id="sessfold" class="dfold">
     <summary class="dhead">recent sessions</summary>

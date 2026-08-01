@@ -1018,12 +1018,17 @@ function setIoChip(inTok, outTok, costUsd) {
 // id in the tooltip, and reflect the name in the window title. The id stays
 // reachable via the tooltip and the sessions panel, so it no longer eats the
 // header width with a long timestamp id.
+// Held so the copy button (and anything else needing the raw id) does not have
+// to parse it back out of a tooltip.
+let currentSessionId = '';
+
 function setSessionChip(id, name) {
+  currentSessionId = id || '';
   const label = name || (id ? id.slice(0, 8) + '…' : '—');
   const chip = document.getElementById('session');
   chip.textContent = label;
   chip.title = 'session: ' + id + (name ? '\nname: ' + name : '') +
-               '\nclick for the sessions panel';
+               '\nclick for the sessions panel · ⧉ copies the id';
   titleBase = 'owncoder' + (name || id ? ' — ' + (name || id) : '');
   renderTitle();
 }
@@ -1706,6 +1711,13 @@ document.getElementById('session').addEventListener('click', () => {
   if (fold && !fold.open) fold.open = true;   // fires toggle → loadSessions
   else loadSessions();
 });
+// The id is what another agent needs to find this session's logs, so it gets a
+// one-click copy of its own rather than a select-from-tooltip dance.
+document.getElementById('sesscopy').addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (!currentSessionId) { row('sys', null, 'no session id yet'); return; }
+  copyText(currentSessionId, e.currentTarget);
+});
 document.getElementById('righttoggle').addEventListener('click', () => {
   if (toggleDrawer('right', 'righttoggle')) {
     loadModels(); loadStats(); loadModelCalls(); loadContext(); loadBg();
@@ -1858,6 +1870,10 @@ try {
 let showHidden = false;
 document.getElementById('sessnew').addEventListener('click', () =>
   sessionAction({action: 'new'}));
+document.getElementById('sesscopyid').addEventListener('click', (e) => {
+  if (!currentSessionId) { row('sys', null, 'no session id yet'); return; }
+  copyText(currentSessionId, e.currentTarget);
+});
 async function sessionAction(payload) {
   try {
     const r = await (await fetch('/api/session', {
@@ -2105,6 +2121,7 @@ async function loadSessions() {
         (q && s.summary ? '<div class="ssum">' + esc(s.summary) + '</div>' : '') +
         '<div class="sess-acts">' +
         (cur ? '' : '<button class="sbtn" data-act="switch" title="Resume this session">⏵</button>') +
+        '<button class="sbtn" data-act="copyid" title="Copy this session ID">⧉</button>' +
         '<button class="sbtn" data-act="rename" title="Rename">✎</button>' +
         '<button class="sbtn" data-act="autoname" title="Auto-name with LLM">✨</button>' +
         '<button class="sbtn" data-act="hide" data-hidden="' + (s.hidden ? '1' : '') +
@@ -2120,6 +2137,7 @@ async function loadSessions() {
       const id = item.dataset.id;
       const act = b.dataset.act;
       if (act === 'switch') sessionAction({action: 'switch', id});
+      else if (act === 'copyid') copyText(id, b);
       else if (act === 'rename') startRename(item, id);
       else if (act === 'autoname') {
         b.textContent = '⏳';
