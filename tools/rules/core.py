@@ -302,8 +302,8 @@ class Rules:
             },
         }
         try:
-            from agent.failure_report import _current_session_id
-            sid = _current_session_id.get()
+            from agent.failure_report import current_session_id
+            sid = current_session_id()
             if sid:
                 entry["session_id"] = sid
         except Exception:

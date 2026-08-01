@@ -24,17 +24,47 @@ logger = logging.getLogger(__name__)
 _current_session_id: ContextVar[str | None] = ContextVar("fr_session_id", default=None)
 _current_config: ContextVar[Any] = ContextVar("fr_config", default=None)
 
+# A ContextVar set in one task is invisible to tasks created earlier or in a
+# different context — and session switches arrive on the UI's event loop via
+# run_coroutine_threadsafe while turns run in their own tasks. The result was
+# every failure being stamped with the *previous* session's id, which made
+# reflect_session (filters on session_id) see nothing. The process-wide
+# fallbacks below are the authoritative values; the ContextVars remain for
+# processes that deliberately scope a different session per context.
+_global_session_id: str | None = None
+_global_config: Any = None
+
 
 def set_session(session_id: str | None) -> None:
+    global _global_session_id
+    _global_session_id = session_id
     _current_session_id.set(session_id)
 
 
 def set_config(config: Any) -> None:
+    global _global_config
+    _global_config = config
     _current_config.set(config)
 
 
+def current_session_id(explicit: str | None = None) -> str | None:
+    """Resolve the session id to stamp on a failure record.
+
+    Precedence: explicit argument → process-wide value set by
+    ``set_session`` → ContextVar. The ContextVar is last because a stale
+    inherited context is exactly the failure mode this ordering fixes.
+    """
+    return explicit or _global_session_id or _current_session_id.get()
+
+
+def _current_cfg(explicit: Any = None) -> Any:
+    if explicit is not None:
+        return explicit
+    return _global_config if _global_config is not None else _current_config.get()
+
+
 def _failure_dir(config: Any = None) -> Path:
-    cfg = config if config is not None else _current_config.get()
+    cfg = _current_cfg(config)
     if cfg is not None:
         try:
             base = Path(cfg.tools.working_dir) / cfg.tools.agent_dir
@@ -51,8 +81,13 @@ def _safe_slug(s: str, n: int = 40) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in s)[:n]
 
 
-def report(kind: str, details: dict, config: Any = None) -> Path | None:
-    """Write a failure report. Never raises — returns None on internal error."""
+def report(kind: str, details: dict, config: Any = None,
+           session_id: str | None = None) -> Path | None:
+    """Write a failure report. Never raises — returns None on internal error.
+
+    *session_id* overrides the ambient session (see ``current_session_id``);
+    callers that hold the agent instance should pass it explicitly.
+    """
     try:
         d = _failure_dir(config)
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%f")[:-3]
@@ -64,10 +99,10 @@ def report(kind: str, details: dict, config: Any = None) -> Path | None:
         payload: dict = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "kind": kind,
-            "session_id": _current_session_id.get(),
+            "session_id": current_session_id(session_id),
             "pid": os.getpid(),
         }
-        cfg = config if config is not None else _current_config.get()
+        cfg = _current_cfg(config)
         if cfg is not None:
             try:
                 payload["model"] = cfg.llm.model
@@ -115,6 +150,7 @@ def report_exception(
     kind: str = "exception",
     context: dict | None = None,
     config: Any = None,
+    session_id: str | None = None,
 ) -> Path | None:
     details: dict = dict(context or {})
     details.setdefault("error", f"{type(exc).__name__}: {exc}")
@@ -122,4 +158,4 @@ def report_exception(
     details["traceback"] = "".join(
         traceback.format_exception(type(exc), exc, exc.__traceback__)
     ).rstrip()
-    return report(kind, details, config=config)
+    return report(kind, details, config=config, session_id=session_id)

@@ -158,13 +158,23 @@ def _collapse_tool_rounds(
 
                 if side_log is not None:
                     try:
-                        seq = side_log.append("tool_calls.jsonl", {
-                            "turn": turn_id,
-                            "tool_call_id": tc.get("id"),
-                            "tool": tc_name,
-                            "arguments": t_args,
-                            "result": raw_result,
-                        })
+                        # run_turn already logged this call at execution time
+                        # (with ok/duration_ms). Collapsing the same round again
+                        # — which happens on every compaction pass — must reuse
+                        # that row, not append a poorer duplicate: the session's
+                        # tool_calls.jsonl was otherwise ~50% duplicates.
+                        seq = None
+                        getter = getattr(side_log, "seq_for_call_id", None)
+                        if getter is not None:
+                            seq = getter("tool_calls.jsonl", tc.get("id"))
+                        if seq is None:
+                            seq = side_log.append("tool_calls.jsonl", {
+                                "turn": turn_id,
+                                "tool_call_id": tc.get("id"),
+                                "tool": tc_name,
+                                "arguments": t_args,
+                                "result": raw_result,
+                            })
                         refs.append(seq)
                     except Exception as e:
                         logger.warning("side_log append failed: %s", e)

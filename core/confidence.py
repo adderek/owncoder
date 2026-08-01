@@ -26,6 +26,33 @@ def _result_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()[:12]
 
 
+# Substrings identifying an error caused by a malformed *call* rather than by
+# the model reasoning badly: wrong/missing arguments, unparseable argument
+# JSON, a tool that does not exist. A stronger model is the wrong lever for
+# these — the fix is a precise schema reminder, and paying a metered tier to
+# re-roll broken JSON is the worst possible reason to escalate.
+_SCHEMA_ERROR_MARKERS = (
+    "missing required argument",
+    "invalid json arguments",
+    "empty_args",
+    "unknown tool",
+    "unexpected argument",
+    "args_json_decode_error",
+    "missing_required_args",
+)
+
+
+# At or above this share of schema-shaped errors, the failures are a call-format
+# problem: intervene with the schema reminder and do NOT escalate the tier.
+SCHEMA_DOMINANT_SHARE = 0.5
+
+
+def classify_error(result_text: str) -> str:
+    """Classify an error result: "schema" (bad call) or "other"."""
+    low = result_text.lower()
+    return "schema" if any(m in low for m in _SCHEMA_ERROR_MARKERS) else "other"
+
+
 @dataclass
 class ConfidenceSignal:
     score: float          # 0.0 = totally lost, 1.0 = converging
@@ -38,6 +65,10 @@ class ConfidenceSignal:
     # by the context budget (see core/context_budget.health_adjusted_budget).
     tool_call_rate: float = 0.0    # tool calls per completed iteration
     token_usage_rate: float = 0.0  # approx result tokens per completed iteration
+    # Fraction of the *errors* in the window that were malformed calls rather
+    # than bad reasoning. Read by the auto-tier gate: schema-shaped failures
+    # do not justify a costlier model (see classify_error).
+    schema_error_share: float = 0.0
 
     @property
     def waste_rate(self) -> float:
@@ -77,6 +108,7 @@ class ConfidenceMonitor:
         self.inject_cooldown = inject_cooldown
 
         self._errors: list[bool] = []    # True = error result
+        self._schema_errors: list[bool] = []  # True = error caused by a malformed call
         self._nulls: list[bool] = []     # True = empty/null result
         self._dups: list[bool] = []      # True = result hash seen before
         self._seen_hashes: set[str] = set()
@@ -96,6 +128,7 @@ class ConfidenceMonitor:
         is_dup = h in self._seen_hashes and not is_error and not is_null
 
         self._errors.append(is_error)
+        self._schema_errors.append(is_error and classify_error(result_text) == "schema")
         self._nulls.append(is_null)
         self._dups.append(is_dup)
         self._seen_hashes.add(h)
@@ -107,6 +140,7 @@ class ConfidenceMonitor:
         # Keep only last `window` entries.
         if len(self._errors) > self.window:
             self._errors = self._errors[-self.window:]
+            self._schema_errors = self._schema_errors[-self.window:]
             self._nulls = self._nulls[-self.window:]
             self._dups = self._dups[-self.window:]
 
@@ -139,6 +173,8 @@ class ConfidenceMonitor:
                                     token_usage_rate=round(tokens_rate, 1))
 
         error_rate = sum(self._errors) / n
+        n_err = sum(self._errors)
+        schema_share = (sum(self._schema_errors) / n_err) if n_err else 0.0
         null_rate = sum(self._nulls) / n
         dup_rate = sum(self._dups) / n
 
@@ -164,6 +200,7 @@ class ConfidenceMonitor:
             triggered=triggered,
             tool_call_rate=round(calls_rate, 2),
             token_usage_rate=round(tokens_rate, 1),
+            schema_error_share=round(schema_share, 3),
         )
 
     def should_intervene(self) -> ConfidenceSignal:
@@ -186,6 +223,14 @@ class ConfidenceMonitor:
         if sig.tool_call_rate >= 4:
             parts.append(f"{sig.tool_call_rate:.0f} tool calls per round")
         detail = ", ".join(parts) or f"score {sig.score:.2f}"
+        if sig.schema_error_share >= SCHEMA_DOMINANT_SHARE and sig.error_rate > 0.3:
+            return (
+                f"[confidence-guard: {detail}. Most of those failures were malformed "
+                "tool calls — missing required arguments, unparseable argument JSON, or a "
+                "tool name that does not exist — not missing information. Before the next "
+                "call: re-read the tool's schema, emit every required field, and emit the "
+                "arguments as one valid JSON object. Call find_tools if unsure of the schema.]"
+            )
         return (
             f"[confidence-guard: non-convergence detected ({detail}). "
             "State explicitly: (1) what you know for certain from tool output so far, "

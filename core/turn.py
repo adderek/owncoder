@@ -130,6 +130,27 @@ async def run_turn(
     # non-streaming call sites below.
     _orig_on_usage = on_usage
     if side_log is not None:
+        def _model_identity() -> dict:
+            """Entry name / model / tier for the endpoint serving this turn.
+
+            Without these, answering "which model ran turn N" needs a
+            time-correlation against the global metrics DB — impossible once
+            it rotates. Read at log time so a mid-turn escalation shows up.
+            """
+            try:
+                from agent.config.registry import entry_tier
+                from agent.metrics.model_stats import resolve_entry_name
+                name = resolve_entry_name(config)
+                entry = (getattr(config, "model_entries", {}) or {}).get(name)
+                return {
+                    "entry_name": name,
+                    "model": getattr(entry, "model", "") or getattr(config.llm, "model", ""),
+                    "tier": entry_tier(entry) if entry is not None else "local",
+                    "role": "main",
+                }
+            except Exception:
+                return {"role": "main"}
+
         def _on_usage_logged(u: dict) -> None:
             try:
                 gen = u.get("gen_seconds") or 0.0
@@ -137,6 +158,7 @@ async def run_turn(
                 ttft = u.get("ttft")
                 side_log.append("llm_calls.jsonl", {
                     "turn": turn_index,
+                    **_model_identity(),
                     "input_tokens": u.get("input_tokens", 0) or 0,
                     "output_tokens": out_tok,
                     "ttft": round(ttft, 3) if ttft else None,
@@ -805,6 +827,7 @@ async def run_turn(
                                 "tool_call_rate": conf_sig.tool_call_rate,
                                 "token_usage_rate": conf_sig.token_usage_rate,
                                 "waste_rate": round(conf_sig.waste_rate, 3),
+                                "schema_error_share": conf_sig.schema_error_share,
                             })
                         except Exception as _e:
                             logger.warning("side_log append failed (confidence_guard): %s", _e)
@@ -813,7 +836,18 @@ async def run_turn(
                     confidence_monitor.acknowledge()
                     # auto-tier: a stuck fast model escalates to the strong model
                     # for the rest of this turn (next turn reverts to fast).
-                    if not _tier_escalated:
+                    # Malformed-call failures are exempt: a costlier model does
+                    # not fix missing arguments or broken argument JSON, so the
+                    # schema reminder above is the whole intervention.
+                    from agent.core.confidence import SCHEMA_DOMINANT_SHARE
+                    _schema_bound = conf_sig.schema_error_share >= SCHEMA_DOMINANT_SHARE
+                    if _schema_bound:
+                        logger.warning(
+                            "auto-tier: escalation skipped — %.0f%% of failures are "
+                            "malformed tool calls, not non-convergence",
+                            conf_sig.schema_error_share * 100,
+                        )
+                    if not _tier_escalated and not _schema_bound:
                         try:
                             from agent.core.model_tier import escalate_mid_turn
                             _new_client = escalate_mid_turn(config)

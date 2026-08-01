@@ -217,6 +217,15 @@ def _dedup_action(store, rule_text: str, embedding) -> str | None:
     return None
 
 
+def _session_start_iso(session_id: str) -> str:
+    """UTC ISO timestamp encoded in *session_id*, or "" when unparseable."""
+    try:
+        from agent.memory.session import _parse_ts
+        return _parse_ts(session_id).isoformat()
+    except Exception:
+        return ""
+
+
 def _read_session_failures(config: "Config", session_id: str) -> str:
     """Read failure entries for session_id from the tail of index.jsonl."""
     try:
@@ -233,17 +242,28 @@ def _read_session_failures(config: "Config", session_id: str) -> str:
                 fbin.readline()  # discard partial first line
             lines_raw = fbin.read().decode("utf-8", errors="replace").splitlines()
 
-        lines = []
+        recs = []
         for line in lines_raw:
             try:
-                rec = json.loads(line)
-                if rec.get("session_id") == session_id:
-                    kind = rec.get("kind", "")
-                    tool = rec.get("tool") or ""
-                    reason = rec.get("reason") or rec.get("error") or ""
-                    lines.append(f"- [{kind}] tool={tool}: {str(reason)[:120]}")
+                recs.append(json.loads(line))
             except Exception:
                 pass
+
+        def _fmt(rec: dict) -> str:
+            kind = rec.get("kind", "")
+            tool = rec.get("tool") or ""
+            reason = rec.get("reason") or rec.get("error") or ""
+            return f"- [{kind}] tool={tool}: {str(reason)[:120]}"
+
+        lines = [_fmt(r) for r in recs if r.get("session_id") == session_id]
+        if not lines:
+            # Nothing carried this session's label — rather than reflect on an
+            # empty set (a mislabelled batch loses the whole session's
+            # material), fall back to everything recorded since the session
+            # started. Session ids are "<UTC start>_<suffix>".
+            start = _session_start_iso(session_id)
+            if start:
+                lines = [_fmt(r) for r in recs if str(r.get("ts") or "") >= start]
         return "\n".join(lines[:20])
     except Exception:
         return ""
