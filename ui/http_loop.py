@@ -1423,6 +1423,26 @@ def _make_handler(ui: _HttpUI):
         def log_message(self, fmt, *args):  # silence per-request stderr noise
             logger.debug("http ui: " + fmt, *args)
 
+        def _check_auth(self) -> bool:
+            """Validate Origin/Host on every request (DNS-rebinding guard).
+
+            Also enforces project secret for router-proxied requests (s5).
+            Returns True if the request is allowed, False if it should be rejected.
+            """
+            from agent.ui_server.auth import validate_origin_host
+            if not validate_origin_host(self):
+                self._json({"error": "forbidden — bad Origin/Host"}, 403)
+                return False
+            # Project secret (s5): if running under a router, reject unproxied requests.
+            secret = os.environ.get("AGENT_PROJECT_SECRET", "")
+            if secret:
+                given = self.headers.get("X-Project-Secret", "")
+                from agent.ui_server.auth import constant_time_compare
+                if not given or not constant_time_compare(given, secret):
+                    self._json({"error": "forbidden — direct access blocked (use router)"}, 403)
+                    return False
+            return True
+
         def _bytes(self, body: bytes, ctype: str, cache: str = "") -> None:
             self.send_response(200)
             self.send_header("Content-Type", ctype)
@@ -1441,6 +1461,8 @@ def _make_handler(ui: _HttpUI):
             self.wfile.write(body)
 
         def do_GET(self):
+            if not self._check_auth():
+                return
             if self.path == "/" or self.path.startswith("/index"):
                 body = _PAGE.encode()
                 self.send_response(200)
@@ -1550,6 +1572,8 @@ def _make_handler(ui: _HttpUI):
                 ui.bus.unsubscribe(q)
 
         def do_POST(self):
+            if not self._check_auth():
+                return
             length = int(self.headers.get("Content-Length") or 0)
             try:
                 payload = json.loads(self.rfile.read(length) or b"{}")

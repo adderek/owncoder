@@ -40,6 +40,13 @@ class _RouterHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         logger.debug("router: " + fmt, *args)
 
+    def _check_auth(self) -> bool:
+        from agent.ui_server.auth import validate_origin_host
+        if not validate_origin_host(self):
+            self._json({"error": "forbidden — bad Origin/Host"}, 403)
+            return False
+        return True
+
     def _json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode()
         self.send_response(code)
@@ -102,6 +109,8 @@ class _RouterHandler(BaseHTTPRequestHandler):
     # ── GET ───────────────────────────────────────────────────────────────
 
     def do_GET(self):
+        if not self._check_auth():
+            return
         if self.path.startswith("/api/projects"):
             self._json(self.registry.to_dict(for_wire=True))
         elif self.path.startswith("/api/events"):
@@ -118,6 +127,8 @@ class _RouterHandler(BaseHTTPRequestHandler):
     # ── POST ──────────────────────────────────────────────────────────────
 
     def do_POST(self):
+        if not self._check_auth():
+            return
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length > 0 else None
         if self.path.startswith("/api/"):
