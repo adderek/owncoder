@@ -108,6 +108,15 @@ def overview(config: "Config", session_id: str = "", mode: str = "",
             ids = FactsStore(session_id).list_round_ids()
             _tier("facts rounds (this session)", len(ids),
                   f"latest round {ids[-1]}" if ids else "no compaction yet")
+            # Rounds on disk with none indexed means the embedder was missing
+            # when they were written: they exist but recall cannot reach them.
+            indexed = next((t["count"] for t in out["tiers"]
+                            if t["name"] == "facts rounds"), 0)
+            if ids and not indexed:
+                out["warnings"].append(
+                    "compaction rounds are on disk but not indexed for recall — "
+                    "no embedder was running when they were written "
+                    "(agent embed --start)")
     except Exception:
         logger.debug("memory overview: facts rounds failed", exc_info=True)
 

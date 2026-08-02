@@ -460,3 +460,55 @@ class TestKB:
         all_items = browse.browse(kb_config, "kb")["items"]
         hits = browse.browse(kb_config, "kb", query="main")["items"]
         assert len(hits) <= len(all_items)
+
+
+class TestUnindexedRoundsAreVisible:
+    """Rounds written without an embedder are invisible to recall. The old
+    behaviour was a bare `return` — for 293 sessions the tier read zero and
+    nothing anywhere said why."""
+
+    def test_the_skip_is_logged_once_with_the_fix(self, tmp_path, caplog):
+        import logging
+        from agent.memory import facts_store as fs
+        from agent.memory import session as session_mod
+
+        session_mod.configure(str(tmp_path), ".agent")
+        fs._warned_no_index = False
+        store = fs.FactsStore("S1")          # no embedder
+        with caplog.at_level(logging.WARNING, logger="agent.memory.facts_store"):
+            store.new_round(from_turn=1, to_turn=2, knowledge_draft="d",
+                            summary="s")
+            store.new_round(from_turn=3, to_turn=4, knowledge_draft="d2",
+                            summary="s2")
+
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warnings) == 1, "one warning per process, not per round"
+        assert "embed --start" in warnings[0].getMessage()
+
+    def test_the_rounds_are_still_written(self, tmp_path):
+        """The warning is about recall, not about losing the data."""
+        from agent.memory import facts_store as fs
+        from agent.memory import session as session_mod
+
+        session_mod.configure(str(tmp_path), ".agent")
+        fs._warned_no_index = False
+        store = fs.FactsStore("S2")
+        store.new_round(from_turn=1, to_turn=2, knowledge_draft="d", summary="s")
+        assert store.list_round_ids() == [1]
+
+    def test_the_overview_says_so_where_someone_will_see_it(self, tmp_path):
+        from agent.config.models import Config
+        from agent.memory import facts_store as fs
+        from agent.memory import session as session_mod
+        from agent.memory.overview import overview
+
+        cfg = Config()
+        cfg.tools.working_dir = str(tmp_path)
+        cfg.tools.agent_dir = ".agent"
+        session_mod.configure(str(tmp_path), ".agent")
+        fs._warned_no_index = False
+        fs.FactsStore("S3").new_round(from_turn=1, to_turn=2,
+                                      knowledge_draft="d", summary="s")
+
+        warnings = overview(cfg, session_id="S3")["warnings"]
+        assert any("not indexed for recall" in w for w in warnings)

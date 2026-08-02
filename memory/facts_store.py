@@ -17,6 +17,7 @@ Layout:
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
@@ -25,6 +26,25 @@ from typing import Any
 
 from agent.security import vault
 from agent.memory.session import _get_session_dir, get_session_subpath
+
+logger = logging.getLogger(__name__)
+
+# One warning per process: this fires on every compaction round, and the fix
+# (start the embeddings server) is the same every time.
+_warned_no_index = False
+
+
+def _warn_rounds_not_indexed() -> None:
+    global _warned_no_index
+    if _warned_no_index:
+        return
+    _warned_no_index = True
+    logger.warning(
+        "compaction rounds are being written to disk but not indexed for "
+        "recall: no embedder is configured, so recall_facts and the "
+        "facts_round memory scope stay empty. Start the embeddings server "
+        "(agent embed --start) and re-open the session to index new rounds."
+    )
 
 
 @dataclass
@@ -196,6 +216,10 @@ class FactsStore:
     def _index_round(self, r: FactsRound) -> None:
         """Embed and store round in MemoryStore for semantic recall."""
         if self._mem_store is None or self._embedder is None:
+            # Rounds still land on disk, but nothing can search them and
+            # `recall_facts` comes back empty — a silent skip here reads as
+            # "compaction produced nothing" for the whole life of a project.
+            _warn_rounds_not_indexed()
             return
         body = "\n\n".join(filter(None, [r.knowledge_draft, r.summary, r.q_view]))
         if not body.strip():
@@ -211,7 +235,9 @@ class FactsStore:
                 entry_id=f"{self.session_id}:round:{r.round_id}",
             )
         except Exception:
-            pass
+            logger.warning(
+                "compaction round %s could not be indexed for recall; it is "
+                "still on disk in %s", r.round_id, self.dir, exc_info=True)
 
     # ── recall / search ─────────────────────────────────────────────────────
     def search(
