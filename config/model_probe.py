@@ -21,7 +21,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import sys
 import threading
 import urllib.error
 import urllib.request
@@ -189,11 +188,12 @@ def _probe_endpoint(
         matched_id = (server_info or {}).get("id", "")
         if matched_id:
             if _strip_ext(matched_id) != _strip_ext(entry.model):
-                print(
-                    f"[model-probe] {name}: config model=\"{entry.model}\" "
-                    f"but server has \"{matched_id}\" — using server metadata",
-                    file=sys.stderr,
-                )
+                # Logged, not printed: enrichment runs on a background thread
+                # while startup is asking questions, and a stray line lands in
+                # the middle of the prompt someone is answering.
+                logger.warning(
+                    "[model-probe] %s: config model=%r but server has %r "
+                    "— using server metadata", name, entry.model, matched_id)
         _enrich_entry(name, entry, server_info, base_url, api_key, is_ollama, timeout, global_max_ctx)
 
 
@@ -709,11 +709,10 @@ def _fill_or_warn(
     if isinstance(current, (int, float)) and current > 0:
         diff = abs(server_val - current) / max(abs(current), 1)
         if diff > MISMATCH_THRESHOLD:
-            print(
-                f"[model-probe] {name}.{field}: config={current} but server reports"
-                f" {server_val} (diff {diff:.0%}) — using config value",
-                file=sys.stderr,
-            )
+            logger.warning(
+                "[model-probe] %s.%s: config=%s but server reports %s "
+                "(diff %.0f%%) — using config value",
+                name, field, current, server_val, diff * 100)
 
 
 def _params_from_id(text: str) -> float:

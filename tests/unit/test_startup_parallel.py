@@ -138,6 +138,16 @@ class TestTheProbesRunUnderThePrompts:
         src = inspect.getsource(warmup)
         assert "print(" not in src
 
+    def test_nor_does_the_enrichment_it_runs_beside(self):
+        """model_probe used to print its config-vs-server mismatches. Once it
+        moved to a background thread those landed mid-prompt:
+
+            [r]ecover / [i]gnore / [d]elete / [s]kip? [model-probe] openrouter…
+        """
+        import inspect
+        from agent.config import model_probe
+        assert "print(" not in inspect.getsource(model_probe)
+
     def test_a_broken_warmup_is_not_a_broken_startup(self, monkeypatch):
         from agent.cli import warmup
         monkeypatch.setattr(warmup, "_warm", lambda cfg: (_ for _ in ()).throw(RuntimeError("nope")))
