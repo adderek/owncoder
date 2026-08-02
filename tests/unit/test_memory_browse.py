@@ -164,6 +164,59 @@ class TestDescribedUnits:
         assert "stack" in browse.item(config, "asm_unit", "a1")["body"]
 
 
+class TestChunks:
+    """The RAG index decides what the agent can find; being able to read a
+    chunk is how you learn why a search missed."""
+
+    @pytest.fixture
+    def indexed(self, config, tmp_path):
+        import dataclasses
+        from agent.rag.store import VectorStore
+        db = tmp_path / ".agent" / "index.db"
+        config.rag.db_path = str(db)
+        store = VectorStore(dataclasses.replace(config.rag, db_path=str(db)))
+        store.upsert_many([
+            {"id": "c1", "path": "auth.py", "language": "python",
+             "node_type": "function_definition", "name": "login",
+             "start_line": 10, "end_line": 40,
+             "content": "def login(user, password):\n    return check(password)",
+             "mtime": 1.0, "git_hash": "abc123"},
+            {"id": "c2", "path": "util.py", "language": "python",
+             "node_type": "function_definition", "name": "slugify",
+             "start_line": 1, "end_line": 5,
+             "content": "def slugify(text):\n    return text.lower()",
+             "mtime": 1.0, "git_hash": ""},
+        ])
+        store.close()
+        return config
+
+    def test_no_index_is_a_note_not_a_crash(self, config, tmp_path):
+        config.rag.db_path = str(tmp_path / "missing.db")
+        out = browse.browse(config, "chunk")
+        assert out["items"] == [] and "no code index" in out["note"]
+
+    def test_chunks_are_counted_and_listed_by_position(self, indexed):
+        tiers = {t["key"]: t["count"] for t in browse.tiers(indexed)}
+        assert tiers["chunk"] == 2
+        assert [i["source"] for i in browse.browse(indexed, "chunk")["items"]] \
+            == ["auth.py", "util.py"]
+
+    def test_search_uses_the_index_not_a_scan(self, indexed):
+        items = browse.browse(indexed, "chunk", query="password")["items"]
+        assert [i["id"] for i in items] == ["c1"]
+
+    def test_a_query_fts_cannot_parse_still_answers(self, indexed):
+        """Bare punctuation is invalid FTS syntax; a parser error is not an answer."""
+        out = browse.browse(indexed, "chunk", query='def login(')
+        assert "items" in out and "error" not in out
+
+    def test_the_detail_shows_the_source_and_whether_it_is_embedded(self, indexed):
+        d = browse.item(indexed, "chunk", "c1")
+        assert "def login" in d["body"]
+        assert d["meta"]["lines"] == "10–40"
+        assert d["meta"]["embedded"] == "no"   # nothing embedded in this fixture
+
+
 class TestKB:
     def test_kb_off_explains_itself_rather_than_erroring(self, config):
         out = browse.browse(config, "kb")

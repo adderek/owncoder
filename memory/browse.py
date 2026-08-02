@@ -187,6 +187,99 @@ def _unit_count(config: "Config", which: str, table: str) -> int | None:
         conn.close()
 
 
+# ── RAG chunks ──────────────────────────────────────────────────────────────
+def _chunk_title(r) -> str:
+    name = r["name"] or ""
+    kind = r["node_type"] or ""
+    where = f"{r['path']}:{r['start_line']}–{r['end_line']}"
+    head = " ".join(x for x in (kind, name) if x)
+    return f"{head} — {where}" if head else where
+
+
+def _chunk_list(config: "Config", query: str = "", limit: int = 50) -> dict:
+    from agent.memory.overview import rag_db_path
+    conn = _sqlite_ro(rag_db_path(config))
+    if conn is None:
+        return {"items": [], "note": "no code index yet — run 'agent init'"}
+    try:
+        if query.strip():
+            # The index already carries FTS5 over content/name/path; a LIKE scan
+            # over 18k chunks would be the slow way to ask the same question.
+            try:
+                rows = conn.execute(
+                    """SELECT c.* FROM chunks_fts
+                       JOIN chunks c ON c.rowid = chunks_fts.rowid
+                       WHERE chunks_fts MATCH ?
+                       ORDER BY bm25(chunks_fts) LIMIT ?""",
+                    (query, limit)).fetchall()
+            except Exception:
+                # A bare-word query can be invalid FTS syntax; fall back to a
+                # literal phrase rather than showing the user a parser error.
+                rows = conn.execute(
+                    """SELECT c.* FROM chunks_fts
+                       JOIN chunks c ON c.rowid = chunks_fts.rowid
+                       WHERE chunks_fts MATCH ?
+                       ORDER BY bm25(chunks_fts) LIMIT ?""",
+                    ('"' + query.replace('"', "") + '"', limit)).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM chunks ORDER BY path, start_line LIMIT ?",
+                (limit,)).fetchall()
+    except Exception as exc:
+        return {"items": [], "note": str(exc)}
+    finally:
+        conn.close()
+    return {"items": [{
+        "id": r["id"],
+        "title": _chunk_title(r),
+        "tags": [t for t in (r["language"],) if t],
+        "preview": _preview(r["content"] or ""),
+        "updated_at": r["mtime"],
+        "source": r["path"],
+    } for r in rows]}
+
+
+def _chunk_get(config: "Config", item_id: str) -> dict:
+    from agent.memory.overview import rag_db_path
+    conn = _sqlite_ro(rag_db_path(config))
+    if conn is None:
+        return {"error": "no code index yet"}
+    try:
+        r = conn.execute("SELECT * FROM chunks WHERE id=?", (item_id,)).fetchone()
+        if r is None:
+            return {"error": "not found"}
+        # vec_chunks is a vec0 virtual table and this connection has no
+        # extensions loaded, so ask its shadow table instead: `id` there is the
+        # chunk id the vector was stored under.
+        try:
+            embedded = bool(conn.execute(
+                "SELECT 1 FROM vec_chunks_rowids WHERE id=? LIMIT 1",
+                (item_id,)).fetchone())
+        except Exception:
+            embedded = False
+        meta = {"path": r["path"], "lines": f"{r['start_line']}–{r['end_line']}",
+                "language": r["language"] or "", "node_type": r["node_type"] or "",
+                "git_hash": (r["git_hash"] or "")[:12],
+                "embedded": "yes" if embedded else "no"}
+        return {"title": _chunk_title(r), "body": r["content"] or "",
+                "tags": [t for t in (r["language"],) if t], "meta": meta}
+    finally:
+        conn.close()
+
+
+def _chunk_count(config: "Config") -> int:
+    from agent.memory.overview import rag_db_path
+    conn = _sqlite_ro(rag_db_path(config))
+    if conn is None:
+        return 0
+    try:
+        return conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+    except Exception:
+        return 0
+    finally:
+        conn.close()
+
+
 # ── knowledge base ──────────────────────────────────────────────────────────
 def _kb_corpus(config: "Config"):
     path = getattr(config.kb, "corpus_path", "")
@@ -272,6 +365,7 @@ _TIERS: dict[str, tuple[str, Callable, Callable]] = {
              _unit_get("unit", "units")),
     "asm_unit": ("described asm units", _unit_list("asm_unit", "asm_units"),
                  _unit_get("asm_unit", "asm_units")),
+    "chunk": ("code index chunks", _chunk_list, _chunk_get),
     "kb": ("kb / wiki", _kb_list, _kb_get),
 }
 
@@ -279,6 +373,7 @@ _TIERS: dict[str, tuple[str, Callable, Callable]] = {
 _COUNTERS: dict[str, "Callable[[Config], int | None]"] = {
     "unit": lambda c: _unit_count(c, "unit", "units"),
     "asm_unit": lambda c: _unit_count(c, "asm_unit", "asm_units"),
+    "chunk": _chunk_count,
 }
 
 
