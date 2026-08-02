@@ -217,6 +217,49 @@ class TestChunks:
         assert d["meta"]["embedded"] == "no"   # nothing embedded in this fixture
 
 
+class TestArchive:
+    """Pruned chunks are kept for a fortnight so a deletion can be undone —
+    but only if someone can see what left the index, and why."""
+
+    @pytest.fixture
+    def archived(self, config, tmp_path):
+        from agent.rag.archive import ArchiveStore
+        db = tmp_path / ".agent" / "index-archive.db"
+        config.rag.archive_db_path = str(db)
+        store = ArchiveStore(str(db))
+        store.ingest([
+            {"id": "c1", "path": "old.py", "language": "python",
+             "node_type": "function_definition", "name": "gone",
+             "start_line": 1, "end_line": 9, "content": "def gone(): pass",
+             "mtime": 1.0, "git_hash": ""},
+        ], reason="missing")
+        store.close()
+        return config
+
+    def test_an_empty_archive_explains_itself(self, config, tmp_path):
+        config.rag.archive_db_path = str(tmp_path / "none.db")
+        out = browse.browse(config, "archive")
+        assert out["items"] == [] and "archived" in out["note"]
+
+    def test_the_reason_for_removal_is_on_the_row(self, archived):
+        item = browse.browse(archived, "archive")["items"][0]
+        assert "missing" in item["tags"]
+
+    def test_the_detail_says_when_and_why_it_left(self, archived):
+        d = browse.item(archived, "archive", "c1")
+        assert d["meta"]["reason"] == "missing"
+        assert d["meta"]["archived_at"]
+        assert "def gone" in d["body"]
+
+    def test_search_reaches_archived_content(self, archived):
+        assert [i["id"] for i in
+                browse.browse(archived, "archive", query="gone")["items"]] == ["c1"]
+
+    def test_the_archive_is_counted_separately_from_the_index(self, archived):
+        tiers = {t["key"]: t["count"] for t in browse.tiers(archived)}
+        assert tiers["archive"] == 1 and tiers["chunk"] == 0
+
+
 class TestKB:
     def test_kb_off_explains_itself_rather_than_erroring(self, config):
         out = browse.browse(config, "kb")
