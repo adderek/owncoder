@@ -3257,6 +3257,110 @@ document.getElementById('planchip').addEventListener('click', () => {
   else loadPlan();
 });
 
+// ── Command menu ───────────────────────────────────────────────────────────
+// Everything the browser can run, grouped by what it is for. The slash
+// palette below completes a name you already know; this is for the other
+// case, which is most of them.
+function cmdSheet() { return document.getElementById('cmdsheet'); }
+
+function cmdMenuOpen(on) {
+  cmdSheet().classList.toggle('hidden', !on);
+  if (on) {
+    const f = document.getElementById('cmdfilter');
+    f.value = '';
+    cmdRender();
+    f.focus();
+  }
+}
+
+// A no-argument command runs on click. One that takes an argument would be a
+// broken promise if it ran bare, so it lands in the message box with the
+// cursor after it — one keystroke from what the user meant.
+function cmdRun(name, arg) {
+  const text = arg ? name + ' ' + arg : name;
+  cmdMenuOpen(false);
+  input.value = text;
+  autoGrow();
+  saveDraft();
+  send();
+}
+
+function cmdFill(name) {
+  cmdMenuOpen(false);
+  input.value = name + ' ';
+  autoGrow();
+  saveDraft();
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+
+async function cmdRender() {
+  const list = document.getElementById('cmdlist');
+  await loadSlashCmds();
+  const q = (document.getElementById('cmdfilter').value || '').trim().toLowerCase();
+  const hits = (slashCmds || []).filter(c =>
+    !q || c.name.indexOf(q) >= 0 || (c.desc || '').toLowerCase().indexOf(q) >= 0 ||
+    (c.group || '').indexOf(q) >= 0);
+  list.textContent = '';
+  if (!hits.length) {
+    const none = document.createElement('div');
+    none.className = 'dim';
+    none.textContent = 'nothing matches "' + q + '"';
+    list.appendChild(none);
+    return;
+  }
+  const groups = new Map();
+  hits.forEach(c => {
+    const g = c.group || 'other';
+    if (!groups.has(g)) groups.set(g, {order: c.group_order != null ? c.group_order : 99, cmds: []});
+    groups.get(g).cmds.push(c);
+  });
+  [...groups.entries()].sort((a, b) => a[1].order - b[1].order).forEach(([name, g]) => {
+    const head = document.createElement('div');
+    head.className = 'cmd-group';
+    head.textContent = name;
+    list.appendChild(head);
+    g.cmds.forEach(c => {
+      const row = document.createElement('div');
+      row.className = 'cmd-row';
+      const btn = document.createElement('button');
+      btn.className = 'cmd-name';
+      btn.textContent = c.name + (c.arg ? ' …' : '');
+      btn.title = c.desc || '';
+      btn.addEventListener('click', () => c.arg ? cmdFill(c.name) : cmdRun(c.name));
+      row.appendChild(btn);
+      const desc = document.createElement('span');
+      desc.className = 'cmd-desc';
+      desc.textContent = (c.desc || '').split('  ')[0];
+      row.appendChild(desc);
+      (c.presets || []).forEach(p => {
+        const b = document.createElement('button');
+        b.className = 'cmd-preset';
+        b.textContent = p.label;
+        b.title = (c.name + ' ' + p.arg).trim();
+        b.addEventListener('click', () => cmdRun(c.name, p.arg));
+        row.appendChild(b);
+      });
+      list.appendChild(row);
+    });
+  });
+}
+
+document.getElementById('cmdmenu').addEventListener('click', () => cmdMenuOpen(true));
+document.getElementById('cmdclose').addEventListener('click', () => cmdMenuOpen(false));
+document.getElementById('cmdfilter').addEventListener('input', cmdRender);
+// Click outside the panel closes, same as the drawer backdrop.
+cmdSheet().addEventListener('mousedown', (e) => {
+  if (e.target === cmdSheet()) cmdMenuOpen(false);
+});
+document.getElementById('cmdfilter').addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { e.stopPropagation(); cmdMenuOpen(false); }
+  if (e.key === 'Enter') {
+    const first = document.querySelector('#cmdlist .cmd-name');
+    if (first) first.click();
+  }
+});
+
 // ── Slash palette ──────────────────────────────────────────────────────────
 // The placeholder has always promised "/ for commands" while nothing
 // completed them. The catalogue comes from /api/slash — the same table the
@@ -3744,6 +3848,7 @@ function findOpen() {
 const SHORTCUTS = [
   ['Enter', 'send  ·  Shift+Enter for a newline'],
   ['\u2191 / \u2193', 'previous / next message you sent (from the first / last line)'],
+  ['Ctrl+K', 'command menu \u2014 every command, grouped'],
   ['/', 'command palette \u2014 Tab completes, \u2191\u2193 picks'],
   ['Ctrl+F', 'find in the conversation, folds included'],
   ['Ctrl+B', 'sessions drawer'],
@@ -3783,7 +3888,15 @@ document.addEventListener('keydown', (e) => {
     findOpen();
     return;
   }
+  // Ctrl/Cmd+K opens the command menu — the same catalogue the '/' palette
+  // completes, for when the name is what you are missing.
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    cmdMenuOpen(cmdSheet().classList.contains('hidden'));
+    return;
+  }
   if (e.key === 'Escape') {
+    if (!cmdSheet().classList.contains('hidden')) { cmdMenuOpen(false); return; }
     if (document.getElementById('helpbox')) { helpClose(); return; }
     if (document.getElementById('findbar')) { findClose(); return; }
     if (document.getElementById('left').classList.contains('open'))

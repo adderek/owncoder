@@ -91,6 +91,75 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
 ]
 
 
+# ── Menu grouping ───────────────────────────────────────────────────────────
+# Typing "/" only helps someone who already knows the name. The browser builds
+# a menu from these groups, so the commands are findable by what they are for.
+# Order here is the order the menu shows.
+_GROUP_ORDER = (
+    "session", "memory & search", "model & context", "work", "code & safety",
+    "privacy & access", "automation", "diagnostics",
+)
+
+_GROUPS: dict[str, tuple[str, ...]] = {
+    "session": ("/sessions", "/resume", "/load", "/save", "/reset", "/clear",
+                "/export", "/who", "/quit"),
+    "memory & search": ("/memory", "/skills", "/commands", "/resummarize",
+                        "/compact", "/context", "/tokens"),
+    "model & context": ("/model", "/models", "/mode", "/effort", "/think",
+                        "/temperature", "/max_tokens", "/autonomy",
+                        "/maxiter", "/unlimited", "/mcp"),
+    "work": ("/plan", "/plans", "/goal", "/continue", "/idea", "/ideas",
+             "/abort-plan", "/stash-plan", "/pause-plan", "/loop", "/bg"),
+    "code & safety": ("/security", "/analyze-asm", "/undo", "/checkpoint",
+                      "/apply", "/heal", "/recoveries"),
+    "privacy & access": ("/incognito", "/private", "/vault", "/paths",
+                         "/permissions", "/hooks", "/credpool", "/notify"),
+    "automation": ("/schedule", "/watch"),
+    "diagnostics": ("/perf", "/modelcalls", "/output", "/speech", "/wrap",
+                    "/round-summary", "/tools", "/help"),
+}
+
+# Ready-made arguments for the commands whose useful forms are a short list.
+# A menu that only ever fills in "/security " is a longer way to type it.
+_PRESETS: dict[str, tuple[tuple[str, str], ...]] = {
+    "/security": (("scan", "scan the project"), ("diff", "scan changed files"),
+                  ("review", "LLM deep read"), ("full", "full posture"),
+                  ("sbom", "dependencies"), ("triage", "rank findings"),
+                  ("airgap status", "egress status")),
+    "/analyze-asm": (("on", "enable for this session"), ("off", "disable"),
+                     ("stop", "interrupt a running analysis")),
+    "/memory": (("", "overview"), ("index", "index freshness"),
+                ("notes", "recent notes")),
+    "/skills": (("list", "list skills"),),
+    "/checkpoint": (("list", "list checkpoints"), ("new", "new checkpoint")),
+    "/schedule": (("list", "list jobs"), ("runs", "recent runs")),
+    "/watch": (("list", "list watches"),),
+    "/mode": (("local-only", "local models only"), ("free-hybrid", "local + free cloud"),
+              ("paid-cloud", "paid cloud")),
+    "/effort": (("quick", "fast"), ("smart", "balanced"), ("deep", "thorough")),
+    "/think": (("off", "no thinking"), ("normal", "default"), ("high", "more"),
+               ("max", "most")),
+    "/bg": (("list", "list background jobs"),),
+    "/plan": (("show", "current plan"), ("steps", "step list")),
+    "/paths": (("show", "granted paths"),),
+    "/vault": (("lock", "lock the vault"),),
+}
+
+
+def command_group(name: str) -> str:
+    """Which menu section a command belongs in. Unlisted commands land in
+    'other' rather than vanishing — a new command should show up unprompted."""
+    for group, names in _GROUPS.items():
+        if name in names:
+            return group
+    return "other"
+
+
+def command_presets(name: str) -> list[dict]:
+    return [{"arg": arg, "label": label}
+            for arg, label in _PRESETS.get(name, ())]
+
+
 def _apply_think(agent, arg: str) -> tuple[bool, str]:
     """Returns (ok, message)."""
     from agent.core.prompts import THINK_LEVELS

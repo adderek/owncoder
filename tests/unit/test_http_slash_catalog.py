@@ -41,8 +41,11 @@ class TestCatalog:
         assert name not in [c["name"] for c in _slash_catalog()]
 
     def test_entries_carry_what_the_ui_needs(self):
+        # The palette needs the first four; the command menu added the
+        # grouping and the ready-made arguments.
         for c in _slash_catalog():
-            assert set(c) == {"name", "aliases", "desc", "arg"}, c
+            assert set(c) == {"name", "aliases", "desc", "arg",
+                              "group", "group_order", "presets"}, c
             assert c["name"].startswith("/") and c["desc"]
             assert isinstance(c["arg"], bool)
 
@@ -50,7 +53,8 @@ class TestCatalog:
         """No second hand-maintained list to fall out of date."""
         src = HTTP_LOOP.read_text(encoding="utf-8")
         i = src.index("def _slash_catalog")
-        assert "from agent.ui.slash import _SLASH_COMMANDS" in src[i:i + 900]
+        assert "_SLASH_COMMANDS" in src[i:i + 900]
+        assert "from agent.ui.slash import" in src[i:i + 900]
 
 
 class TestEndpoint:

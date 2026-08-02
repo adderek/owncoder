@@ -538,6 +538,7 @@ _PAGE = r"""<!DOCTYPE html>
   <button type="button" class="chip btn" id="privchip" title="Session privacy mode — click for off-the-record options" aria-haspopup="menu" aria-expanded="false">▪ standard ▾</button>
   <div id="statuswrap"><span id="dot"></span><span id="status" role="status" aria-live="polite">idle</span></div>
   <button type="button" class="chip btn" id="layout" title="Cycle chat width: centered / wide / full">center</button>
+  <button type="button" class="chip btn" id="cmdmenu" title="All commands, grouped — no need to know the names (Ctrl+K)">☰ commands</button>
   <button type="button" class="chip btn" id="viewchip" title="What the main panel is showing — click to go back to the conversation" style="display:none"></button>
   <button type="button" class="chip btn" id="condchip" title="Condensed Q/A view — one line per turn, click rows to expand">≣ Q/A</button>
   <button type="button" class="chip btn" id="iostats" title="Session totals: prompt in / completion out / est. USD cost (paid-tier only). Click for per-model split">↑0 ↓0</button>
@@ -548,6 +549,17 @@ _PAGE = r"""<!DOCTYPE html>
   <button class="icon" id="notifytoggle" title="Notify me when the agent needs an answer or finishes" aria-label="Toggle desktop notifications">🔕</button>
   <button class="icon" id="themetoggle" title="Theme: dark (click to cycle)" aria-label="Cycle theme">◐</button>
   <button class="icon" id="righttoggle" title="Details panel" aria-label="Toggle details panel">☰</button>
+</div>
+<!-- Command menu. The slash palette only helps someone who already knows the
+     name; this is the same catalogue arranged by what each command is for. -->
+<div id="cmdsheet" class="hidden" role="dialog" aria-modal="true" aria-label="Commands">
+  <div id="cmdpanel">
+    <div id="cmdhead">
+      <input id="cmdfilter" placeholder="filter commands…" aria-label="Filter commands">
+      <button class="sbtn" id="cmdclose" title="Close (Esc)">✕</button>
+    </div>
+    <div id="cmdlist">—</div>
+  </div>
 </div>
 <div id="main">
 <div id="backdrop"></div>
@@ -2350,14 +2362,20 @@ def _slash_catalog() -> list[dict]:
     makes sense at a terminal. See test_http_slash for the check that every
     entry is actually handled here.
     """
-    from agent.ui.slash import _SLASH_COMMANDS
+    from agent.ui.slash import (
+        _GROUP_ORDER, _SLASH_COMMANDS, command_group, command_presets)
 
     out = []
     for primary, aliases, desc, takes_arg in _SLASH_COMMANDS:
         if primary in _TERMINAL_ONLY:
             continue
+        group = command_group(primary)
         out.append({"name": primary, "aliases": list(aliases),
-                    "desc": desc, "arg": bool(takes_arg)})
+                    "desc": desc, "arg": bool(takes_arg),
+                    "group": group,
+                    "group_order": (_GROUP_ORDER.index(group)
+                                    if group in _GROUP_ORDER else len(_GROUP_ORDER)),
+                    "presets": command_presets(primary)})
     out.sort(key=lambda c: c["name"])
     return out
 
