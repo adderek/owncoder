@@ -422,6 +422,76 @@ def _size(path: Path) -> int:
         return 0
 
 
+# ── skills (procedural memory) ──────────────────────────────────────────────
+# Skills are the one tier the agent writes for itself and revises: the
+# distiller bumps a version each session-end. Reading the current body — and
+# seeing how many revisions it took — is how you catch it learning the wrong
+# lesson.
+def _skill_loader(config: "Config"):
+    from agent.skills import SkillLoader
+    return SkillLoader(config)
+
+
+def _skill_list(config: "Config", query: str = "", limit: int = 50) -> dict:
+    from agent.skills import parse_skill
+
+    loader = _skill_loader(config)
+    q = query.strip().lower()
+    project = loader.project_names()
+    items = []
+    for name, desc in loader.available():
+        path = loader._resolve(name)
+        meta = {}
+        if path is not None:
+            try:
+                meta = parse_skill(path)
+            except Exception:
+                meta = {}
+        if q and q not in name.lower() and q not in (desc or "").lower() \
+                and q not in (meta.get("body") or "").lower():
+            continue
+        origin = "project" if name in project else "bundled"
+        version = meta.get("version")
+        items.append({
+            "id": name,
+            "title": name,
+            "tags": [origin] + ([f"v{version}"] if version else []),
+            "preview": _preview(desc or meta.get("body") or ""),
+            "updated_at": _mtime(path) if path else None,
+            "source": str(path) if path else "",
+        })
+    return {"items": items[:limit]}
+
+
+def _skill_get(config: "Config", item_id: str) -> dict:
+    from agent.skills import parse_skill
+
+    loader = _skill_loader(config)
+    path = loader._resolve(item_id)
+    if path is None:
+        return {"error": "not found"}
+    meta = parse_skill(path)
+    origin = "project" if item_id in loader.project_names() else "bundled"
+    history = []
+    try:
+        history = loader.history(item_id)
+    except Exception:
+        logger.debug("browse: skill history failed", exc_info=True)
+    body = meta.get("body") or ""
+    if history:
+        body += "\n\n— revisions —\n" + "\n".join(
+            f"  v{h.get('version')}  {h.get('updated_at') or ''}" for h in history)
+    info = {"origin": origin, "path": str(path)}
+    for key in ("version", "created_at", "updated_at"):
+        if meta.get(key):
+            info[key] = meta[key]
+    if history:
+        # history() returns the archived copies *and* the current one.
+        info["versions"] = len(history)
+    return {"title": item_id, "body": body or "(empty skill)",
+            "tags": [origin], "meta": info}
+
+
 # ── knowledge base ──────────────────────────────────────────────────────────
 def _kb_corpus(config: "Config"):
     path = getattr(config.kb, "corpus_path", "")
@@ -513,6 +583,7 @@ _TIERS: dict[str, tuple[str, Callable, Callable]] = {
                 _chunk_list(_archive_db, _NO_ARCHIVE, archived=True),
                 _chunk_get(_archive_db, _NO_ARCHIVE, archived=True)),
     "rule": ("rules & always-on context", _rule_list, _rule_get),
+    "skill": ("skills", _skill_list, _skill_get),
     "kb": ("kb / wiki", _kb_list, _kb_get),
 }
 
@@ -523,6 +594,7 @@ _COUNTERS: dict[str, "Callable[[Config], int | None]"] = {
     "chunk": _chunk_count(_rag_db),
     "archive": _chunk_count(_archive_db),
     "rule": lambda c: len(_rule_sources(c)),
+    "skill": lambda c: len(_skill_loader(c).available()),
 }
 
 

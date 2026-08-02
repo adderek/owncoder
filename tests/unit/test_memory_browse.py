@@ -304,6 +304,44 @@ class TestRules:
         assert browse.item(ruled, "rule", "/etc/passwd") == {"error": "not found"}
 
 
+class TestSkills:
+    """The one tier the agent writes for itself and revises — worth reading
+    to catch it learning the wrong lesson."""
+
+    @pytest.fixture
+    def skilled(self, config, tmp_path):
+        from agent.skills import SkillLoader
+        loader = SkillLoader(config)
+        loader.save("release", "bump, tag, push", description="how to cut a release")
+        loader.save("release", "bump, tag, push, announce",
+                    description="how to cut a release")
+        return config
+
+    def test_project_and_bundled_skills_are_told_apart(self, skilled):
+        items = browse.browse(skilled, "skill")["items"]
+        by_name = {i["title"]: i["tags"] for i in items}
+        assert "project" in by_name["release"]
+        assert any("bundled" in tags for name, tags in by_name.items()
+                   if name != "release")
+
+    def test_the_version_rides_along(self, skilled):
+        items = {i["title"]: i["tags"] for i in browse.browse(skilled, "skill")["items"]}
+        assert "v2" in items["release"]
+
+    def test_the_body_and_its_revisions_read_back(self, skilled):
+        d = browse.item(skilled, "skill", "release")
+        assert "announce" in d["body"]
+        assert "revisions" in d["body"] and "v1" in d["body"]
+        assert d["meta"]["origin"] == "project" and d["meta"]["versions"] == 2
+
+    def test_search_looks_inside_the_skill(self, skilled):
+        items = browse.browse(skilled, "skill", query="announce")["items"]
+        assert [i["title"] for i in items] == ["release"]
+
+    def test_a_missing_skill_is_not_found(self, config):
+        assert browse.item(config, "skill", "nope") == {"error": "not found"}
+
+
 class TestKB:
     def test_kb_off_explains_itself_rather_than_erroring(self, config):
         out = browse.browse(config, "kb")
