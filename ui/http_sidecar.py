@@ -361,8 +361,8 @@ class _SidecarServer:
                 on_loop_detected=on_loop_detected,  # interactive — stays with the primary UI
                 on_phase=_fanout(on_phase, lambda label, detail="": pub(
                     {"type": "phase", "label": label, "detail": detail})),
-                on_injected_message=_fanout(on_injected_message, lambda text: pub(
-                    {"type": "user", "text": text})),
+                on_injected_message=_fanout(on_injected_message, lambda kind, text: pub(
+                    {"type": "injected", "kind": kind, "text": text})),
                 on_reasoning=_fanout(on_reasoning, lambda tok: pub({"type": "reasoning", "text": tok})),
                 on_context_size=on_context_size,
                 on_user_message=on_user_message,

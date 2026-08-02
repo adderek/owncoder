@@ -770,6 +770,29 @@ function replayToolResult(d, ok, text) {
   }
 }
 
+// A note the turn wrote into its own history — a failing verify command, a
+// goal check, a loop-guard switch. It goes into history as a user message, but
+// the user did not write it, and its body is often a whole test log: shown as
+// a labelled fold, closed, headline first.
+function injectedNote(kind, text) {
+  const body = String(text || '');
+  const d = document.createElement('details');
+  d.className = 'think inject';
+  d.innerHTML = '<summary></summary><div class="body"></div>';
+  d.querySelector('summary').textContent =
+    '⚙ ' + (kind || 'agent') + ' — ' + injectedHeadline(body);
+  d.querySelector('.body').textContent = body;
+  stamp(metaMount(d));
+  return d;
+}
+
+// First non-empty line, minus the bracketed kind prefix it usually opens with.
+function injectedHeadline(text) {
+  let line = (text.split('\n').find(l => l.trim()) || '').trim();
+  line = line.replace(/^\[[^\]]*\]\s*/, '');
+  return line.length > 110 ? line.slice(0, 110) + '…' : (line || 'note');
+}
+
 // The compaction boundary: a closed fold saying the earlier rounds are now a
 // summary, with the summary itself inside for anyone who wants it.
 function replayCompaction(text) {
@@ -858,6 +881,10 @@ function handle(ev) {
     stallBudgetMs = 0;
     setActivity('thinking');
     row('msg user', null, ev.text);
+  } else if (ev.type === 'injected') {
+    // Not the user's words: the turn's own note (verify failure, goal check).
+    endStream();
+    injectedNote(ev.kind, ev.text);
   } else if (ev.type === 'tool_call') {
     endStream();
     setActivity('tool');
@@ -2300,6 +2327,12 @@ function replayTranscriptInner(messages) {
       endTurn();
       work = null;
       row('msg user', null, m.content);
+    } else if (m.role === 'injected') {
+      // Between rounds, where it happened — metaMount routes by busyFlag,
+      // which is false while replaying, so it lands at top level either way.
+      endTurn();
+      work = null;
+      injectedNote(m.kind, m.content);
     } else if (m.role === 'compaction') {
       // Where the older rounds went. Without this the replayed session just
       // has fewer rounds than the live one had, with nothing saying why.

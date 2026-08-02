@@ -122,15 +122,16 @@ class InjectedMessageEvent:
     as the resumed one, where these messages have always been visible."""
 
     WIRE_TYPE = "injected_message"
+    kind: str
     text: str
 
     def to_wire(self) -> dict:
         return {"v": EVENT_PROTOCOL_VERSION, "type": self.WIRE_TYPE,
-                "text": self.text}
+                "kind": self.kind, "text": self.text}
 
     @classmethod
     def from_wire(cls, obj: dict) -> "InjectedMessageEvent":
-        return cls(text=obj.get("text", ""))
+        return cls(kind=obj.get("kind", ""), text=obj.get("text", ""))
 
 
 @dataclass

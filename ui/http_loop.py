@@ -258,6 +258,32 @@ _EXEC_RE = re.compile(
 #: session grew bubbles nobody ever typed.
 _HIDDEN_MARKERS = ("_similar_sessions_marker", "_notes_marker")
 
+#: Notes the turn writes into history as user messages. They are stored with
+#: `_injected_kind`; the prefixes recognise sessions written before that, and
+#: the two flag markers cover the notes that carry no prefix at all.
+_INJECTED_PREFIXES = (
+    ("[verify]", "verify"),
+    ("[goal check]", "goal check"),
+    ("[loop guard", "loop guard"),
+    ("[mid-turn message from user]", "mid-turn message"),
+)
+_INJECTED_FLAGS = (("_confidence_guard", "confidence guard"), ("_nudged", "nudge"))
+
+
+def _injected_kind(message: dict) -> str:
+    """Where a stored user message actually came from, "" if from the user."""
+    kind = message.get("_injected_kind")
+    if kind:
+        return str(kind)
+    for flag, name in _INJECTED_FLAGS:
+        if message.get(flag):
+            return name
+    content = (message.get("content") or "").lstrip()
+    for prefix, name in _INJECTED_PREFIXES:
+        if content.startswith(prefix):
+            return name
+    return ""
+
 
 def _unescape_exec(text: str) -> str:
     return (text.replace("&quot;", '"').replace("&gt;", ">").replace("&lt;", "<"))
@@ -403,7 +429,15 @@ def _transcript(messages, result_limit: int = 2000, sid: str = "") -> list[dict]
         if role == "user":
             if any(m.get(k) for k in _HIDDEN_MARKERS):
                 continue
-            out.append({"role": "user", "content": m.get("content") or ""})
+            # A verify failure is not something the user said. Rendered as a
+            # user message it both misattributed the text and took a full-width
+            # bubble for a test log nobody wanted open.
+            kind = _injected_kind(m)
+            if kind:
+                out.append({"role": "injected", "kind": kind,
+                            "content": m.get("content") or ""})
+            else:
+                out.append({"role": "user", "content": m.get("content") or ""})
         elif role == "assistant":
             if m.get("_compaction_marker") or (
                     (m.get("content") or "").startswith("[SESSION SUMMARY")):
@@ -2836,10 +2870,11 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
                 on_phase=lambda label, detail="": pub(
                     {"type": "phase", "label": label, "detail": detail}),
                 # Verify failures and the other notes the turn writes into
-                # history are user messages: showing them live is what makes a
-                # reloaded session read the same as the one being watched.
-                on_injected_message=lambda text: pub(
-                    {"type": "user", "text": text}),
+                # history: shown live so a reloaded session reads the same as
+                # the one being watched, and labelled with where they came
+                # from so they are not mistaken for something the user typed.
+                on_injected_message=lambda kind, text: pub(
+                    {"type": "injected", "kind": kind, "text": text}),
                 on_reasoning=lambda tok: pub({"type": "reasoning", "text": tok}),
                 on_progress=lambda done, limit: pub(
                     {"type": "progress", "done": done, "limit": limit}),

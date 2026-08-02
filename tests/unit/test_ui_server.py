@@ -398,12 +398,18 @@ def test_load_session_found(monkeypatch):
     agent = _make_agent()
     server = LocalUIServer(agent)
     fake_session = MagicMock()
-    raw_msgs = [{"role": "user", "content": "hi", "_internal": "x"}]
+    raw_msgs = [{"role": "user", "content": "hi", "_tool_refs": [3],
+                 "_reasoning_content": "why", "_notes_marker": True}]
     with patch("agent.memory.session.load_session", return_value=(fake_session, raw_msgs)):
         session, msgs = server.load_session("mysession")
     assert session is fake_session
-    # _-prefixed keys stripped
-    assert msgs == [{"role": "user", "content": "hi"}]
+    # Side-log links and stored reasoning survive the round trip: the next save
+    # writes these back, and replay is built on them.
+    assert msgs[0]["_tool_refs"] == [3]
+    assert msgs[0]["_reasoning_content"] == "why"
+    # The notes block is re-injected fresh each turn; a restored one would sit
+    # in history as a user message and pile up a copy per resume.
+    assert "_notes_marker" not in msgs[0]
 
 
 def test_load_session_not_found():
@@ -453,3 +459,34 @@ def test_submit_external_prompt_ignores_empty():
     server = LocalUIServer(agent)
     server.submit_external_prompt("")
     agent.inject.assert_not_called()
+
+
+def test_resuming_a_session_does_not_degrade_it(tmp_path, monkeypatch):
+    """Load → save must not shed what replay is built on.
+
+    The load used to drop every "_"-prefixed key, and the next save wrote that
+    stripped history back: resuming a session permanently cost it its tool
+    folds, its reasoning and the labels on the notes the agent wrote itself.
+    """
+    from agent.memory import session as S
+
+    S.configure(str(tmp_path))
+    sess = S.new_session(short_name="round-trip")
+    msgs = [
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "content": '<agent_exec tool="ls" args="">ok</agent_exec>',
+         "_tool_refs": [0], "_reasoning_content": "thinking"},
+        {"role": "user", "content": "[verify] failed", "_injected_kind": "verify"},
+    ]
+    S.save_session(sess, msgs)
+
+    agent = _make_agent()
+    server = LocalUIServer(agent)
+    _, loaded = server.load_session(sess.id)
+    S.save_session(sess, loaded)
+
+    _, again = server.load_session(sess.id)
+    assert again[-3]["content"] == "go"
+    assert again[-2]["_tool_refs"] == [0]
+    assert again[-2]["_reasoning_content"] == "thinking"
+    assert again[-1]["_injected_kind"] == "verify"

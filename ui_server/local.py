@@ -625,12 +625,29 @@ class LocalUIServer:
         save_session(session, messages)
         return True, f"auto-named: '{session.name}'"
 
+    #: Keys that must not survive a load. Notes are re-injected fresh each turn,
+    #: and a stale one restored from disk would sit in history as an ordinary
+    #: user message, accumulating a copy per resume.
+    _TRANSIENT_MESSAGE_KEYS = ("_notes_marker",)
+
     def load_session(self, name: str, session_id: str = "") -> "tuple[Session | None, list[dict]]":
+        """Load a session's messages, keeping what makes them replayable.
+
+        This used to drop every "_"-prefixed key. The transient one it was
+        aimed at is `_notes_marker` — but the same sweep took the side-log
+        links (`_tool_refs`, `_reasoning_ref`), the stored reasoning and the
+        provenance markers with it, and the next save wrote the stripped
+        version back. Resuming a session therefore destroyed the very things
+        that let it be replayed: the tool folds, the thinking, and the labels
+        saying which "user" messages the agent had written to itself.
+        Per-request key stripping still happens in normalize_api_messages, so
+        none of this reaches the model.
+        """
         from agent.memory.session import load_session
         session, messages = load_session(name)
         if session is not None:
             messages = [
-                {k: v for k, v in m.items() if not k.startswith("_")}
+                {k: v for k, v in m.items() if k not in self._TRANSIENT_MESSAGE_KEYS}
                 for m in messages
             ]
         return session, messages

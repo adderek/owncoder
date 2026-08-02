@@ -608,6 +608,13 @@ details.think { margin: 0 0 8px 6px; font-size: 12px; color: var(--dimmer); font
 details.think summary { cursor: pointer; list-style: none; user-select: none; color: var(--dimmer); }
 details.think summary::before { content: "◦ "; }
 details.think .body { padding: 4px 0 2px 14px; white-space: pre-wrap; }
+/* Notes the turn wrote into its own history (a failing verify command, a goal
+   check). Same fold as thinking, but upright and a shade brighter: this is an
+   outcome the round has to answer for, not the model musing. */
+details.think.inject { font-style: normal; color: var(--dim); }
+details.think.inject summary { color: var(--dim); }
+details.think.inject summary::before { content: ""; }
+details.think.inject .body { font-family: var(--mono, monospace); }
 /* Per-turn work fold: every meta-step (tool calls, thinking, phases,
    intermediate streamed text) lands inside; open+animated while the turn
    runs, auto-collapsed to a one-line summary when the final answer arrives. */

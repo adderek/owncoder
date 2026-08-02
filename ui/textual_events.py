@@ -40,8 +40,9 @@ def build_event_classes() -> "SimpleNamespace":
         """A note the turn wrote into its own history (verify failure, goal
         check, nudge). Shown because the resumed session shows it."""
 
-        def __init__(self, text: str) -> None:
+        def __init__(self, kind: str, text: str) -> None:
             super().__init__()
+            self.kind = kind
             self.text = text
 
     class ReasoningTokenEvent(Message):

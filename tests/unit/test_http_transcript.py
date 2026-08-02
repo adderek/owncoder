@@ -172,17 +172,46 @@ class TestInjectedContext:
                            {"role": "user", "content": "hi"}])
         assert [m["content"] for m in out] == ["hi"]
 
-    def test_a_verify_failure_is_still_shown(self):
-        """It is the one injected message the user has to see."""
-        out = _transcript([{"role": "user", "content": "[verify] `pytest` failed"}])
-        assert out and out[0]["content"].startswith("[verify]")
+    def test_a_verify_failure_is_shown_but_not_as_the_user(self):
+        """It is the one injected message the user has to see — and it is not
+        something they said, so it does not get their bubble."""
+        out = _transcript([{"role": "user", "content": "[verify] `pytest` failed",
+                            "_injected_kind": "verify"}])
+        assert out[0]["role"] == "injected" and out[0]["kind"] == "verify"
+
+    def test_an_older_session_is_labelled_from_its_text(self):
+        """Sessions written before the kind was stored still replay right."""
+        for content, kind in (("[verify] failed", "verify"),
+                              ("[goal check] not done", "goal check"),
+                              ("[loop guard: switching]", "loop guard")):
+            out = _transcript([{"role": "user", "content": content}])
+            assert out[0]["kind"] == kind
+
+    def test_a_nudge_is_recognised_by_its_flag(self):
+        """It carries no prefix at all — only the marker says what it is."""
+        out = _transcript([{"role": "user", "content": "Call the tool now.",
+                            "_nudged": True}])
+        assert out[0]["role"] == "injected" and out[0]["kind"] == "nudge"
+
+    def test_what_the_user_typed_stays_the_user(self):
+        out = _transcript([{"role": "user", "content": "run the tests"}])
+        assert out[0]["role"] == "user"
 
     def test_the_live_view_hears_about_them_too(self):
-        """Same message, both views: the server publishes what it injects."""
+        """Same message, both views: the server publishes what it injects,
+        with the same label the transcript replays."""
         src = (Path(__file__).resolve().parents[2] / "ui" / "http_loop.py"
                ).read_text(encoding="utf-8")
-        assert "on_injected_message=lambda text: pub(" in src
-        assert '{"type": "user", "text": text}' in src
+        assert "on_injected_message=lambda kind, text: pub(" in src
+        assert '{"type": "injected", "kind": kind, "text": text}' in src
+
+    def test_the_browser_folds_it_instead_of_shouting_it(self):
+        """A verify failure is a whole test log: headline first, closed."""
+        i = APP_JS.index("function injectedNote(")
+        body = APP_JS[i:i + 700]
+        assert "details" in body and "injectedHeadline(" in body
+        assert "ev.type === 'injected'" in APP_JS
+        assert "m.role === 'injected'" in APP_JS
 
 
 class TestReasoningSurvivesAReload:

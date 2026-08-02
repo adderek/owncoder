@@ -797,8 +797,8 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             def on_phase(label: str, detail: str = "") -> None:
                 self.post_message(PhaseEvent(label, detail))
 
-            def on_injected_message(text: str) -> None:
-                self.post_message(InjectedMessageEvent(text))
+            def on_injected_message(kind: str, text: str) -> None:
+                self.post_message(InjectedMessageEvent(kind, text))
 
             def on_reasoning(tok: str) -> None:
                 self.post_message(ReasoningTokenEvent(tok))

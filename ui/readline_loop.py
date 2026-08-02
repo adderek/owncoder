@@ -901,7 +901,7 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
         def on_progress(done: int, limit: int) -> None:
             _spinner_status[0] = f"iter {done}/{limit}…"
 
-        def on_injected_message(text: str) -> None:
+        def on_injected_message(kind: str, text: str) -> None:
             """A note the turn wrote into history — shown here because the
             resumed session shows it, and a verify failure the user never saw
             makes a finished-looking turn a lie."""
@@ -909,6 +909,7 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
             if streaming_tokens:
                 console.print()
                 streaming_tokens.clear()
+            console.print(f"  [{t.text_dim}]⚙ {kind}[/{t.text_dim}]")
             for line in (text or "").splitlines() or [""]:
                 console.print(f"  [{t.text_dim}]{line}[/{t.text_dim}]")
 

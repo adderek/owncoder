@@ -326,7 +326,12 @@ def cmd_chat(args, config):
         elif _mode != "standard":
             session.mode = _mode
         if messages:
-            messages = [{k: v for k, v in m.items() if not k.startswith("_")} for m in messages]
+            # Same rule as the UI server: only the transient note marker is
+            # dropped. Sweeping every "_" key here cost the resumed session its
+            # side-log links and stored reasoning (see
+            # ui_server.local.LocalServer.load_session).
+            messages = [{k: v for k, v in m.items() if k != "_notes_marker"}
+                        for m in messages]
             agent.messages = messages
             console.print(f"Loaded session: {session.id} ({len(messages)} messages)")
             _warn_loop_guard_resume(console, messages)

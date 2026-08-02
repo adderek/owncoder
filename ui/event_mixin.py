@@ -291,6 +291,8 @@ class EventHandlerMixin:
         that ended on a failing verify read as finished.
         """
         t = self._t
+        kind = _escape(getattr(event, "kind", "") or "agent")
+        self._write_chat(f"[{t.text_dim}]⚙ {kind}[/{t.text_dim}]")
         for line in (event.text or "").splitlines() or [""]:
             self._write_chat(f"[{t.text_dim}]{_escape(line)}[/{t.text_dim}]")
 

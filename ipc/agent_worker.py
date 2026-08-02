@@ -71,8 +71,8 @@ async def run(
     def _on_phase(label: str, detail: str = "") -> None:
         send(PhaseEvent(label, detail))
 
-    def _on_injected_message(text: str) -> None:
-        send(InjectedMessageEvent(text))
+    def _on_injected_message(kind: str, text: str) -> None:
+        send(InjectedMessageEvent(kind, text))
 
     def _on_usage(data: dict) -> None:
         send(UsageEvent(data))

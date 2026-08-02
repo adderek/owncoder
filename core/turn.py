@@ -119,21 +119,23 @@ async def run_turn(
         except Exception:
             logger.exception("on_phase callback failed")
 
-    def _injected(text: str) -> str:
-        """Announce a message the turn writes into history on its own.
+    def _injected(kind: str, text: str, **extra) -> dict:
+        """A message the turn writes into history on its own, announced.
 
         Verify failures, goal checks and nudges are stored as user messages, so
         a resumed session shows them — but the live view never did, and a turn
         that ended on a failing verify looked finished until it was reloaded.
-        Announcing them here keeps both views telling the same story. Returns
-        *text* so callers can use it inline.
+
+        *kind* travels with the message so neither view has to guess where it
+        came from: unlabelled, these read as something the user typed, which is
+        exactly what they are not.
         """
         if on_injected_message is not None:
             try:
-                on_injected_message(text)
+                on_injected_message(kind, text)
             except Exception:
                 logger.exception("on_injected_message callback failed")
-        return text
+        return {"role": "user", "content": text, "_injected_kind": kind, **extra}
 
     def _notify_ctx(n: int) -> None:
         if on_context_size is None:
@@ -251,10 +253,10 @@ async def run_turn(
     _error_streak = 0        # consecutive iterations where every tool call errored
 
     def _loop_guard_escalation_note() -> dict:
-        return {"role": "user", "content": _injected(
+        return _injected("loop guard", (
             f"[loop guard: switching to a stronger model ({config.llm.model}) — the previous "
             f"model was stuck repeating tool calls. Take a different approach.]"
-        )}
+        ))
 
     def _try_escalate_loop_guard(reset, inject_note: bool = True) -> bool:
         """Before a loop-guard hard stop, try swapping to the strong model instead.
@@ -830,9 +832,9 @@ async def run_turn(
                             note = f"[goal achieved after {total_iter_count} iterations: {goal}]"
                             messages = messages + [{"role": "assistant", "content": note}]
                             return "".join(content_parts + [note]), messages
-                        check_msg = {"role": "user", "content": _injected(f"[goal check] Shell command returned non-zero (not yet done): {shell_cmd}\nContinue working toward the goal.")}
+                        check_msg = _injected("goal check", f"[goal check] Shell command returned non-zero (not yet done): {shell_cmd}\nContinue working toward the goal.")
                     else:
-                        check_msg = {"role": "user", "content": _injected(f"[goal check] Your current goal is: {goal}\nHave you fully achieved it? If yes, summarize what was done and stop calling tools. If not, continue working.")}
+                        check_msg = _injected("goal check", f"[goal check] Your current goal is: {goal}\nHave you fully achieved it? If yes, summarize what was done and stop calling tools. If not, continue working.")
                     messages = messages + [check_msg]
                     iter_count = 0
                     continue
@@ -869,7 +871,7 @@ async def run_turn(
                         except Exception as _e:
                             logger.warning("side_log append failed (confidence_guard): %s", _e)
                     intervention = ConfidenceMonitor.intervention_message(conf_sig)
-                    messages = messages + [{"role": "user", "content": _injected(intervention), "_confidence_guard": True}]
+                    messages = messages + [_injected("confidence guard", intervention, _confidence_guard=True)]
                     confidence_monitor.acknowledge()
                     # auto-tier: a stuck fast model escalates to the strong model
                     # for the rest of this turn (next turn reverts to fast).
@@ -954,7 +956,7 @@ async def run_turn(
                 )
             else:
                 nudge_text = "Call the tool now. Do not describe it, execute it."
-            nudge = {"role": "user", "content": _injected(nudge_text), "_nudged": True}
+            nudge = _injected("nudge", nudge_text, _nudged=True)
             messages = messages + [nudge]
             nudge_count += 1
             continue
@@ -1032,7 +1034,7 @@ async def run_turn(
                         _phase("tier_escalate", f"verify -> {config.llm.model}")
                         logger.warning("auto-tier: escalated to strong model '%s' mid-turn (verify fail)", config.llm.model)
                         note += f"\n[switching to a stronger model ({config.llm.model}) for this fix round.]"
-                messages = messages + [{"role": "user", "content": _injected(note)}]
+                messages = messages + [_injected("verify", note)]
                 if _verify_attempts < verify_cfg.max_attempts:
                     continue
                 content_parts.append(

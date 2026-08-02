@@ -226,16 +226,21 @@ async def test_a_failing_verify_is_announced_while_it_happens(monkeypatch):
     monkeypatch.setattr(turn_mod, "execute_tool", _fake_execute_ok)
     monkeypatch.setattr(turn_mod, "get_schemas", lambda: [])
 
-    announced: list[str] = []
+    announced: list[tuple[str, str]] = []
     client = _StubClient(
         _tool_call_response("edit_file", {"path": "a.py"}),
         _stop_response("first attempt"),
         _stop_response("second attempt"),
     )
-    _, out_messages = await run_turn(_base_messages(), cfg, client,
-                                     on_injected_message=announced.append)
+    _, out_messages = await run_turn(
+        _base_messages(), cfg, client,
+        on_injected_message=lambda kind, text: announced.append((kind, text)))
 
     stored = [m["content"] for m in out_messages
               if m.get("role") == "user" and "[verify]" in (m.get("content") or "")]
-    assert announced == stored
-    assert "boom" in announced[0]
+    assert [text for _, text in announced] == stored
+    # Labelled, so no view has to guess whether the user typed it.
+    assert [kind for kind, _ in announced] == ["verify"]
+    assert all(m.get("_injected_kind") == "verify" for m in out_messages
+               if "[verify]" in (m.get("content") or ""))
+    assert "boom" in announced[0][1]

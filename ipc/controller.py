@@ -106,7 +106,7 @@ async def run_turn_ipc(
             elif isinstance(event, PhaseEvent):
                 _safe_call(on_phase, event.label, event.detail)
             elif isinstance(event, InjectedMessageEvent):
-                _safe_call(on_injected_message, event.text)
+                _safe_call(on_injected_message, event.kind, event.text)
             elif isinstance(event, UsageEvent):
                 _safe_call(on_usage, event.data)
             elif isinstance(event, ProgressEvent):
