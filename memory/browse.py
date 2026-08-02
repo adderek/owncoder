@@ -1,0 +1,229 @@
+"""Read-only browsing of the memory tiers, one registry entry per tier.
+
+`overview.py` answers "how much is stored"; this answers "show me". Both
+feed the same UI: the overview is the landing page of the memory view, and
+each tier here is one section of it.
+
+A tier is a (list, get) pair registered in `_TIERS`, so a new tier — code
+units, chunks, archive, rules, skills — is an entry and a function, not a
+change to the UI or the endpoints.
+
+Read-only by design: deleting memory is a decision with consequences and
+belongs behind an explicit action, not a browse call.
+"""
+from __future__ import annotations
+
+import json
+import logging
+from pathlib import Path
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from agent.config.models import Config
+
+logger = logging.getLogger(__name__)
+
+_PREVIEW_CHARS = 220
+
+
+def _memory_db(config: "Config") -> Path:
+    return Path(config.tools.working_dir) / config.tools.agent_dir / "memory.db"
+
+
+def _store(config: "Config"):
+    from agent.memory.store import MemoryStore
+    return MemoryStore(_memory_db(config))
+
+
+def _tags(raw) -> list[str]:
+    try:
+        return json.loads(raw or "[]")
+    except Exception:
+        return []
+
+
+def _preview(body: str) -> str:
+    body = " ".join((body or "").split())
+    return body[:_PREVIEW_CHARS] + ("…" if len(body) > _PREVIEW_CHARS else "")
+
+
+def _entry_row(e: dict) -> dict:
+    return {
+        "id": e.get("id"),
+        "title": e.get("title") or "(untitled)",
+        "tags": _tags(e.get("tags")),
+        "preview": _preview(e.get("body") or ""),
+        "updated_at": e.get("updated_at") or e.get("created_at"),
+        "source": e.get("source") or "",
+    }
+
+
+# ── memory.db scopes ────────────────────────────────────────────────────────
+def _scope_list(scope: str):
+    def _list(config: "Config", query: str = "", limit: int = 50) -> dict:
+        store = _store(config)
+        if query.strip():
+            rows = store.fts_search(query, scope=scope, top_k=limit)
+        else:
+            rows = store.list_entries(scope=scope, limit=limit,
+                                      order_by="updated_at DESC")
+        return {"items": [_entry_row(r) for r in rows]}
+    return _list
+
+
+def _scope_get(scope: str):
+    def _get(config: "Config", item_id: str) -> dict:
+        e = _store(config).get(item_id)
+        if not e or e.get("scope") != scope:
+            return {"error": "not found"}
+        return {"title": e.get("title") or "(untitled)",
+                "body": e.get("body") or "",
+                "tags": _tags(e.get("tags")),
+                "meta": {"scope": e.get("scope"), "source": e.get("source") or "",
+                         "created_at": e.get("created_at"),
+                         "updated_at": e.get("updated_at"),
+                         "hits": e.get("hit_count")}}
+    return _get
+
+
+# ── knowledge base ──────────────────────────────────────────────────────────
+def _kb_corpus(config: "Config"):
+    path = getattr(config.kb, "corpus_path", "")
+    if not getattr(config.kb, "enabled", False) or not path:
+        return None
+    from kb.api import Corpus
+    return Corpus.open(path)
+
+
+def _kb_name(node) -> str:
+    return (node.inferred_name_override or node.inferred_name_base
+            or node.id)
+
+
+def _kb_description(node) -> str:
+    return node.description_override or node.description_base or ""
+
+
+def _kb_list(config: "Config", query: str = "", limit: int = 50) -> dict:
+    corpus = _kb_corpus(config)
+    if corpus is None:
+        return {"items": [], "note": "kb.enabled is false — no corpus configured"}
+    try:
+        if query.strip():
+            nodes = corpus.search(query, limit=limit)
+        else:
+            # No query: the corpus has no "recent" order, so show the nodes a
+            # reader wants first — described ones, highest priority.
+            rows = corpus.conn.execute(
+                "SELECT id FROM nodes ORDER BY priority DESC, id LIMIT ?",
+                (limit,)).fetchall()
+            nodes = [n for n in (corpus.get(r["id"]) for r in rows) if n]
+        return {"items": [{
+            "id": n.id,
+            "title": _kb_name(n),
+            "tags": [v for v in (n.dims or {}).values() if v],
+            "preview": _preview(_kb_description(n)),
+            "updated_at": n.analysis_date,
+            "source": n.dims.get("scope", "") if n.dims else "",
+        } for n in nodes]}
+    finally:
+        corpus.close()
+
+
+def _kb_get(config: "Config", item_id: str) -> dict:
+    corpus = _kb_corpus(config)
+    if corpus is None:
+        return {"error": "kb.enabled is false"}
+    try:
+        node = corpus.get(item_id)
+        if node is None:
+            return {"error": "not found"}
+        locs = [f"{l.path}:{l.start_line}" if getattr(l, "start_line", None)
+                else getattr(l, "path", str(l)) for l in (node.locators or [])]
+        body = _kb_description(node) or "(no description)"
+        if locs:
+            body += "\n\nLocations:\n" + "\n".join("  " + s for s in locs)
+        return {"title": _kb_name(node), "body": body,
+                "tags": [v for v in (node.dims or {}).values() if v],
+                "meta": {"id": node.id, "completeness": node.completeness,
+                         "data_grade": node.data_grade,
+                         "stale": node.stale,
+                         "analysis_model": node.analysis_model or "",
+                         "children_described":
+                             f"{node.children_described_n}/{node.children_described_m}"}}
+    finally:
+        corpus.close()
+
+
+# ── registry ────────────────────────────────────────────────────────────────
+# label, list fn, get fn. Order is the order the UI shows them in.
+_TIERS: dict[str, tuple[str, Callable, Callable]] = {
+    "note": ("notes", _scope_list("note"), _scope_get("note")),
+    "session_summary": ("session summaries", _scope_list("session_summary"),
+                        _scope_get("session_summary")),
+    "facts_round": ("facts rounds", _scope_list("facts_round"),
+                    _scope_get("facts_round")),
+    "behavioral_rule": ("behavioral rules", _scope_list("behavioral_rule"),
+                        _scope_get("behavioral_rule")),
+    "context_chunk": ("context chunks", _scope_list("context_chunk"),
+                      _scope_get("context_chunk")),
+    "kb": ("kb / wiki", _kb_list, _kb_get),
+}
+
+
+def tiers(config: "Config") -> list[dict]:
+    """Browsable tiers with their counts — the memory view's left rail.
+
+    A tier with nothing in it is still listed: "0 notes" is an answer, and a
+    rail that changes shape as data arrives is harder to navigate than one
+    that does not.
+    """
+    counts: dict[str, int] = {}
+    try:
+        counts = _store(config).counts_by_scope()
+    except Exception:
+        logger.debug("browse: scope counts failed", exc_info=True)
+    kb_count = None
+    try:
+        corpus = _kb_corpus(config)
+        if corpus is not None:
+            try:
+                kb_count = corpus.conn.execute(
+                    "SELECT COUNT(*) FROM nodes").fetchone()[0]
+            finally:
+                corpus.close()
+    except Exception:
+        logger.debug("browse: kb count failed", exc_info=True)
+
+    out = []
+    for key, (label, _l, _g) in _TIERS.items():
+        count = kb_count if key == "kb" else counts.get(key, 0)
+        out.append({"key": key, "label": label, "count": count,
+                    "available": count is not None})
+    return out
+
+
+def browse(config: "Config", tier: str, query: str = "", limit: int = 50) -> dict:
+    entry = _TIERS.get(tier)
+    if entry is None:
+        return {"error": f"unknown tier '{tier}'", "items": []}
+    try:
+        out = entry[1](config, query, limit)
+    except Exception as exc:
+        logger.debug("browse: tier %s failed", tier, exc_info=True)
+        return {"error": str(exc), "items": []}
+    out.setdefault("items", [])
+    out["tier"] = tier
+    out["label"] = entry[0]
+    return out
+
+
+def item(config: "Config", tier: str, item_id: str) -> dict:
+    entry = _TIERS.get(tier)
+    if entry is None:
+        return {"error": f"unknown tier '{tier}'"}
+    try:
+        return entry[2](config, item_id)
+    except Exception as exc:
+        logger.debug("browse: item %s/%s failed", tier, item_id, exc_info=True)
+        return {"error": str(exc)}

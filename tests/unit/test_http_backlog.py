@@ -364,9 +364,13 @@ class TestEditorPane:
 
         app_js = (Path(__file__).resolve().parents[2] / "ui" / "static" / "app.js"
                   ).read_text(encoding="utf-8")
-        fn = app_js[app_js.index("function showTaskPane("):app_js.index("async function openTask(")]
+        # The editor is one view of the centre-column router (showView), which
+        # hides the transcript rather than rebuilding it.
+        fn = app_js[app_js.index("function showView("):app_js.index("function showTaskPane(")]
         assert "classList.toggle('hidden'" in fn
         assert "innerHTML = ''" not in fn
+        assert "showView(" in app_js[app_js.index("function showTaskPane("):
+                                     app_js.index("async function openTask(")]
 
     def test_a_drop_is_sent_as_neighbours_not_an_index(self):
         from pathlib import Path

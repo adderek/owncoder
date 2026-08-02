@@ -538,6 +538,7 @@ _PAGE = r"""<!DOCTYPE html>
   <button type="button" class="chip btn" id="privchip" title="Session privacy mode — click for off-the-record options" aria-haspopup="menu" aria-expanded="false">▪ standard ▾</button>
   <div id="statuswrap"><span id="dot"></span><span id="status" role="status" aria-live="polite">idle</span></div>
   <button type="button" class="chip btn" id="layout" title="Cycle chat width: centered / wide / full">center</button>
+  <button type="button" class="chip btn" id="viewchip" title="What the main panel is showing — click to go back to the conversation" style="display:none"></button>
   <button type="button" class="chip btn" id="condchip" title="Condensed Q/A view — one line per turn, click rows to expand">≣ Q/A</button>
   <button type="button" class="chip btn" id="iostats" title="Session totals: prompt in / completion out / est. USD cost (paid-tier only). Click for per-model split">↑0 ↓0</button>
   <button type="button" class="chip btn" id="bgchip" title="Background jobs running — click to review / kill" style="display:none">⚙0</button>
@@ -626,6 +627,21 @@ _PAGE = r"""<!DOCTYPE html>
     <span id="taskinfo" class="dim"></span>
   </div>
 </div>
+<!-- Memory browser. Same centre-column takeover as the task editor: reading
+     what the agent remembers is its own activity, and a drawer is too narrow
+     for a note body. -->
+<div id="mempane" class="hidden">
+  <div id="membar">
+    <button class="sbtn" id="memback" title="Back to the conversation">← chat</button>
+    <b>🧠 Memory &amp; indexes</b>
+    <input id="memsearch" placeholder="search this tier…">
+  </div>
+  <div id="memmain">
+    <div id="memrail">—</div>
+    <div id="memlist">—</div>
+    <div id="memdetail" class="dim">Pick an entry to read it.</div>
+  </div>
+</div>
 <div id="log"></div>
 <button id="jumpdown" class="hidden" title="Jump to latest">↓ new output</button>
 <div id="turnnav" class="hidden">
@@ -665,6 +681,7 @@ _PAGE = r"""<!DOCTYPE html>
   <details id="memfold" class="dfold">
     <summary class="dhead">Memory &amp; indexes <span id="memcount" class="chip"></span><span id="d-mem" class="dhead-refresh" title="Refresh">⟳</span></summary>
     <pre id="membody">—</pre>
+    <button class="sbtn" id="memopen" title="Browse the stored entries in the main panel">open in main panel</button>
     <button class="sbtn" id="memdeep" title="Walk the project tree and report files the code index has not seen yet">check index freshness</button>
   </details>
   <details id="bgfold" class="dfold" open>
@@ -1864,6 +1881,28 @@ class _HttpUI:
         sid = self.session.id if self.session else ""
         return overview(config, session_id=sid, mode=self.session_mode(), deep=deep)
 
+    def memory_tiers(self) -> dict:
+        """Left rail of the memory view: what can be browsed, and how much."""
+        from agent.memory.browse import tiers
+        config = _agent_config(self.server)
+        if config is None:
+            return {"tiers": [], "error": _NEEDS_LOCAL}
+        return {"tiers": tiers(config)}
+
+    def memory_browse(self, tier: str, query: str = "", limit: int = 50) -> dict:
+        from agent.memory.browse import browse
+        config = _agent_config(self.server)
+        if config is None:
+            return {"items": [], "error": _NEEDS_LOCAL}
+        return browse(config, tier, query, limit)
+
+    def memory_item(self, tier: str, item_id: str) -> dict:
+        from agent.memory.browse import item
+        config = _agent_config(self.server)
+        if config is None:
+            return {"error": _NEEDS_LOCAL}
+        return item(config, tier, item_id)
+
     # ── on-demand heal ────────────────────────────────────────────────────
     def _heal_signals(self, focus: str = "") -> tuple[str, dict]:
         from agent.core.self_heal import heal_request
@@ -1987,8 +2026,20 @@ def _make_handler(ui: _HttpUI):
                 self._json(ui.stats_info())
             elif self.path.startswith("/api/memory"):
                 from urllib.parse import parse_qs, urlparse
-                q = parse_qs(urlparse(self.path).query)
-                self._json(ui.memory_info(deep=q.get("deep", ["0"])[0] == "1"))
+                parsed = urlparse(self.path)
+                q = parse_qs(parsed.query)
+                one = lambda k, d="": (q.get(k) or [d])[0]  # noqa: E731
+                if parsed.path == "/api/memory/tiers":
+                    self._json(ui.memory_tiers())
+                elif parsed.path == "/api/memory/browse":
+                    raw = one("limit", "50")
+                    limit = int(raw) if raw.isdigit() else 50
+                    self._json(ui.memory_browse(
+                        one("tier", "note"), one("q"), max(1, min(500, limit))))
+                elif parsed.path == "/api/memory/item":
+                    self._json(ui.memory_item(one("tier", "note"), one("id")))
+                else:
+                    self._json(ui.memory_info(deep=one("deep", "0") == "1"))
             elif self.path.startswith("/api/sessions"):
                 from urllib.parse import parse_qs, urlparse
                 _qs = parse_qs(urlparse(self.path).query)
@@ -2560,6 +2611,9 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
             sid = ui.session.id if ui.session else ""
             pub({"type": "sys", "text": await asyncio.to_thread(
                 run_memory_command, cfg, arg, sid, ui.session_mode())})
+            # The text answer lands in the transcript for the record; the
+            # browser also opens the browser view, which is what was wanted.
+            pub({"type": "openview", "view": "memory"})
     elif cmd == "/mcp":
         cfg = _agent_config(server)
         if cfg is None:

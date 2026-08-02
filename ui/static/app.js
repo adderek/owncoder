@@ -1016,6 +1016,9 @@ function handle(ev) {
     clearPreview();
     resyncView().then(() => row('sys', null, '⇄ switched to session ' + ev.session));
     if (document.getElementById('left').classList.contains('open')) loadSessions();
+  } else if (ev.type === 'openview') {
+    // A slash command asked for a centre-column view (e.g. /memory).
+    if (ev.view === 'memory') openMemoryView();
   } else if (ev.type === 'stats') {
     setIoChip(ev.in, ev.out, ev.cost_usd);
     // refresh the drawer section if it's visible
@@ -1542,6 +1545,137 @@ async function loadMemory(deep) {
     }
   } catch (e) { el.textContent = 'failed: ' + e; }
 }
+// Memory browser in the centre column. The drawer panel answers "how much is
+// stored"; this answers "show me", one tier at a time.
+let memTier = 'note';
+
+function memRow(it) {
+  const div = document.createElement('div');
+  div.className = 'mem-row';
+  div.dataset.id = it.id;
+  const head = document.createElement('div');
+  head.className = 'mem-row-title';
+  head.textContent = it.title;
+  div.appendChild(head);
+  if (it.tags && it.tags.length) {
+    const tags = document.createElement('span');
+    tags.className = 'mem-tags';
+    tags.textContent = it.tags.join(' · ');
+    div.appendChild(tags);
+  }
+  if (it.preview) {
+    const p = document.createElement('div');
+    p.className = 'mem-prev';
+    p.textContent = it.preview;
+    div.appendChild(p);
+  }
+  div.addEventListener('click', () => {
+    document.querySelectorAll('#memlist .mem-row.sel').forEach(r =>
+      r.classList.remove('sel'));
+    div.classList.add('sel');
+    openMemItem(it.id);
+  });
+  return div;
+}
+
+async function loadMemTiers() {
+  const rail = document.getElementById('memrail');
+  rail.textContent = '…';
+  try {
+    const d = await (await fetch('/api/memory/tiers')).json();
+    rail.textContent = '';
+    (d.tiers || []).forEach(t => {
+      const b = document.createElement('button');
+      b.className = 'mem-tier' + (t.key === memTier ? ' sel' : '');
+      b.innerHTML = '';
+      b.textContent = t.label;
+      const c = document.createElement('span');
+      c.className = 'mem-count';
+      c.textContent = t.count == null ? '–' : fmtK(t.count);
+      b.appendChild(c);
+      b.addEventListener('click', () => { memTier = t.key; loadMemTiers(); loadMemList(); });
+      rail.appendChild(b);
+    });
+  } catch (e) { rail.textContent = 'failed: ' + e; }
+}
+
+async function loadMemList() {
+  const list = document.getElementById('memlist');
+  list.textContent = '…';
+  const q = document.getElementById('memsearch').value.trim();
+  try {
+    const d = await (await fetch('/api/memory/browse?tier=' +
+      encodeURIComponent(memTier) + '&q=' + encodeURIComponent(q))).json();
+    list.textContent = '';
+    if (d.error) { list.textContent = d.error; return; }
+    if (d.note) {
+      const n = document.createElement('div');
+      n.className = 'dim'; n.textContent = d.note; list.appendChild(n);
+    }
+    if (!(d.items || []).length) {
+      const n = document.createElement('div');
+      n.className = 'dim';
+      n.textContent = q ? 'nothing matches "' + q + '"' : 'nothing stored in this tier';
+      list.appendChild(n);
+      return;
+    }
+    d.items.forEach(it => list.appendChild(memRow(it)));
+  } catch (e) { list.textContent = 'failed: ' + e; }
+}
+
+async function openMemItem(id) {
+  const el = document.getElementById('memdetail');
+  el.textContent = '…';
+  try {
+    const d = await (await fetch('/api/memory/item?tier=' +
+      encodeURIComponent(memTier) + '&id=' + encodeURIComponent(id))).json();
+    el.textContent = '';
+    el.classList.remove('dim');
+    if (d.error) { el.textContent = d.error; return; }
+    const h = document.createElement('div');
+    h.className = 'mem-detail-title';
+    h.textContent = d.title || '(untitled)';
+    el.appendChild(h);
+    const meta = Object.entries(d.meta || {})
+      .filter(([, v]) => v !== null && v !== undefined && v !== '')
+      .map(([k, v]) => k + '=' + v).join('   ');
+    if (meta || (d.tags || []).length) {
+      const m = document.createElement('div');
+      m.className = 'mem-detail-meta';
+      m.textContent = [(d.tags || []).join(' · '), meta].filter(Boolean).join('   ');
+      el.appendChild(m);
+    }
+    const body = document.createElement('pre');
+    body.className = 'mem-detail-body';
+    body.textContent = d.body || '';
+    el.appendChild(body);
+  } catch (e) { el.textContent = 'failed: ' + e; }
+}
+
+function openMemoryView(tier) {
+  if (tier) memTier = tier;
+  showView('memory');
+  loadMemTiers();
+  loadMemList();
+  document.getElementById('memsearch').focus();
+}
+
+document.getElementById('memback').addEventListener('click', () => showView('chat'));
+document.getElementById('viewchip').addEventListener('click', () => showView('chat'));
+document.getElementById('mempane').addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') showView('chat');
+});
+(() => {
+  // Search re-runs on a short debounce: the store is local and the lists are
+  // capped, so typing straight into results beats a submit button.
+  let t = null;
+  const inp = document.getElementById('memsearch');
+  if (inp) inp.addEventListener('input', () => {
+    clearTimeout(t);
+    t = setTimeout(loadMemList, 200);
+  });
+})();
+
 // Fold state for every <details class="dfold"> in both drawers, persisted per
 // panel so the drawer comes back the way it was left. Restored at startup
 // (see restoreFolds' call site) *after* the lazy-load toggle handlers are
@@ -1810,12 +1944,35 @@ async function todoAction(payload) {
 // activities; the transcript stays where it is and comes back untouched.
 let taskCurrentId = null;
 
-function showTaskPane(on) {
-  document.getElementById('taskpane').classList.toggle('hidden', !on);
-  document.getElementById('log').classList.toggle('hidden', on);
-  document.getElementById('inputrow').classList.toggle('hidden', on);
+// The centre column shows one view at a time, and chat is the one that is
+// always there — every other view is a takeover that hands it back. The
+// header chip names the current view, because the drawers can be closed and
+// then nothing else on screen says what you are looking at.
+const VIEW_PANES = {task: 'taskpane', memory: 'mempane'};
+const VIEW_LABELS = {task: '✎ task', memory: '🧠 memory'};
+let currentView = 'chat';
+
+function showView(name, label) {
+  currentView = name;
+  Object.entries(VIEW_PANES).forEach(([view, id]) => {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('hidden', view !== name);
+  });
+  const onChat = name === 'chat';
+  document.getElementById('log').classList.toggle('hidden', !onChat);
+  document.getElementById('inputrow').classList.toggle('hidden', !onChat);
   const jump = document.getElementById('jumpdown');
-  if (on && jump) jump.classList.add('hidden');
+  if (!onChat && jump) jump.classList.add('hidden');
+  const chip = document.getElementById('viewchip');
+  if (chip) {
+    chip.style.display = onChat ? 'none' : '';
+    chip.textContent = label || VIEW_LABELS[name] || name;
+  }
+}
+
+function showTaskPane(on) {
+  showView(on ? 'task' : 'chat',
+           on && taskCurrentId ? '✎ ' + taskCurrentId : null);
 }
 
 async function openTask(id) {
@@ -1996,6 +2153,8 @@ wireRefresh('d-mem', loadMemory);
 (() => {
   const b = document.getElementById('memdeep');
   if (b) b.addEventListener('click', () => loadMemory(true));
+  const o = document.getElementById('memopen');
+  if (o) o.addEventListener('click', () => openMemoryView());
 })();
 // Load a right-drawer panel when its fold is opened — including the restore
 // at startup, which fires toggle for every fold that comes back open.

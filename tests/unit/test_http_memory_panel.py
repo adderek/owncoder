@@ -152,6 +152,46 @@ class TestSharedCommand:
         assert rag_db_path(config) == tmp_path / ".agent" / "index.db"
 
 
+class TestCentrePaneView:
+    """Memory browsing lives in the main panel, like the task editor — a
+    drawer is too narrow for a note body, and the drawers can be closed."""
+
+    def test_the_pane_and_its_parts_are_in_the_page(self):
+        for el in ("mempane", "membar", "memrail", "memlist", "memdetail",
+                   "memsearch", "memback"):
+            assert f'id="{el}"' in _PAGE, el
+
+    def test_the_header_says_which_view_is_showing(self):
+        """With both drawers closed, the chip is the only thing that does."""
+        assert 'id="viewchip"' in _PAGE
+        assert "VIEW_LABELS" in APP_JS and "showView" in APP_JS
+
+    def test_going_back_to_chat_is_offered_two_ways(self):
+        assert "getElementById('memback')" in APP_JS
+        assert "getElementById('viewchip')" in APP_JS
+        assert "showView('chat')" in APP_JS
+
+    def test_the_task_editor_uses_the_same_router(self):
+        """One view at a time, one place that decides what is visible."""
+        assert "function showTaskPane" in APP_JS and "showView(on ? 'task'" in APP_JS
+
+    def test_the_drawer_can_launch_the_view(self):
+        assert 'id="memopen"' in _PAGE and "openMemoryView" in APP_JS
+
+    def test_the_slash_command_opens_it_too(self):
+        assert '"openview"' in HTTP_LOOP and "ev.type === 'openview'" in APP_JS
+
+    def test_the_browse_endpoints_are_routed(self):
+        for path in ("/api/memory/tiers", "/api/memory/browse", "/api/memory/item"):
+            assert f'"{path}"' in HTTP_LOOP, path
+
+    def test_a_remote_backend_degrades_on_every_browse_endpoint(self):
+        ui = _ui(None)
+        assert ui.memory_tiers()["tiers"] == []
+        assert ui.memory_browse("note")["items"] == []
+        assert "error" in ui.memory_item("note", "x")
+
+
 class TestWiring:
     def test_every_dispatcher_knows_the_command(self):
         root = Path(__file__).resolve().parents[2] / "ui"
