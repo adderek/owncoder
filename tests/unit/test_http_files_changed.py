@@ -325,7 +325,7 @@ class TestReplayShowsWhatEachRoundChanged:
 class TestReplayMountsIt:
     def test_the_replayed_turn_carries_the_changeset_into_end_turn(self):
         i = APP_JS.index("function replayTranscriptInner(")
-        body = APP_JS[i:i + 1200]
+        body = APP_JS[i:i + 1800]
         assert "if (turn && m.changeset) turn.changeset = m.changeset;" in body
         assert body.index("turn.changeset = m.changeset") < body.index("endTurn();\n        work = null;")
 

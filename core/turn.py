@@ -108,6 +108,7 @@ async def run_turn(
     project_memory_store=None,
     session_id: str | None = None,
     stop_event: asyncio.Event | None = None,
+    partial_sink: list | None = None,
     _depth: int = 0,
 ) -> tuple[str, list[dict]]:
     def _phase(label: str, detail: str = "") -> None:
@@ -290,7 +291,20 @@ async def run_turn(
             messages = messages + [_loop_guard_escalation_note()]
         return True
 
+    def _checkpoint_partial() -> None:
+        """Publish the round so far for a caller that may never get a return.
+
+        A turn only hands its history back when it finishes. A stop button or a
+        dead endpoint therefore threw away tool calls the user had just watched
+        run — including the edits they made. Copied at the two points where an
+        interruption is likely (waiting on the model, waiting on a tool), which
+        is enough for the caller to keep the work rather than the intention.
+        """
+        if partial_sink is not None:
+            partial_sink[:] = messages
+
     while True:
+        _checkpoint_partial()
         # Re-expose any tools the model activated via find_tools last iteration.
         if _refresh_tools is not None:
             tools = _refresh_tools()
@@ -723,6 +737,11 @@ async def run_turn(
                         })
                     except Exception:
                         logger.exception("on_tool_record callback failed")
+
+            # Results are paired with their calls now: a stop from here on
+            # keeps the whole round rather than an assistant message whose
+            # tool_calls have no answers.
+            _checkpoint_partial()
 
             # Error-streak guard: when every tool call in an iteration fails for
             # several iterations in a row (e.g. a rate-limited backend erroring

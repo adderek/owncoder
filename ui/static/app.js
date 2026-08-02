@@ -770,6 +770,18 @@ function replayToolResult(d, ok, text) {
   }
 }
 
+// The compaction boundary: a closed fold saying the earlier rounds are now a
+// summary, with the summary itself inside for anyone who wants it.
+function replayCompaction(text) {
+  const d = document.createElement('details');
+  d.className = 'think';
+  d.innerHTML = '<summary>⇘ earlier rounds compacted into a summary</summary>' +
+                '<div class="body"></div>';
+  d.querySelector('.body').textContent = text;
+  mount(d);
+  return d;
+}
+
 // Replay counterpart of reasoning(): the whole trace is known already, so it
 // mounts as one closed fold inside the work fold rather than streaming in.
 function replayReasoning(text) {
@@ -2288,6 +2300,12 @@ function replayTranscriptInner(messages) {
       endTurn();
       work = null;
       row('msg user', null, m.content);
+    } else if (m.role === 'compaction') {
+      // Where the older rounds went. Without this the replayed session just
+      // has fewer rounds than the live one had, with nothing saying why.
+      endTurn();
+      work = null;
+      replayCompaction(m.content);
     } else if (m.role === 'assistant') {
       // Thinking came before the round's work, same as live.
       if (m.reasoning) {

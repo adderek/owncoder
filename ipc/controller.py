@@ -54,6 +54,7 @@ async def run_turn_ipc(
     session_id: str | None = None,
     stop_event: asyncio.Event | None = None,
     excluded_tools: set[str] | None = None,
+    partial_sink: list | None = None,
 ) -> tuple[str, list[dict]]:
     """Run one agent turn through the IPC layer.
 
@@ -78,6 +79,7 @@ async def run_turn_ipc(
             session_id=session_id,
             stop_event=stop_event,
             excluded_tools=excluded_tools,
+            partial_sink=partial_sink,
         )
     )
 

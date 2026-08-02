@@ -209,3 +209,49 @@ class TestReasoningSurvivesAReload:
         body = APP_JS[i:i + 500]
         assert "turn.body.appendChild(d)" in body
         assert "replayReasoning(m.reasoning)" in APP_JS
+
+
+class TestCompactionIsVisible:
+    """Compaction rewrites old rounds into one summary. Replayed as a plain
+    assistant message it read as something the agent had said, and the rounds
+    it replaced just looked missing."""
+
+    SUMMARY = {"role": "assistant", "_compaction_marker": True,
+               "content": "[SESSION SUMMARY · round 3] facts…"}
+
+    def test_the_boundary_gets_its_own_role(self):
+        out = _transcript([self.SUMMARY])
+        assert out[0]["role"] == "compaction"
+        assert "SESSION SUMMARY" in out[0]["content"]
+
+    def test_an_older_session_is_recognised_by_its_header(self):
+        """Sessions compacted before the marker existed still replay right."""
+        out = _transcript([{"role": "assistant",
+                            "content": "[SESSION SUMMARY] older run"}])
+        assert out[0]["role"] == "compaction"
+
+    def test_an_answer_mentioning_the_words_is_left_alone(self):
+        out = _transcript([{"role": "assistant",
+                            "content": "the [SESSION SUMMARY] header is built in compactor.py"}])
+        assert out[0]["role"] == "assistant"
+
+    def test_the_browser_shows_it_as_a_boundary(self):
+        i = APP_JS.index("function replayCompaction(")
+        assert "compacted into a summary" in APP_JS[i:i + 400]
+        assert "m.role === 'compaction'" in APP_JS
+
+
+class TestReasoningAfterCompaction:
+    def test_it_falls_back_to_the_side_log(self, tmp_path, monkeypatch):
+        """Compaction drops the inline copy; _reasoning_ref still points at it."""
+        import agent.ui.http_loop as H
+        sdir = tmp_path / "s2"
+        sdir.mkdir()
+        (sdir / "reasoning.jsonl").write_text(
+            json.dumps({"seq": 2, "turn": 1, "content": "the long trace"}) + "\n",
+            encoding="utf-8")
+        monkeypatch.setattr("agent.memory.session.get_session_full_dir",
+                            lambda sid: sdir)
+        out = H._transcript([{"role": "assistant", "content": "a",
+                              "_reasoning_ref": 2}], sid="s2")
+        assert out[0]["reasoning"] == "the long trace"

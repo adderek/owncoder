@@ -2344,6 +2344,7 @@ def build_widget_classes(t) -> SimpleNamespace:
     TokenStreamEvent = _events.TokenStreamEvent
     IterationProgressEvent = _events.IterationProgressEvent
     PhaseEvent = _events.PhaseEvent
+    InjectedMessageEvent = _events.InjectedMessageEvent
     ReasoningTokenEvent = _events.ReasoningTokenEvent
     ContextSizeEvent = _events.ContextSizeEvent
 
@@ -2403,6 +2404,7 @@ def build_widget_classes(t) -> SimpleNamespace:
         TokenStreamEvent=TokenStreamEvent,
         IterationProgressEvent=IterationProgressEvent,
         PhaseEvent=PhaseEvent,
+        InjectedMessageEvent=InjectedMessageEvent,
         ReasoningTokenEvent=ReasoningTokenEvent,
         ContextSizeEvent=ContextSizeEvent,
         _PLACEHOLDER_Q=_PLACEHOLDER_Q,

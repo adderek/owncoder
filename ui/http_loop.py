@@ -263,13 +263,13 @@ def _unescape_exec(text: str) -> str:
     return (text.replace("&quot;", '"').replace("&gt;", ">").replace("&lt;", "<"))
 
 
-def _side_log_records(sid: str) -> dict:
-    """seq → tool_calls.jsonl record for one session, or {} when unavailable."""
+def _side_log_records(sid: str, filename: str = "tool_calls.jsonl") -> dict:
+    """seq → side-log record for one session, or {} when unavailable."""
     if not sid:
         return {}
     try:
         from agent.memory.session import get_session_full_dir
-        path = get_session_full_dir(sid) / "tool_calls.jsonl"
+        path = get_session_full_dir(sid) / filename
         if not path.exists():
             return {}
         records: dict = {}
@@ -283,7 +283,7 @@ def _side_log_records(sid: str) -> dict:
                     records[rec["seq"]] = rec
         return records
     except Exception:
-        logger.debug("http ui: side log unreadable for %s", sid, exc_info=True)
+        logger.debug("http ui: %s unreadable for %s", filename, sid, exc_info=True)
         return {}
 
 
@@ -361,15 +361,23 @@ def _unfold_round(m: dict, records: dict, result_limit: int) -> list[dict] | Non
 _REASONING_LIMIT = 4000
 
 
-def _attach_reasoning(message: dict, entries: list[dict]) -> None:
+def _attach_reasoning(message: dict, entries: list[dict],
+                      reasoning_records: dict | None = None) -> None:
     """Carry the round's thinking into its first replayed entry.
 
     The live view streams reasoning into a "thinking…" fold, and history keeps
     it, but replay dropped it — so a reloaded turn lost the part that explains
-    the rest of it.
+    the rest of it. Compaction rewrites old messages and drops the inline copy,
+    which is what ``_reasoning_ref`` into reasoning.jsonl is for.
     """
+    if not entries:
+        return
     text = message.get("_reasoning_content") or ""
-    if not text or not entries:
+    if not text and reasoning_records is not None:
+        ref = message.get("_reasoning_ref")
+        if isinstance(ref, int):
+            text = (reasoning_records.get(ref) or {}).get("content") or ""
+    if not text:
         return
     entries[0]["reasoning"] = (
         text[:_REASONING_LIMIT] + ("…" if len(text) > _REASONING_LIMIT else ""))
@@ -388,6 +396,7 @@ def _transcript(messages, result_limit: int = 2000, sid: str = "") -> list[dict]
     shortened text kept in the message itself.
     """
     records = _side_log_records(sid)
+    reasoning_records = _side_log_records(sid, "reasoning.jsonl")
     out: list[dict] = []
     for m in messages:
         role = m.get("role")
@@ -396,9 +405,16 @@ def _transcript(messages, result_limit: int = 2000, sid: str = "") -> list[dict]
                 continue
             out.append({"role": "user", "content": m.get("content") or ""})
         elif role == "assistant":
+            if m.get("_compaction_marker") or (
+                    (m.get("content") or "").startswith("[SESSION SUMMARY")):
+                # Not an answer: the boundary where older rounds were folded
+                # into a summary. Replaying it as an assistant message made a
+                # compacted session look like the agent had said this.
+                out.append({"role": "compaction", "content": m.get("content") or ""})
+                continue
             unfolded = _unfold_round(m, records, result_limit)
             if unfolded is not None:
-                _attach_reasoning(m, unfolded)
+                _attach_reasoning(m, unfolded, reasoning_records)
                 out.extend(unfolded)
                 continue
             calls = []
@@ -413,7 +429,7 @@ def _transcript(messages, result_limit: int = 2000, sid: str = "") -> list[dict]
             if calls:
                 entry["tool_calls"] = calls
             if entry["content"] or calls:
-                _attach_reasoning(m, [entry])
+                _attach_reasoning(m, [entry], reasoning_records)
                 out.append(entry)
         elif role == "tool":
             out.append({

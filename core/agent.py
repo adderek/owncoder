@@ -12,6 +12,7 @@ from agent.tools import get_schemas
 from .prompts import _build_system_prompt, load_base_rules, HARD_RULES_MARKER
 from agent import prompt_compiler as _prompt_compiler
 from .turn import _post_turn_capture_and_summarize, run_turn
+from .history_ops import _collapse_tool_rounds, _merge_consecutive_assistants
 from .changeset import open_window as _changeset_open_window, paths_from_tool_call
 from agent.ipc.controller import run_turn_ipc
 from agent.security.airgap import is_local_url
@@ -744,6 +745,55 @@ class Agent:
             logger.exception("changeset: collection failed (round summary skipped)")
             return _cs.Changeset(turn_id=turn_id)
 
+    def _salvage_failed_turn(self, base: list[dict], partial: list[dict],
+                             user_input: str, exc: BaseException,
+                             turn_id: int) -> list[dict]:
+        """History for a round that raised: its work, then why it stopped.
+
+        *partial* is what run_turn had built when it was interrupted; it starts
+        with the same messages as *base* plus the question. Anything shorter
+        than *base* means the turn died before it got going, and the question
+        is re-added by hand so the round is still in the transcript.
+        """
+        if len(partial) > len(base):
+            messages = list(partial)
+        else:
+            messages = list(base)
+            if user_input:
+                messages.append({"role": "user", "content": user_input})
+        # Fold the round's calls into text: unanswered tool_calls at the end of
+        # history are the 400 deadloop the old rollback was avoiding, and the
+        # folded form is what a finished round is stored as anyway.
+        messages = _collapse_tool_rounds(messages, side_log=self._side_log,
+                                         turn_id=turn_id)
+        messages = _merge_consecutive_assistants(messages)
+        messages.append({
+            "role": "assistant",
+            "content": f"[turn did not finish: {_describe_turn_failure(exc)}]",
+        })
+        return messages
+
+    def _record_failed_turn_changeset(self, turn_id: int, since_seq: int,
+                                      on_changeset) -> None:
+        """Report what a failed round changed on disk.
+
+        The edits happened whether or not the turn finished, and the pre-images
+        are pinned to this round's journal window — so a stop with three files
+        already written has a file list, and not collecting it here was the
+        difference between "I stopped it" and "I have no idea what it wrote".
+        """
+        try:
+            cs = self._collect_changeset(turn_id, since_seq)
+        except Exception:
+            logger.exception("changeset: failed-turn collection failed (ignored)")
+            return
+        self.last_changeset = cs
+        if on_changeset is not None and cs:
+            try:
+                on_changeset(cs)
+            except Exception:
+                logger.exception("on_changeset callback failed")
+
     def _changeset_prose_mode(self) -> str:
         """"off" | "background" | "always" from [ui.changeset], read defensively
         so a missing/odd config value degrades to "off" rather than raising."""
@@ -991,6 +1041,8 @@ class Agent:
         else:
             _excluded.add("ask_internet")
         self._turn_busy = True
+        # Somewhere for the turn to leave its work if it never returns.
+        _partial: list[dict] = []
         try:
             response, self.messages = await _run_turn_fn(
                 self.messages,
@@ -1015,21 +1067,19 @@ class Agent:
                 session_id=self._session_id,
                 stop_event=stop_event,
                 excluded_tools=_excluded or None,
+                partial_sink=_partial,
             )
         except BaseException as _turn_exc:
-            # Roll back the turn's own additions so the next turn doesn't start
-            # with consecutive user messages (which causes a 400 deadloop) —
-            # but keep the question itself, followed by a note saying it never
-            # got answered. Dropping the question outright made a stopped or
-            # crashed round vanish from the resumed session even though the
-            # user had watched it happen.
-            self.messages = self.messages[:pre_turn_len]
-            if user_input:
-                self.messages.append({"role": "user", "content": user_input})
-                self.messages.append({
-                    "role": "assistant",
-                    "content": f"[turn did not finish: {_describe_turn_failure(_turn_exc)}]",
-                })
+            # Keep what the round got done. A stopped or crashed turn used to
+            # roll history back past the question, so work the user had just
+            # watched — including edits already on disk — left no trace in the
+            # session they reopened. The salvage collapses the tool calls into
+            # text, which is also what keeps a half-finished round from leaving
+            # unanswered tool_calls (a 400 deadloop) at the end of history.
+            self.messages = self._salvage_failed_turn(
+                self.messages[:pre_turn_len], _partial, user_input,
+                _turn_exc, turn_id)
+            self._record_failed_turn_changeset(turn_id, _changeset_seq, on_changeset)
             _note = self._checkpoint_note_for_failed_turn(_turn_exc)
             if _note:
                 self.messages.append({"role": "system", "content": _note})

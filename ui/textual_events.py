@@ -36,6 +36,14 @@ def build_event_classes() -> "SimpleNamespace":
             self.label = label
             self.detail = detail
 
+    class InjectedMessageEvent(Message):
+        """A note the turn wrote into its own history (verify failure, goal
+        check, nudge). Shown because the resumed session shows it."""
+
+        def __init__(self, text: str) -> None:
+            super().__init__()
+            self.text = text
+
     class ReasoningTokenEvent(Message):
         def __init__(self, token: str) -> None:
             super().__init__()
@@ -68,6 +76,7 @@ def build_event_classes() -> "SimpleNamespace":
         TokenStreamEvent=TokenStreamEvent,
         IterationProgressEvent=IterationProgressEvent,
         PhaseEvent=PhaseEvent,
+        InjectedMessageEvent=InjectedMessageEvent,
         ReasoningTokenEvent=ReasoningTokenEvent,
         ContextSizeEvent=ContextSizeEvent,
         JumpToTurn=JumpToTurn,

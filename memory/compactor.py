@@ -514,7 +514,8 @@ async def compact(
         )
     except CompactionError as e:
         logger.warning("compact: stage 2 failed, falling back to error summary: %s", e)
-        error_msg = {"role": "assistant", "content": f"[SESSION SUMMARY ERROR: {e}]"}
+        error_msg = {"role": "assistant", "content": f"[SESSION SUMMARY ERROR: {e}]",
+                     "_compaction_marker": True}
         result = list(hard_rules_msgs)
         if system_msg:
             result.append(system_msg)
@@ -579,7 +580,10 @@ async def compact(
     if q_view:
         compacted_content += f"\n\n[OUTSTANDING USER INTENT]\n{q_view}"
 
-    compacted_msg = {"role": "assistant", "content": compacted_content}
+    # Marked so a replayed session can say where history was compacted rather
+    # than silently showing fewer rounds than the live view had.
+    compacted_msg = {"role": "assistant", "content": compacted_content,
+                     "_compaction_marker": True}
 
     verbatim = _truncate_tool_results_in(verbatim, max_chars=2000)
 

@@ -283,6 +283,17 @@ class EventHandlerMixin:
     def on_context_size_event(self, event) -> None:
         self._refresh_token_bar()
 
+    def on_injected_message_event(self, event) -> None:
+        """A turn's own note, written where the user is reading.
+
+        These are stored as user messages, so a reloaded session has always
+        shown them — but live the turn only flashed a phase label, and a round
+        that ended on a failing verify read as finished.
+        """
+        t = self._t
+        for line in (event.text or "").splitlines() or [""]:
+            self._write_chat(f"[{t.text_dim}]{_escape(line)}[/{t.text_dim}]")
+
     def on_phase_event(self, event) -> None:
         t = self._t
         detail = f": {_escape(event.detail)}" if event.detail else ""

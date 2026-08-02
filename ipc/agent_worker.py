@@ -44,6 +44,7 @@ async def run(
     session_id: str | None = None,
     stop_event: asyncio.Event | None = None,
     excluded_tools: set[str] | None = None,
+    partial_sink: list | None = None,
 ) -> None:
     """Run one agent turn; emit result events via `send` (sync callable).
 
@@ -120,6 +121,7 @@ async def run(
             session_id=session_id,
             stop_event=stop_event,
             excluded_tools=excluded_tools,
+            partial_sink=partial_sink,
         )
         send(TurnDoneEvent(response=response, messages=updated_messages))
     except Exception as exc:

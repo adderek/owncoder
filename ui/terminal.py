@@ -107,6 +107,7 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
     TokenStreamEvent = _w.TokenStreamEvent
     IterationProgressEvent = _w.IterationProgressEvent
     PhaseEvent = _w.PhaseEvent
+    InjectedMessageEvent = _w.InjectedMessageEvent
     ReasoningTokenEvent = _w.ReasoningTokenEvent
     ContextSizeEvent = _w.ContextSizeEvent
     _PLACEHOLDER_Q = _w._PLACEHOLDER_Q
@@ -796,6 +797,9 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             def on_phase(label: str, detail: str = "") -> None:
                 self.post_message(PhaseEvent(label, detail))
 
+            def on_injected_message(text: str) -> None:
+                self.post_message(InjectedMessageEvent(text))
+
             def on_reasoning(tok: str) -> None:
                 self.post_message(ReasoningTokenEvent(tok))
 
@@ -819,6 +823,7 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                     on_token=on_token,
                     on_progress=on_progress,
                     on_phase=on_phase,
+                    on_injected_message=on_injected_message,
                     on_reasoning=on_reasoning,
                     on_context_size=on_context_size,
                     on_loop_detected=on_loop_detected,
