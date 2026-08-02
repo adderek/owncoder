@@ -536,8 +536,7 @@ _PAGE = r"""<!DOCTYPE html>
   <button type="button" class="chip btn" id="session" title="Current session — click for the sessions panel"></button>
   <button type="button" class="chip btn" id="sesscopy" title="Copy the current session ID to the clipboard" aria-label="Copy session ID">⧉</button>
   <button type="button" class="chip btn" id="workdir" title="Project directory (session-scoped) — click to manage access"></button>
-  <button type="button" class="chip btn" id="privchip" title="Session privacy mode" aria-haspopup="menu" aria-expanded="false">▪ standard</button>
-  <button class="icon" id="otrnew" title="New off-the-record session — nothing is written to disk" aria-label="New off-the-record session">🕶</button>
+  <button type="button" class="chip btn" id="privchip" title="Session privacy mode — click for off-the-record options" aria-haspopup="menu" aria-expanded="false">▪ standard ▾</button>
   <div id="statuswrap"><span id="dot"></span><span id="status" role="status" aria-live="polite">idle</span></div>
   <button type="button" class="chip btn" id="layout" title="Cycle chat width: centered / wide / full">center</button>
   <button type="button" class="chip btn" id="condchip" title="Condensed Q/A view — one line per turn, click rows to expand">≣ Q/A</button>

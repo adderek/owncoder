@@ -102,8 +102,6 @@ body[data-mode="private"]   { --priv: #e0a63f; }   /* amber  — off the record 
 body[data-mode="vault"]     { --priv: #4bbf73; }   /* green  — recorded, sealed */
 #privchip { color: var(--priv, var(--dim)); border-color: var(--priv, var(--border)); }
 #privchip:hover { color: var(--priv, var(--fg)); }
-body[data-mode="standard"] #otrnew { color: var(--dimmer); }
-#otrnew { color: var(--priv, var(--dimmer)); }
 /* The frame. Border-box edges rather than a background wash: a tint behind the
    transcript would fight every other colour in it. */
 body[data-mode]:not([data-mode="standard"]) #header {

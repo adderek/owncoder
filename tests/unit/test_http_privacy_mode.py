@@ -35,13 +35,19 @@ def _run(fn):
 
 
 class TestControls:
-    def test_the_header_has_a_mode_chip_and_an_otr_button(self):
+    def test_the_header_has_one_mode_control(self):
+        """Indicator and button are the same chip — a second 🕶 shortcut next
+        to it only repeated the menu's first item."""
         assert re.search(r'<button[^>]*\bid="privchip"', HEADER)
-        assert re.search(r'<button[^>]*\bid="otrnew"', HEADER)
+        assert 'id="otrnew"' not in HEADER
+        assert "getElementById('otrnew')" not in APP_JS
 
-    def test_the_otr_button_starts_an_incognito_session(self):
-        m = re.search(r"getElementById\('otrnew'\)[\s\S]{0,200}", APP_JS)
-        assert m and "mode: 'incognito'" in m.group(0)
+    def test_the_menu_leads_with_a_new_incognito_session(self):
+        fn = APP_JS[APP_JS.index("function togglePrivMenu"):]
+        fn = fn[:fn.index("document.getElementById('privchip').addEventListener")]
+        items = fn[fn.index("const acts = ["):fn.index("const menu = document.createElement")]
+        assert re.search(r"\['([\w-]+)'", items).group(1) == "new-incognito"
+        assert "mode: 'incognito'" in fn
 
     def test_every_mode_is_rendered(self):
         for mode in MODES:

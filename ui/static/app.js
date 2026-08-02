@@ -2020,6 +2020,9 @@ try {
 // "Is this being recorded?" must be answerable without opening a panel, so the
 // chip states the mode and body[data-mode] tints the header and composer: an
 // off-the-record session should not look like a normal one.
+// One control, not two: the chip is both the indicator and the button, and its
+// menu leads with "New incognito session" — a separate 🕶 shortcut next to it
+// only duplicated that item.
 const PRIV_MODES = {
   standard:  {icon: '▪',  label: 'standard',
               hint: 'everything is written to disk (session, Q/A log, notes, memory)'},
@@ -2039,7 +2042,7 @@ function setSessionMode(mode, locked) {
   const m = PRIV_MODES[sessionMode];
   document.body.dataset.mode = sessionMode;
   const chip = document.getElementById('privchip');
-  chip.textContent = m.icon + ' ' + m.label + (vaultLocked ? ' (locked)' : '');
+  chip.textContent = m.icon + ' ' + m.label + (vaultLocked ? ' (locked)' : '') + ' ▾';
   chip.title = 'session mode: ' + m.label + ' — ' + m.hint +
                (vaultLocked ? '\nvault is LOCKED: nothing persists until it is ' +
                               'unlocked from the terminal' : '') +
@@ -2115,10 +2118,6 @@ document.getElementById('privchip').addEventListener('click', (ev) => {
   ev.stopPropagation();
   togglePrivMenu();
 });
-// The 🕶 button is the one-click path the menu exists to shortcut: a fresh
-// session that leaves no trace.
-document.getElementById('otrnew').addEventListener('click', () =>
-  sessionAction({action: 'new', mode: 'incognito'}));
 document.addEventListener('click', (ev) => {
   if (document.getElementById('privmenu') && !ev.target.closest('#privmenu, #privchip'))
     closePrivMenu();
