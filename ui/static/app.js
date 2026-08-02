@@ -840,7 +840,7 @@ function handle(ev) {
   if (['tokens', 'stats'].indexOf(ev.type) < 0) lastEventAt = Date.now();
   // History preview is read-only: drop render events while it's open (header
   // chips still update); count them so the banner shows activity happened.
-  if (previewing && ['tokens','stats','state','switched',
+  if (previewing && ['tokens','stats','state','switched','mode',
                      'loopguard','loopguard_done','permission','permission_done',
                      'grants_changed'].indexOf(ev.type) < 0) {
     missedLive++;
@@ -1010,6 +1010,8 @@ function handle(ev) {
       setBusy(false, 'waiting for your answer');
     else
       setBusy(ev.state === 'busy', ev.state === 'busy' ? 'working…' : ev.state);
+  } else if (ev.type === 'mode') {
+    setSessionMode(ev.mode, ev.locked);
   } else if (ev.type === 'switched') {
     clearPreview();
     resyncView().then(() => row('sys', null, '⇄ switched to session ' + ev.session));
@@ -2008,6 +2010,127 @@ try {
   setTheme(saved || (systemLight ? 'light' : 'dark'));
 } catch (e) { setTheme('dark'); }
 
+// ── Session privacy mode ───────────────────────────────────────────────────
+// Four modes decide what a session may leave behind; the single gate is
+// agent/security/vault.py (see docs/PRIVACY_MODES.md):
+//   standard  — everything on disk, any endpoint
+//   incognito — nothing on disk
+//   private   — nothing on disk, and only local LLM endpoints
+//   vault     — everything on disk, encrypted at rest
+// "Is this being recorded?" must be answerable without opening a panel, so the
+// chip states the mode and body[data-mode] tints the header and composer: an
+// off-the-record session should not look like a normal one.
+const PRIV_MODES = {
+  standard:  {icon: '▪',  label: 'standard',
+              hint: 'everything is written to disk (session, Q/A log, notes, memory)'},
+  incognito: {icon: '🕶', label: 'incognito',
+              hint: 'off the record — nothing is written to disk'},
+  private:   {icon: '🛡', label: 'private',
+              hint: 'off the record, and every LLM endpoint must be local'},
+  vault:     {icon: '🔐', label: 'vault',
+              hint: 'written to disk, encrypted at rest'},
+};
+let sessionMode = 'standard';
+let vaultLocked = false;
+
+function setSessionMode(mode, locked) {
+  sessionMode = PRIV_MODES[mode] ? mode : 'standard';
+  vaultLocked = !!locked;
+  const m = PRIV_MODES[sessionMode];
+  document.body.dataset.mode = sessionMode;
+  const chip = document.getElementById('privchip');
+  chip.textContent = m.icon + ' ' + m.label + (vaultLocked ? ' (locked)' : '');
+  chip.title = 'session mode: ' + m.label + ' — ' + m.hint +
+               (vaultLocked ? '\nvault is LOCKED: nothing persists until it is ' +
+                              'unlocked from the terminal' : '') +
+               '\nclick for off-the-record options';
+}
+
+function closePrivMenu() {
+  const old = document.getElementById('privmenu');
+  if (old) old.remove();
+  document.getElementById('privchip').setAttribute('aria-expanded', 'false');
+}
+
+// Slash commands the browser already supports, sent the same way typing them
+// would — one code path for the toggles instead of a second API.
+function sendSlash(cmd) {
+  fetch('/api/chat', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({text: cmd}),
+  }).catch(e => row('sys error', null, 'command failed: ' + e));
+}
+
+function togglePrivMenu() {
+  const chip = document.getElementById('privchip');
+  if (document.getElementById('privmenu')) { closePrivMenu(); return; }
+
+  const acts = [
+    ['new-incognito', '🕶', 'New incognito session'],
+    ['new-private', '🛡', 'New private session'],
+  ];
+  if (sessionMode !== 'standard') acts.push(['new-standard', '▪', 'New standard session']);
+  // Switching the live session is the weaker promise: what earlier turns
+  // already wrote stays written. Offered, but below the fresh-session options.
+  if (sessionMode === 'incognito')
+    acts.push(['toggle-incognito', '⇄', 'Back to standard (this session)']);
+  else if (sessionMode === 'private')
+    acts.push(['toggle-private', '⇄', 'Back to standard (this session)']);
+  else if (sessionMode === 'standard')
+    acts.push(['toggle-incognito', '⇄', 'This session → incognito']);
+  if (sessionMode === 'vault' && !vaultLocked)
+    acts.push(['vault-lock', '🔒', 'Lock the vault']);
+
+  const menu = document.createElement('div');
+  menu.className = 'sess-menu priv-menu';
+  menu.id = 'privmenu';
+  menu.setAttribute('role', 'menu');
+  menu.innerHTML = acts.map(([act, icon, label]) =>
+    '<button role="menuitem" data-act="' + act + '"><span class="mi">' + icon +
+    '</span>' + esc(label) + '</button>').join('');
+  document.getElementById('header').appendChild(menu);
+  const r = chip.getBoundingClientRect();
+  const hr = document.getElementById('header').getBoundingClientRect();
+  menu.style.left = Math.max(4, r.left - hr.left) + 'px';
+  menu.style.top = (r.bottom - hr.top + 4) + 'px';
+  chip.setAttribute('aria-expanded', 'true');
+
+  menu.querySelectorAll('button').forEach(b => b.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    const act = b.dataset.act;
+    closePrivMenu();
+    if (act === 'new-incognito') sessionAction({action: 'new', mode: 'incognito'});
+    else if (act === 'new-private') sessionAction({action: 'new', mode: 'private'});
+    else if (act === 'new-standard') sessionAction({action: 'new', mode: 'standard'});
+    else if (act === 'toggle-incognito') sendSlash('/incognito');
+    else if (act === 'toggle-private') sendSlash('/private');
+    else if (act === 'vault-lock') sendSlash('/vault lock');
+  }));
+  const first = menu.querySelector('button');
+  if (first) first.focus();
+}
+
+document.getElementById('privchip').addEventListener('click', (ev) => {
+  ev.stopPropagation();
+  togglePrivMenu();
+});
+// The 🕶 button is the one-click path the menu exists to shortcut: a fresh
+// session that leaves no trace.
+document.getElementById('otrnew').addEventListener('click', () =>
+  sessionAction({action: 'new', mode: 'incognito'}));
+document.addEventListener('click', (ev) => {
+  if (document.getElementById('privmenu') && !ev.target.closest('#privmenu, #privchip'))
+    closePrivMenu();
+});
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && document.getElementById('privmenu')) {
+    closePrivMenu();
+    ev.stopPropagation();
+  }
+}, true);
+setSessionMode('standard', false);
+
 // Sessions list (left drawer) — loads lazily when the fold is opened.
 // Per-item actions: resume/switch, rename (inline), auto-name (LLM), hide.
 let showHidden = false;
@@ -2469,6 +2592,7 @@ function applyState(s) {
   const wdel = document.getElementById('workdir');
   wdel.textContent = '📁 ' + (wd.split('/').filter(Boolean).pop() || wd || '?');
   wdel.title = 'project dir (session-scoped): ' + wd + ' — click to manage access';
+  setSessionMode(s.mode || 'standard', s.vault_locked);
   if (s.session) {
     setSessionChip(s.session, s.session_name);
     document.getElementById('sessinfo').textContent =

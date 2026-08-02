@@ -17,7 +17,7 @@ APP_JS = (Path(__file__).resolve().parents[2] / "ui" / "static" / "app.js"
 
 HEADER = _PAGE[_PAGE.index('<div id="header">'):_PAGE.index('<div id="main">')]
 
-CLICKABLE = ["model", "session", "workdir", "layout", "condchip", "iostats",
+CLICKABLE = ["model", "session", "workdir", "privchip", "layout", "condchip", "iostats",
              "bgchip", "tokenwrap"]
 
 

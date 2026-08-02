@@ -536,6 +536,8 @@ _PAGE = r"""<!DOCTYPE html>
   <button type="button" class="chip btn" id="session" title="Current session — click for the sessions panel"></button>
   <button type="button" class="chip btn" id="sesscopy" title="Copy the current session ID to the clipboard" aria-label="Copy session ID">⧉</button>
   <button type="button" class="chip btn" id="workdir" title="Project directory (session-scoped) — click to manage access"></button>
+  <button type="button" class="chip btn" id="privchip" title="Session privacy mode" aria-haspopup="menu" aria-expanded="false">▪ standard</button>
+  <button class="icon" id="otrnew" title="New off-the-record session — nothing is written to disk" aria-label="New off-the-record session">🕶</button>
   <div id="statuswrap"><span id="dot"></span><span id="status" role="status" aria-live="polite">idle</span></div>
   <button type="button" class="chip btn" id="layout" title="Cycle chat width: centered / wide / full">center</button>
   <button type="button" class="chip btn" id="condchip" title="Condensed Q/A view — one line per turn, click rows to expand">≣ Q/A</button>
@@ -797,20 +799,32 @@ class _HttpUI:
             logger.exception("http ui: applying session grants failed")
         return session.id
 
-    def start_new_session(self) -> str:
+    def start_new_session(self, mode: str | None = None) -> str:
         """Save the current session and start a fresh one. Must run on the
-        asyncio loop thread."""
+        asyncio loop thread.
+
+        *mode* pins the privacy mode of the new session (see
+        agent/security/vault.py); without it the current session's mode is
+        inherited, which is what the plain "＋ new" button does.
+        """
         self._stop_prompt_loop()
         from agent.memory.session import new_session
-        mode = "standard"
+        cur_mode = "standard"
         if self.session is not None:
-            mode = getattr(self.session, "mode", "standard") or "standard"
+            cur_mode = getattr(self.session, "mode", "standard") or "standard"
             try:
                 self._sync_grants()
                 self.server.save_session(self.session)
             except Exception:
                 logger.exception("http ui: save before new session failed")
+        mode = mode or cur_mode
         session = new_session(mode=mode)
+        if mode != cur_mode:
+            agent_ = getattr(self.server, "_agent", None)
+            if agent_ is not None:
+                # Announce before anything of the new session can be written:
+                # the persistence gate is what makes "off the record" true.
+                agent_.set_session_mode(mode)
         self.server.reset_messages()
         self.server.set_session_id(session.id)
         self.session = session
@@ -1124,6 +1138,8 @@ class _HttpUI:
             "session_name": (
                 (self.session.name or self.session.short_name or "")
                 if self.session else ""),
+            "mode": self.session_mode(),
+            "vault_locked": self._vault_locked(),
             "messages": messages,
             "models": models,
             "fold_journal": self._fold_journal(),
@@ -1132,6 +1148,32 @@ class _HttpUI:
                    "calls": stats.get("calls", 0),
                    "cost_usd": self._cost_usd()},
         }
+
+    def session_mode(self) -> str:
+        """Privacy mode of the live session — standard/incognito/private/vault.
+
+        The vault gate is asked first: it is the process-wide truth every store
+        obeys, so a mode entered anywhere (CLI flag, terminal /incognito) shows
+        up here even though it never touched this session object.
+        """
+        try:
+            from agent.security import vault as _vault
+            m = _vault.mode()
+            if m:
+                return m
+        except Exception:
+            logger.debug("http ui: vault mode read failed", exc_info=True)
+        if self.session is None:
+            return "standard"
+        return getattr(self.session, "mode", "standard") or "standard"
+
+    def _vault_locked(self) -> bool:
+        """True when vault mode is on but no key is held (nothing can persist)."""
+        try:
+            from agent.security import vault as _vault
+            return _vault.mode() == "vault" and _vault.locked()
+        except Exception:
+            return False
 
     def session_rollup(self, cs=None) -> "dict | None":
         """Session totals for the changeset footer, or None when off/empty.
@@ -1703,9 +1745,25 @@ class _HttpUI:
                 if self.busy and not self._force_stop(payload):
                     return {"ok": False, "msg": "turn in progress — stop it before starting a new session",
                             "busy": True}
-                new_id = self._call_on_loop(self.start_new_session)
+                mode = str(payload.get("mode") or "").strip().lower() or None
+                if mode is not None:
+                    from agent.security import vault as _vault
+                    if mode not in _vault.MODES:
+                        return {"ok": False, "msg": f"unknown session mode {mode!r}"}
+                    # Vault needs a passphrase, and the browser is the one
+                    # channel it must never travel; entering it stays a
+                    # terminal action (an already-unlocked vault carries over).
+                    if mode == "vault" and not _vault.encrypting():
+                        return {"ok": False,
+                                "msg": "vault mode is entered from the terminal "
+                                       "(--vault or /vault) — the passphrase is "
+                                       "never typed in the browser"}
+                new_id = self._call_on_loop(self.start_new_session, mode)
                 self.bus.publish({"type": "switched", "session": new_id})
-                return {"ok": True, "msg": f"started new session {new_id}"}
+                if mode is not None:
+                    self.bus.publish({"type": "mode", "mode": mode})
+                label = f" ({mode})" if mode else ""
+                return {"ok": True, "msg": f"started new session {new_id}{label}"}
 
             if action == "switch":
                 if self.busy and not self._force_stop(payload):
@@ -2249,6 +2307,7 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
              "sessions:\n"
              "  /save [name]  save/name session      /load <id> switch session\n"
              "  /sessions [N|all] list saved         /incognito | /private toggle mode\n"
+             "  /vault [lock]     encrypted-at-rest mode (enter it from the terminal)\n"
              "models & tuning:\n"
              "  /model switch model        /models roles; enable|disable <entry>\n"
              "  /mode model-mode tiers     /effort quick|smart|deep\n"
@@ -2635,6 +2694,21 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
                 "private": "private: no persistence + non-local LLM endpoints refused",
             }[target]
             pub({"type": "sys", "text": desc})
+            pub({"type": "mode", "mode": target})
+    elif cmd == "/vault":
+        # No passphrase prompt over HTTP: it would travel the browser channel
+        # and land in the transcript. Vault mode is entered where the terminal
+        # is, and once entered it applies to this UI too.
+        from agent.security import vault as _vault
+        if arg.strip() == "lock":
+            _vault.lock()
+            pub({"type": "sys", "text": "vault locked — sealed data unreadable "
+                                        "until unlocked from the terminal"})
+            pub({"type": "mode", "mode": "vault", "locked": True})
+        else:
+            pub({"type": "sys", "text": _vault.describe() + "\n"
+                 "Start the agent with --vault (or use /vault in the terminal UI) "
+                 "to enter vault mode; the passphrase is never entered in the browser."})
     elif cmd == "/idea":
         agent_ = getattr(server, "_agent", None)
         if agent_ is None:

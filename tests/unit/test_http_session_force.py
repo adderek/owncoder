@@ -53,7 +53,7 @@ class TestForceStop:
                 stopped.append(mode)
                 ui.busy = False          # the cancelled turn releases it
             ui.request_stop = _stop
-            ui.start_new_session = lambda: "sess-new"
+            ui.start_new_session = lambda mode=None: "sess-new"
             ui._call_on_loop = lambda fn, *a: fn(*a)
             ui.bus.publish = lambda ev: None
             return ui.session_action({"action": "new", "force": True})
@@ -68,7 +68,7 @@ class TestForceStop:
         top of it — refuse again rather than run two turns over one history."""
         def scenario(ui):
             ui.request_stop = lambda mode="soft": None   # stays busy
-            ui.start_new_session = lambda: "never"
+            ui.start_new_session = lambda mode=None: "never"
             return ui._force_stop({"force": True}, timeout=0.3)
 
         assert _run(scenario) is False

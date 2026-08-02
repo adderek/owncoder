@@ -92,6 +92,28 @@ body[data-activity="stalled"] #header::after {
         border: 1px solid var(--border); color: var(--dim); white-space: nowrap; }
 .chip.btn { cursor: pointer; }
 .chip.btn:hover { color: var(--fg); border-color: var(--accent); }
+/* ── Session privacy mode ──────────────────────────────────────────────────
+   A session that leaves no trace must not look like one that records
+   everything, so the mode colours the chip AND the page frame: a tinted rule
+   under the header and above the composer, visible without reading anything.
+   --priv is unset in standard mode, and every rule below keys off it. */
+body[data-mode="incognito"] { --priv: #a97bd6; }   /* violet — off the record */
+body[data-mode="private"]   { --priv: #e0a63f; }   /* amber  — off the record + local only */
+body[data-mode="vault"]     { --priv: #4bbf73; }   /* green  — recorded, sealed */
+#privchip { color: var(--priv, var(--dim)); border-color: var(--priv, var(--border)); }
+#privchip:hover { color: var(--priv, var(--fg)); }
+body[data-mode="standard"] #otrnew { color: var(--dimmer); }
+#otrnew { color: var(--priv, var(--dimmer)); }
+/* The frame. Border-box edges rather than a background wash: a tint behind the
+   transcript would fight every other colour in it. */
+body[data-mode]:not([data-mode="standard"]) #header {
+  border-bottom-color: var(--priv); box-shadow: inset 0 -2px 0 -1px var(--priv);
+}
+body[data-mode]:not([data-mode="standard"]) #inputrow {
+  border-top-color: var(--priv); box-shadow: inset 0 2px 0 -1px var(--priv);
+}
+body[data-mode]:not([data-mode="standard"]) #input:focus { border-color: var(--priv); }
+.priv-menu { position: absolute; z-index: 40; }
 /* One ring for every control, keyboard-only: mouse users never see it, and
    without it tabbing through the header was invisible. */
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 4px; }
