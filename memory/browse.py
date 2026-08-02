@@ -306,6 +306,122 @@ _NO_INDEX = "no code index yet — run 'agent init'"
 _NO_ARCHIVE = "nothing archived yet — pruning fills this"
 
 
+# ── rules and always-on context ─────────────────────────────────────────────
+# Not a store: these are the files that enter the prompt every turn. They are
+# the memory the agent is most often *wrong* about, because nothing showed
+# which of them were actually picked up.
+_RULE_FILES = (
+    (".agent.ignore", "paths never read or indexed"),
+    (".agent.ro", "paths the agent may read but not write"),
+    (".agent.config", "rule-layer settings"),
+    (".agent.sandbox", "shell command allowlist"),
+    (".agent.approve", "which actions need approval"),
+    (".agent.log", "audit log settings"),
+    (".agent.boundary", "project boundary"),
+)
+
+
+def _rule_layers(config: "Config") -> list[tuple[str, Path]]:
+    """The search order load_rules() uses — later layers override earlier."""
+    root = Path(config.tools.working_dir).resolve()
+    return [("user", Path.home() / ".config" / "agent"),
+            ("project", root),
+            ("agent dir", root / config.tools.agent_dir)]
+
+
+def _rule_sources(config: "Config") -> list[dict]:
+    """Every file that feeds the prompt or the rule layers, found or not."""
+    from agent.context import _PROJECT_DOC_NAMES
+
+    root = Path(config.tools.working_dir).resolve()
+    out: list[dict] = []
+
+    for name in _PROJECT_DOC_NAMES:
+        p = root / name
+        if p.is_file():
+            out.append({"id": str(p), "kind": "project doc", "layer": "project",
+                        "path": p, "note": "injected every turn"})
+    ctx = root / config.tools.agent_dir / "context" / "always"
+    for name, note in (("user", "always-on context you wrote"),
+                       ("system", "mirror of the system prompt")):
+        p = ctx / name
+        if p.is_file():
+            out.append({"id": str(p), "kind": f"context/{name}",
+                        "layer": "agent dir", "path": p, "note": note})
+    for layer, d in _rule_layers(config):
+        for name, note in _RULE_FILES:
+            p = d / name
+            if p.is_file():
+                out.append({"id": str(p), "kind": name, "layer": layer,
+                            "path": p, "note": note})
+    return out
+
+
+def _rule_list(config: "Config", query: str = "", limit: int = 50) -> dict:
+    from agent.context import _PROJECT_DOC_NAMES
+
+    rows = _rule_sources(config)
+    q = query.strip().lower()
+    if q:
+        rows = [r for r in rows
+                if q in r["kind"].lower() or q in str(r["path"]).lower()
+                or q in _read_text(r["path"]).lower()]
+    items = [{
+        "id": r["id"],
+        "title": f"{r['kind']} — {r['layer']}",
+        "tags": [r["layer"]],
+        "preview": _preview(_read_text(r["path"])) or r["note"],
+        "updated_at": _mtime(r["path"]),
+        "source": str(r["path"]),
+    } for r in rows[:limit]]
+
+    out: dict = {"items": items}
+    # A file named for a tool that is not this one is the classic silent
+    # miss: it looks like project instructions and is never read.
+    root = Path(config.tools.working_dir).resolve()
+    stray = [n for n in ("AGENTS.md", "CLAUDE.md", "AGENT.md")
+             if (root / n).is_file() and n not in _PROJECT_DOC_NAMES]
+    if stray:
+        out["note"] = (", ".join(stray) + " is present but not loaded — this "
+                       "agent reads " + " or ".join(_PROJECT_DOC_NAMES))
+    return out
+
+
+def _rule_get(config: "Config", item_id: str) -> dict:
+    known = {r["id"]: r for r in _rule_sources(config)}
+    r = known.get(item_id)
+    if r is None:
+        # Only files this project actually loads are readable here; the browser
+        # must not become a way to read arbitrary paths off the host.
+        return {"error": "not found"}
+    return {"title": f"{r['kind']} — {r['layer']}",
+            "body": _read_text(r["path"]) or "(empty)",
+            "tags": [r["layer"]],
+            "meta": {"path": str(r["path"]), "role": r["note"],
+                     "size": _size(r["path"])}}
+
+
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _mtime(path: Path) -> float | None:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
+
+
+def _size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
 # ── knowledge base ──────────────────────────────────────────────────────────
 def _kb_corpus(config: "Config"):
     path = getattr(config.kb, "corpus_path", "")
@@ -396,6 +512,7 @@ _TIERS: dict[str, tuple[str, Callable, Callable]] = {
     "archive": ("archived chunks",
                 _chunk_list(_archive_db, _NO_ARCHIVE, archived=True),
                 _chunk_get(_archive_db, _NO_ARCHIVE, archived=True)),
+    "rule": ("rules & always-on context", _rule_list, _rule_get),
     "kb": ("kb / wiki", _kb_list, _kb_get),
 }
 
@@ -405,6 +522,7 @@ _COUNTERS: dict[str, "Callable[[Config], int | None]"] = {
     "asm_unit": lambda c: _unit_count(c, "asm_unit", "asm_units"),
     "chunk": _chunk_count(_rag_db),
     "archive": _chunk_count(_archive_db),
+    "rule": lambda c: len(_rule_sources(c)),
 }
 
 

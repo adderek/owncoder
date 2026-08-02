@@ -260,6 +260,50 @@ class TestArchive:
         assert tiers["archive"] == 1 and tiers["chunk"] == 0
 
 
+class TestRules:
+    """The files that enter the prompt every turn — the memory people are most
+    often wrong about, because nothing showed which ones were picked up."""
+
+    @pytest.fixture
+    def ruled(self, config, tmp_path):
+        (tmp_path / "AGENT.md").write_text("# project\nalways run the tests\n",
+                                           encoding="utf-8")
+        (tmp_path / ".agent.ignore").write_text("node_modules/\n", encoding="utf-8")
+        ctx = tmp_path / ".agent" / "context" / "always"
+        ctx.mkdir(parents=True)
+        (ctx / "user").write_text("prefer small diffs\n", encoding="utf-8")
+        return config
+
+    def test_the_project_doc_and_rule_files_are_listed(self, ruled):
+        titles = [i["title"] for i in browse.browse(ruled, "rule")["items"]]
+        assert any("project doc" in t for t in titles)
+        assert any(".agent.ignore" in t for t in titles)
+        assert any("context/user" in t for t in titles)
+
+    def test_each_row_says_which_layer_it_came_from(self, ruled):
+        items = browse.browse(ruled, "rule")["items"]
+        assert {"project", "agent dir"} & {t for i in items for t in i["tags"]}
+
+    def test_a_file_named_for_another_tool_is_called_out(self, config, tmp_path):
+        """AGENTS.md looks like project instructions and is never read."""
+        (tmp_path / "AGENTS.md").write_text("# not loaded\n", encoding="utf-8")
+        out = browse.browse(config, "rule")
+        assert "AGENTS.md" in out["note"] and "not loaded" in out["note"]
+
+    def test_the_content_reads_back(self, ruled):
+        items = browse.browse(ruled, "rule")["items"]
+        doc = [i for i in items if "project doc" in i["title"]][0]
+        assert "always run the tests" in browse.item(ruled, "rule", doc["id"])["body"]
+
+    def test_search_looks_inside_the_files(self, ruled):
+        items = browse.browse(ruled, "rule", query="small diffs")["items"]
+        assert [i["title"] for i in items] == ["context/user — agent dir"]
+
+    def test_arbitrary_paths_are_not_readable(self, ruled):
+        """Browsing rules must not become a way to read the host filesystem."""
+        assert browse.item(ruled, "rule", "/etc/passwd") == {"error": "not found"}
+
+
 class TestKB:
     def test_kb_off_explains_itself_rather_than_erroring(self, config):
         out = browse.browse(config, "kb")
