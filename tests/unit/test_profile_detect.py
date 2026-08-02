@@ -244,3 +244,38 @@ class TestEmbedAutostart:
                             lambda config, device: f"started {device}")
         run_startup_profile_check(cfg, interactive=False)
         assert "started cpu" in capsys.readouterr().out
+
+
+class TestModeSelector:
+    def test_letters_numbers_and_names(self):
+        from agent.config.profile_detect import _MODE_ORDER, resolve_mode_input
+        assert resolve_mode_input("l") == "local-only"
+        assert resolve_mode_input("N") == "lan-only"      # case-insensitive
+        assert resolve_mode_input(" h ") == "free-hybrid"  # whitespace tolerated
+        assert resolve_mode_input("1") == _MODE_ORDER[0]
+        assert resolve_mode_input(str(len(_MODE_ORDER))) == _MODE_ORDER[-1]
+        assert resolve_mode_input("paid-cloud") == "paid-cloud"
+
+    def test_unknown_input_is_none(self):
+        from agent.config.profile_detect import _MODE_ORDER, resolve_mode_input
+        assert resolve_mode_input("") is None
+        assert resolve_mode_input("z") is None
+        assert resolve_mode_input("0") is None
+        assert resolve_mode_input(str(len(_MODE_ORDER) + 1)) is None
+
+    def test_every_mode_has_a_unique_key(self):
+        from agent.config.profile_detect import _MODE_KEYS, _MODE_ORDER
+        assert sorted(_MODE_KEYS.values()) == sorted(_MODE_ORDER)
+        assert len(set(_MODE_KEYS)) == len(_MODE_ORDER)
+
+    def test_prompt_accepts_single_key(self, monkeypatch, capsys):
+        cfg = _cfg()
+        cfg.agent.startup_profile = "ask"
+        cfg.agent.model_mode = "any"
+        monkeypatch.setattr("agent.config.profile_detect._default_probe",
+                            _probe_only("api.deepseek.com"))
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda *a: "p")
+        run_startup_profile_check(cfg, interactive=True)
+        assert cfg.agent.model_mode == "paid-cloud"
+        assert "1/l local-only" in capsys.readouterr().out

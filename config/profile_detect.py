@@ -33,6 +33,47 @@ PROBE_TIMEOUT_S = 3
 _MODE_ORDER = ["local-only", "lan-only", "free-cloud", "free-hybrid", "paid-cloud",
                "manual", "any"]
 
+# One-character selector per mode, so the startup prompt takes a keystroke
+# instead of a typed-out name. Letters are hand-picked because first letters
+# collide (local-/lan-, free-cloud/free-hybrid); the digit is the position in
+# _MODE_ORDER and is accepted as well.
+_MODE_KEYS: dict[str, str] = {
+    "l": "local-only",
+    "n": "lan-only",
+    "f": "free-cloud",
+    "h": "free-hybrid",
+    "p": "paid-cloud",
+    "m": "manual",
+    "a": "any",
+}
+
+
+def resolve_mode_input(raw: str) -> str | None:
+    """Map one prompt answer to a mode name, or None when unrecognized.
+
+    Accepts the full mode name, its one-character selector, or its 1-based
+    position in ``_MODE_ORDER``.
+    """
+    raw = (raw or "").strip().lower()
+    if not raw:
+        return None
+    if raw in MODE_TIERS:
+        return raw
+    if raw in _MODE_KEYS:
+        return _MODE_KEYS[raw]
+    if raw.isdigit() and 1 <= int(raw) <= len(_MODE_ORDER):
+        return _MODE_ORDER[int(raw) - 1]
+    return None
+
+
+def _mode_menu() -> str:
+    """One-line `1/l local-only  2/n lan-only  …` menu for the prompt."""
+    key_of = {name: k for k, name in _MODE_KEYS.items()}
+    return "  ".join(
+        f"{i}/{key_of.get(name, '?')} {name}"
+        for i, name in enumerate(_MODE_ORDER, 1)
+    )
+
 
 @dataclass
 class HostStatus:
@@ -280,18 +321,17 @@ def run_startup_profile_check(config: "Config", interactive: bool) -> None:
 
     chosen = report.suggested
     if interactive and setting == "ask" and sys.stdin.isatty():
+        print("  " + _mode_menu(), flush=True)
         try:
-            raw = input(
-                f"profile [{chosen}] (enter=accept, or "
-                f"{'|'.join(_MODE_ORDER)}): "
-            ).strip().lower()
+            raw = input(f"profile [{chosen}] (enter=accept, or key/number): ")
         except (EOFError, KeyboardInterrupt):
             raw = ""
-        if raw:
-            if raw in MODE_TIERS:
-                chosen = raw
+        if raw.strip():
+            picked = resolve_mode_input(raw)
+            if picked:
+                chosen = picked
             else:
-                print(f"unknown profile {raw!r} — using {chosen}", flush=True)
+                print(f"unknown profile {raw.strip()!r} — using {chosen}", flush=True)
 
     if chosen != config.agent.model_mode:
         config.agent.model_mode = chosen
