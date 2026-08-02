@@ -342,6 +342,56 @@ class TestSkills:
         assert browse.item(config, "skill", "nope") == {"error": "not found"}
 
 
+class TestSessionFacts:
+    """What compaction threw out of the context, and what it kept. The
+    memory.db scope only fills when an embedder is configured; the JSON on
+    disk is always written."""
+
+    @pytest.fixture
+    def compacted(self, config, tmp_path):
+        from agent.memory import session as session_mod
+        from agent.memory.facts_store import FactsStore
+        session_mod.configure(str(tmp_path), ".agent")
+        store = FactsStore("S1")
+        store.new_round(from_turn=1, to_turn=8,
+                        knowledge_draft="long draft about the parser rewrite",
+                        summary="rewrote the parser", q_view="make it faster",
+                        facts={"files_modified": ["parser.py"]})
+        return config
+
+    def test_without_a_session_it_says_why_it_is_empty(self, config):
+        out = browse.browse(config, "session_facts")
+        assert out["items"] == [] and "per session" in out["note"]
+
+    def test_an_uncompacted_session_says_so(self, config, tmp_path):
+        from agent.memory import session as session_mod
+        session_mod.configure(str(tmp_path), ".agent")
+        out = browse.browse(config, "session_facts", session_id="S404")
+        assert out["items"] == [] and "not been compacted" in out["note"]
+
+    def test_rounds_are_listed_newest_first_with_their_turn_range(self, compacted):
+        items = browse.browse(compacted, "session_facts", session_id="S1")["items"]
+        assert items[0]["title"].startswith("round 1 — turns 1–8")
+
+    def test_the_detail_separates_what_survived_from_the_draft(self, compacted):
+        d = browse.item(compacted, "session_facts", "1", session_id="S1")
+        assert "what the model still sees" in d["body"]
+        assert "long draft" in d["body"]
+        assert "parser.py" in d["body"]
+        assert d["meta"]["turns"] == "1–8"
+
+    def test_the_count_follows_the_live_session(self, compacted):
+        by_key = {t["key"]: t["count"]
+                  for t in browse.tiers(compacted, session_id="S1")}
+        assert by_key["session_facts"] == 1
+        assert {t["key"]: t["count"]
+                for t in browse.tiers(compacted)}["session_facts"] == 0
+
+    def test_a_bad_round_id_is_not_found(self, compacted):
+        assert "error" in browse.item(compacted, "session_facts", "nope",
+                                      session_id="S1")
+
+
 class TestKB:
     def test_kb_off_explains_itself_rather_than_erroring(self, config):
         out = browse.browse(config, "kb")

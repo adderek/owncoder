@@ -1881,27 +1881,30 @@ class _HttpUI:
         sid = self.session.id if self.session else ""
         return overview(config, session_id=sid, mode=self.session_mode(), deep=deep)
 
+    def _sid(self) -> str:
+        return self.session.id if self.session else ""
+
     def memory_tiers(self) -> dict:
         """Left rail of the memory view: what can be browsed, and how much."""
         from agent.memory.browse import tiers
         config = _agent_config(self.server)
         if config is None:
             return {"tiers": [], "error": _NEEDS_LOCAL}
-        return {"tiers": tiers(config)}
+        return {"tiers": tiers(config, session_id=self._sid())}
 
     def memory_browse(self, tier: str, query: str = "", limit: int = 50) -> dict:
         from agent.memory.browse import browse
         config = _agent_config(self.server)
         if config is None:
             return {"items": [], "error": _NEEDS_LOCAL}
-        return browse(config, tier, query, limit)
+        return browse(config, tier, query, limit, session_id=self._sid())
 
     def memory_item(self, tier: str, item_id: str) -> dict:
         from agent.memory.browse import item
         config = _agent_config(self.server)
         if config is None:
             return {"error": _NEEDS_LOCAL}
-        return item(config, tier, item_id)
+        return item(config, tier, item_id, session_id=self._sid())
 
     # ── on-demand heal ────────────────────────────────────────────────────
     def _heal_signals(self, focus: str = "") -> tuple[str, dict]:

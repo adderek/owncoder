@@ -492,6 +492,74 @@ def _skill_get(config: "Config", item_id: str) -> dict:
             "tags": [origin], "meta": info}
 
 
+# ── on-disk compaction rounds of the live session ───────────────────────────
+# What compaction threw out of the context and what it kept. The memory.db
+# `facts_round` scope only fills when an embedder is configured; the JSON on
+# disk is always there, so this reads that.
+def _rounds(session_id: str):
+    from agent.memory.facts_store import FactsStore
+    store = FactsStore(session_id)
+    return store, store.list_round_ids()
+
+
+def _round_body(r) -> str:
+    parts = []
+    if r.summary:
+        parts.append("— summary (this is what the model still sees) —\n" + r.summary)
+    if r.q_view:
+        parts.append("— what you were asking for —\n" + r.q_view)
+    if r.facts:
+        parts.append("— facts —\n" + json.dumps(r.facts, indent=2, ensure_ascii=False))
+    if r.knowledge_draft:
+        parts.append("— draft (kept on disk, never re-injected) —\n" + r.knowledge_draft)
+    return "\n\n".join(parts) or "(empty round)"
+
+
+def _facts_list(config: "Config", query: str = "", limit: int = 50,
+                session_id: str = "") -> dict:
+    if not session_id:
+        return {"items": [], "note": "no live session — compaction rounds are per session"}
+    store, ids = _rounds(session_id)
+    if not ids:
+        return {"items": [], "note": "this session has not been compacted yet"}
+    q = query.strip().lower()
+    items = []
+    for rid in reversed(ids):            # newest round first
+        r = store.load_round(rid)
+        if r is None:
+            continue
+        body = _round_body(r)
+        if q and q not in body.lower():
+            continue
+        items.append({
+            "id": str(rid),
+            "title": f"round {rid} — turns {r.from_turn}–{r.to_turn}",
+            "tags": [t for t in (r.timestamp[:10] if r.timestamp else "",) if t],
+            "preview": _preview(r.summary or r.knowledge_draft),
+            "updated_at": None,
+            "source": r.timestamp or "",
+        })
+        if len(items) >= limit:
+            break
+    return {"items": items}
+
+
+def _facts_get(config: "Config", item_id: str, session_id: str = "") -> dict:
+    if not session_id:
+        return {"error": "no live session"}
+    store, _ids = _rounds(session_id)
+    try:
+        r = store.load_round(int(item_id))
+    except ValueError:
+        return {"error": "not found"}
+    if r is None:
+        return {"error": "not found"}
+    return {"title": f"round {r.round_id} — turns {r.from_turn}–{r.to_turn}",
+            "body": _round_body(r), "tags": [],
+            "meta": {"round": r.round_id, "turns": f"{r.from_turn}–{r.to_turn}",
+                     "at": r.timestamp, "previous": r.prev_round_id or ""}}
+
+
 # ── knowledge base ──────────────────────────────────────────────────────────
 def _kb_corpus(config: "Config"):
     path = getattr(config.kb, "corpus_path", "")
@@ -582,6 +650,7 @@ _TIERS: dict[str, tuple[str, Callable, Callable]] = {
     "archive": ("archived chunks",
                 _chunk_list(_archive_db, _NO_ARCHIVE, archived=True),
                 _chunk_get(_archive_db, _NO_ARCHIVE, archived=True)),
+    "session_facts": ("compaction rounds (this session)", _facts_list, _facts_get),
     "rule": ("rules & always-on context", _rule_list, _rule_get),
     "skill": ("skills", _skill_list, _skill_get),
     "kb": ("kb / wiki", _kb_list, _kb_get),
@@ -597,8 +666,12 @@ _COUNTERS: dict[str, "Callable[[Config], int | None]"] = {
     "skill": lambda c: len(_skill_loader(c).available()),
 }
 
+# Tiers scoped to the live session rather than the project; they take the
+# session id as a keyword so the rest of the registry keeps one signature.
+_SESSION_TIERS = ("session_facts",)
 
-def tiers(config: "Config") -> list[dict]:
+
+def tiers(config: "Config", session_id: str = "") -> list[dict]:
     """Browsable tiers with their counts — the memory view's left rail.
 
     A tier with nothing in it is still listed: "0 notes" is an answer, and a
@@ -626,6 +699,12 @@ def tiers(config: "Config") -> list[dict]:
     for key, (label, _l, _g) in _TIERS.items():
         if key == "kb":
             count = kb_count
+        elif key in _SESSION_TIERS:
+            try:
+                count = len(_rounds(session_id)[1]) if session_id else 0
+            except Exception:
+                logger.debug("browse: session round count failed", exc_info=True)
+                count = 0
         elif key in _COUNTERS:
             try:
                 count = _COUNTERS[key](config)
@@ -639,12 +718,16 @@ def tiers(config: "Config") -> list[dict]:
     return out
 
 
-def browse(config: "Config", tier: str, query: str = "", limit: int = 50) -> dict:
+def browse(config: "Config", tier: str, query: str = "", limit: int = 50,
+           session_id: str = "") -> dict:
     entry = _TIERS.get(tier)
     if entry is None:
         return {"error": f"unknown tier '{tier}'", "items": []}
     try:
-        out = entry[1](config, query, limit)
+        if tier in _SESSION_TIERS:
+            out = entry[1](config, query, limit, session_id=session_id)
+        else:
+            out = entry[1](config, query, limit)
     except Exception as exc:
         logger.debug("browse: tier %s failed", tier, exc_info=True)
         return {"error": str(exc), "items": []}
@@ -654,11 +737,13 @@ def browse(config: "Config", tier: str, query: str = "", limit: int = 50) -> dic
     return out
 
 
-def item(config: "Config", tier: str, item_id: str) -> dict:
+def item(config: "Config", tier: str, item_id: str, session_id: str = "") -> dict:
     entry = _TIERS.get(tier)
     if entry is None:
         return {"error": f"unknown tier '{tier}'"}
     try:
+        if tier in _SESSION_TIERS:
+            return entry[2](config, item_id, session_id=session_id)
         return entry[2](config, item_id)
     except Exception as exc:
         logger.debug("browse: item %s/%s failed", tier, item_id, exc_info=True)
