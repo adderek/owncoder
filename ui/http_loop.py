@@ -556,6 +556,17 @@ _PAGE = r"""<!DOCTYPE html>
   <details id="sessfold" class="dfold">
     <summary class="dhead">recent sessions <span id="sesscount" class="chip"></span></summary>
     <input id="sessfilter" placeholder="search sessions — name, topic, tags…" class="sess-filter">
+    <div class="sess-sortbar">
+      <label for="sesssort">sort</label>
+      <select id="sesssort" class="sess-sort" title="Order of the session list">
+        <option value="updated">last activity</option>
+        <option value="created">started</option>
+        <option value="name">name</option>
+        <option value="tag">kind &amp; tags</option>
+        <option value="messages">size</option>
+        <option value="relevance">best match</option>
+      </select>
+    </div>
     <div id="sesslist" class="sess-list">—</div>
   </details>
   <details id="accessfold" class="dfold">
@@ -1451,31 +1462,49 @@ class _HttpUI:
         }
         return out
 
-    def sessions_info(self, query: str = "") -> dict:
+    #: The drawer shows this many rows. The count beside the fold header is the
+    #: whole matching set, which is the number worth knowing — "30" was just
+    #: this constant read back.
+    _SESSION_ROWS = 30
+
+    def sessions_info(self, query: str = "", sort: str = "updated") -> dict:
         """Recent saved sessions — backs the left-drawer session list.
 
         With a query, this is the same search /resume runs: name, description,
         tags, summary and classification, ranked. The drawer filter used to be
         a substring match over the thirty names already loaded, which could not
         find a session by what was discussed in it.
+
+        Returns the capped rows plus `total`: how many sessions match at all,
+        so the header can say "12 of 293" instead of counting to the cap.
         """
+        total = 0
         try:
-            from agent.memory.session import list_sessions, search_sessions
-            raw = (search_sessions(query, limit=30) if query.strip()
-                   else list_sessions(limit=30))
+            from agent.memory.session import SORT_KEYS, list_sessions, search_sessions
+            if sort not in SORT_KEYS:
+                sort = "updated"
+            # Both paths already read every session file, so counting the whole
+            # match set costs nothing beyond the slice that used to be taken.
+            matches = (search_sessions(query, limit=None, sort=sort) if query.strip()
+                       else list_sessions(sort=sort))
+            total = len(matches)
             sessions = [
                 {"id": s.get("id", ""),
                  "name": s.get("name") or s.get("short_name") or s.get("id", ""),
                  "updated_at": s.get("updated_at") or "",
+                 "created_at": s.get("created_at") or "",
+                 "tags": list(s.get("tags") or []),
+                 "classification": s.get("classification") or "",
                  "messages": s.get("message_count", 0),
                  "summary": (s.get("description") or s.get("summary") or "")[:160],
                  "hidden": bool(s.get("hidden", False))}
-                for s in raw
+                for s in matches[:self._SESSION_ROWS]
             ]
         except Exception:
             logger.debug("http ui: list_sessions failed", exc_info=True)
             sessions = []
-        return {"sessions": sessions, "query": query,
+        return {"sessions": sessions, "query": query, "sort": sort,
+                "total": total, "shown": len(sessions),
                 "current": self.session.id if self.session else ""}
 
     def history_info(self, sid: str) -> dict:
@@ -1880,8 +1909,10 @@ def _make_handler(ui: _HttpUI):
                 self._json(ui.stats_info())
             elif self.path.startswith("/api/sessions"):
                 from urllib.parse import parse_qs, urlparse
-                q = (parse_qs(urlparse(self.path).query).get("q") or [""])[0]
-                self._json(ui.sessions_info(q))
+                _qs = parse_qs(urlparse(self.path).query)
+                q = (_qs.get("q") or [""])[0]
+                sort = (_qs.get("sort") or ["updated"])[0]
+                self._json(ui.sessions_info(q, sort))
             elif self.path.startswith("/api/history"):
                 from urllib.parse import parse_qs, urlparse
                 sid = (parse_qs(urlparse(self.path).query).get("id") or [""])[0]

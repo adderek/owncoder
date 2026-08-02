@@ -2234,6 +2234,75 @@ function startRename(item, id) {
   inp.addEventListener('blur', () => loadSessions());
 }
 
+// Sort order for the session list, remembered per browser: which order is
+// useful depends on what someone is looking for, and re-picking it on every
+// page load would make it not worth having.
+function sessSort() {
+  const sel = document.getElementById('sesssort');
+  return (sel && sel.value) || 'updated';
+}
+
+// The per-row action menu. One button opens it; a click anywhere else, Escape
+// or a second click closes it. The actions are the same five as before, each
+// with the word for what it does — an icon alone made ✎ and ✨ guesswork.
+let sessMenuEl = null;
+
+function closeSessionMenu() {
+  if (sessMenuEl) { sessMenuEl.remove(); sessMenuEl = null; }
+}
+
+function sessionMenu(btn) {
+  const item = btn.closest('.sess-item');
+  const id = item.dataset.id;
+  const wasOpen = sessMenuEl && sessMenuEl.dataset.for === id;
+  closeSessionMenu();
+  if (wasOpen) return;
+
+  const acts = [];
+  if (!btn.dataset.cur) acts.push(['switch', '⏵', 'Resume this session']);
+  acts.push(['copyid', '⧉', 'Copy session ID']);
+  acts.push(['rename', '✎', 'Rename…']);
+  acts.push(['autoname', '✨', 'Auto-name with the model']);
+  acts.push(btn.dataset.hidden ? ['hide', '👁', 'Show in the list again']
+                               : ['hide', '🚫', 'Hide from the list']);
+
+  const menu = document.createElement('div');
+  menu.className = 'sess-menu';
+  menu.dataset.for = id;
+  menu.setAttribute('role', 'menu');
+  menu.innerHTML = acts.map(([act, icon, label]) =>
+    '<button role="menuitem" data-act="' + act + '"><span class="mi">' + icon +
+    '</span>' + esc(label) + '</button>').join('');
+  item.appendChild(menu);
+  sessMenuEl = menu;
+
+  menu.querySelectorAll('button').forEach(b => b.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    const act = b.dataset.act;
+    closeSessionMenu();
+    if (act === 'switch') sessionAction({action: 'switch', id});
+    else if (act === 'copyid') copyText(id, btn);
+    else if (act === 'rename') startRename(item, id);
+    else if (act === 'autoname') {
+      btn.textContent = '⏳';
+      btn.disabled = true;
+      item.classList.add('working');   // pulsing border until the list reloads
+      sessionAction({action: 'autoname', id});
+    } else if (act === 'hide') {
+      sessionAction({action: 'hide', id, hidden: !btn.dataset.hidden});
+    }
+  }));
+  const first = menu.querySelector('button');
+  if (first) first.focus();
+}
+
+document.addEventListener('click', (ev) => {
+  if (sessMenuEl && !ev.target.closest('.sess-menu, .smenu')) closeSessionMenu();
+});
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && sessMenuEl) { closeSessionMenu(); ev.stopPropagation(); }
+}, true);
+
 async function loadSessions() {
   const el = document.getElementById('sesslist');
   el.textContent = '…';
@@ -2242,7 +2311,8 @@ async function loadSessions() {
     // classification — what /resume searches), not a substring match over the
     // thirty names that happened to be loaded.
     const q = (document.getElementById('sessfilter').value || '').trim();
-    const d = await (await fetch('/api/sessions?q=' + encodeURIComponent(q))).json();
+    const d = await (await fetch('/api/sessions?q=' + encodeURIComponent(q) +
+                                 '&sort=' + encodeURIComponent(sessSort()))).json();
     const all = d.sessions || [];
     // Keep the header chip / window title in sync with the current session's
     // name after a rename or LLM auto-name (which only reload this list).
@@ -2250,8 +2320,15 @@ async function loadSessions() {
     if (curSess) setSessionChip(curSess.id, curSess.name);
     const shown = all.filter(s => showHidden || !s.hidden);
     const hiddenN = all.length - all.filter(s => !s.hidden).length;
+    // The number of sessions there are (or that the search found) — not the
+    // row cap, which is what counting the loaded rows was reporting.
     const scEl = document.getElementById('sesscount');
-    if (scEl) scEl.textContent = all.length || '';
+    if (scEl) {
+      const total = d.total == null ? all.length : d.total;
+      scEl.textContent = total || '';
+      scEl.title = q ? total + ' session' + (total === 1 ? '' : 's') + ' match “' + q + '”'
+                     : total + ' session' + (total === 1 ? '' : 's') + ' saved';
+    }
     if (!shown.length) { el.textContent = q ? 'no sessions match “' + q + '”' : 'none saved'; return; }
     el.innerHTML = shown.map(s => {
       const cur = s.id === d.current;
@@ -2264,36 +2341,28 @@ async function loadSessions() {
         (s.hidden ? ' · hidden' : '') + '</div>' +
         // Why this session matched — a name alone rarely says.
         (q && s.summary ? '<div class="ssum">' + esc(s.summary) + '</div>' : '') +
+        // One button, not five: these actions are rare, and a row of small
+        // targets next to "resume this session" is a misclick waiting to
+        // happen. The menu opens on demand and names what each one does.
         '<div class="sess-acts">' +
-        (cur ? '' : '<button class="sbtn" data-act="switch" title="Resume this session">⏵</button>') +
-        '<button class="sbtn" data-act="copyid" title="Copy this session ID">⧉</button>' +
-        '<button class="sbtn" data-act="rename" title="Rename">✎</button>' +
-        '<button class="sbtn" data-act="autoname" title="Auto-name with LLM">✨</button>' +
-        '<button class="sbtn" data-act="hide" data-hidden="' + (s.hidden ? '1' : '') +
-        '" title="' + (s.hidden ? 'Unhide' : 'Hide from list') + '">' +
-        (s.hidden ? '👁' : '🚫') + '</button>' +
+        '<button class="sbtn smenu" data-act="menu" data-hidden="' +
+        (s.hidden ? '1' : '') + '" data-cur="' + (cur ? '1' : '') +
+        '" title="Actions for this session" aria-haspopup="menu">⋯</button>' +
         '</div></div>';
     }).join('') +
+    (all.length < (d.total || 0)
+      ? '<div class="sess-more count">showing ' + all.length + ' of ' + d.total +
+        (q ? ' matches — narrow the search to see the rest' : ' — search to reach older ones') +
+        '</div>'
+      : '') +
     (hiddenN ? '<div class="sess-more">' + (showHidden ? 'hide' : 'show') +
                ' ' + hiddenN + ' hidden</div>' : '');
     el.querySelectorAll('.sbtn').forEach(b => b.addEventListener('click', (ev) => {
       ev.stopPropagation();
-      const item = b.closest('.sess-item');
-      const id = item.dataset.id;
-      const act = b.dataset.act;
-      if (act === 'switch') sessionAction({action: 'switch', id});
-      else if (act === 'copyid') copyText(id, b);
-      else if (act === 'rename') startRename(item, id);
-      else if (act === 'autoname') {
-        b.textContent = '⏳';
-        b.disabled = true;
-        item.classList.add('working');   // pulsing border until the list reloads
-        sessionAction({action: 'autoname', id});
-      }
-      else if (act === 'hide') sessionAction({action: 'hide', id, hidden: !b.dataset.hidden});
+      sessionMenu(b);
     }));
     el.querySelectorAll('.sess-item').forEach(it => it.addEventListener('click', (ev) => {
-      if (ev.target.closest('.sbtn, input')) return;
+      if (ev.target.closest('.sbtn, input, .sess-menu')) return;
       const id = it.dataset.id;
       if (id === previewing) { exitPreview(); return; }
       if (id === d.current && !previewing) return;   // already looking at it
@@ -2306,7 +2375,22 @@ async function loadSessions() {
 document.getElementById('sessfold').addEventListener('toggle', (e) => {
   if (e.target.open) loadSessions();
 });
-document.getElementById('sessfilter').addEventListener('input', () => loadSessions());
+document.getElementById('sesssort').addEventListener('change', (e) => {
+  try { localStorage.setItem('oc-sess-sort', e.target.value); } catch (err) {}
+  loadSessions();
+});
+document.getElementById('sesssort').addEventListener('click', (e) => e.stopPropagation());
+try {
+  const saved = localStorage.getItem('oc-sess-sort');
+  if (saved) document.getElementById('sesssort').value = saved;
+} catch (e) {}
+// Each search reads every session file on the server (~75ms for a few hundred
+// of them), so typing fires one request when the typing stops, not one per key.
+let sessFilterTimer = null;
+document.getElementById('sessfilter').addEventListener('input', () => {
+  clearTimeout(sessFilterTimer);
+  sessFilterTimer = setTimeout(loadSessions, 150);
+});
 document.getElementById('sessfilter').addEventListener('click', (e) => e.stopPropagation());
 
 // Replay a transcript from the server: user turns, the tool work each answer

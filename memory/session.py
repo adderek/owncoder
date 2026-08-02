@@ -368,12 +368,37 @@ def load_session(id_or_name: str) -> tuple[Session | None, list[dict]]:
     return None, []
 
 
+#: How the session list can be ordered. "updated" is the file's own mtime, so
+#: it stays right for sessions written before updated_at existed; the rest read
+#: the metadata. "tag" groups by classification, then tags, then name — the
+#: question it answers is "what kind of session was this", not "when".
+#: "relevance" only means anything with a query — search ranks by match score
+#: and every other key re-orders those hits instead.
+SORT_KEYS = ("updated", "created", "name", "tag", "messages", "relevance")
+
+
+def _sort_key(sort: str):
+    if sort == "created":
+        return lambda s: (s.get("created_at") or s.get("updated_at") or 0, "")
+    if sort == "name":
+        return lambda s: (-1, (s.get("name") or s.get("short_name") or s.get("id") or "").lower())
+    if sort == "messages":
+        return lambda s: (s.get("message_count") or 0, "")
+    if sort == "tag":
+        return lambda s: (-1, ((s.get("classification") or "").lower(),
+                               " ".join(s.get("tags") or []).lower(),
+                               (s.get("name") or "").lower()))
+    return lambda s: (s.get("_mtime") or 0, "")
+
+
 def list_sessions(oldest_first: bool = False, limit: int | None = None,
-                  include_empty: bool = False) -> list[dict]:
+                  include_empty: bool = False, sort: str = "updated") -> list[dict]:
     """Return summary dicts for all sessions.
 
     Newest-first by default (back-compat). Pass oldest_first=True for
     chronological order, and limit to cap the number returned (after ordering).
+    *sort* picks what "newest" means — see SORT_KEYS; the name and tag orders
+    are alphabetical, so oldest_first reverses them into Z→A.
 
     Sessions nobody said anything in are left out: they are files written by
     older versions (and by any path that saves before the first message), and a
@@ -385,15 +410,14 @@ def list_sessions(oldest_first: bool = False, limit: int | None = None,
     sessions = []
     # Only session.json files are sessions; other JSON under .agent (facts
     # round-*.json, system.json sidecars) must not show up as phantom sessions.
-    for p in sorted(
-        sdir.rglob("session.json"),
-        key=lambda x: x.stat().st_mtime,
-        reverse=not oldest_first,
-    ):
+    for p in sdir.rglob("session.json"):
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
             sessions.append(
                 {
+                    # The file's own clock, kept for ordering: sessions written
+                    # before updated_at existed have nothing else to sort by.
+                    "_mtime": p.stat().st_mtime,
                     "id": data.get("id", p.stem),
                     "short_name": data.get("short_name", ""),
                     "name": data.get("name", p.stem),
@@ -413,6 +437,8 @@ def list_sessions(oldest_first: bool = False, limit: int | None = None,
             pass
     if not include_empty:
         sessions = [s for s in sessions if s["message_count"] > 0]
+    sessions.sort(key=_sort_key(sort if sort in SORT_KEYS else "updated"),
+                  reverse=not oldest_first)
     if limit is not None and limit >= 0:
         sessions = sessions[:limit]
     return sessions
@@ -433,17 +459,18 @@ def update_session_fields(id_or_name: str, **fields) -> "tuple[Session | None, s
     return session, ""
 
 
-def search_sessions(query: str, limit: int = 20) -> list[dict]:
+def search_sessions(query: str, limit: int | None = 20,
+                    sort: str = "updated") -> list[dict]:
     """Substring search over session metadata, ranked by relevance.
 
     Matches name/short_name/description/tags/summary/classification.  Empty
     query returns the most-recent sessions (newest first).  For semantic search
     use the recall_sessions tool / MemoryStore instead.
     """
-    all_sessions = list_sessions()  # newest-first
+    all_sessions = list_sessions(sort=sort)
     q = (query or "").strip().lower()
     if not q:
-        return all_sessions[:limit]
+        return all_sessions if limit is None else all_sessions[:limit]
 
     terms = q.split()
     scored: list[tuple[int, dict]] = []
@@ -470,4 +497,7 @@ def search_sessions(query: str, limit: int = 20) -> list[dict]:
         scored.append((score, s))
 
     scored.sort(key=lambda x: x[0], reverse=True)
-    return [s for _score, s in scored[:limit]]
+    hits = [s for _score, s in scored]
+    if sort in SORT_KEYS and sort != "relevance":
+        hits.sort(key=_sort_key(sort), reverse=True)
+    return hits if limit is None else hits[:limit]

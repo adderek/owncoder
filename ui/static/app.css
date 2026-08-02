@@ -223,15 +223,43 @@ aside.resizing { transition: none; }   /* no lag while dragging */
 /* Why a searched session matched — its name alone rarely says. */
 .sess-item .ssum { color: var(--dimmer); font-size: 10.5px; margin-top: 2px;
                    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sess-acts { display: none; gap: 2px; position: absolute; top: 3px; right: 4px; }
-.sess-item:hover .sess-acts { display: flex; }
+/* Always present, faint until wanted: hover-only worked with a mouse and not
+   at all with a finger, and the menu has to survive the pointer leaving the
+   row it belongs to. */
+.sess-acts { display: flex; gap: 2px; position: absolute; top: 3px; right: 4px;
+             opacity: .35; transition: opacity .12s ease; }
+.sess-item:hover .sess-acts, .sess-acts:focus-within { opacity: 1; }
 .sbtn { background: var(--panel); border: 1px solid var(--border); color: var(--dim);
         font-size: 10px; padding: 0 5px; border-radius: 4px; cursor: pointer; line-height: 1.5; }
 .sbtn:hover { color: var(--fg); border-color: var(--accent); filter: none; }
 .sess-item input { width: 100%; background: var(--bg); color: var(--fg);
                    border: 1px solid var(--accent); border-radius: 4px;
                    font-size: 12px; padding: 1px 4px; }
+/* Sort control, under the search box. */
+.sess-sortbar { display: flex; align-items: center; gap: 6px; margin-top: 6px;
+                color: var(--dimmer); font-size: 11px; }
+.sess-sort { flex: 1; font: inherit; font-size: 11.5px; padding: 3px 6px;
+             border-radius: 6px; border: 1px solid var(--border);
+             background: var(--panel2); color: var(--dim); cursor: pointer; }
+.sess-sort:hover { color: var(--fg); border-color: var(--accent); }
+/* Per-row actions: one button, and the menu it opens. Five bare icon buttons
+   sat next to "resume this session", which is the one action with a cost. */
+.sess-menu { position: absolute; top: 20px; right: 4px; z-index: 20;
+             background: var(--panel); border: 1px solid var(--border);
+             border-radius: 6px; padding: 3px; min-width: 168px;
+             box-shadow: 0 4px 14px rgba(0,0,0,.35); display: flex;
+             flex-direction: column; }
+.sess-menu button { display: flex; align-items: center; gap: 7px; width: 100%;
+                    background: none; border: none; color: var(--dim);
+                    font: inherit; font-size: 11.5px; text-align: left;
+                    padding: 4px 7px; border-radius: 4px; cursor: pointer; }
+.sess-menu button:hover, .sess-menu button:focus-visible {
+  background: var(--panel2); color: var(--fg); }
+.sess-menu .mi { width: 1.2em; text-align: center; flex-shrink: 0; }
 .sess-more { color: var(--dimmer); font-size: 11px; cursor: pointer; padding: 4px 8px; }
+/* How many of the matches are on screen: a statement, not a control. */
+.sess-more.count { cursor: default; font-family: var(--mono); font-size: 10.5px; }
+.sess-more.count:hover { color: var(--dimmer); }
 .sess-more:hover { color: var(--fg); }
 .sess-item.previewed { border-left: 2px solid var(--warn); background: var(--panel2); }
 /* Access panel: per-session allowed paths (grants). */
