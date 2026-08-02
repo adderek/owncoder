@@ -37,6 +37,10 @@ def config(tmp_path):
     cfg.tools.working_dir = str(tmp_path)
     cfg.tools.agent_dir = ".agent"
     cfg.rag.db_path = str(tmp_path / ".agent" / "index.db")
+    # Session listing reads a process-global dir; point it at the tmp project
+    # so counts here are this test's, not whatever ran before it.
+    from agent.memory import session as session_mod
+    session_mod.configure(str(tmp_path), ".agent")
     return cfg
 
 
@@ -105,7 +109,56 @@ class TestEndpoint:
         assert _tier(out, "sessions") is not None
 
 
+class TestSharedCommand:
+    """Same overview text for every UI — the browser and the console cannot drift."""
+
+    def test_a_fresh_project_renders_without_stored_memory(self, config):
+        from agent.memory.overview import run_memory_command
+        out = run_memory_command(config)
+        assert out.startswith("Memory and indexes:")
+        assert "Recent notes" not in out
+
+    def test_the_summary_lists_the_tiers(self, config, tmp_path):
+        from agent.memory.overview import run_memory_command
+        store = MemoryStore(tmp_path / ".agent" / "memory.db")
+        store.add(scope="note", title="prefer tabs", body="the user said so")
+
+        out = run_memory_command(config)
+
+        assert "notes" in out and "prefer tabs" in out
+
+    def test_notes_subcommand_takes_a_limit(self, config, tmp_path):
+        from agent.memory.overview import run_memory_command
+        store = MemoryStore(tmp_path / ".agent" / "memory.db")
+        for i in range(5):
+            store.add(scope="note", title=f"note {i}", body="body")
+
+        out = run_memory_command(config, "notes 2")
+
+        assert out.count("\n  - ") == 2
+
+    def test_index_subcommand_without_an_index(self, config):
+        from agent.memory.overview import run_memory_command
+        assert "No code index" in run_memory_command(config, "index")
+
+    def test_unknown_subcommand_shows_usage(self, config):
+        from agent.memory.overview import run_memory_command
+        assert "Usage:" in run_memory_command(config, "wat")
+
+    def test_the_index_path_is_resolved_against_the_project(self, config, tmp_path):
+        """Relative rag.db_path read from another cwd must not open a new db."""
+        from agent.memory.overview import rag_db_path
+        config.rag.db_path = ".agent/index.db"
+        assert rag_db_path(config) == tmp_path / ".agent" / "index.db"
+
+
 class TestWiring:
+    def test_every_dispatcher_knows_the_command(self):
+        root = Path(__file__).resolve().parents[2] / "ui"
+        for name in ("slash.py", "slash_mixin.py", "readline_loop.py", "http_loop.py"):
+            assert "/memory" in (root / name).read_text(encoding="utf-8"), name
+
+
     def test_the_endpoint_is_routed(self):
         assert '"/api/memory"' in HTTP_LOOP
 

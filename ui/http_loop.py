@@ -665,6 +665,7 @@ _PAGE = r"""<!DOCTYPE html>
   <details id="memfold" class="dfold">
     <summary class="dhead">Memory &amp; indexes <span id="memcount" class="chip"></span><span id="d-mem" class="dhead-refresh" title="Refresh">⟳</span></summary>
     <pre id="membody">—</pre>
+    <button class="sbtn" id="memdeep" title="Walk the project tree and report files the code index has not seen yet">check index freshness</button>
   </details>
   <details id="bgfold" class="dfold" open>
     <summary class="dhead">Background jobs <span id="d-bg" class="dhead-refresh" title="Refresh">⟳</span></summary>
@@ -1847,124 +1848,21 @@ class _HttpUI:
         return out
 
     # ── memory & indexes ──────────────────────────────────────────────────
-    def memory_info(self) -> dict:
+    def memory_info(self, deep: bool = False) -> dict:
         """High-level view of every memory tier and index this project has.
 
-        Counts and paths only — enough to answer "what does the agent
-        remember, and is the index current?" without dumping content.
-        Every section is independent and fail-soft: a missing store (fresh
-        project, private mode, kb off) just leaves its section out.
+        The shared overview (agent/memory/overview.py) also backs /memory in
+        the terminal UIs, so the browser and the console can never drift.
+        `deep` adds the index-freshness scan, which walks the project tree.
         """
-        from pathlib import Path
+        from agent.memory.overview import overview
 
         config = _agent_config(self.server)
-        out: dict = {"tiers": [], "notes": [], "skills": [], "warnings": []}
         if config is None:
-            out["warnings"].append(_NEEDS_LOCAL)
-            return out
-
-        work = Path(config.tools.working_dir)
-        agent_dir = work / config.tools.agent_dir
-        out["agent_dir"] = str(agent_dir)
-        out["mode"] = self.session_mode()
-
-        def _size(p: Path) -> int:
-            try:
-                return p.stat().st_size
-            except OSError:
-                return 0
-
-        def _tier(name: str, count, detail: str = "", path: Path | None = None) -> None:
-            row = {"name": name, "count": count, "detail": detail}
-            if path is not None:
-                row["path"] = str(path)
-                row["size"] = _size(path)
-            out["tiers"].append(row)
-
-        # Cross-session text memory: notes, session summaries, context chunks.
-        try:
-            from agent.memory.store import MemoryStore
-            db = agent_dir / "memory.db"
-            store = MemoryStore(db)
-            counts = store.counts_by_scope()
-            labels = {"note": "notes", "session_summary": "session summaries",
-                      "context_chunk": "context chunks", "facts_round": "facts rounds"}
-            for scope, count in sorted(counts.items(), key=lambda kv: -kv[1]):
-                _tier(labels.get(scope, scope), count, "memory.db  scope=" + scope, db)
-            out["notes"] = [
-                {"title": e.get("title") or "(untitled)",
-                 "tags": json.loads(e.get("tags") or "[]"),
-                 "updated_at": e.get("updated_at") or e.get("created_at")}
-                for e in store.list_entries(scope="note", limit=10,
-                                            order_by="updated_at DESC")
-            ]
-        except Exception:
-            logger.debug("http ui: memory store overview failed", exc_info=True)
-
-        # Sessions on disk.
-        try:
-            from agent.memory.session import list_sessions
-            sess = list_sessions()
-            msgs = sum(int(s.get("message_count") or 0) for s in sess)
-            _tier("sessions", len(sess), f"{msgs:,} messages on disk")
-        except Exception:
-            logger.debug("http ui: session count failed", exc_info=True)
-
-        # Facts rounds of the *current* session (two-stage compaction tier 2).
-        try:
-            if self.session is not None:
-                from agent.memory.facts_store import FactsStore
-                ids = FactsStore(self.session.id).list_round_ids()
-                _tier("facts rounds (this session)", len(ids),
-                      "latest round " + str(ids[-1]) if ids else "no compaction yet")
-        except Exception:
-            logger.debug("http ui: facts rounds failed", exc_info=True)
-
-        # Procedural memory.
-        try:
-            from agent.skills import SkillLoader
-            skills = SkillLoader(config).available()
-            _tier("skills", len(skills), str(agent_dir / "skills"))
-            out["skills"] = [{"name": n, "description": d} for n, d in skills[:20]]
-        except Exception:
-            logger.debug("http ui: skills overview failed", exc_info=True)
-
-        # Code index (RAG): chunks + embeddings.
-        try:
-            from agent.rag.store import VectorStore
-            db = Path(config.rag.db_path)
-            if not db.is_absolute():
-                db = work / db
-            if db.exists():
-                # rag.db_path is relative to the project, but VectorStore reads
-                # it as given — opening it raw from another cwd would create a
-                # second, empty index instead of reading this one.
-                import dataclasses
-                st = VectorStore(
-                    dataclasses.replace(config.rag, db_path=str(db))).stats()
-                model = st.get("embedding_model") or "no embeddings"
-                _tier("code index chunks", st.get("chunks", 0),
-                      f"{st.get('files', 0)} files · {model}", db)
-        except Exception:
-            logger.debug("http ui: code index stats failed", exc_info=True)
-
-        # Knowledge base (separate corpus, shared across projects).
-        try:
-            kb_path = getattr(config.kb, "corpus_path", "")
-            if getattr(config.kb, "enabled", False) and kb_path:
-                from kb.api import Corpus
-                with Corpus.open(kb_path) as corpus:
-                    nodes = corpus.conn.execute(
-                        "SELECT COUNT(*) FROM nodes").fetchone()[0]
-                _tier("kb nodes", nodes, kb_path)
-        except Exception:
-            logger.debug("http ui: kb overview failed", exc_info=True)
-
-        if out["mode"] not in ("standard", ""):
-            out["warnings"].append(
-                f"session mode '{out['mode']}' — writes to these stores are "
-                "suppressed or sealed for this session")
-        return out
+            return {"tiers": [], "notes": [], "skills": [],
+                    "warnings": [_NEEDS_LOCAL]}
+        sid = self.session.id if self.session else ""
+        return overview(config, session_id=sid, mode=self.session_mode(), deep=deep)
 
     # ── on-demand heal ────────────────────────────────────────────────────
     def _heal_signals(self, focus: str = "") -> tuple[str, dict]:
@@ -2087,8 +1985,10 @@ def _make_handler(ui: _HttpUI):
                 self._json(ui.modelcalls_info())
             elif self.path == "/api/stats":
                 self._json(ui.stats_info())
-            elif self.path == "/api/memory":
-                self._json(ui.memory_info())
+            elif self.path.startswith("/api/memory"):
+                from urllib.parse import parse_qs, urlparse
+                q = parse_qs(urlparse(self.path).query)
+                self._json(ui.memory_info(deep=q.get("deep", ["0"])[0] == "1"))
             elif self.path.startswith("/api/sessions"):
                 from urllib.parse import parse_qs, urlparse
                 _qs = parse_qs(urlparse(self.path).query)
@@ -2447,6 +2347,7 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
              "workspace:\n"
              "  /tools list tools          /skills list|show|rm skills\n"
              "  /commands project cmds     /mcp MCP server status\n"
+             "  /memory tiers + indexes    /memory index|notes\n"
              "  /undo [file] restore snapshot   /checkpoint list|new|rollback\n"
              "  /plan …  /plans            /schedule jobs   /notify channels\n"
              "  /watch event triggers      /bg background jobs\n"
@@ -2650,6 +2551,15 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
         else:
             from agent.core.scheduler import run_watch_command
             pub({"type": "sys", "text": run_watch_command(cfg, arg)})
+    elif cmd in ("/memory", "/mem"):
+        cfg = _agent_config(server)
+        if cfg is None:
+            pub({"type": "sys", "error": True, "text": _NEEDS_LOCAL})
+        else:
+            from agent.memory.overview import run_memory_command
+            sid = ui.session.id if ui.session else ""
+            pub({"type": "sys", "text": await asyncio.to_thread(
+                run_memory_command, cfg, arg, sid, ui.session_mode())})
     elif cmd == "/mcp":
         cfg = _agent_config(server)
         if cfg is None:

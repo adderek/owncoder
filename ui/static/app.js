@@ -1494,12 +1494,12 @@ function fmtBytes(n) {
   return n + 'B';
 }
 
-async function loadMemory() {
+async function loadMemory(deep) {
   if (!foldOpen('memfold')) return;
   const el = document.getElementById('membody');
-  el.textContent = '…';
+  el.textContent = deep ? 'scanning the project tree…' : '…';
   try {
-    const d = await (await fetch('/api/memory')).json();
+    const d = await (await fetch('/api/memory' + (deep ? '?deep=1' : ''))).json();
     const tiers = d.tiers || [];
     let out = '';
     if (tiers.length) {
@@ -1523,6 +1523,14 @@ async function loadMemory() {
     if (skills.length) {
       out += '\n\nskills:\n' + skills.map(s =>
         '· ' + s.name + (s.description ? ' — ' + s.description : '')).join('\n');
+    }
+    const idx = d.index;
+    if (idx && idx.pending) {
+      out += '\n\nnot yet indexed (' + idx.pending + ' of ' + idx.total +
+        ' files) — run: agent index --update\n' +
+        idx.paths.map(p => '· ' + p).join('\n');
+    } else if (idx) {
+      out += '\n\ncode index up to date (' + idx.total + ' files on disk)';
     }
     if (d.agent_dir) out += '\n\nagent dir: ' + d.agent_dir;
     (d.warnings || []).forEach(wmsg => { out += '\n! ' + wmsg; });
@@ -1983,6 +1991,12 @@ wireRefresh('d-stats', loadStats);
 wireRefresh('d-mc', loadModelCalls);
 wireRefresh('d-ctx', loadContext);
 wireRefresh('d-mem', loadMemory);
+// The freshness scan walks the whole project, so it stays a deliberate click
+// rather than something every panel refresh pays for.
+(() => {
+  const b = document.getElementById('memdeep');
+  if (b) b.addEventListener('click', () => loadMemory(true));
+})();
 // Load a right-drawer panel when its fold is opened — including the restore
 // at startup, which fires toggle for every fold that comes back open.
 [['modelsfold', loadModels], ['statsfold', loadStats], ['mcfold', loadModelCalls],

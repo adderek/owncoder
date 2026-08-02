@@ -289,6 +289,13 @@ class SlashHandlerMixin:
             from agent.core.scheduler import run_watch_command
             self._write_sys(_escape(run_watch_command(self._server._agent.config, arg)))
 
+        elif cmd in ("/memory", "/mem"):
+            from agent.memory.overview import run_memory_command
+            _sid = getattr(self._session, "id", "") if self._session else ""
+            _mode = getattr(self._session, "mode", "") if self._session else ""
+            self._write_sys(_escape(run_memory_command(
+                self._server._agent.config, arg, session_id=_sid, mode=_mode)))
+
         elif cmd == "/mcp":
             from agent.mcp import run_mcp_command
             self._write_sys(_escape(run_mcp_command(self._server._agent.config, arg)))
