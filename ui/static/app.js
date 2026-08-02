@@ -1484,6 +1484,56 @@ async function loadContext() {
     el.textContent = s;
   } catch (e) { el.textContent = 'failed: ' + e; }
 }
+// What the agent remembers, one line per tier: cross-session notes, session
+// summaries, facts rounds, skills, the code index, the KB. Counts and paths
+// only — the content lives behind the tools and the /api/qa view.
+function fmtBytes(n) {
+  if (!n) return '';
+  if (n >= 1 << 20) return (n / (1 << 20)).toFixed(1) + 'MB';
+  if (n >= 1 << 10) return (n / (1 << 10)).toFixed(0) + 'kB';
+  return n + 'B';
+}
+
+async function loadMemory() {
+  if (!foldOpen('memfold')) return;
+  const el = document.getElementById('membody');
+  el.textContent = '…';
+  try {
+    const d = await (await fetch('/api/memory')).json();
+    const tiers = d.tiers || [];
+    let out = '';
+    if (tiers.length) {
+      const w = Math.max(...tiers.map(t => t.name.length));
+      out += tiers.map(t => {
+        let line = t.name.padEnd(w) + '  ' + fmtK(t.count).padStart(6);
+        const extra = [t.detail, fmtBytes(t.size)].filter(Boolean).join('  ');
+        if (extra) line += '   ' + extra;
+        return line;
+      }).join('\n');
+    } else {
+      out += 'nothing stored yet';
+    }
+    const notes = d.notes || [];
+    if (notes.length) {
+      out += '\n\nrecent notes:\n' + notes.map(n =>
+        '· ' + n.title + (n.tags && n.tags.length ? '  [' + n.tags.join(' ') + ']' : '')
+      ).join('\n');
+    }
+    const skills = d.skills || [];
+    if (skills.length) {
+      out += '\n\nskills:\n' + skills.map(s =>
+        '· ' + s.name + (s.description ? ' — ' + s.description : '')).join('\n');
+    }
+    if (d.agent_dir) out += '\n\nagent dir: ' + d.agent_dir;
+    (d.warnings || []).forEach(wmsg => { out += '\n! ' + wmsg; });
+    el.textContent = out;
+    const chip = document.getElementById('memcount');
+    if (chip) {
+      const notesTier = tiers.filter(t => t.name === 'notes')[0];
+      chip.textContent = notesTier ? fmtK(notesTier.count) + ' notes' : '';
+    }
+  } catch (e) { el.textContent = 'failed: ' + e; }
+}
 // Fold state for every <details class="dfold"> in both drawers, persisted per
 // panel so the drawer comes back the way it was left. Restored at startup
 // (see restoreFolds' call site) *after* the lazy-load toggle handlers are
@@ -1858,7 +1908,7 @@ document.getElementById('session').addEventListener('click', () => {
 });
 document.getElementById('righttoggle').addEventListener('click', () => {
   if (toggleDrawer('right', 'righttoggle')) {
-    loadModels(); loadStats(); loadModelCalls(); loadContext(); loadBg();
+    loadModels(); loadStats(); loadModelCalls(); loadContext(); loadMemory(); loadBg();
   }
 });
 document.getElementById('model').addEventListener('click', () => openDetails(loadModels, 'modelsfold'));
@@ -1932,10 +1982,12 @@ wireRefresh('d-models', loadModels);
 wireRefresh('d-stats', loadStats);
 wireRefresh('d-mc', loadModelCalls);
 wireRefresh('d-ctx', loadContext);
+wireRefresh('d-mem', loadMemory);
 // Load a right-drawer panel when its fold is opened — including the restore
 // at startup, which fires toggle for every fold that comes back open.
 [['modelsfold', loadModels], ['statsfold', loadStats], ['mcfold', loadModelCalls],
- ['ctxfold', loadContext], ['bgfold', loadBg]].forEach(([id, loader]) => {
+ ['ctxfold', loadContext], ['memfold', loadMemory],
+ ['bgfold', loadBg]].forEach(([id, loader]) => {
   const f = document.getElementById(id);
   if (f) f.addEventListener('toggle', () => { if (f.open) loader(); });
 });
@@ -3618,7 +3670,7 @@ function restoreDrawers() {
   try { open = localStorage.getItem('oc-drawer-open-right'); } catch (e) {}
   if (open === '1') {
     toggleDrawer('right', 'righttoggle', true, false);
-    loadModels(); loadStats(); loadModelCalls(); loadContext(); loadBg();
+    loadModels(); loadStats(); loadModelCalls(); loadContext(); loadMemory(); loadBg();
   }
 }
 

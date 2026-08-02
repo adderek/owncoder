@@ -239,6 +239,13 @@ class MemoryStore:
         ).fetchone()
         return dict(row) if row else None
 
+    def counts_by_scope(self) -> dict[str, int]:
+        """{scope: row count} — cheap tier overview for status views/UI panels."""
+        rows = self._conn().execute(
+            "SELECT scope, COUNT(*) FROM entries GROUP BY scope"
+        ).fetchall()
+        return {r[0]: r[1] for r in rows}
+
     def list_entries(
         self,
         scope: str | None = None,
