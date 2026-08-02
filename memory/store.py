@@ -20,6 +20,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from agent.security import vault
+
 
 def _has_all_tags(tags_json: str | None, required: list[str]) -> bool:
     if not required:
@@ -34,8 +36,14 @@ def _has_all_tags(tags_json: str | None, required: list[str]) -> bool:
 
 class MemoryStore:
     def __init__(self, db_path: str | Path) -> None:
-        self._db_path = str(Path(db_path).resolve())
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        # The logical path is what the caller asked for; the DSN is where the
+        # data actually lives, which in incognito/private is memory and in vault
+        # mode is a tmpfs working copy of the sealed image (agent/security/vault.py).
+        self._logical_path = Path(db_path).resolve()
+        self._dsn, self._uri = vault.sqlite_target(self._logical_path)
+        if not self._uri:
+            Path(self._dsn).parent.mkdir(parents=True, exist_ok=True)
+        self._db_path = self._dsn
         self._local = threading.local()
         self._vec_dims: int | None = None
         self._setup()
@@ -46,8 +54,15 @@ class MemoryStore:
     def _conn(self) -> sqlite3.Connection:
         if not hasattr(self._local, "conn"):
             from agent.core.sqlite_util import open_threadlocal_conn
-            self._local.conn = open_threadlocal_conn(self._db_path, load_vec=True)
+            self._local.conn = open_threadlocal_conn(
+                self._dsn, load_vec=True, uri=self._uri
+            )
         return self._local.conn
+
+    def _commit(self, conn: sqlite3.Connection) -> None:
+        """Commit, then re-seal the database if this session is a vault one."""
+        conn.commit()
+        vault.reseal_sqlite(self._logical_path)
 
     def _setup(self) -> None:
         self._conn().executescript("""
@@ -72,11 +87,11 @@ class MemoryStore:
                 value TEXT NOT NULL
             );
         """)
-        self._conn().commit()
+        self._commit(self._conn())
         # Migration: add hit_count if missing (SQLite doesn't support IF NOT EXISTS for columns).
         try:
             self._conn().execute("ALTER TABLE entries ADD COLUMN hit_count INTEGER DEFAULT 0")
-            self._conn().commit()
+            self._commit(self._conn())
         except Exception:
             pass
         # Usefulness feedback (notes injection grading): how often an entry was
@@ -84,7 +99,7 @@ class MemoryStore:
         for col in ("inject_count", "used_count"):
             try:
                 self._conn().execute(f"ALTER TABLE entries ADD COLUMN {col} INTEGER DEFAULT 0")
-                self._conn().commit()
+                self._commit(self._conn())
             except Exception:
                 pass
 
@@ -110,7 +125,7 @@ class MemoryStore:
                 "INSERT OR REPLACE INTO _meta(key,value) VALUES('embedding_dims',?)",
                 (str(dims),),
             )
-            self._conn().commit()
+            self._commit(self._conn())
             self._vec_dims = dims
             return True
         except Exception:
@@ -168,7 +183,7 @@ class MemoryStore:
                 except Exception:
                     pass
 
-        conn.commit()
+        self._commit(conn)
         return eid
 
     def find_duplicate(self, scope: str, title: str, body: str) -> str | None:
@@ -202,7 +217,7 @@ class MemoryStore:
             conn.execute(
                 "UPDATE entries SET updated_at=? WHERE id=?", (time.time(), entry_id)
             )
-        conn.commit()
+        self._commit(conn)
 
     def delete(self, entry_id: str) -> None:
         conn = self._conn()
@@ -214,7 +229,7 @@ class MemoryStore:
         if self._vec_dims is not None:
             conn.execute("DELETE FROM vec_entries WHERE entry_id=?", (entry_id,))
         conn.execute("DELETE FROM entries WHERE id=?", (entry_id,))
-        conn.commit()
+        self._commit(conn)
 
     # ── read ─────────────────────────────────────────────────────────────────
 
@@ -267,7 +282,7 @@ class MemoryStore:
                 "INSERT INTO entries_fts(rowid,body,title,tags) VALUES(?,?,?,?)",
                 (row["rowid"], row["body"] or "", row["title"] or "", tags_json),
             )
-        conn.commit()
+        self._commit(conn)
         return len(rows)
 
     def _tag_filter_sql(self, tags_filter: list[str] | None) -> tuple[str, list]:
@@ -417,7 +432,7 @@ class MemoryStore:
             f"UPDATE entries SET {column} = COALESCE({column}, 0) + 1 WHERE id = ?",
             [(i,) for i in entry_ids],
         )
-        conn.commit()
+        self._commit(conn)
 
     def increment_hit_count(self, entry_id: str) -> None:
         conn = self._conn()
@@ -425,7 +440,7 @@ class MemoryStore:
             "UPDATE entries SET hit_count = COALESCE(hit_count, 0) + 1, updated_at = ? WHERE id = ?",
             (time.time(), entry_id),
         )
-        conn.commit()
+        self._commit(conn)
 
     def close(self) -> None:
         if hasattr(self._local, "conn"):

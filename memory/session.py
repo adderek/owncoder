@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from agent.security import vault
+
 
 # ── Module-level configuration ───────────────────────────────────────────────
 
@@ -93,19 +95,13 @@ def _extract_preamble(messages: list[dict]) -> tuple[list[dict], list[dict]]:
 
 def _write_preamble(session_dir: Path, preamble: list[dict]) -> None:
     """Write preamble to sidecar *system.json*."""
-    path = session_dir / _PREAMBLE_FILENAME
-    path.write_text(json.dumps(preamble, indent=2, ensure_ascii=False), encoding="utf-8")
+    vault.write_json(session_dir / _PREAMBLE_FILENAME, preamble)
 
 
 def _read_preamble(session_dir: Path) -> list[dict] | None:
     """Read preamble from sidecar, returns None if missing."""
-    path = session_dir / _PREAMBLE_FILENAME
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
+    data = vault.read_json(session_dir / _PREAMBLE_FILENAME)
+    return data if isinstance(data, list) else None
 
 
 def _needs_preamble_restore(messages: list[dict]) -> bool:
@@ -273,9 +269,43 @@ def has_content(messages: list[dict]) -> bool:
     return content_count(messages) > 0
 
 
+def _locked_entry(path: Path) -> dict:
+    """Placeholder row for a sealed session we hold no key for.
+
+    Only what the filesystem already reveals is filled in — the directory name
+    (a timestamp) and the mtime. Nothing is guessed about the contents.
+    """
+    session_id = path.parent.name
+    return {
+        "_mtime": _logical_mtime(path),
+        "id": session_id,
+        "short_name": "",
+        "name": "🔒 locked (vault)",
+        "description": "",
+        "summary": "",
+        "tags": [],
+        "classification": "",
+        "created_at": None,
+        "updated_at": None,
+        "message_count": 0,
+        "hidden": False,
+        "locked": True,
+    }
+
+
+def _logical_mtime(path: Path) -> float:
+    """mtime of whichever shape of *path* is on disk (plain or sealed)."""
+    for candidate in (path, vault.sealed_path(path)):
+        try:
+            return candidate.stat().st_mtime
+        except OSError:
+            continue
+    return 0.0
+
+
 def _already_saved(session: "Session") -> bool:
     path = getattr(session, "_file_path", None)
-    return bool(path is not None and path.exists())
+    return bool(path is not None and vault.exists(path))
 
 
 def save_session(session: Session, messages: list[dict]) -> None:
@@ -284,10 +314,13 @@ def save_session(session: Session, messages: list[dict]) -> None:
     System preamble (repetitive tool rules, project context) is stripped into a
     sidecar *system.json* sibling to avoid bloating session.json on every save.
 
-    Incognito sessions are never written to disk — this is the single chokepoint
-    all persistence paths (cli, UI, idle tasks) funnel through.
+    Incognito and private sessions are never written to disk; vault sessions are
+    written sealed. This is the single chokepoint all persistence paths (cli, UI,
+    idle tasks) funnel through — see agent/security/vault.py.
     """
-    if session.mode == "incognito":
+    if not vault.persist_allowed() or session.mode in ("incognito", "private"):
+        return
+    if vault.locked():
         return
 
     # A session nobody said anything in is not a session. Starting the UI,
@@ -320,17 +353,15 @@ def save_session(session: Session, messages: list[dict]) -> None:
     # Determine file path
     if session._file_path is not None:
         expected = sdir / _session_filename(session)
-        if session._file_path != expected and session._file_path.exists():
-            session._file_path.unlink()
+        if session._file_path != expected and vault.exists(session._file_path):
+            vault.unlink(session._file_path)
         session._file_path = expected
     else:
         session._file_path = sdir / _session_filename(session)
 
-    # Ensure parent directory exists
-    session._file_path.parent.mkdir(parents=True, exist_ok=True)
-    session._file_path.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    # vault.write_json seals the payload in vault mode and writes plain JSON
+    # otherwise; either way the path here is the logical one.
+    vault.write_json(session._file_path, data)
 
     # Write preamble sidecar once per session (overwrite — same content each time)
     if preamble:
@@ -349,10 +380,12 @@ def load_session(id_or_name: str) -> tuple[Session | None, list[dict]]:
     # Match only session.json — other JSON under .agent (facts round-*.json,
     # system.json sidecars) are not sessions and would otherwise be misread.
     for p in sorted(
-        sdir.rglob("session.json"), key=lambda x: x.stat().st_mtime, reverse=True
+        vault.rglob(sdir, "session.json"), key=_logical_mtime, reverse=True
     ):
         try:
-            data = json.loads(p.read_text(encoding="utf-8"))
+            data = vault.read_json(p)
+            if not isinstance(data, dict):
+                continue
             if data.get("id") == id_or_name or data.get("short_name") == id_or_name:
                 session = _session_from_data(data, file_path=p)
                 messages = data.get("messages", [])
@@ -410,14 +443,23 @@ def list_sessions(oldest_first: bool = False, limit: int | None = None,
     sessions = []
     # Only session.json files are sessions; other JSON under .agent (facts
     # round-*.json, system.json sidecars) must not show up as phantom sessions.
-    for p in sdir.rglob("session.json"):
+    for p in vault.rglob(sdir, "session.json"):
         try:
-            data = json.loads(p.read_text(encoding="utf-8"))
+            data = vault.read_json(p)
+            if data is None and vault.sealed_path(p).exists():
+                # Sealed and unreadable (vault locked, or a different vault).
+                # Listed rather than hidden: "there is a session here you cannot
+                # read" is the honest answer, and silently dropping it would make
+                # a locked vault look like an empty history.
+                sessions.append(_locked_entry(p))
+                continue
+            if not isinstance(data, dict):
+                continue
             sessions.append(
                 {
                     # The file's own clock, kept for ordering: sessions written
                     # before updated_at existed have nothing else to sort by.
-                    "_mtime": p.stat().st_mtime,
+                    "_mtime": _logical_mtime(p),
                     "id": data.get("id", p.stem),
                     "short_name": data.get("short_name", ""),
                     "name": data.get("name", p.stem),
@@ -436,7 +478,9 @@ def list_sessions(oldest_first: bool = False, limit: int | None = None,
         except Exception:
             pass
     if not include_empty:
-        sessions = [s for s in sessions if s["message_count"] > 0]
+        # A locked entry's message count is unknowable without the passphrase,
+        # so it is kept rather than filtered out as "empty".
+        sessions = [s for s in sessions if s["message_count"] > 0 or s.get("locked")]
     sessions.sort(key=_sort_key(sort if sort in SORT_KEYS else "updated"),
                   reverse=not oldest_first)
     if limit is not None and limit >= 0:

@@ -73,6 +73,7 @@ def open_threadlocal_conn(
     load_vec: bool = False,
     foreign_keys: bool = False,
     busy_ms: int = DEFAULT_BUSY_MS,
+    uri: bool = False,
 ) -> sqlite3.Connection:
     """Open a per-thread SQLite connection with the shared tuning.
 
@@ -81,8 +82,11 @@ def open_threadlocal_conn(
     unavailable the connection is still returned and vector search degrades to
     FTS-only (logged) rather than crashing — a uniform policy across all stores.
     Store-specific DDL is the caller's job (run it after caching the conn).
+    ``uri`` passes *db_path* through as a SQLite URI, which is how an in-memory
+    database gets a shared cache — without it every thread would silently open
+    its own empty one (see agent/security/vault.py).
     """
-    conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
+    conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False, uri=uri)
     conn.row_factory = sqlite3.Row
     apply_concurrency_pragmas(conn, busy_ms)
     if foreign_keys:

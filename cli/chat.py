@@ -320,11 +320,36 @@ def cmd_chat(args, config):
     agent.messages.append({"role": "system", "content": _cov_msg})
 
     _mode = "private" if getattr(args, "private", False) else (
-        "incognito" if getattr(args, "incognito", False) else "standard"
+        "incognito" if getattr(args, "incognito", False) else (
+            "vault" if getattr(args, "vault", False) else "standard"
+        )
     )
+    if _mode == "vault":
+        # Unlock before anything opens a store: sqlite paths and file targets
+        # are chosen at open time from the mode, so a late unlock would leave
+        # this session writing in the clear.
+        from agent.security import vault as _vault
+        _vault.set_mode("vault")
+        try:
+            _vault.prompt_and_unlock(
+                Path(config.tools.working_dir) / config.tools.agent_dir)
+        except _vault.VaultError as exc:
+            # Refuse to start rather than fall back to standard mode: a session
+            # that quietly persists in the clear is the one failure this feature
+            # cannot have.
+            console.print(f"[red]Vault: {exc}[/red]")
+            raise SystemExit(1)
     if args.session:
         session, messages = load_session(args.session)
         if session is None:
+            if _mode != "vault":
+                # A sealed session is unreadable without the key, so "not found"
+                # would be a misleading answer where a vault exists.
+                from agent.security import vault as _vault
+                if _vault.header_path(
+                        Path(config.tools.working_dir) / config.tools.agent_dir).exists():
+                    console.print("[yellow]This project has a vault. If that session "
+                                  "was sealed, resume it with --vault.[/yellow]")
             session = new_session(short_name=args.session, mode=_mode)
             messages = []
         elif _mode != "standard":

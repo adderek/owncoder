@@ -359,6 +359,9 @@ class SlashHandlerMixin:
             else:
                 self._write_sys(f"[{t.warning}]Private: no persistence + non-local LLM endpoints will be refused.[/{t.warning}]")
 
+        elif cmd == "/vault":
+            self._cmd_vault(arg.strip())
+
         elif cmd == "/load":
             if not arg.strip():
                 self._write_sys(f"[{t.warning}]Usage: /load <session-id-or-short-name>[/{t.warning}]")
@@ -760,6 +763,73 @@ class SlashHandlerMixin:
                 f"type a message to redirect (e.g. 're-read the file and retry').[/{t.warning}]"
             )
             self._write_sys(f"[{t.text_dim}]{note[:200]}[/{t.text_dim}]")
+
+    def _cmd_vault(self, arg: str = "") -> None:
+        """``/vault`` — turn encrypted persistence on, off, or lock it again.
+
+        Switching *into* vault mode mid-session only affects what is written
+        from here on: anything this session already wrote in the clear stays in
+        the clear, and it says so rather than implying a retroactive sweep.
+        """
+        t = self._t
+        from pathlib import Path
+        from agent.security import vault
+
+        agent_ = self._server._agent
+        agent_dir = (Path(agent_.config.tools.working_dir)
+                     / agent_.config.tools.agent_dir)
+        cur = getattr(self._session, "mode", "standard") if self._session else "standard"
+
+        if arg == "lock":
+            vault.lock()
+            self._write_sys(f"[{t.warning}]Vault locked — sealed data is unreadable "
+                            f"until the passphrase is entered again.[/{t.warning}]")
+            return
+
+        if cur == "vault":
+            self._set_session_mode("standard")
+            vault.lock()
+            self._write_sys(f"[{t.text_dim}]Session mode: standard (persistence in "
+                            f"the clear).[/{t.text_dim}]")
+            return
+
+        first_time = not vault.header_path(agent_dir).exists()
+        prompt = "Set a vault passphrase" if first_time else "Vault passphrase"
+
+        def _on_passphrase(passphrase: str | None) -> None:
+            if not passphrase:
+                self._write_sys(f"[{t.text_dim}]Vault: cancelled — mode unchanged.[/{t.text_dim}]")
+                return
+            try:
+                vault.set_mode("vault")
+                vault.unlock(passphrase, agent_dir)
+            except vault.VaultError as exc:
+                vault.set_mode(cur)
+                self._write_sys(f"[{t.error}]Vault: {exc}[/{t.error}]")
+                return
+            self._set_session_mode("vault")
+            self._write_sys(
+                f"[{t.warning}]Vault: session, logs, Q/A and facts are written "
+                f"encrypted (AES-256-GCM) from here on. Files written earlier this "
+                f"session stay in the clear, and databases already open keep their "
+                f"current file until restart — start with [{t.cmd_color}]--vault"
+                f"[/{t.cmd_color}] to seal a session end to end. Lose the "
+                f"passphrase and the data is gone.[/{t.warning}]")
+
+        try:
+            self.push_screen(self._wt.PassphraseScreen(prompt, confirm=first_time),
+                             _on_passphrase)
+        except Exception as exc:
+            self._write_sys(f"[{t.error}]Vault prompt failed: {exc}[/{t.error}]")
+
+    def _set_session_mode(self, target: str) -> None:
+        """Point both the session record and the agent at *target*."""
+        if self._session is not None:
+            self._session.mode = target
+        try:
+            self._server._agent.set_session_mode(target)
+        except Exception:
+            pass
 
     def _open_session_picker(self, initial_query: str = "") -> None:
         """Push the live session search/picker modal and load the chosen one."""

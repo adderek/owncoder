@@ -25,13 +25,14 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
-import json
 import logging
 import os
 import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from agent.security import vault
 
 if TYPE_CHECKING:
     from agent.config import Config
@@ -46,7 +47,13 @@ _BLOBS = "blobs"
 
 
 def enabled(config: "Config | None") -> bool:
-    if config is None:
+    """Whether the journal is backed by disk at all.
+
+    Off in incognito/private: the pre-image blobs are copies of the files the
+    session touched, which is exactly the trail those modes exist to not leave.
+    core/checkpoint.py keeps its in-memory journal either way, so rollback still
+    works within the session — it just does not survive a restart."""
+    if config is None or not vault.persist_allowed():
         return False
     return bool(getattr(getattr(config, "checkpoints", None), "persist", False))
 
@@ -82,21 +89,16 @@ def write_blob(directory: Path, content: str) -> str:
     """Store *content*, returning its digest. Writing an existing blob is a no-op."""
     digest = hashlib.sha256(content.encode("utf-8", "surrogatepass")).hexdigest()
     path = _blob_path(directory, digest)
-    if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(content, encoding="utf-8", errors="surrogatepass")
-        tmp.replace(path)   # atomic: a reader never sees a partial blob
+    if not vault.exists(path):
+        vault.write_text(path, content)
     return digest
 
 
 def read_blob(directory: Path, digest: str) -> str | None:
-    path = _blob_path(directory, digest)
-    try:
-        return path.read_text(encoding="utf-8", errors="surrogatepass")
-    except OSError:
+    content = vault.read_text(_blob_path(directory, digest))
+    if content is None:
         logger.warning("checkpoints: pre-image blob %s is missing", digest[:12])
-        return None
+    return content
 
 
 def _record(directory: Path, entry: dict, before: str | None) -> dict:
@@ -117,12 +119,7 @@ def append_entry(config: "Config", entry: dict, before: str | None) -> None:
         directory = root(config)
         directory.mkdir(parents=True, exist_ok=True)
         record = _record(directory, entry, before)
-        line = json.dumps(record, ensure_ascii=False) + "\n"
-        fd = os.open(directory / _JOURNAL, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
-        try:
-            os.write(fd, line.encode("utf-8", "surrogatepass"))
-        finally:
-            os.close(fd)
+        vault.append_jsonl(directory / _JOURNAL, record)
     except Exception:
         logger.exception("checkpoints: failed to persist journal entry")
 
@@ -131,10 +128,7 @@ def save_checkpoints(config: "Config", checkpoints: list[dict]) -> None:
     try:
         directory = root(config)
         with _exclusive(directory):
-            tmp = directory / (_CHECKPOINTS + ".tmp")
-            tmp.write_text(json.dumps({"checkpoints": checkpoints}, indent=2) + "\n",
-                           encoding="utf-8")
-            tmp.replace(directory / _CHECKPOINTS)
+            vault.write_json(directory / _CHECKPOINTS, {"checkpoints": checkpoints})
     except Exception:
         logger.exception("checkpoints: failed to persist checkpoint list")
 
@@ -148,50 +142,35 @@ def load(config: "Config") -> tuple[list[dict], list[dict]]:
     """
     directory = root(config)
     journal: list[dict] = []
-    path = directory / _JOURNAL
-    if path.is_file():
-        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            line = line.strip()
-            if not line:
+    for record in vault.iter_jsonl(directory / _JOURNAL):
+        if not isinstance(record, dict) or "seq" not in record or "path" not in record:
+            continue
+        digest = record.get("blob")
+        if digest is None:
+            before = None
+        else:
+            before = read_blob(directory, str(digest))
+            if before is None:
                 continue
-            try:
-                record = json.loads(line)
-            except ValueError:
-                logger.warning("checkpoints: skipping malformed journal line")
-                continue
-            if not isinstance(record, dict) or "seq" not in record or "path" not in record:
-                continue
-            digest = record.get("blob")
-            if digest is None:
-                before = None
-            else:
-                before = read_blob(directory, str(digest))
-                if before is None:
-                    continue
-            journal.append({
-                "seq": int(record["seq"]), "path": str(record["path"]),
-                "before": before, "ts": record.get("ts"),
-                # Absent on lines written before these fields existed: unknown
-                # actor / unknown post-state, which downstream must not read as
-                # "me" or "unchanged".
-                "actor": record.get("actor"),
-                "before_sha": record.get("blob"),
-                "after_sha": record.get("after_sha"),
-                "pinned": record.get("pinned"),
-            })
+        journal.append({
+            "seq": int(record["seq"]), "path": str(record["path"]),
+            "before": before, "ts": record.get("ts"),
+            # Absent on lines written before these fields existed: unknown
+            # actor / unknown post-state, which downstream must not read as
+            # "me" or "unchanged".
+            "actor": record.get("actor"),
+            "before_sha": record.get("blob"),
+            "after_sha": record.get("after_sha"),
+            "pinned": record.get("pinned"),
+        })
     journal.sort(key=lambda e: e["seq"])
 
     checkpoints: list[dict] = []
-    cpath = directory / _CHECKPOINTS
-    if cpath.is_file():
-        try:
-            raw = json.loads(cpath.read_text(encoding="utf-8"))
-            entries = raw.get("checkpoints", []) if isinstance(raw, dict) else raw
-            for item in entries or []:
-                if isinstance(item, dict) and item.get("id"):
-                    checkpoints.append(item)
-        except (OSError, ValueError):
-            logger.warning("checkpoints: ignoring unreadable %s", cpath)
+    raw = vault.read_json(directory / _CHECKPOINTS)
+    entries = raw.get("checkpoints", []) if isinstance(raw, dict) else (raw or [])
+    for item in entries:
+        if isinstance(item, dict) and item.get("id"):
+            checkpoints.append(item)
     return journal, checkpoints
 
 
@@ -200,13 +179,9 @@ def rewrite_journal(config: "Config", journal: list[dict]) -> None:
     try:
         directory = root(config)
         with _exclusive(directory):
-            lines = [
-                json.dumps(_record(directory, entry, entry.get("before")), ensure_ascii=False)
-                for entry in journal
-            ]
-            tmp = directory / (_JOURNAL + ".tmp")
-            tmp.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
-            tmp.replace(directory / _JOURNAL)
+            vault.rewrite_jsonl(directory / _JOURNAL, [
+                _record(directory, entry, entry.get("before")) for entry in journal
+            ])
     except Exception:
         logger.exception("checkpoints: failed to rewrite journal")
 
@@ -252,7 +227,10 @@ def prune(config: "Config") -> dict:
                 if not shard.is_dir():
                     continue
                 for blob in shard.iterdir():
-                    if shard.name + blob.name not in referenced:
+                    name = blob.name
+                    if name.endswith(vault.ENC_SUFFIX):
+                        name = name[: -len(vault.ENC_SUFFIX)]
+                    if shard.name + name not in referenced:
                         try:
                             blob.unlink()
                             deleted += 1

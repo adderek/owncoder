@@ -86,8 +86,9 @@ def save_note(
     body: str,
     tags: list[str] | None = None,
 ) -> dict[str, Any]:
-    if _session_mode == "incognito":
-        return {"saved": False, "message": "Incognito mode: note not persisted."}
+    if _session_mode in ("incognito", "private"):
+        return {"saved": False,
+                "message": f"{_session_mode.capitalize()} mode: note not persisted."}
 
     store = _get_store()
     if store is None:

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from agent.memory.session import _get_session_dir, get_session_subpath
+from agent.security import vault
 
 
 class QALogger:
@@ -72,8 +72,11 @@ class QALogger:
         return self._get_a_dir() / filename
 
     def _write_json(self, directory: Path, filename: str, data: Dict[str, Any]) -> None:
-        directory.mkdir(parents=True, exist_ok=True)
-        directory.joinpath(filename).write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        """Persist one Q or A turn.
+
+        The Q/A log holds the conversation verbatim, so it goes through the
+        vault gate: suppressed in incognito/private, sealed in vault mode."""
+        vault.write_json(directory / filename, data)
 
     async def read_history(self) -> AsyncIterator[Tuple[int, Dict[str, Any], Dict[str, Any]]]:
         """
@@ -83,7 +86,7 @@ class QALogger:
         q_dir = self._get_q_dir()
         a_dir = self._get_a_dir()
 
-        if not q_dir.exists() or not a_dir.exists():
+        if not q_dir.is_dir() or not a_dir.is_dir():
             return
 
         # Use a dictionary to group by turn_id
@@ -91,9 +94,9 @@ class QALogger:
         history: Dict[int, Dict[str, Any]] = {}
 
         # Read Q files
-        for q_file in q_dir.glob("Q-*.json"):
+        for q_file in vault.glob(q_dir, "Q-*.json"):
             try:
-                data = json.loads(q_file.read_text(encoding="utf-8"))
+                data = vault.read_json(q_file) or {}
                 tid = data.get("turn_id")
                 if tid is not None:
                     if tid not in history:
@@ -103,9 +106,9 @@ class QALogger:
                 continue
 
         # Read A files
-        for a_file in a_dir.glob("A-*.json"):
+        for a_file in vault.glob(a_dir, "A-*.json"):
             try:
-                data = json.loads(a_file.read_text(encoding="utf-8"))
+                data = vault.read_json(a_file) or {}
                 tid = data.get("turn_id")
                 if tid is not None:
                     if tid not in history:
@@ -131,18 +134,18 @@ def read_history_sync(session_id: str) -> List[Tuple[int, Dict[str, Any], Dict[s
     a_dir = logger._get_a_dir()
     history: Dict[int, Dict[str, Any]] = {}
     if q_dir.exists():
-        for q_file in q_dir.glob("Q-*.json"):
+        for q_file in vault.glob(q_dir, "Q-*.json"):
             try:
-                data = json.loads(q_file.read_text(encoding="utf-8"))
+                data = vault.read_json(q_file) or {}
                 tid = data.get("turn_id")
                 if tid is not None:
                     history.setdefault(tid, {"q": None, "a": None})["q"] = data
             except Exception:
                 continue
     if a_dir.exists():
-        for a_file in a_dir.glob("A-*.json"):
+        for a_file in vault.glob(a_dir, "A-*.json"):
             try:
-                data = json.loads(a_file.read_text(encoding="utf-8"))
+                data = vault.read_json(a_file) or {}
                 tid = data.get("turn_id")
                 if tid is not None:
                     history.setdefault(tid, {"q": None, "a": None})["a"] = data

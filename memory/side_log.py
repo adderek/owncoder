@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import json
 import threading
 import time
 from pathlib import Path
+
+from agent.security import vault
 
 
 class SideLogWriter:
@@ -27,23 +28,16 @@ class SideLogWriter:
     def _init_counter(self, filename: str) -> None:
         if filename in self._counters:
             return
-        path = self.session_dir / filename
-        if path.exists():
-            try:
-                n = 0
-                with path.open("r", encoding="utf-8", errors="replace") as f:
-                    for n, line in enumerate(f, start=1):
-                        self._index_line(filename, line)
-                self._counters[filename] = n
-            except Exception:
-                self._counters[filename] = 0
-        else:
-            self._counters[filename] = 0
-
-    def _index_line(self, filename: str, line: str) -> None:
+        n = 0
         try:
-            rec = json.loads(line)
+            for n, rec in enumerate(vault.iter_jsonl(self.session_dir / filename), start=1):
+                self._index_record(filename, rec)
         except Exception:
+            n = 0
+        self._counters[filename] = n
+
+    def _index_record(self, filename: str, rec: dict) -> None:
+        if not isinstance(rec, dict):
             return
         cid = rec.get("tool_call_id")
         seq = rec.get("seq")
@@ -68,22 +62,18 @@ class SideLogWriter:
             cid = payload.get("tool_call_id")
             if cid:
                 self._by_call_id.setdefault((filename, str(cid)), seq)
-            path = self.session_dir / filename
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            # Suppressed in incognito/private, sealed in vault mode. The seq
+            # still advances so in-memory _tool_refs stay consistent within the
+            # session even when nothing reaches the disk.
+            vault.append_jsonl(self.session_dir / filename, payload)
             return seq
 
     def read(self, filename: str, seq: int) -> dict | None:
         """Fetch a single record by seq number. Returns None if missing."""
-        path = self.session_dir / filename
-        if not path.exists():
-            return None
         try:
-            with path.open("r", encoding="utf-8") as f:
-                for i, line in enumerate(f):
-                    if i == seq:
-                        return json.loads(line)
+            for i, rec in enumerate(vault.iter_jsonl(self.session_dir / filename)):
+                if i == seq:
+                    return rec
         except Exception:
             return None
         return None

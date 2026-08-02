@@ -55,6 +55,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/unlimited", ["/nomax"], "toggle unlimited tool-call iterations", False),
     ("/incognito", [], "toggle incognito mode (session not saved)", False),
     ("/private", [], "toggle private mode (no persistence + local LLMs only)", False),
+    ("/vault", [], "toggle vault mode (everything persists, encrypted)  [lock]", True),
     ("/paths", [], "path grants: show | add <path> [ro|rw] | remove <path> | list", True),
     ("/maxiter", ["/max_iter"], "set max tool-call iterations per turn  [<n> | 0/none = unlimited]", True),
     ("/wrap", [], "toggle line wrapping", False),

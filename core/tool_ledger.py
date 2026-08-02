@@ -165,11 +165,15 @@ def record_changes(config, schemas: list[dict]) -> list[dict]:
     if not entries:
         return []
     path = history_path(config)
+    # The ledger records which tools the agent had, not what was said, but an
+    # off-the-record session still leaves no new lines behind; in vault mode the
+    # lines are sealed like everything else.
+    from agent.security import vault
+    if not vault.persist_allowed():
+        return entries
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as f:
-            for entry in entries:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        for entry in entries:
+            vault.append_jsonl(path, entry)
     except OSError:
         logger.warning("could not append tool history at %s", path, exc_info=True)
         return []
@@ -178,22 +182,9 @@ def record_changes(config, schemas: list[dict]) -> list[dict]:
 
 def history(config, tool: str = "", limit: int = 0) -> list[dict]:
     """Recorded changes, oldest first, optionally for one tool."""
-    path = history_path(config)
-    if not path.is_file():
-        return []
+    from agent.security import vault
     out = []
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return []
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            entry = json.loads(line)
-        except ValueError:
-            continue
+    for entry in vault.iter_jsonl(history_path(config)):
         if not isinstance(entry, dict):
             continue
         if tool and entry.get("tool") != tool:

@@ -25,6 +25,14 @@ def setup(config: "Config") -> None:
     _corpus = None  # lazy-open on first call
 
 
+def _may_persist() -> bool:
+    """The KB is a shared corpus outside the session directory, so an
+    off-the-record session must not append to it (agent/security/vault.py).
+    Reads stay available — the corpus is a source, not a record."""
+    from agent.security import vault
+    return vault.persist_allowed()
+
+
 def _get_corpus():
     global _corpus
     if _corpus is not None:
@@ -224,6 +232,8 @@ def kb_callers(node_id: str, kind: str = "calls", depth: int = 1) -> str:
     },
 })
 def kb_add_note(attach_to: str, body: str, kind: str = "observation") -> str:
+    if not _may_persist():
+        return json.dumps({"error": "off-the-record session: KB not written"})
     try:
         corpus = _get_corpus()
         note_id = corpus.add_note(attach_to, body, kind=kind)
@@ -250,6 +260,8 @@ def kb_add_note(attach_to: str, body: str, kind: str = "observation") -> str:
     },
 })
 def kb_propose_description(node_id: str, text: str) -> str:
+    if not _may_persist():
+        return json.dumps({"error": "off-the-record session: KB not written"})
     try:
         corpus = _get_corpus()
         corpus.propose_description(node_id, text)

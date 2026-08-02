@@ -27,6 +27,11 @@ def write_crash_report(error: BaseException, config, *, context: str = "") -> Pa
     Best-effort: never raises (a crash handler must not crash).
     """
     try:
+        from agent.security import vault
+        if not vault.persist_allowed():
+            # Tracebacks carry locals — prompts, tool arguments, file contents.
+            # An off-the-record session keeps them off the disk too.
+            return None
         d = crash_dir(config)
         d.mkdir(parents=True, exist_ok=True)
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
@@ -39,7 +44,7 @@ def write_crash_report(error: BaseException, config, *, context: str = "") -> Pa
             lines.append(f"context: {context}")
         lines.append("")
         lines.append("".join(_tb.format_exception(type(error), error, error.__traceback__)))
-        path.write_text("\n".join(lines), encoding="utf-8")
+        vault.write_text(path, "\n".join(lines))
         return path
     except Exception:
         logger.exception("failed to write crash report")

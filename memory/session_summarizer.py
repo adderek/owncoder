@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from agent.security import vault
+
 if TYPE_CHECKING:
     from agent.config import Config
 
@@ -51,30 +53,17 @@ def summary_path(session_dir: Path, scope: str) -> Path:
 
 
 def load_stored(session_dir: Path, scope: str) -> dict:
-    p = summary_path(session_dir, scope)
-    if not p.exists():
-        return {}
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    data = vault.read_json(summary_path(session_dir, scope))
+    return data if isinstance(data, dict) else {}
 
 
 def _save(session_dir: Path, scope: str, content: str, up_to_turn: int) -> None:
-    p = summary_path(session_dir, scope)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(
-        json.dumps(
-            {
-                "content": content,
-                "summarized_up_to_turn": up_to_turn,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            },
-            indent=2,
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
+    # A summary is the conversation in condensed form — same privacy gate.
+    vault.write_json(summary_path(session_dir, scope), {
+        "content": content,
+        "summarized_up_to_turn": up_to_turn,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
 
 
 def _fmt_q(entries: list) -> str:

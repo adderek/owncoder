@@ -905,6 +905,80 @@ def build_widget_classes(t) -> SimpleNamespace:
                     pass
                 self._refresh(self.query_one("#session-picker-input").value)
 
+    class PassphraseScreen(ModalScreen):
+        """Passphrase prompt for vault mode (agent/security/vault.py).
+
+        Dismisses with the passphrase, or None on cancel. Input is masked and
+        never echoed into the transcript — which is why ``/vault`` does not take
+        the passphrase as a command argument.
+        """
+
+        CSS = """
+        PassphraseScreen {
+            align: center middle;
+        }
+        #vault-dialog {
+            width: 64;
+            height: auto;
+            border: solid $warning;
+            background: $surface;
+            padding: 1 2;
+        }
+        #vault-input {
+            margin-top: 1;
+        }
+        #vault-hint {
+            margin-top: 1;
+        }
+        """
+
+        def __init__(self, prompt: str, confirm: bool = False) -> None:
+            super().__init__()
+            self._prompt = prompt
+            self._confirm = confirm
+            self._first: str | None = None
+
+        def compose(self):
+            from textual.widgets import Input, Static
+            with Vertical(id="vault-dialog"):
+                yield Static(f"[{t.warning}]🔐 {_escape(self._prompt)}[/{t.warning}]",
+                             id="vault-question", markup=True)
+                yield Input(password=True, id="vault-input")
+                hint = "Enter confirm · Esc cancel"
+                if self._confirm:
+                    hint = "New vault — you will be asked to repeat it. " + hint
+                yield Static(f"[{t.text_dim}]{hint}[/{t.text_dim}]",
+                             id="vault-hint", markup=True)
+
+        def on_mount(self) -> None:
+            try:
+                self.query_one("#vault-input").focus()
+            except Exception:
+                pass
+
+        def on_input_submitted(self, event) -> None:
+            value = event.value
+            event.input.value = ""
+            if self._confirm and self._first is None:
+                self._first = value
+                self.query_one("#vault-question").update(
+                    f"[{t.warning}]🔐 Repeat the passphrase[/{t.warning}]")
+                return
+            if self._confirm and value != self._first:
+                self.query_one("#vault-hint").update(
+                    f"[{t.error}]Passphrases did not match — start again.[/{t.error}]")
+                self._first = None
+                self.query_one("#vault-question").update(
+                    f"[{t.warning}]🔐 {_escape(self._prompt)}[/{t.warning}]")
+                return
+            self.dismiss(value)
+
+        def on_key(self, event) -> None:
+            if event.key == "escape":
+                event.stop()
+                self.dismiss(None)
+
+
     class PermissionScreen(ModalScreen):
         """Blocking permission prompt for a `[permissions]` ask verdict.
 
@@ -2381,6 +2455,7 @@ def build_widget_classes(t) -> SimpleNamespace:
         TurnDetailScreen=TurnDetailScreen,
         SessionPickerScreen=SessionPickerScreen,
         PermissionScreen=PermissionScreen,
+        PassphraseScreen=PassphraseScreen,
         ToolCallDetailScreen=ToolCallDetailScreen,
         FileDiffScreen=FileDiffScreen,
         ChangesetFilesScreen=ChangesetFilesScreen,

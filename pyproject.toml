@@ -38,6 +38,10 @@ notify = [
     "websockets>=12",
     "cryptography>=42",
 ]
+vault = [
+    # Argon2id landed in cryptography 44 and needs OpenSSL 3.2+ underneath.
+    "cryptography>=44",
+]
 speech = [
     "faster-whisper>=1.0",
     "soundfile>=0.12",

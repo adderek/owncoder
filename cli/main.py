@@ -163,6 +163,18 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Don't persist this session or any notes it produces")
     chat_p.add_argument("--private", action="store_true",
                         help="Incognito + refuse to run against non-local LLM endpoints")
+    chat_p.add_argument("--vault", action="store_true",
+                        help="Persist everything encrypted at rest (prompts for a "
+                             "passphrase; lose it and the session is unrecoverable)")
+
+    # vault
+    vault_p = sub.add_parser("vault", help="Read back files sealed by vault mode")
+    vault_sub = vault_p.add_subparsers(dest="vault_action")
+    vault_sub.add_parser("status", help="Is there a vault here, and how much is sealed")
+    vault_show = vault_sub.add_parser("show", help="Decrypt one sealed file to stdout")
+    vault_show.add_argument("path", type=str, help="Logical path (with or without .enc)")
+    vault_log = vault_sub.add_parser("log", help="Decrypt the sealed agent log")
+    vault_log.add_argument("--tail", type=int, default=0, help="Last N lines only")
 
     # run
     run_p = sub.add_parser("run", help="Run a single prompt non-interactively")
@@ -385,6 +397,9 @@ def main() -> None:
                 except Exception:
                     pass
             cmd_chat(args, config)
+        elif args.command == "vault":
+            from agent.cli.vault_cli import cmd_vault
+            sys.exit(cmd_vault(args, config))
         elif args.command == "run":
             from agent.cli.run import cmd_run
             from agent.cli import warmup

@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from agent.security import vault
 from agent.memory.session import _get_session_dir, get_session_subpath
 
 
@@ -92,27 +93,27 @@ class FactsStore:
         return (latest or 0) + 1
 
     def latest_round_id(self) -> int | None:
-        pointer = self._latest_pointer()
-        if pointer.exists():
+        raw = vault.read_text(self._latest_pointer())
+        if raw is not None:
             try:
-                return int(pointer.read_text(encoding="utf-8").strip())
-            except Exception:
+                return int(raw.strip())
+            except ValueError:
                 pass
         # Fallback: scan directory.
-        if not self.dir.exists():
+        if not self.dir.is_dir():
             return None
         ids: list[int] = []
-        for p in self.dir.glob("round-*.json"):
+        for p in vault.glob(self.dir, "round-*.json"):
             m = _ROUND_FILE_RE.match(p.name)
             if m:
                 ids.append(int(m.group(1)))
         return max(ids) if ids else None
 
     def list_round_ids(self) -> list[int]:
-        if not self.dir.exists():
+        if not self.dir.is_dir():
             return []
         ids: list[int] = []
-        for p in self.dir.glob("round-*.json"):
+        for p in vault.glob(self.dir, "round-*.json"):
             m = _ROUND_FILE_RE.match(p.name)
             if m:
                 ids.append(int(m.group(1)))
@@ -120,11 +121,11 @@ class FactsStore:
 
     # ── read ────────────────────────────────────────────────────────────────
     def load_round(self, round_id: int) -> FactsRound | None:
-        p = self._round_path(round_id)
-        if not p.exists():
+        data = vault.read_json(self._round_path(round_id))
+        if not isinstance(data, dict):
             return None
         try:
-            return FactsRound.from_dict(json.loads(p.read_text(encoding="utf-8")))
+            return FactsRound.from_dict(data)
         except Exception:
             return None
 
@@ -140,13 +141,13 @@ class FactsStore:
 
     # ── write ───────────────────────────────────────────────────────────────
     def save_round(self, r: FactsRound) -> Path:
-        self.dir.mkdir(parents=True, exist_ok=True)
+        """Persist one compaction round.
+
+        Rounds are distilled conversation, so they follow the session's privacy
+        mode: nothing written in incognito/private, sealed in vault mode."""
         path = self._round_path(r.round_id)
-        path.write_text(
-            json.dumps(r.to_dict(), indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
-        self._latest_pointer().write_text(str(r.round_id), encoding="utf-8")
+        vault.write_json(path, r.to_dict())
+        vault.write_text(self._latest_pointer(), str(r.round_id))
         return path
 
     def new_round(
@@ -184,20 +185,13 @@ class FactsStore:
     def set_original_request(self, text: str) -> None:
         """Persist original user request. Written once; subsequent calls no-op if already set."""
         p = self._original_request_path()
-        if p.exists():
+        if vault.exists(p):
             return
-        self.dir.mkdir(parents=True, exist_ok=True)
-        p.write_text(text, encoding="utf-8")
+        vault.write_text(p, text)
 
     def get_original_request(self) -> str:
         """Return persisted original request, or empty string if not set."""
-        p = self._original_request_path()
-        if not p.exists():
-            return ""
-        try:
-            return p.read_text(encoding="utf-8").strip()
-        except Exception:
-            return ""
+        return (vault.read_text(self._original_request_path()) or "").strip()
 
     def _index_round(self, r: FactsRound) -> None:
         """Embed and store round in MemoryStore for semantic recall."""

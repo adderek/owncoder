@@ -110,7 +110,7 @@ def promote_session_to_notes(
         else:
             return 0
 
-    if not notes_list or session_mode == "incognito":
+    if not notes_list or session_mode in ("incognito", "private"):
         return 0
 
     try:

@@ -1185,11 +1185,27 @@ class Agent:
     def set_session_mode(self, mode: str) -> None:
         """Record the session privacy mode and propagate it to persistence sinks.
 
-        "standard" — normal. "incognito" — nothing persists (sessions, notes).
-        "private" — incognito plus a hard requirement that every configured LLM
-        endpoint is local, enforced per-turn by ``_validate_private_mode``.
+        "standard" — normal. "incognito" — nothing persists (session, Q/A log,
+        side-logs, facts, memory.db, checkpoints, notes, log file). "private" —
+        incognito plus a hard requirement that every configured LLM endpoint is
+        local, enforced per-turn by ``_validate_private_mode``. "vault" —
+        everything persists, encrypted with the session passphrase.
+
+        The gate itself lives in agent/security/vault.py; every store asks it
+        before writing, so this only has to announce the mode.
         """
         self._session_mode = mode or "standard"
+        from agent.security import vault
+        vault.set_mode(self._session_mode)
+        # Log handlers are chosen by mode, so a mid-session switch has to
+        # re-run setup: otherwise /incognito keeps appending to agent.log.
+        try:
+            from pathlib import Path
+            from agent.cli.logging_setup import _setup_logging
+            agent_dir = Path(self.config.tools.working_dir) / self.config.tools.agent_dir
+            _setup_logging(str(agent_dir), getattr(self.config, "logs", None))
+        except Exception:
+            logger.debug("re-init logging for session mode failed (ignored)", exc_info=True)
         # Pin mid-turn routing (auto-tier escalation) to local endpoints while
         # private mode is active, mirroring the per-turn _validate_private_mode
         # guard. Non-persisted runtime flag on config, read by escalate_mid_turn.
