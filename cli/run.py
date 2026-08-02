@@ -58,6 +58,8 @@ def _warn_unanswerable_asks(config, as_json: bool) -> list[str]:
 
 def cmd_run(args, config):
     import sys
+    from agent.cli import warmup
+    warmup.join()
     from agent.rag.store import VectorStore
     from agent.rag.embedder import Embedder
     from agent.core.agent import Agent

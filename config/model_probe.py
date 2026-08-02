@@ -19,14 +19,18 @@ config.parallel.decision.verify_on_startup is True.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sys
+import threading
 import urllib.error
 import urllib.request
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from agent.config.models import Config, ModelEntry
+
+logger = logging.getLogger(__name__)
 
 MISMATCH_THRESHOLD = 0.10  # warn when server value differs by > 10 %
 _PARAMS_RE = re.compile(r"(\d+(?:\.\d+)?)\s*[bB]\b")
@@ -42,6 +46,46 @@ def _strip_ext(name: str) -> str:
 
 
 # ── public entry points ───────────────────────────────────────────────────────
+
+_startup_enrichment: "threading.Thread | None" = None
+
+
+def start_enrichment(config: "Config", timeout: int = 3) -> None:
+    """Enrich model entries in the background.
+
+    This refines ctx_window and friends from what each server reports, and
+    nothing needs it until the first LLM call — but it ran inline at startup,
+    between the last prompt and the UI, probing every configured endpoint. It
+    now runs while the session is being set up and is collected by
+    join_enrichment() before the first turn.
+    """
+    global _startup_enrichment
+    if _startup_enrichment is not None:
+        return
+
+    def _run() -> None:
+        try:
+            enrich_model_entries(config, timeout)
+        except Exception:
+            logger.debug("startup model enrichment failed", exc_info=True)
+
+    _startup_enrichment = threading.Thread(
+        target=_run, name="model-enrichment", daemon=True)
+    _startup_enrichment.start()
+
+
+def join_enrichment(timeout: float = 20.0) -> None:
+    """Wait for start_enrichment(), if one is in flight."""
+    global _startup_enrichment
+    t = _startup_enrichment
+    if t is None:
+        return
+    t.join(timeout)
+    if t.is_alive():
+        logger.warning("model enrichment still running after %.0fs — continuing "
+                       "with the configured ctx windows", timeout)
+    _startup_enrichment = None
+
 
 def enrich_model_entries(config: "Config", timeout: int = 3) -> None:
     """Probe all unique endpoints and enrich model_entries in-place."""
@@ -110,13 +154,15 @@ def _probe_endpoint(
     timeout: int,
     global_max_ctx: int = 0,
 ) -> None:
-    url = base_url.rstrip("/") + "/models"
+    # Through the shared probe cache: the profile check asked these same
+    # endpoints the same question seconds ago, and a dead LAN box should cost
+    # one timeout per startup, not one per caller.
+    from agent.config.loader import _probe_models
     try:
-        req = urllib.request.Request(url, method="GET")
-        req.add_header("Authorization", f"Bearer {api_key}")
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read())
+        data = _probe_models(base_url, api_key, timeout=timeout)
     except Exception:
+        data = None
+    if data is None:
         return  # unreachable or unknown format — skip silently
 
     server_models: dict[str, dict] = {

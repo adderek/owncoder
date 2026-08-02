@@ -23,3 +23,18 @@ def _no_real_background_compile(monkeypatch):
     precedence over this default no-op.
     """
     monkeypatch.setattr("agent.prompt_compiler._spawn_compile", lambda *a, **k: None)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_probe_cache():
+    """Endpoint probe answers must not leak between tests.
+
+    agent.config.probe_cache keeps them process-wide so a startup asks each
+    server once. In a test run that means whichever test probed
+    http://localhost:8080/v1 first decides what every later one sees, which is
+    exactly the kind of ordering dependence that makes a suite flaky.
+    """
+    from agent.config import probe_cache
+    probe_cache.invalidate()
+    yield
+    probe_cache.invalidate()

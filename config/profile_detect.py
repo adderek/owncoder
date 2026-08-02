@@ -100,6 +100,23 @@ def suggest_mode(reachable_tiers: set, current: str) -> tuple[str, str]:
     return current, "NO endpoint reachable — keeping current mode"
 
 
+def prefetch_endpoints(config: "Config") -> None:
+    """Warm the probe cache for every configured endpoint, in parallel.
+
+    Called as early as startup can manage — the answers are the same whatever
+    profile is chosen, so they can be gathered while the report is being read
+    and the prompts answered, instead of one at a time afterwards.
+    """
+    try:
+        from agent.config import probe_cache
+        from agent.config.loader import _probe_models_uncached
+        pairs = [((getattr(e, "base_url", "") or ""), (getattr(e, "api_key", "") or ""))
+                 for e in config.model_entries.values()]
+        probe_cache.prefetch(pairs, PROBE_TIMEOUT_S, _probe_models_uncached)
+    except Exception:
+        logger.debug("endpoint prefetch failed", exc_info=True)
+
+
 def detect(config: "Config", probe: Callable[[str, str], bool] | None = None) -> ProfileReport:
     """Probe every distinct configured endpoint (parallel) and build a report."""
     probe = probe or _default_probe

@@ -370,7 +370,12 @@ def main() -> None:
                 print(embed_server.status(config))
         elif args.command == "chat":
             from agent.cli.chat import cmd_chat
+            from agent.cli import warmup
             from agent.config.profile_detect import run_startup_profile_check
+            # Probe every endpoint and import the agent while the profile and
+            # relay questions are on screen: none of that depends on the
+            # answers, and it used to run afterwards, one endpoint at a time.
+            warmup.start(config)
             run_startup_profile_check(config, interactive=sys.stdin.isatty())
             check_reachability(config)
             if config.recovery.enabled:
@@ -382,7 +387,9 @@ def main() -> None:
             cmd_chat(args, config)
         elif args.command == "run":
             from agent.cli.run import cmd_run
+            from agent.cli import warmup
             from agent.config.profile_detect import run_startup_profile_check
+            warmup.start(config)
             run_startup_profile_check(config, interactive=False)
             check_reachability(config)
             cmd_run(args, config)

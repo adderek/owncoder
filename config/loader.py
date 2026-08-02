@@ -781,20 +781,32 @@ def _resolve_role_pools(config: Config, timeout: int = 3) -> None:
             entry = config.model_entries.get(name)
             if entry is None:
                 continue
-            url = entry.base_url.rstrip("/") + "/models"
-            try:
-                req = urllib.request.Request(url, method="GET")
-                req.add_header("Authorization", f"Bearer {entry.api_key}")
-                with urllib.request.urlopen(req, timeout=timeout):
-                    pass
-                config.model_roles[role] = name
-                break
-            except (urllib.error.URLError, OSError):
+            # Through the shared cache: this walk asks the same endpoints the
+            # default-pool walk just asked, and the role pools repeat each
+            # other's hosts — thirteen serial probes for five distinct URLs
+            # that had already answered.
+            if _probe_models(entry.base_url, entry.api_key, timeout=timeout) is None:
                 continue
+            config.model_roles[role] = name
+            break
 
 
-def _probe_models(base_url: str, api_key: str, timeout: int = 3) -> dict | None:
-    """GET <base_url>/models; return parsed JSON ({} on parse failure) or None if unreachable."""
+def _probe_models(base_url: str, api_key: str, timeout: int = 3,
+                  force: bool = False) -> dict | None:
+    """GET <base_url>/models; return parsed JSON ({} on parse failure) or None if unreachable.
+
+    Answers are cached per URL for a short while (agent.config.probe_cache):
+    startup asks the same endpoints the same question from three places, and
+    the pool asks per entry rather than per URL, so a single dead LAN box used
+    to cost eight three-second waits. Pass force=True where the user has
+    explicitly asked for a fresh look.
+    """
+    from agent.config import probe_cache
+    return probe_cache.get(base_url, api_key, timeout, _probe_models_uncached,
+                           force=force)
+
+
+def _probe_models_uncached(base_url: str, api_key: str, timeout: int = 3) -> dict | None:
     import json
     url = base_url.rstrip("/") + "/models"
     try:
@@ -929,10 +941,11 @@ def check_reachability(config: Config) -> None:
 
     decision_cfg = getattr(config.parallel, "decision", None)
     if decision_cfg is not None and getattr(decision_cfg, "verify_on_startup", False):
-        from agent.config.model_probe import enrich_model_entries
-        print("Probing model entries ...", end=" ", flush=True)
-        enrich_model_entries(config)
-        print("done", flush=True)
+        # In the background: it refines ctx windows from what each server
+        # reports, which nothing needs before the first LLM call. Collected by
+        # model_probe.join_enrichment() when that call is about to happen.
+        from agent.config.model_probe import start_enrichment
+        start_enrichment(config)
 
 
 def _try_auto_select_model(config: Config, data: dict) -> None:

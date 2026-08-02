@@ -872,6 +872,16 @@ class Agent:
         self._turn_id += 1
         turn_id = self._turn_id
 
+        # Startup probing runs in the background so the prompts and the session
+        # setup do not wait behind it. This is the point where its results are
+        # needed: the ctx window this turn is budgeted against.
+        if turn_id == 1:
+            try:
+                from agent.config.model_probe import join_enrichment
+                join_enrichment()
+            except Exception:
+                logger.debug("model enrichment join failed", exc_info=True)
+
         # Start a fresh per-round model-call tally (local/free/bundled/paid).
         try:
             from agent.metrics import model_calls

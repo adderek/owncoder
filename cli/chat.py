@@ -172,6 +172,10 @@ def _warn_loop_guard_resume(console, messages: list[dict]) -> None:
 
 
 def cmd_chat(args, config):
+    # The background warmup (endpoint probes, heavy imports) was started before
+    # the startup prompts. Everything below needs it done.
+    from agent.cli import warmup
+    warmup.join()
     from agent.rag.store import VectorStore
     from agent.rag.embedder import Embedder
     from agent.core.agent import Agent
