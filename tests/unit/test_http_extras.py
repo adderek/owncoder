@@ -128,7 +128,8 @@ class _FakeInner:
 
     async def chat(self, text, session_id="", on_token=None, on_tool_call=None,
                     on_tool_result=None, on_usage=None, on_progress=None,
-                    on_loop_detected=None, on_phase=None, on_reasoning=None,
+                    on_loop_detected=None, on_phase=None, on_injected_message=None,
+                    on_reasoning=None,
                     on_context_size=None, on_user_message=None, on_signal=None,
                     source="terminal"):
         if on_token:

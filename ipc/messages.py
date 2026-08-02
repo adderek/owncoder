@@ -116,6 +116,24 @@ class PhaseEvent:
 
 
 @dataclass
+class InjectedMessageEvent:
+    """A message the turn wrote into history by itself (verify failure, goal
+    check, nudge). It reaches the user's view so a live session reads the same
+    as the resumed one, where these messages have always been visible."""
+
+    WIRE_TYPE = "injected_message"
+    text: str
+
+    def to_wire(self) -> dict:
+        return {"v": EVENT_PROTOCOL_VERSION, "type": self.WIRE_TYPE,
+                "text": self.text}
+
+    @classmethod
+    def from_wire(cls, obj: dict) -> "InjectedMessageEvent":
+        return cls(text=obj.get("text", ""))
+
+
+@dataclass
 class UsageEvent:
     WIRE_TYPE = "usage"
     data: dict[str, Any]
@@ -389,7 +407,7 @@ _WIRE_REGISTRY: dict[str, type] = {
     cls.WIRE_TYPE: cls
     for cls in (
         TokenEvent, ReasoningEvent, ToolCallEvent, ToolResultEvent,
-        ToolRecordEvent, PhaseEvent,
+        ToolRecordEvent, PhaseEvent, InjectedMessageEvent,
         UsageEvent, ContextSizeEvent, ProgressEvent, TruncationEvent,
         LoopDetectedEvent, TurnDoneEvent, ErrorEvent, SignalEvent, TurnEndEvent,
         ChangesetEvent, ChangesetDiffEvent,

@@ -176,6 +176,23 @@ def _tc_field(tc, *path):
     return cur
 
 
+#: How much of two answers has to line up before they are called the same
+#: round. Long enough that two different answers cannot collide, short enough
+#: to survive the suffixes the turn engine appends to the QA record (the
+#: "[verify still failing…]" note) but not to the stored message.
+_ANSWER_MATCH_CHARS = 120
+
+
+def _same_answer(message_text: str, qa_text: str) -> bool:
+    a, b = message_text.strip(), qa_text.strip()
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    n = min(len(a), len(b), _ANSWER_MATCH_CHARS)
+    return n >= 40 and a[:n] == b[:n]
+
+
 def _attach_changesets(sid: str, messages: list[dict]) -> None:
     """Hang each round's changeset on the assistant message that ended it.
 
@@ -207,7 +224,7 @@ def _attach_changesets(sid: str, messages: list[dict]) -> None:
             entry = messages[i]
             if entry.get("role") != "assistant":
                 continue
-            if (entry.get("content") or "").strip() != content:
+            if not _same_answer(entry.get("content") or "", content):
                 continue
             from agent.core.changeset import from_a_data, to_json
             cs = from_a_data(a)
@@ -232,20 +249,138 @@ def _attach_session_rollup(messages: list[dict], rollup: "dict | None") -> None:
             return
 
 
-def _transcript(messages, result_limit: int = 2000) -> list[dict]:
+#: A collapsed tool round as history_ops writes it into the assistant message.
+_EXEC_RE = re.compile(
+    r'<agent_exec tool="([^"]*)" args="([^"]*)">(.*?)</agent_exec>', re.S)
+
+#: Injected context that the live view never showed — similar-session recall,
+#: transient note blocks. Replaying them as user messages is how a resumed
+#: session grew bubbles nobody ever typed.
+_HIDDEN_MARKERS = ("_similar_sessions_marker", "_notes_marker")
+
+
+def _unescape_exec(text: str) -> str:
+    return (text.replace("&quot;", '"').replace("&gt;", ">").replace("&lt;", "<"))
+
+
+def _side_log_records(sid: str) -> dict:
+    """seq → tool_calls.jsonl record for one session, or {} when unavailable."""
+    if not sid:
+        return {}
+    try:
+        from agent.memory.session import get_session_full_dir
+        path = get_session_full_dir(sid) / "tool_calls.jsonl"
+        if not path.exists():
+            return {}
+        records: dict = {}
+        with path.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(rec.get("seq"), int):
+                    records[rec["seq"]] = rec
+        return records
+    except Exception:
+        logger.debug("http ui: side log unreadable for %s", sid, exc_info=True)
+        return {}
+
+
+def _unfold_round(m: dict, records: dict, result_limit: int) -> list[dict] | None:
+    """Turn a collapsed assistant message back into call/result messages.
+
+    History is stored folded: a round's tool calls become `<agent_exec>` tags
+    inside the assistant text, with the full arguments and output in the
+    side-log. Replayed as-is that markup rendered as prose, so a resumed
+    session showed none of the tool folds the live one had. Rebuilding the
+    call/result pairs here means one replay path for both.
+
+    Returns None when the message holds no collapsed round.
+    """
+    content = m.get("content") or ""
+    blocks = list(_EXEC_RE.finditer(content))
+    if not blocks:
+        return None
+
+    # exec tags and _tool_refs are written in the same order by the collapser,
+    # so position i in one is position i in the other.
+    refs = [r for r in (m.get("_tool_refs") or []) if isinstance(r, int)]
+    out: list[dict] = []
+    calls: list[dict] = []
+    results: list[dict] = []
+
+    def _flush() -> None:
+        if not calls:
+            return
+        out.append({"role": "assistant", "content": "", "tool_calls": list(calls)})
+        out.extend(results)
+        calls.clear()
+        results.clear()
+
+    cursor = 0
+    for i, block in enumerate(blocks):
+        # Prose the model wrote before this run of calls. Kept in place rather
+        # than hoisted: it is what the live view showed before the tool folds,
+        # and the round's closing chunk has to stay last so _attach_changesets
+        # can match it to the QA log's answer for that turn.
+        prose = content[cursor:block.start()].strip()
+        cursor = block.end()
+        if prose:
+            _flush()
+            out.append({"role": "assistant", "content": prose})
+        rec = records.get(refs[i]) if i < len(refs) else None
+        cid = str((rec or {}).get("tool_call_id") or "") or f"replay-{id(m)}-{i}"
+        if rec is not None:
+            raw_args = json.dumps(rec.get("arguments"), ensure_ascii=False)
+            calls.append({"id": cid, "name": rec.get("tool") or block.group(1),
+                          "args": _args_preview(raw_args),
+                          "args_full": _args_full(raw_args)})
+            results.append({"role": "tool", "id": cid,
+                            "content": _result_preview(rec.get("result"), result_limit),
+                            "ok": _tool_ok(rec.get("result"))})
+        else:
+            # No side-log row (older session, or the log was pruned): the tag
+            # itself still carries the shortened argument and result the
+            # collapser kept, which beats showing the raw markup.
+            preview = _unescape_exec(block.group(3))
+            calls.append({"id": cid, "name": block.group(1),
+                          "args": _unescape_exec(block.group(2)), "args_full": ""})
+            results.append({"role": "tool", "id": cid, "content": preview,
+                            "ok": not preview.startswith("ERROR:")})
+
+    _flush()
+    tail = content[cursor:].strip()
+    if tail:
+        out.append({"role": "assistant", "content": tail})
+    return out
+
+
+def _transcript(messages, result_limit: int = 2000, sid: str = "") -> list[dict]:
     """The conversation as the browser replays it, tool work included.
 
     A reload used to hand back questions and answers only, so every tool call
     and its output vanished the moment the page was refreshed — the evidence
     for an answer outlived by the answer. Results are shortened harder than
     in the live event: this is a whole session in one response.
+
+    *sid* names the session whose side-log holds the full tool arguments and
+    output for collapsed rounds; without it those rounds replay from the
+    shortened text kept in the message itself.
     """
+    records = _side_log_records(sid)
     out: list[dict] = []
     for m in messages:
         role = m.get("role")
         if role == "user":
+            if any(m.get(k) for k in _HIDDEN_MARKERS):
+                continue
             out.append({"role": "user", "content": m.get("content") or ""})
         elif role == "assistant":
+            unfolded = _unfold_round(m, records, result_limit)
+            if unfolded is not None:
+                out.extend(unfolded)
+                continue
             calls = []
             for tc in (m.get("tool_calls") or []):
                 calls.append({
@@ -878,7 +1013,9 @@ class _HttpUI:
 
     def state(self) -> dict:
         info = self.server.get_llm_info()
-        messages = _transcript(self.server.get_messages())
+        messages = _transcript(
+            self.server.get_messages(),
+            sid=self.session.id if self.session is not None else "")
         # This payload rebuilds the whole view after a reconnect, so it replays
         # the transcript exactly as the preview pane does and needs the same
         # per-round file lists.
@@ -1285,7 +1422,7 @@ class _HttpUI:
                 return {"error": f"session '{sid}' not found"}
             name = getattr(session, "name", "") or session.id
             workdir = getattr(session, "working_dir", "") or str(get_working_dir())
-        messages = _transcript(msgs)
+        messages = _transcript(msgs, sid=sid)
         _attach_changesets(sid, messages)
         return {"id": sid, "name": name, "workdir": workdir, "messages": messages}
 
@@ -2661,6 +2798,11 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
                      "text": _result_preview(rec.get("result"))}),
                 on_phase=lambda label, detail="": pub(
                     {"type": "phase", "label": label, "detail": detail}),
+                # Verify failures and the other notes the turn writes into
+                # history are user messages: showing them live is what makes a
+                # reloaded session read the same as the one being watched.
+                on_injected_message=lambda text: pub(
+                    {"type": "user", "text": text}),
                 on_reasoning=lambda tok: pub({"type": "reasoning", "text": tok}),
                 on_progress=lambda done, limit: pub(
                     {"type": "progress", "done": done, "limit": limit}),

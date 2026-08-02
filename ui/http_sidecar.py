@@ -326,6 +326,7 @@ class _SidecarServer:
     async def chat(self, text: str, session_id: str = "", on_token=None,
                     on_tool_call=None, on_tool_result=None, on_usage=None,
                     on_progress=None, on_loop_detected=None, on_phase=None,
+                    on_injected_message=None,
                     on_reasoning=None, on_context_size=None,
                     on_user_message=None, on_signal=None,
                     source: str = "terminal") -> str:
@@ -360,6 +361,8 @@ class _SidecarServer:
                 on_loop_detected=on_loop_detected,  # interactive — stays with the primary UI
                 on_phase=_fanout(on_phase, lambda label, detail="": pub(
                     {"type": "phase", "label": label, "detail": detail})),
+                on_injected_message=_fanout(on_injected_message, lambda text: pub(
+                    {"type": "user", "text": text})),
                 on_reasoning=_fanout(on_reasoning, lambda tok: pub({"type": "reasoning", "text": tok})),
                 on_context_size=on_context_size,
                 on_user_message=on_user_message,

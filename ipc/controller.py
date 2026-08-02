@@ -12,6 +12,7 @@ from .messages import (
     ToolResultEvent,
     ToolRecordEvent,
     PhaseEvent,
+    InjectedMessageEvent,
     UsageEvent,
     ReasoningEvent,
     ContextSizeEvent,
@@ -41,6 +42,7 @@ async def run_turn_ipc(
     on_progress=None,
     on_loop_detected=None,
     on_phase=None,
+    on_injected_message=None,
     on_reasoning=None,
     on_context_size=None,
     on_truncation=None,
@@ -101,6 +103,8 @@ async def run_turn_ipc(
                 _safe_call(on_tool_record, event.record)
             elif isinstance(event, PhaseEvent):
                 _safe_call(on_phase, event.label, event.detail)
+            elif isinstance(event, InjectedMessageEvent):
+                _safe_call(on_injected_message, event.text)
             elif isinstance(event, UsageEvent):
                 _safe_call(on_usage, event.data)
             elif isinstance(event, ProgressEvent):

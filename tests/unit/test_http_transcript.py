@@ -101,3 +101,85 @@ class TestReplay:
     def test_both_replay_paths_share_it(self):
         """Live state and the session preview render the same way."""
         assert APP_JS.count("replayTranscript(") == 3
+
+
+class TestCollapsedRounds:
+    """A resumed session shows the tool work a live one showed.
+
+    History is stored folded — a round's calls become `<agent_exec>` tags in
+    the assistant text — so replaying it verbatim printed that markup as prose
+    and lost every fold. The transcript unfolds it back into call/result pairs.
+    """
+
+    FOLDED = {
+        "role": "assistant",
+        "content": ("Looking at the file.\n\n"
+                    "<agent_exec tool=\"read_file\" args=\"path='a.py'\">"
+                    "['content']</agent_exec>\n\n"
+                    "Done."),
+    }
+
+    def test_the_markup_never_reaches_the_browser(self):
+        for m in _transcript([self.FOLDED]):
+            assert "<agent_exec" not in (m.get("content") or "")
+
+    def test_the_call_and_its_result_come_back(self):
+        out = _transcript([self.FOLDED])
+        calls = [m for m in out if m.get("tool_calls")]
+        assert calls and calls[0]["tool_calls"][0]["name"] == "read_file"
+        results = [m for m in out if m["role"] == "tool"]
+        assert results and results[0]["content"] == "['content']"
+
+    def test_prose_keeps_its_place_around_the_calls(self):
+        """The model wrote before the call and after it; both stay, in order."""
+        texts = [m["content"] for m in _transcript([self.FOLDED])
+                 if m["role"] == "assistant" and m["content"]]
+        assert texts == ["Looking at the file.", "Done."]
+
+    def test_an_error_result_is_marked(self):
+        out = _transcript([{"role": "assistant", "content":
+                            '<agent_exec tool="bash" args="cmd=\'x\'">'
+                            'ERROR: boom</agent_exec>'}])
+        assert [m for m in out if m["role"] == "tool"][0]["ok"] is False
+
+    def test_the_side_log_supplies_the_full_arguments(self, tmp_path, monkeypatch):
+        """The folded tag only kept a preview; the side-log kept everything."""
+        import agent.ui.http_loop as H
+        sdir = tmp_path / "s1"
+        sdir.mkdir()
+        (sdir / "tool_calls.jsonl").write_text(json.dumps({
+            "seq": 4, "tool_call_id": "t4", "tool": "read_file",
+            "arguments": {"path": "very/long/path/a.py"},
+            "result": json.dumps({"output": "hello"}),
+        }) + "\n", encoding="utf-8")
+        monkeypatch.setattr("agent.memory.session.get_session_full_dir",
+                            lambda sid: sdir)
+        folded = {**self.FOLDED, "_tool_refs": [4]}
+        out = H._transcript([folded], sid="s1")
+        call = [m for m in out if m.get("tool_calls")][0]["tool_calls"][0]
+        assert call["id"] == "t4"
+        assert "very/long/path/a.py" in call["args_full"]
+        assert [m for m in out if m["role"] == "tool"][0]["content"] == "hello"
+
+
+class TestInjectedContext:
+    """Context the agent injects for itself was never shown live, so replaying
+    it as a user message put words in the user's mouth."""
+
+    def test_recalled_sessions_stay_out_of_the_conversation(self):
+        out = _transcript([{"role": "user", "content": "# Similar past sessions",
+                            "_similar_sessions_marker": True},
+                           {"role": "user", "content": "hi"}])
+        assert [m["content"] for m in out] == ["hi"]
+
+    def test_a_verify_failure_is_still_shown(self):
+        """It is the one injected message the user has to see."""
+        out = _transcript([{"role": "user", "content": "[verify] `pytest` failed"}])
+        assert out and out[0]["content"].startswith("[verify]")
+
+    def test_the_live_view_hears_about_them_too(self):
+        """Same message, both views: the server publishes what it injects."""
+        src = (Path(__file__).resolve().parents[2] / "ui" / "http_loop.py"
+               ).read_text(encoding="utf-8")
+        assert "on_injected_message=lambda text: pub(" in src
+        assert '{"type": "user", "text": text}' in src

@@ -206,3 +206,36 @@ async def test_verify_timeout_treated_as_failure(monkeypatch):
     response, _ = await run_turn(_base_messages(), cfg, client)
     assert "verify" in response.lower()
     assert "failing" in response.lower()
+
+
+@pytest.mark.asyncio
+async def test_a_failing_verify_is_announced_while_it_happens(monkeypatch):
+    """The note goes into history, so the live view has to hear about it too.
+
+    Without this the turn stored a failure the watching user never saw: the
+    answer read "done", and the failing suite only surfaced when the session
+    was reloaded.
+    """
+    cfg = Config()
+    cfg.verify.enabled = True
+    cfg.verify.command = "pytest"
+    cfg.verify.max_attempts = 2
+
+    fake_fn, _ = _fake_verify_sequence([(1, "AssertionError: boom"), (0, "ok")])
+    monkeypatch.setattr(turn_mod, "_run_verify_command", fake_fn)
+    monkeypatch.setattr(turn_mod, "execute_tool", _fake_execute_ok)
+    monkeypatch.setattr(turn_mod, "get_schemas", lambda: [])
+
+    announced: list[str] = []
+    client = _StubClient(
+        _tool_call_response("edit_file", {"path": "a.py"}),
+        _stop_response("first attempt"),
+        _stop_response("second attempt"),
+    )
+    _, out_messages = await run_turn(_base_messages(), cfg, client,
+                                     on_injected_message=announced.append)
+
+    stored = [m["content"] for m in out_messages
+              if m.get("role") == "user" and "[verify]" in (m.get("content") or "")]
+    assert announced == stored
+    assert "boom" in announced[0]

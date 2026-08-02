@@ -11,6 +11,7 @@ from .messages import (
     ToolResultEvent,
     ToolRecordEvent,
     PhaseEvent,
+    InjectedMessageEvent,
     UsageEvent,
     ReasoningEvent,
     ContextSizeEvent,
@@ -69,6 +70,9 @@ async def run(
     def _on_phase(label: str, detail: str = "") -> None:
         send(PhaseEvent(label, detail))
 
+    def _on_injected_message(text: str) -> None:
+        send(InjectedMessageEvent(text))
+
     def _on_usage(data: dict) -> None:
         send(UsageEvent(data))
 
@@ -104,6 +108,7 @@ async def run(
             on_progress=_on_progress,
             on_loop_detected=_on_loop_detected,
             on_phase=_on_phase,
+            on_injected_message=_on_injected_message,
             on_reasoning=_on_reasoning,
             on_context_size=_on_context_size,
             on_truncation=_on_truncation,
