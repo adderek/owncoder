@@ -1790,7 +1790,13 @@ document.getElementById('workdir').addEventListener('click', () => {
   else loadGrants();
 });
 document.getElementById('lefttoggle').addEventListener('click', () => {
-  toggleDrawer('left', 'lefttoggle');
+  if (toggleDrawer('left', 'lefttoggle')) {
+    // Mirror the right drawer: refresh the sections (and their count chips)
+    // when the panel opens, rather than waiting for each fold's toggle.
+    loadSessions();
+    loadTriggers();
+    loadPlan();
+  }
 });
 document.getElementById('session').addEventListener('click', () => {
   toggleDrawer('left', 'lefttoggle', true);
@@ -2194,6 +2200,8 @@ async function loadSessions() {
     if (curSess) setSessionChip(curSess.id, curSess.name);
     const shown = all.filter(s => showHidden || !s.hidden);
     const hiddenN = all.length - all.filter(s => !s.hidden).length;
+    const scEl = document.getElementById('sesscount');
+    if (scEl) scEl.textContent = all.length || '';
     if (!shown.length) { el.textContent = q ? 'no sessions match “' + q + '”' : 'none saved'; return; }
     el.innerHTML = shown.map(s => {
       const cur = s.id === d.current;
@@ -2637,13 +2645,15 @@ function trigRow(t, kindLabel) {
 
 async function loadTriggers() {
   const el = document.getElementById('trigbody');
-  if (!el || !foldOpen('trigfold') ||
-      !document.getElementById('left').classList.contains('open')) return;
   let d;
   try { d = await (await fetch('/api/triggers')).json(); }
-  catch (e) { el.textContent = 'failed: ' + e; return; }
-  if (d.error) { el.textContent = d.error; return; }
+  catch (e) { if (el) el.textContent = 'failed: ' + e; return; }
   const jobs = d.jobs || [], watches = d.watches || [];
+  const tc = document.getElementById('trigcount');
+  if (tc) tc.textContent = d.error ? '!' : (jobs.length + watches.length) || '';
+  if (!el || !foldOpen('trigfold') ||
+      !document.getElementById('left').classList.contains('open')) return;
+  if (d.error) { el.textContent = d.error; return; }
   if (!jobs.length && !watches.length) {
     el.innerHTML = '<div class="plan-none">none — <code>/schedule</code> and ' +
                    '<code>/watch</code> create them</div>';
@@ -2696,14 +2706,17 @@ async function loadPlan() {
   try { d = await (await fetch('/api/plan')).json(); }
   catch (e) { return; }
   const chip = document.getElementById('planchip');
+  const pc = document.getElementById('plancount');
   const plan = d.plan;
   if (plan) {
     chip.style.display = '';
     chip.textContent = '◑ ' + plan.done + '/' + plan.total;
     chip.title = 'plan ' + plan.id + ' (' + plan.status + ')\n' + plan.goal +
                  '\nclick for the steps';
+    if (pc) pc.textContent = plan.done + '/' + plan.total;
   } else {
     chip.style.display = 'none';
+    if (pc) pc.textContent = '';
   }
   const el = document.getElementById('planbody');
   if (!el || !foldOpen('planfold') ||

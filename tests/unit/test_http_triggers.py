@@ -101,7 +101,7 @@ class TestPanel:
 
     def test_nothing_loads_into_a_closed_drawer(self):
         i = APP_JS.index("async function loadTriggers()")
-        assert "foldOpen('trigfold')" in APP_JS[i:i + 400]
+        assert "foldOpen('trigfold')" in APP_JS[i:i + 600]
 
     def test_a_failing_trigger_is_surfaced(self):
         i = APP_JS.index("function trigRow(")

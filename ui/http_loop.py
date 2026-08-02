@@ -348,7 +348,7 @@ _PAGE = r"""<!DOCTYPE html>
   <div class="ptitle">Sessions <button class="sbtn" id="sessnew" title="Start a fresh session">＋ new</button><button class="sbtn" id="sesscopyid" title="Copy the current session ID to the clipboard">⧉ id</button></div>
   <div class="dsec"><pre id="sessinfo">—</pre></div>
   <details id="sessfold" class="dfold">
-    <summary class="dhead">recent sessions</summary>
+    <summary class="dhead">recent sessions <span id="sesscount" class="chip"></span></summary>
     <input id="sessfilter" placeholder="search sessions — name, topic, tags…" class="sess-filter">
     <div id="sesslist" class="sess-list">—</div>
   </details>
@@ -362,11 +362,11 @@ _PAGE = r"""<!DOCTYPE html>
     </div>
   </details>
   <details id="planfold" class="dfold">
-    <summary class="dhead">plan &amp; goal <span id="d-plan" class="dhead-refresh" title="Refresh">⟳</span></summary>
+    <summary class="dhead">plan &amp; goal <span id="plancount" class="chip"></span><span id="d-plan" class="dhead-refresh" title="Refresh">⟳</span></summary>
     <div id="planbody">—</div>
   </details>
   <details id="trigfold" class="dfold">
-    <summary class="dhead">schedules &amp; watches <span id="d-trig" class="dhead-refresh" title="Refresh">⟳</span></summary>
+    <summary class="dhead">schedules &amp; watches <span id="trigcount" class="chip"></span><span id="d-trig" class="dhead-refresh" title="Refresh">⟳</span></summary>
     <div id="trigbody">—</div>
   </details>
   <details id="todofold" class="dfold">
