@@ -534,7 +534,6 @@ _PAGE = r"""<!DOCTYPE html>
   <b>owncoder</b>
   <button type="button" class="chip btn" id="model" title="Click to manage models"></button>
   <button type="button" class="chip btn" id="session" title="Current session — click for the sessions panel"></button>
-  <button type="button" class="chip btn" id="sesscopy" title="Copy the current session ID to the clipboard" aria-label="Copy session ID">⧉</button>
   <button type="button" class="chip btn" id="workdir" title="Project directory (session-scoped) — click to manage access"></button>
   <button type="button" class="chip btn" id="privchip" title="Session privacy mode — click for off-the-record options" aria-haspopup="menu" aria-expanded="false">▪ standard ▾</button>
   <div id="statuswrap"><span id="dot"></span><span id="status" role="status" aria-live="polite">idle</span></div>

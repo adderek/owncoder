@@ -1167,7 +1167,7 @@ function setSessionChip(id, name) {
   const chip = document.getElementById('session');
   chip.textContent = label;
   chip.title = 'session: ' + id + (name ? '\nname: ' + name : '') +
-               '\nclick for the sessions panel · ⧉ copies the id';
+               '\nclick for the sessions panel, where "⧉ id" copies the id';
   titleBase = 'owncoder' + (name || id ? ' — ' + (name || id) : '');
   renderTitle();
 }
@@ -1855,13 +1855,6 @@ document.getElementById('session').addEventListener('click', () => {
   const fold = document.getElementById('sessfold');
   if (fold && !fold.open) fold.open = true;   // fires toggle → loadSessions
   else loadSessions();
-});
-// The id is what another agent needs to find this session's logs, so it gets a
-// one-click copy of its own rather than a select-from-tooltip dance.
-document.getElementById('sesscopy').addEventListener('click', (e) => {
-  e.stopPropagation();
-  if (!currentSessionId) { row('sys', null, 'no session id yet'); return; }
-  copyText(currentSessionId, e.currentTarget);
 });
 document.getElementById('righttoggle').addEventListener('click', () => {
   if (toggleDrawer('right', 'righttoggle')) {
