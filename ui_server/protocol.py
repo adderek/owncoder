@@ -28,6 +28,7 @@ class UIServerProtocol(Protocol):
         on_progress=None,
         on_loop_detected=None,
         on_phase=None,
+        on_injected_message=None,
         on_reasoning=None,
         on_context_size=None,
         on_user_message=None,

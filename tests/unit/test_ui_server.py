@@ -73,6 +73,7 @@ async def test_local_ui_server_chat_all_callbacks():
         "on_progress": MagicMock(),
         "on_loop_detected": MagicMock(),
         "on_phase": MagicMock(),
+        "on_injected_message": MagicMock(),
         "on_reasoning": MagicMock(),
         "on_context_size": MagicMock(),
         "on_user_message": MagicMock(),
@@ -490,3 +491,40 @@ def test_resuming_a_session_does_not_degrade_it(tmp_path, monkeypatch):
     assert again[-2]["_tool_refs"] == [0]
     assert again[-2]["_reasoning_content"] == "thinking"
     assert again[-1]["_injected_kind"] == "verify"
+
+
+def test_every_ui_callback_reaches_the_agent():
+    """The UI server is a pass-through; a callback it does not know about is a
+    TypeError at the first turn, not at import.
+
+    This is exactly how `on_injected_message` shipped broken: it was threaded
+    through Agent.chat, the sidecar, readline, textual and the IPC boundary,
+    but LocalUIServer.chat still had the old fixed keyword list — and that is
+    the one the HTTP UI calls.
+    """
+    import inspect
+    from agent.core.agent import Agent
+    from agent.ui_server.local import LocalUIServer
+    from agent.ui_server.protocol import UIServerProtocol
+
+    def callbacks(fn):
+        return {p for p in inspect.signature(fn).parameters if p.startswith("on_")}
+
+    agent_cbs = callbacks(Agent.chat)
+    server_cbs = callbacks(LocalUIServer.chat)
+    missing = agent_cbs - server_cbs
+    assert not missing, f"LocalUIServer.chat cannot pass: {sorted(missing)}"
+
+    # …and it must actually forward them, not just accept them.
+    src = inspect.getsource(LocalUIServer.chat)
+    forwarded = {p for p in agent_cbs if f"{p}={p}" in src}
+    # on_signal and on_usage are handled by the server itself, not the agent.
+    handled_here = {"on_signal", "on_usage"}
+    assert (agent_cbs - handled_here) <= forwarded, (
+        "accepted but never forwarded: "
+        f"{sorted((agent_cbs - handled_here) - forwarded)}")
+
+    proto_cbs = callbacks(UIServerProtocol.chat)
+    assert server_cbs <= proto_cbs, (
+        f"LocalUIServer.chat takes what the protocol does not declare: "
+        f"{sorted(server_cbs - proto_cbs)}")
