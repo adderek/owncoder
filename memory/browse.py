@@ -86,6 +86,107 @@ def _scope_get(scope: str):
     return _get
 
 
+# ── LLM-described units ─────────────────────────────────────────────────────
+# Code and assembly both get split into units and described by the model, one
+# level at a time; the two live in different DBs with near-identical columns,
+# so one pair of readers serves both.
+def _sqlite_ro(path: Path):
+    """Open read-only. Browsing must never create the DB it is looking for —
+    an empty file in place of a missing one hides the real answer."""
+    import sqlite3
+    if not path.exists():
+        return None
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _units_db(config: "Config", which: str) -> Path:
+    from agent.memory.overview import rag_db_path
+    if which == "asm_unit":
+        return rag_db_path(config)         # asm units live in the chunk index
+    db = Path(config.summarization.db_path)
+    return db if db.is_absolute() else Path(config.tools.working_dir) / db
+
+
+def _unit_title(r) -> str:
+    name = (r["inferred_name"] if "inferred_name" in r.keys() else None) or ""
+    if not name and "name" in r.keys():
+        name = r["name"] or ""
+    where = f"{r['path']}:{r['start_line']}"
+    return f"{name} — {where}" if name else where
+
+
+def _unit_list(which: str, table: str):
+    def _list(config: "Config", query: str = "", limit: int = 50) -> dict:
+        conn = _sqlite_ro(_units_db(config, which))
+        if conn is None:
+            return {"items": [], "note": "no unit database yet — run 'agent init'"}
+        try:
+            sql = f"SELECT * FROM {table}"
+            params: list = []
+            if query.strip():
+                like = f"%{query.strip()}%"
+                sql += " WHERE description LIKE ? OR path LIKE ? OR inferred_name LIKE ?"
+                params += [like, like, like]
+            # Highest level first: the roll-ups say more per row than leaves.
+            sql += " ORDER BY level DESC, path, start_line LIMIT ?"
+            params.append(limit)
+            rows = conn.execute(sql, params).fetchall()
+        except Exception as exc:
+            return {"items": [], "note": str(exc)}
+        finally:
+            conn.close()
+        return {"items": [{
+            "id": r["id"],
+            "title": _unit_title(r),
+            "tags": [f"L{r['level']}", r["status"]],
+            "preview": _preview(r["description"] or ""),
+            "updated_at": r["mtime"],
+            "source": r["path"],
+        } for r in rows]}
+    return _list
+
+
+def _unit_get(which: str, table: str):
+    def _get(config: "Config", item_id: str) -> dict:
+        conn = _sqlite_ro(_units_db(config, which))
+        if conn is None:
+            return {"error": "no unit database yet"}
+        try:
+            r = conn.execute(f"SELECT * FROM {table} WHERE id=?", (item_id,)).fetchone()
+            if r is None:
+                return {"error": "not found"}
+            keys = r.keys()
+            meta = {"path": r["path"], "lines": f"{r['start_line']}–{r['end_line']}",
+                    "level": r["level"], "status": r["status"]}
+            for extra in ("language", "node_type", "confidence", "analysis_model",
+                          "revision"):
+                if extra in keys and r[extra]:
+                    meta[extra] = r[extra]
+            body = r["description"] or "(not described yet)"
+            for extra in ("calls", "side_effects", "key_patterns"):
+                if extra in keys and r[extra]:
+                    body += f"\n\n{extra}: {r[extra]}"
+            return {"title": _unit_title(r), "body": body,
+                    "tags": [f"L{r['level']}", r["status"]], "meta": meta}
+        finally:
+            conn.close()
+    return _get
+
+
+def _unit_count(config: "Config", which: str, table: str) -> int | None:
+    conn = _sqlite_ro(_units_db(config, which))
+    if conn is None:
+        return 0
+    try:
+        return conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+    except Exception:
+        return 0
+    finally:
+        conn.close()
+
+
 # ── knowledge base ──────────────────────────────────────────────────────────
 def _kb_corpus(config: "Config"):
     path = getattr(config.kb, "corpus_path", "")
@@ -167,7 +268,17 @@ _TIERS: dict[str, tuple[str, Callable, Callable]] = {
                         _scope_get("behavioral_rule")),
     "context_chunk": ("context chunks", _scope_list("context_chunk"),
                       _scope_get("context_chunk")),
+    "unit": ("described units", _unit_list("unit", "units"),
+             _unit_get("unit", "units")),
+    "asm_unit": ("described asm units", _unit_list("asm_unit", "asm_units"),
+                 _unit_get("asm_unit", "asm_units")),
     "kb": ("kb / wiki", _kb_list, _kb_get),
+}
+
+# Tiers whose counts do not come from memory.db scopes.
+_COUNTERS: dict[str, "Callable[[Config], int | None]"] = {
+    "unit": lambda c: _unit_count(c, "unit", "units"),
+    "asm_unit": lambda c: _unit_count(c, "asm_unit", "asm_units"),
 }
 
 
@@ -197,7 +308,16 @@ def tiers(config: "Config") -> list[dict]:
 
     out = []
     for key, (label, _l, _g) in _TIERS.items():
-        count = kb_count if key == "kb" else counts.get(key, 0)
+        if key == "kb":
+            count = kb_count
+        elif key in _COUNTERS:
+            try:
+                count = _COUNTERS[key](config)
+            except Exception:
+                logger.debug("browse: count for %s failed", key, exc_info=True)
+                count = 0
+        else:
+            count = counts.get(key, 0)
         out.append({"key": key, "label": label, "count": count,
                     "available": count is not None})
     return out

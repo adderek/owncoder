@@ -92,6 +92,78 @@ class TestItem:
         assert "error" in browse.item(config, "note", "nope")
 
 
+class TestDescribedUnits:
+    """The LLM-written descriptions of code (and of assembly) were reachable
+    only through retrieval — never as something a person could read."""
+
+    @pytest.fixture
+    def units(self, config, tmp_path):
+        from agent.rag.code_store import CodeStore
+        db = tmp_path / ".agent" / "summaries.db"
+        config.summarization.db_path = str(db)
+        store = CodeStore(str(db))
+        store.upsert_unit({
+            "id": "u1", "path": "auth.py", "language": "python",
+            "node_type": "function", "name": "login", "level": 0,
+            "start_line": 10, "end_line": 40,
+            "description": "checks the password and issues a session token",
+            "status": "described", "analysis_model": "qwen"})
+        store.upsert_unit({
+            "id": "u2", "path": "auth.py", "language": "python",
+            "node_type": "file", "name": "auth", "level": 1,
+            "start_line": 1, "end_line": 200,
+            "description": "authentication module rollup",
+            "status": "described"})
+        store.close()
+        return config
+
+    def test_no_database_is_a_note_not_a_crash(self, config, tmp_path):
+        config.summarization.db_path = str(tmp_path / "nope.db")
+        out = browse.browse(config, "unit")
+        assert out["items"] == [] and "no unit database" in out["note"]
+
+    def test_browsing_never_creates_the_database(self, config, tmp_path):
+        db = tmp_path / "nope.db"
+        config.summarization.db_path = str(db)
+        browse.browse(config, "unit")
+        assert not db.exists()
+
+    def test_rollups_come_before_leaves(self, units):
+        """The higher level says more per row, so it reads first."""
+        items = browse.browse(units, "unit")["items"]
+        assert [i["tags"][0] for i in items] == ["L1", "L0"]
+
+    def test_a_unit_shows_where_it_lives(self, units):
+        items = browse.browse(units, "unit")["items"]
+        assert "auth.py:10" in [i["title"] for i in items][1]
+        assert "login" in [i["title"] for i in items][1]
+
+    def test_search_matches_the_description(self, units):
+        items = browse.browse(units, "unit", query="password")["items"]
+        assert len(items) == 1 and items[0]["id"] == "u1"
+
+    def test_the_detail_carries_the_analysis_metadata(self, units):
+        d = browse.item(units, "unit", "u1")
+        assert "password" in d["body"]
+        assert d["meta"]["lines"] == "10–40"
+        assert d["meta"]["analysis_model"] == "qwen"
+
+    def test_asm_units_share_the_reader(self, config, tmp_path):
+        """Same columns, different DB — one pair of readers serves both."""
+        import dataclasses
+        from agent.rag.asm_store import AsmStore
+        db = tmp_path / ".agent" / "index.db"
+        config.rag.db_path = str(db)
+        store = AsmStore(dataclasses.replace(config.rag, db_path=str(db)))
+        store.upsert_unit({
+            "id": "a1", "path": "boot.asm", "level": 0, "start_line": 1,
+            "end_line": 20, "description": "sets up the stack",
+            "checksum": "x", "status": "described"})
+        items = browse.browse(config, "asm_unit")["items"]
+        assert [i["id"] for i in items] == ["a1"]
+        assert "stack" in browse.item(config, "asm_unit", "a1")["body"]
+
+
 class TestKB:
     def test_kb_off_explains_itself_rather_than_erroring(self, config):
         out = browse.browse(config, "kb")
