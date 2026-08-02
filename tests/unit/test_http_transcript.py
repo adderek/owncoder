@@ -183,3 +183,29 @@ class TestInjectedContext:
                ).read_text(encoding="utf-8")
         assert "on_injected_message=lambda text: pub(" in src
         assert '{"type": "user", "text": text}' in src
+
+
+class TestReasoningSurvivesAReload:
+    """Live streams the thinking into a fold and history keeps it; replay used
+    to drop it, so a reloaded turn lost what explained it."""
+
+    def test_it_rides_along_with_the_round(self):
+        out = _transcript([{"role": "assistant", "content": "answer",
+                            "_reasoning_content": "because of X"}])
+        assert out[0]["reasoning"] == "because of X"
+
+    def test_a_folded_round_carries_it_on_the_first_entry(self):
+        out = _transcript([{"role": "assistant", "_reasoning_content": "why",
+                            "content": '<agent_exec tool="ls" args="">ok</agent_exec>'}])
+        assert out[0]["reasoning"] == "why"
+
+    def test_a_long_trace_is_shortened(self):
+        out = _transcript([{"role": "assistant", "content": "a",
+                            "_reasoning_content": "x" * 9000}])
+        assert len(out[0]["reasoning"]) == 4001
+
+    def test_the_browser_mounts_it_inside_the_work_fold(self):
+        i = APP_JS.index("function replayReasoning(")
+        body = APP_JS[i:i + 500]
+        assert "turn.body.appendChild(d)" in body
+        assert "replayReasoning(m.reasoning)" in APP_JS

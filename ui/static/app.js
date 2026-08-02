@@ -770,6 +770,17 @@ function replayToolResult(d, ok, text) {
   }
 }
 
+// Replay counterpart of reasoning(): the whole trace is known already, so it
+// mounts as one closed fold inside the work fold rather than streaming in.
+function replayReasoning(text) {
+  const d = document.createElement('details');
+  d.className = 'think';
+  d.innerHTML = '<summary>thinking…</summary><div class="body"></div>';
+  d.querySelector('.body').textContent = text;
+  if (turn) turn.body.appendChild(d); else mount(d);
+  return d;
+}
+
 function reasoning(text) {
   if (!thinkEl) {
     const d = document.createElement('details');
@@ -2278,6 +2289,11 @@ function replayTranscriptInner(messages) {
       work = null;
       row('msg user', null, m.content);
     } else if (m.role === 'assistant') {
+      // Thinking came before the round's work, same as live.
+      if (m.reasoning) {
+        if (!work) { work = beginTurn(); work.replay = true; }
+        replayReasoning(m.reasoning);
+      }
       for (const c of (m.tool_calls || [])) {
         if (!work) { work = beginTurn(); work.replay = true; }
         folds[c.id] = replayToolCall(c.name, c.args, c.args_full);

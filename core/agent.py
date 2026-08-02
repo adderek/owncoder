@@ -26,6 +26,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _describe_turn_failure(exc: BaseException) -> str:
+    """Why a round ended early, short enough to sit in the transcript."""
+    if isinstance(exc, (KeyboardInterrupt, asyncio.CancelledError)):
+        return "stopped"
+    text = str(exc).strip().splitlines()[0] if str(exc).strip() else ""
+    return f"{type(exc).__name__}: {text}"[:200] if text else type(exc).__name__
+
+
 class Agent:
     def __init__(self, config: "Config", store=None, embedder=None, asm_store=None, data_provider=None) -> None:
         from agent.tools import load_all_tools
@@ -1009,9 +1017,19 @@ class Agent:
                 excluded_tools=_excluded or None,
             )
         except BaseException as _turn_exc:
-            # Roll back the user message so the next turn doesn't start with
-            # consecutive user messages (which causes a 400 deadloop).
+            # Roll back the turn's own additions so the next turn doesn't start
+            # with consecutive user messages (which causes a 400 deadloop) —
+            # but keep the question itself, followed by a note saying it never
+            # got answered. Dropping the question outright made a stopped or
+            # crashed round vanish from the resumed session even though the
+            # user had watched it happen.
             self.messages = self.messages[:pre_turn_len]
+            if user_input:
+                self.messages.append({"role": "user", "content": user_input})
+                self.messages.append({
+                    "role": "assistant",
+                    "content": f"[turn did not finish: {_describe_turn_failure(_turn_exc)}]",
+                })
             _note = self._checkpoint_note_for_failed_turn(_turn_exc)
             if _note:
                 self.messages.append({"role": "system", "content": _note})

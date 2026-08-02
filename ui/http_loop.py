@@ -356,6 +356,25 @@ def _unfold_round(m: dict, records: dict, result_limit: int) -> list[dict] | Non
     return out
 
 
+#: Reasoning is the longest thing a round stores and the least load-bearing:
+#: enough of it to see how the model got there, not the whole trace.
+_REASONING_LIMIT = 4000
+
+
+def _attach_reasoning(message: dict, entries: list[dict]) -> None:
+    """Carry the round's thinking into its first replayed entry.
+
+    The live view streams reasoning into a "thinking…" fold, and history keeps
+    it, but replay dropped it — so a reloaded turn lost the part that explains
+    the rest of it.
+    """
+    text = message.get("_reasoning_content") or ""
+    if not text or not entries:
+        return
+    entries[0]["reasoning"] = (
+        text[:_REASONING_LIMIT] + ("…" if len(text) > _REASONING_LIMIT else ""))
+
+
 def _transcript(messages, result_limit: int = 2000, sid: str = "") -> list[dict]:
     """The conversation as the browser replays it, tool work included.
 
@@ -379,6 +398,7 @@ def _transcript(messages, result_limit: int = 2000, sid: str = "") -> list[dict]
         elif role == "assistant":
             unfolded = _unfold_round(m, records, result_limit)
             if unfolded is not None:
+                _attach_reasoning(m, unfolded)
                 out.extend(unfolded)
                 continue
             calls = []
@@ -393,6 +413,7 @@ def _transcript(messages, result_limit: int = 2000, sid: str = "") -> list[dict]
             if calls:
                 entry["tool_calls"] = calls
             if entry["content"] or calls:
+                _attach_reasoning(m, [entry])
                 out.append(entry)
         elif role == "tool":
             out.append({
