@@ -679,38 +679,19 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                 console.print(f"[dim]Exported to {target} ({len(lines)} turns).[/dim]")
 
             elif cmd == "/analyze-asm":
-                from agent.tools.analyze_asm import analyze_asm, get_interrupt_flag
+                from agent.tools.analyze_asm import (
+                    analyze_asm, get_interrupt_flag, parse_asm_args)
 
-                parts = arg.split()
-                if not parts:
-                    console.print(
-                        "[yellow]Usage: /analyze-asm <file> [--resume] [--force] [--levels N][/yellow]"
-                    )
+                kwargs, err = parse_asm_args(arg)
+                if kwargs is None:
+                    console.print(f"[yellow]{err}[/yellow]")
                 else:
-                    path_arg = parts[0]
-                    resume = "--resume" in parts
-                    force_flag = "--force" in parts
-                    max_lvls = None
-                    if "--levels" in parts:
-                        idx = parts.index("--levels")
-                        if idx + 1 < len(parts):
-                            try:
-                                max_lvls = int(parts[idx + 1])
-                            except ValueError:
-                                pass
                     interrupt = get_interrupt_flag()
                     interrupt.clear()
                     console.print(
-                        f"[dim]Analyzing {path_arg}… (Ctrl+C to interrupt)[/dim]"
+                        f"[dim]Analyzing {kwargs['path']}… (Ctrl+C to interrupt)[/dim]"
                     )
                     try:
-                        kwargs = {
-                            "path": path_arg,
-                            "resume": resume,
-                            "force": force_flag,
-                        }
-                        if max_lvls is not None:
-                            kwargs["max_levels"] = max_lvls
                         loop = asyncio.get_event_loop()
                         result = await loop.run_in_executor(
                             None, lambda: analyze_asm(**kwargs)

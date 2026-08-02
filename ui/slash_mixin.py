@@ -901,34 +901,20 @@ class SlashHandlerMixin:
 
     async def _run_analyze_asm(self, arg: str) -> None:
         t = self._t
-        from agent.tools.analyze_asm import analyze_asm, get_interrupt_flag
+        from agent.tools.analyze_asm import (
+            analyze_asm, get_interrupt_flag, parse_asm_args)
 
-        parts = arg.split()
-        if not parts:
-            self._write_sys(
-                f"[{t.warning}]Usage: /analyze-asm <file> [--resume] [--force] [--levels N][/{t.warning}]"
-            )
+        kwargs, err = parse_asm_args(arg)
+        if kwargs is None:
+            self._write_sys(f"[{t.warning}]{err}[/{t.warning}]")
             return
-        path = parts[0]
-        resume = "--resume" in parts
-        force = "--force" in parts
-        max_levels = None
-        if "--levels" in parts:
-            idx = parts.index("--levels")
-            if idx + 1 < len(parts):
-                try:
-                    max_levels = int(parts[idx + 1])
-                except ValueError:
-                    pass
 
         interrupt = get_interrupt_flag()
         interrupt.clear()
-        self._write_sys(f"[{t.text_dim}]Analyzing {path}…  ESC to interrupt[/{t.text_dim}]")
+        self._write_sys(
+            f"[{t.text_dim}]Analyzing {kwargs['path']}…  ESC to interrupt[/{t.text_dim}]")
 
         def _do_analyze():
-            kwargs = {"path": path, "resume": resume, "force": force}
-            if max_levels is not None:
-                kwargs["max_levels"] = max_levels
             return analyze_asm(**kwargs)
 
         loop = asyncio.get_event_loop()

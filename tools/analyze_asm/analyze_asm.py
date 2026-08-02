@@ -42,6 +42,32 @@ def get_interrupt_flag() -> threading.Event:
     return _interrupt_flag
 
 
+ASM_USAGE = "Usage: /analyze-asm <file> [--resume] [--force] [--levels N]"
+
+
+def parse_asm_args(arg: str) -> tuple[dict | None, str]:
+    """Parse the slash-command arguments shared by all three UIs.
+
+    Returns (kwargs, error). Exactly one of the two is meaningful: kwargs is
+    None when the arguments do not name a file to analyse.
+    """
+    parts = (arg or "").split()
+    if not parts:
+        return None, ASM_USAGE
+    kwargs: dict = {"path": parts[0],
+                    "resume": "--resume" in parts,
+                    "force": "--force" in parts}
+    if "--levels" in parts:
+        idx = parts.index("--levels")
+        if idx + 1 >= len(parts):
+            return None, "--levels needs a number"
+        try:
+            kwargs["max_levels"] = int(parts[idx + 1])
+        except ValueError:
+            return None, f"--levels wants a number, got {parts[idx + 1]!r}"
+    return kwargs, ""
+
+
 @register(
     "analyze_asm",
     {

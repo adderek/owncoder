@@ -561,11 +561,27 @@ def _facts_get(config: "Config", item_id: str, session_id: str = "") -> dict:
 
 
 # ── knowledge base ──────────────────────────────────────────────────────────
+class KbUnavailable(Exception):
+    """kb is on but unusable — say which of the three reasons it is."""
+
+
 def _kb_corpus(config: "Config"):
     path = getattr(config.kb, "corpus_path", "")
     if not getattr(config.kb, "enabled", False) or not path:
         return None
-    from kb.api import Corpus
+    try:
+        from kb.api import Corpus
+    except ImportError:
+        # kb ships as its own package; a namespace-package shadow (the repo's
+        # kb/ directory) imports but has no submodules, so this is what a
+        # missing install actually looks like.
+        raise KbUnavailable(
+            "kb is enabled but the kb package is not installed in this "
+            "environment — uv pip install -e kb") from None
+    root = Path(path)
+    if not (root / "corpus.yaml").exists():
+        raise KbUnavailable(
+            f"kb.corpus_path {path} is not a corpus — run: kb corpus init {path}")
     return Corpus.open(path)
 
 
@@ -579,7 +595,10 @@ def _kb_description(node) -> str:
 
 
 def _kb_list(config: "Config", query: str = "", limit: int = 50) -> dict:
-    corpus = _kb_corpus(config)
+    try:
+        corpus = _kb_corpus(config)
+    except KbUnavailable as exc:
+        return {"items": [], "note": str(exc)}
     if corpus is None:
         return {"items": [], "note": "kb.enabled is false — no corpus configured"}
     try:
@@ -605,7 +624,10 @@ def _kb_list(config: "Config", query: str = "", limit: int = 50) -> dict:
 
 
 def _kb_get(config: "Config", item_id: str) -> dict:
-    corpus = _kb_corpus(config)
+    try:
+        corpus = _kb_corpus(config)
+    except KbUnavailable as exc:
+        return {"error": str(exc)}
     if corpus is None:
         return {"error": "kb.enabled is false"}
     try:

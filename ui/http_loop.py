@@ -2339,7 +2339,7 @@ def _agent_config(server):
 # as completions here.
 _TERMINAL_ONLY = frozenset({
     "/a", "/q", "/sparse", "/wrap", "/round-summary", "/speech", "/exec",
-    "/apply", "/analyze-asm", "/quit",
+    "/apply", "/quit",
 })
 
 
@@ -2360,6 +2360,79 @@ def _slash_catalog() -> list[dict]:
                     "desc": desc, "arg": bool(takes_arg)})
     out.sort(key=lambda c: c["name"])
     return out
+
+
+async def _run_analyze_asm(ui: "_HttpUI", cfg, arg: str, pub) -> None:
+    """Assembly analysis from the browser.
+
+    It used to be terminal-only because it is a long, chatty job: minutes of
+    LLM calls with a progress line per window. The browser has the same two
+    things the terminal has — a stream to write progress to and a way to say
+    stop — so the only real work is throttling the stream and handing the
+    interrupt flag a way in.
+    """
+    from agent.tools.analyze_asm import (
+        ASM_USAGE, analyze_asm, get_interrupt_flag, parse_asm_args,
+        set_ui_progress_cb)
+
+    sub = (arg or "").strip().lower()
+    if sub in ("on", "off"):
+        # Enabling from here is session-scoped on purpose: it does not rewrite
+        # the config file, so a flag flipped to try one file does not silently
+        # become the project's setting.
+        cfg.asm.enabled = (sub == "on")
+        pub({"type": "sys", "text":
+             f"assembly analysis {'enabled' if cfg.asm.enabled else 'disabled'} "
+             "for this session — set asm_analysis.enabled in the config to persist"})
+        return
+    if sub in ("status", ""):
+        state = "enabled" if cfg.asm.enabled else "disabled"
+        pub({"type": "sys", "text":
+             f"assembly analysis is {state}.\n{ASM_USAGE}\n"
+             "  /analyze-asm on|off   toggle for this session\n"
+             "  /analyze-asm stop     interrupt a running analysis"})
+        return
+    if sub == "stop":
+        get_interrupt_flag().set()
+        pub({"type": "sys", "text": "stopping after the current chunk — "
+                                    "resume with --resume"})
+        return
+
+    kwargs, err = parse_asm_args(arg)
+    if kwargs is None:
+        pub({"type": "sys", "error": True, "text": err})
+        return
+
+    interrupt = get_interrupt_flag()
+    interrupt.clear()
+    pub({"type": "sys", "text": f"analysing {kwargs['path']}… "
+                                "/analyze-asm stop to interrupt"})
+
+    # The pipeline emits a line per window; forwarding every one would spend
+    # the SSE stream on a progress bar nobody reads. One line a second keeps
+    # the phase and the percentage current.
+    last = [0.0]
+
+    def _progress(msg: str) -> None:
+        now = time.time()
+        if now - last[0] < 1.0 and "complete" not in msg:
+            return
+        last[0] = now
+        pub({"type": "sys", "text": msg})
+
+    set_ui_progress_cb(_progress)
+    try:
+        result = await asyncio.to_thread(lambda: analyze_asm(**kwargs))
+    except Exception as exc:
+        pub({"type": "sys", "error": True, "text": f"analyze-asm failed: {exc}"})
+        return
+    finally:
+        set_ui_progress_cb(None)
+
+    if "error" in result:
+        pub({"type": "sys", "error": True, "text": result["error"]})
+    else:
+        pub({"type": "sys", "text": result.get("message", str(result))})
 
 
 async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
@@ -2407,7 +2480,8 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
              "  /watch event triggers      /bg background jobs\n"
              "  /idea /ideas               /recoveries      /resummarize [--force]\n"
              "  /security scan|report|…    /credpool list|status|…\n"
-             "terminal-only: /a /q /sparse /wrap /round-summary /speech /exec /apply /analyze-asm /quit\n"
+             "  /analyze-asm <file> assembly analysis; on|off|stop\n"
+             "terminal-only: /a /q /sparse /wrap /round-summary /speech /exec /apply /quit\n"
              "Anything else is sent to the agent."})
     elif cmd == "/tokens":
         info = server.get_llm_info()
@@ -2858,8 +2932,14 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
     elif cmd == "/paths":
         pub({"type": "sys",
              "text": "paths are managed in the Access panel (☰ left drawer)"})
+    elif cmd in ("/analyze-asm", "/asm"):
+        cfg = _agent_config(server)
+        if cfg is None:
+            pub({"type": "sys", "error": True, "text": _NEEDS_LOCAL})
+        else:
+            await _run_analyze_asm(ui, cfg, arg, pub)
     elif cmd in ("/a", "/q", "/sparse", "/wrap", "/round-summary", "/summary",
-                 "/speech", "/exec", "/apply", "/analyze-asm", "/asm",
+                 "/speech", "/exec", "/apply",
                  "/quit", "/exit", "/q!"):
         pub({"type": "sys", "error": True,
              "text": f"{cmd} is terminal-only — use the terminal UI for it"})

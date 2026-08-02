@@ -397,6 +397,35 @@ class TestKB:
         out = browse.browse(config, "kb")
         assert out["items"] == [] and "kb.enabled" in out["note"]
 
+    def test_a_path_that_is_not_a_corpus_says_how_to_make_one(self, config, tmp_path):
+        """An empty directory is the normal first mistake after setting the path."""
+        empty = tmp_path / "not-a-corpus"
+        empty.mkdir()
+        config.kb.enabled = True
+        config.kb.corpus_path = str(empty)
+        out = browse.browse(config, "kb")
+        assert out["items"] == [] and "kb corpus init" in out["note"]
+
+    def test_a_missing_kb_package_names_the_fix(self, config, tmp_path, monkeypatch):
+        """kb/ imports as a namespace package with no submodules, so a missing
+        install looks like a plain ImportError deep in the call."""
+        import builtins
+        root = tmp_path / "corpus"
+        root.mkdir()
+        (root / "corpus.yaml").write_text("name: x\n", encoding="utf-8")
+        config.kb.enabled = True
+        config.kb.corpus_path = str(root)
+        real_import = builtins.__import__
+
+        def _fail(name, *a, **kw):
+            if name == "kb.api":
+                raise ImportError("No module named 'kb.api'")
+            return real_import(name, *a, **kw)
+
+        monkeypatch.setattr(builtins, "__import__", _fail)
+        out = browse.browse(config, "kb")
+        assert "not installed" in out["note"] and "pip install" in out["note"]
+
     @pytest.fixture
     def kb_config(self, config, tmp_path):
         if not KB_FIXTURE.exists():
