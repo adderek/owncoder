@@ -178,9 +178,8 @@ class Agent:
         user_context = load_always_context(config)
         project_doc, project_doc_warning = load_project_doc(config)
         if project_doc_warning:
-            logger.warning(project_doc_warning)
-            import sys
-            print(f"warning: {project_doc_warning}", file=sys.stderr)
+            from agent import ui_notice
+            ui_notice.emit(f"warning: {project_doc_warning}")
 
         base_rules = load_base_rules()
         if base_rules:
@@ -1203,7 +1202,8 @@ class Agent:
             from pathlib import Path
             from agent.cli.logging_setup import _setup_logging
             agent_dir = Path(self.config.tools.working_dir) / self.config.tools.agent_dir
-            _setup_logging(str(agent_dir), getattr(self.config, "logs", None))
+            _setup_logging(str(agent_dir), getattr(self.config, "logs", None),
+                           getattr(self.config.ui, "mode", None))
         except Exception:
             logger.debug("re-init logging for session mode failed (ignored)", exc_info=True)
         # Pin mid-turn routing (auto-tier escalation) to local endpoints while

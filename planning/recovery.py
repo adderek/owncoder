@@ -142,10 +142,13 @@ def prompt_user_choice(rec: CrashRecord) -> str:
             return "ignore"
 
 
-def handle_pending_at_startup(prompt_mode: str = "ask") -> list[CrashRecord]:
+def handle_pending_at_startup(prompt_mode: str = "ask", *,
+                              interactive: bool = True) -> list[CrashRecord]:
     """Apply `prompt_mode` to pending records. Returns records user chose to recover.
 
-    prompt_mode ∈ {ask, auto_recover, auto_skip}.
+    prompt_mode ∈ {ask, auto_recover, auto_skip}. `interactive=False` (HTTP UI,
+    non-tty launches) turns "ask" into "leave pending and say so" rather than a
+    stdin prompt nobody can answer.
     """
     pending = scan_pending()
     to_recover: list[CrashRecord] = []
@@ -160,12 +163,22 @@ def handle_pending_at_startup(prompt_mode: str = "ask") -> list[CrashRecord]:
         for rec in pending:
             set_status(rec.session_id, "ignored")
         return to_recover
-    # ask mode
+    # ask mode. Without a terminal there is nobody to answer: input() would
+    # raise EOFError and every pending record would be silently marked ignored
+    # (browser-driven and service launches both hit this). Leave them pending
+    # and point at the command that lists them.
+    import sys
+    if not interactive or not (sys.stdin and sys.stdin.isatty()):
+        from agent import ui_notice
+        ui_notice.emit(
+            f"{len(pending)} crashed session(s) pending recovery — "
+            "run /recoveries to review them.")
+        return to_recover
     for rec in pending:
         try:
             choice = prompt_user_choice(rec)
         except (EOFError, KeyboardInterrupt):
-            choice = "ignore"
+            continue      # left pending, not silently ignored
         if choice == "recover":
             set_status(rec.session_id, "recovered")
             to_recover.append(rec)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import socket
 import sqlite3
 import threading
@@ -587,21 +588,23 @@ def _make_handler(rag_db: str, asm_db: str, working_dir: str):
         def log_message(self, fmt, *args):  # silence access log
             pass
 
+        def _send(self, body: bytes, ctype: str, status: int = 200):
+            # Client hang-ups are routine; keep them off stderr.
+            try:
+                self.send_response(status)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                logging.getLogger(__name__).debug(
+                    "chunk browser: client dropped during response", exc_info=True)
+
         def send_json(self, data, status=200):
-            body = json.dumps(data, default=str).encode()
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            self._send(json.dumps(data, default=str).encode(), "application/json", status)
 
         def send_html(self, html: str):
-            body = html.encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            self._send(html.encode(), "text/html; charset=utf-8")
 
         def do_GET(self):
             parsed = urllib.parse.urlparse(self.path)
@@ -793,7 +796,8 @@ def cmd_serve(args, config: "Config") -> None:
     url = f"http://127.0.0.1:{port}"
 
     Handler = _make_handler(rag_db, asm_db, working_dir)
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    from agent.ui_server.quiet_http import QuietThreadingHTTPServer
+    server = QuietThreadingHTTPServer(("127.0.0.1", port), Handler)
 
     console.print(f"[bold green]Chunk browser running:[/bold green] {url}")
     console.print("[dim]Ctrl-C to stop[/dim]")

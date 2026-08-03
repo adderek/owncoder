@@ -8,6 +8,7 @@ browser through per-client SSE queues.
 from __future__ import annotations
 
 import asyncio
+import collections
 import concurrent.futures
 import json
 import logging
@@ -490,11 +491,22 @@ class _EventBus:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._clients: list[queue.Queue] = []
+        # Events published before the first browser connects (startup warnings
+        # replayed through agent/ui_notice.py). Held for the first subscriber,
+        # bounded because nothing guarantees a browser ever shows up.
+        self._backlog: "collections.deque[dict]" = collections.deque(maxlen=50)
 
     def subscribe(self) -> queue.Queue:
         q: queue.Queue = queue.Queue(maxsize=2000)
         with self._lock:
             self._clients.append(q)
+            held = list(self._backlog)
+            self._backlog.clear()
+        for event in held:
+            try:
+                q.put_nowait(event)
+            except queue.Full:
+                break
         return q
 
     def unsubscribe(self, q: queue.Queue) -> None:
@@ -504,9 +516,12 @@ class _EventBus:
             except ValueError:
                 pass
 
-    def publish(self, event: dict) -> None:
+    def publish(self, event: dict, *, hold: bool = False) -> None:
         with self._lock:
             clients = list(self._clients)
+            if not clients and hold:
+                self._backlog.append(event)
+                return
         for q in clients:
             try:
                 q.put_nowait(event)
@@ -1997,40 +2012,39 @@ def _make_handler(ui: _HttpUI):
             return True
 
         def _bytes(self, body: bytes, ctype: str, cache: str = "") -> None:
-            self.send_response(200)
-            self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(len(body)))
-            if cache:
-                self.send_header("Cache-Control", cache)
-            self.end_headers()
-            self.wfile.write(body)
+            # A browser that navigates away mid-response drops the socket; the
+            # write then raises and the stdlib server dumps a traceback with
+            # request locals in it. Nothing to do about it but note it.
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                if cache:
+                    self.send_header("Cache-Control", cache)
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError, OSError) as exc:
+                logger.debug("http ui: client dropped during response: %s", exc)
 
         def _json(self, obj, code=200):
             body = json.dumps(obj, ensure_ascii=False).encode()
-            self.send_response(code)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError, OSError) as exc:
+                logger.debug("http ui: client dropped during response: %s", exc)
 
         def do_GET(self):
             if not self._check_auth():
                 return
             if self.path == "/" or self.path.startswith("/index"):
-                body = _PAGE.encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                self._bytes(_PAGE.encode(), "text/html; charset=utf-8")
             elif self.path in _STATIC_ASSETS:
                 content_type, body = _STATIC_ASSETS[self.path]
-                self.send_response(200)
-                self.send_header("Content-Type", content_type)
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header("Cache-Control", "no-cache")
-                self.end_headers()
-                self.wfile.write(body)
+                self._bytes(body, content_type, cache="no-cache")
             elif self.path == "/api/state":
                 self._json(ui.state())
             elif self.path == "/api/context":
@@ -2244,10 +2258,12 @@ def _write_project_pidfile_if_enabled(agent, port: int) -> str | None:
 
 def _bind_server(handler, host: str, port: int) -> ThreadingHTTPServer:
     """Bind requested port; walk forward a little if it's taken."""
+    from agent.ui_server.quiet_http import QuietThreadingHTTPServer
+
     last_exc: OSError | None = None
     for p in range(port, port + 20):
         try:
-            return ThreadingHTTPServer((host, p), handler)
+            return QuietThreadingHTTPServer((host, p), handler)
         except OSError as exc:
             last_exc = exc
     raise last_exc  # type: ignore[misc]
@@ -3003,6 +3019,17 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
     except Exception:
         _pg = None
 
+    # Operator warnings raised deep in the stack (no sandbox, unreadable
+    # project doc) would otherwise land on a terminal the browser user is not
+    # watching. Mirror them into the chat instead.
+    from agent import ui_notice
+
+    def _notice(text: str, is_error: bool) -> None:
+        ui.bus.publish({"type": "sys", "error": is_error, "text": text},
+                       hold=True)
+
+    ui_notice.register(_notice)
+
     cfg = agent.config.ui
     host = getattr(cfg, "http_host", "127.0.0.1")
     port = int(getattr(cfg, "http_port", 8180))
@@ -3288,6 +3315,7 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     finally:
+        ui_notice.unregister(_notice)
         if _pg is not None:
             _pg.unregister_notify(_grants_notify)
         pub({"type": "sys", "text": "server shutting down"})

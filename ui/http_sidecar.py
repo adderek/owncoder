@@ -388,29 +388,28 @@ def _make_sidecar_handler(wrapped: "_SidecarServer"):
         def log_message(self, fmt, *args):
             logger.debug("http sidecar: " + fmt, *args)
 
+        def _bytes(self, body: bytes, ctype: str, code: int = 200) -> None:
+            # Client can vanish mid-response; log it rather than let the stdlib
+            # server print a traceback full of request locals to stderr.
+            try:
+                self.send_response(code)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError, OSError) as exc:
+                logger.debug("http sidecar: client dropped during response: %s", exc)
+
         def _json(self, obj, code=200):
             body = json.dumps(obj, ensure_ascii=False).encode()
-            self.send_response(code)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            self._bytes(body, "application/json; charset=utf-8", code)
 
         def do_GET(self):
             if self.path == "/" or self.path.startswith("/index"):
-                body = _SIDECAR_PAGE.encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                self._bytes(_SIDECAR_PAGE.encode(), "text/html; charset=utf-8")
             elif self.path in _STATIC_ASSETS:
                 content_type, body = _STATIC_ASSETS[self.path]
-                self.send_response(200)
-                self.send_header("Content-Type", content_type)
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                self._bytes(body, content_type)
             elif self.path == "/api/state":
                 self._json(self._state())
             elif self.path == "/api/events":

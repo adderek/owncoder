@@ -32,6 +32,13 @@ def set_ui_progress_cb(cb: "callable | None") -> None:
     _ui_progress_cb = cb
 
 
+def _stderr_is_tty() -> bool:
+    try:
+        return bool(sys.stderr) and sys.stderr.isatty()
+    except Exception:      # closed/replaced stream
+        return False
+
+
 def setup(config, data_provider) -> None:
     global _config, _data_provider
     _config = config
@@ -169,12 +176,16 @@ def analyze_asm(
             msg = f"{ts} Phase 4/4 Hierarchy:  level {lvl}  group {gi:>4}/{gt} ({pct:3d}%)"
         else:
             return
-        # Pad to overwrite previous line on stderr
-        padded = msg.ljust(_last_line_len[0])
-        _last_line_len[0] = len(msg)
-        print(f"\r{padded}", end="", flush=True, file=sys.stderr)
-        if event in ("split_complete",):
-            print(file=sys.stderr)  # newline after phase-complete markers
+        # \r-redrawn progress only makes sense on a terminal nobody else is
+        # writing to: with a UI consumer attached (HTTP browser, Textual) it is
+        # noise on the operator console, and redirected to a file it is a wall
+        # of half-lines. Everything worth keeping goes to the log below.
+        if _ui_progress_cb is None and _stderr_is_tty():
+            padded = msg.ljust(_last_line_len[0])
+            _last_line_len[0] = len(msg)
+            print(f"\r{padded}", end="", flush=True, file=sys.stderr)
+            if event in ("split_complete",):
+                print(file=sys.stderr)  # newline after phase-complete markers
         # Log key milestones so they appear in agent.log
         if event == "split_complete":
             logger.info(msg)
@@ -210,7 +221,8 @@ def analyze_asm(
     )
 
     result = pipeline.analyze_file(str(p), force=force)
-    print(file=sys.stderr)  # final newline after last \r progress line
+    if _last_line_len[0]:
+        print(file=sys.stderr)  # close the last \r progress line
 
     if result.get("cached"):
         result["message"] = (

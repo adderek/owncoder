@@ -117,7 +117,6 @@ def select_backend() -> str:
             "security.require_sandbox=false to allow host exec."
         )
     _BACKEND = "none"
-    logger.warning("No sandbox backend available — running commands on host!")
     _warn_degraded(candidates)
     return _BACKEND
 
@@ -127,17 +126,16 @@ def _warn_degraded(tried: list[str]) -> None:
     if _DEGRADED_WARNING_SHOWN:
         return
     _DEGRADED_WARNING_SHOWN = True
-    import sys
-    # Print to stderr so it's visible in the terminal regardless of log config.
-    print(
-        "\n"
+    # Goes to the active UI (browser included) and the log; falls back to
+    # stderr when no UI is attached. See agent/ui_notice.py.
+    from agent import ui_notice
+    ui_notice.emit(
         "WARNING: No sandbox backend found (tried: " + ", ".join(tried) + ").\n"
         "  Running on HOST with no filesystem isolation (require_sandbox=false).\n"
         "  Install bubblewrap (bwrap) or firejail for full sandboxing.\n"
         "  To re-enable the safety default, remove require_sandbox override from\n"
-        "    agent.toml [security] (default is require_sandbox = true).\n",
-        file=sys.stderr,
-        flush=True,
+        "    agent.toml [security] (default is require_sandbox = true).",
+        error=True,
     )
 
 

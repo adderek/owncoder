@@ -135,6 +135,10 @@ def _audit_crash(console, sentinel: Path, messages: list[dict]) -> None:
     if not sentinel.exists():
         return
     console.print("[yellow]Warning: previous run of this session may have crashed.[/yellow]")
+    # These land before any UI exists; record them so an HTTP session replays
+    # them into the browser instead of leaving them on a terminal nobody reads.
+    from agent import ui_notice
+    ui_notice.record("Warning: previous run of this session may have crashed.")
     written = _extract_written_files(messages)
     if not written:
         return
@@ -154,6 +158,10 @@ def _audit_crash(console, sentinel: Path, messages: list[dict]) -> None:
         for f in dirty:
             console.print(f"  {f}")
         console.print("  Restore: [bold]git checkout HEAD -- <file>[/bold]")
+        ui_notice.record(
+            "Files modified last session differ from git HEAD:\n"
+            + "\n".join(f"  {f}" for f in dirty)
+            + "\n  Restore: git checkout HEAD -- <file>")
 
 
 def _warn_loop_guard_resume(console, messages: list[dict]) -> None:
@@ -162,12 +170,20 @@ def _warn_loop_guard_resume(console, messages: list[dict]) -> None:
         if m.get("role") == "assistant":
             content = m.get("content") or ""
             if content.strip().startswith("[loop guard:"):
-                console.print("[yellow]Note: last session ended with a loop-guard stop:[/yellow]")
+                note = (
+                    "Note: last session ended with a loop-guard stop:\n"
+                    f"  {content.strip()[:200]}\n"
+                    "The agent will see this in history. Type a message to "
+                    "redirect it (e.g. 're-read the file and retry')."
+                )
+                console.print(f"[yellow]{note.splitlines()[0]}[/yellow]")
                 console.print(f"  {content.strip()[:200]}")
                 console.print(
                     "[yellow]The agent will see this in history. "
                     "Type a message to redirect it (e.g. 're-read the file and retry').[/yellow]"
                 )
+                from agent import ui_notice
+                ui_notice.record(note)
             break
 
 
@@ -301,6 +317,8 @@ def cmd_chat(args, config):
             _bg_thread.start()
         except Exception as e:
             console.print(f"[yellow]Warning: could not load index: {e}[/yellow]")
+            from agent import ui_notice
+            ui_notice.record(f"Warning: could not load index: {e}", error=True)
 
     data_provider = LocalDataProvider(store=store, embedder=embedder, asm_store=asm_store, config=config)
     agent = Agent(config, data_provider=data_provider)
@@ -413,6 +431,8 @@ def cmd_chat(args, config):
         for _w in (warn_if_tampered(agent.config), warn_if_drift(agent.config)):
             if _w:
                 console.print(f"[red]{_w}[/red]")
+                from agent import ui_notice
+                ui_notice.record(_w, error=True)
     except Exception:
         pass
 
@@ -430,6 +450,11 @@ def cmd_chat(args, config):
                 "[yellow]  Shared worktree — coordinate before editing/building "
                 "(see AGENTS.md → Multi-agent coordination).[/yellow]"
             )
+            from agent import ui_notice
+            ui_notice.record(
+                f"⚠ {_coord.summary(_wd)}\n"
+                "  Shared worktree — coordinate before editing/building "
+                "(see AGENTS.md → Multi-agent coordination).")
     except Exception:
         logger.debug("coord presence announce failed", exc_info=True)
 

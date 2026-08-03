@@ -108,7 +108,28 @@ class _VaultFileHandler(logging.Handler):
             self._emitting.active = False
 
 
-def _setup_logging(agent_dir: str | None = None, logs_cfg=None) -> None:
+def _default_stderr_level(logs_cfg, ui_mode: str | None) -> str:
+    """Resolve the stderr threshold, quieter when the UI is not the terminal.
+
+    In HTTP mode the terminal is a supervision console: the user reads the
+    browser, so routine warnings there are noise nobody acts on (they are still
+    in the file log, and operator-facing ones go through agent/ui_notice.py).
+    An explicit ``logs.stderr_level`` in agent.toml always wins; "explicit"
+    means "differs from the dataclass default", which is the best signal the
+    loader leaves behind.
+    """
+    from agent.config.models import LogsConfig
+
+    configured = getattr(logs_cfg, "stderr_level", None)
+    if configured and configured.upper() != LogsConfig.stderr_level.upper():
+        return configured.upper()
+    if ui_mode == "http":
+        return "ERROR"
+    return (configured or LogsConfig.stderr_level).upper()
+
+
+def _setup_logging(agent_dir: str | None = None, logs_cfg=None,
+                   ui_mode: str | None = None) -> None:
     """Attach handlers for the current privacy mode.
 
     Called again by ``Agent.set_session_mode`` when the mode changes mid-session,
@@ -123,7 +144,7 @@ def _setup_logging(agent_dir: str | None = None, logs_cfg=None) -> None:
     log_path = log_dir / "agent.log"
 
     level_name = (getattr(logs_cfg, "level", None) or "DEBUG").upper()
-    stderr_level = (getattr(logs_cfg, "stderr_level", None) or "WARNING").upper()
+    stderr_level = _default_stderr_level(logs_cfg, ui_mode)
     max_bytes = getattr(logs_cfg, "max_bytes", 20 * 1024 * 1024)
     backup_count = getattr(logs_cfg, "backup_count", 5)
     sources = getattr(logs_cfg, "sources", {}) or {}

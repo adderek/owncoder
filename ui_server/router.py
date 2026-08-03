@@ -108,11 +108,16 @@ class _RouterHandler(BaseHTTPRequestHandler):
 
     def _json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        # A dropped client must not surface as a stderr traceback (the frames
+        # carry request locals); log and move on.
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, OSError) as exc:
+            logger.debug("router: client dropped during response: %s", exc)
 
     def _proxy(self, project_id: str, method: str = "GET", body: bytes | None = None) -> None:
         """Forward a request to the project process identified by project_id.
@@ -141,24 +146,30 @@ class _RouterHandler(BaseHTTPRequestHandler):
 
             with urllib.request.urlopen(req, timeout=120) as resp:
                 resp_body = resp.read()
-                self.send_response(resp.status)
-                for hdr, val in resp.getheaders():
-                    if hdr.lower() in ("transfer-encoding", "content-encoding"):
-                        continue
-                    self.send_header(hdr, val)
-                self.end_headers()
-                self.wfile.write(resp_body)
+                status = resp.status
+                headers = [(h, v) for h, v in resp.getheaders()
+                           if h.lower() not in ("transfer-encoding", "content-encoding")]
         except urllib.error.HTTPError as exc:
             try:
                 err_body = exc.read()
             except Exception:
                 err_body = b""
-            self.send_response(exc.code)
-            self.end_headers()
-            self.wfile.write(err_body)
+            resp_body, status, headers = err_body, exc.code, []
         except (OSError, ValueError) as exc:
             logger.warning("router: proxy to %s: %s", target, exc)
             self._json({"error": f"project unreachable: {rec.label}"}, 502)
+            return
+
+        # Relaying to the browser is its own failure domain: a client that hung
+        # up is a debug line, not an upstream-unreachable warning.
+        try:
+            self.send_response(status)
+            for hdr, val in headers:
+                self.send_header(hdr, val)
+            self.end_headers()
+            self.wfile.write(resp_body)
+        except (BrokenPipeError, ConnectionResetError, OSError) as exc:
+            logger.debug("router: client dropped during proxy response: %s", exc)
 
     @staticmethod
     def _project_id_from_path(path: str) -> str:
@@ -208,12 +219,16 @@ class _RouterHandler(BaseHTTPRequestHandler):
                 f'<td>{btn}</td>'
                 f'</tr>'
             )
-        body = _ROOT_PAGE.replace("{{projects}}", rows or "<tr><td colspan='4'>no projects</td></tr>")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body.encode())
+        body = _ROOT_PAGE.replace(
+            "{{projects}}", rows or "<tr><td colspan='4'>no projects</td></tr>").encode()
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, OSError) as exc:
+            logger.debug("router: client dropped during response: %s", exc)
 
     # ── POST ──────────────────────────────────────────────────────────────
 
@@ -359,10 +374,12 @@ class _RouterHandler(BaseHTTPRequestHandler):
 
 def _bind_server(handler_class, host: str, port: int) -> ThreadingHTTPServer:
     """Bind requested port; walk forward a little if it's taken."""
+    from agent.ui_server.quiet_http import QuietThreadingHTTPServer
+
     last_exc: OSError | None = None
     for p in range(port, port + 20):
         try:
-            return ThreadingHTTPServer((host, p), handler_class)
+            return QuietThreadingHTTPServer((host, p), handler_class)
         except OSError as exc:
             last_exc = exc
     raise last_exc  # type: ignore[misc]

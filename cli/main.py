@@ -330,7 +330,7 @@ def main() -> None:
     configure_recovery(config.tools.working_dir, config.tools.agent_dir)
     configure_ideas(config.tools.working_dir, config.tools.agent_dir)
     log_dir = Path(config.tools.working_dir) / config.tools.agent_dir
-    _setup_logging(str(log_dir), config.logs)
+    _setup_logging(str(log_dir), config.logs, getattr(config.ui, "mode", None))
     log_path = log_dir / "agent.log"
 
     from agent.core.model_state_store import load_disabled
@@ -393,7 +393,11 @@ def main() -> None:
             if config.recovery.enabled:
                 from agent.planning import recovery as _rec
                 try:
-                    _rec.handle_pending_at_startup(config.recovery.prompt_mode)
+                    # HTTP mode drives from the browser: no stdin prompt there.
+                    _rec.handle_pending_at_startup(
+                        config.recovery.prompt_mode,
+                        interactive=(getattr(config.ui, "mode", None) != "http"),
+                    )
                 except Exception:
                     pass
             cmd_chat(args, config)
