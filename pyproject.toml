@@ -64,10 +64,8 @@ testpaths = ["tests"]
 # not installed" and had never once run.
 pythonpath = ["..", "../kb/src"]
 markers = [
-    "e2e: end-to-end tests requiring a live LLM server",
     "integration: tests against the kb fixture corpus (no LLM, no network)",
 ]
-addopts = "-m 'not e2e'"
 # Concurrent pytest sessions (e.g. parallel agent workers) share
 # /tmp/pytest-of-<user>/; the default retention (3) lets one session prune
 # another LIVE session's tmp roots mid-run, randomly breaking disk-backed

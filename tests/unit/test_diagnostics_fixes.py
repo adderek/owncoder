@@ -177,7 +177,6 @@ def test_failures_fall_back_to_the_session_time_window(tmp_path):
 
 # --- B3 -------------------------------------------------------------------
 
-@pytest.mark.asyncio
 async def test_llm_calls_row_names_the_model(tmp_path, monkeypatch):
     from agent._test_helpers import make_client, make_response
     from agent.config import Config

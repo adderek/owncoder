@@ -112,7 +112,6 @@ class TestStreamResponseClean:
         c.llm.think_level = "off"
         return c
 
-    @pytest.mark.asyncio
     async def test_channel_tokens_cleaned_from_stream(self):
         """Leaky stream chunks have channel tokens stripped, text tool calls parsed."""
         client = self._make_client(
@@ -132,7 +131,6 @@ class TestStreamResponseClean:
         assert len(calls) == 1
         assert calls[0].function.name == "search"
 
-    @pytest.mark.asyncio
     async def test_think_blocks_cleaned_from_stream(self):
         """<think> blocks spread across chunks are stripped."""
         client = self._make_client(
@@ -146,7 +144,6 @@ class TestStreamResponseClean:
         )
         assert content == "Result.\n Done."
 
-    @pytest.mark.asyncio
     async def test_clean_stream_unchanged(self):
         """Stream without leaks returns full content as-is."""
         client = self._make_client(
@@ -190,7 +187,6 @@ class TestStreamResponseClean:
         tc.function = fn
         return tc
 
-    @pytest.mark.asyncio
     async def test_malformed_tool_args_preserved_not_dropped(self):
         """Unparseable streamed tool-call args keep the raw string instead of {}."""
         bad = '{this is not valid json at all}'  # fails json.loads and flat-arg parse
@@ -206,7 +202,6 @@ class TestStreamResponseClean:
         assert calls[0].function.arguments == bad
         assert calls[0].function.arguments != "{}"
 
-    @pytest.mark.asyncio
     async def test_valid_tool_args_parsed(self):
         """Well-formed streamed tool-call args round-trip to canonical JSON."""
         client = self._make_client(
@@ -221,7 +216,6 @@ class TestStreamResponseClean:
         assert calls[0].function.name == "read_file"
         assert _json.loads(calls[0].function.arguments) == {"path": "a.py"}
 
-    @pytest.mark.asyncio
     async def test_stream_breaks_on_repeated_content(self):
         """Stream breaks when same word repeats many times."""
         chunks = [self._mock_chunk(content="de-facto ")] * 15
@@ -233,7 +227,6 @@ class TestStreamResponseClean:
         # Should have fewer than all 15 (broken early)
         assert content.count("de-facto") < 15
 
-    @pytest.mark.asyncio
     async def test_repeated_reasoning_breaks_stream(self):
         """Stream breaks when same reasoning word repeats many times."""
         chunks = [self._mock_chunk(reasoning="de-facto ")] * 15
@@ -287,7 +280,6 @@ class TestStreamStallWatchdog:
         c.llm.stream_ttft_seconds = stall_s
         return c
 
-    @pytest.mark.asyncio
     async def test_stall_raises_after_timeout(self):
         chunk = MagicMock()
         chunk.usage = None
@@ -301,7 +293,6 @@ class TestStreamStallWatchdog:
             await _stream_response(client, cfg, [], [], on_token=lambda t: None)
         assert stream.closed is True  # stream closed → server slot freed
 
-    @pytest.mark.asyncio
     async def test_no_watchdog_when_disabled(self):
         # stall_seconds=0 disables the watchdog; a normal finite stream still works
         c = self._config(stall_s=0)
@@ -329,7 +320,6 @@ class TestStreamStallWatchdog:
         chunk.choices = [choice]
         return chunk
 
-    @pytest.mark.asyncio
     async def test_ttft_fuse_independent_of_inter_chunk(self):
         # Before the first token, the generous TTFT budget governs — NOT the tight
         # inter-chunk stall. A long prefill must not false-trip the mid-stream fuse.
@@ -346,7 +336,6 @@ class TestStreamStallWatchdog:
             await _stream_response(client, c, [], [], on_token=lambda t: None)
         assert stream.closed is True
 
-    @pytest.mark.asyncio
     async def test_heartbeat_fires_while_waiting(self):
         c = Config()
         c.llm.think_level = "off"

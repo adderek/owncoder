@@ -51,7 +51,6 @@ class _StubClient:
         self.chat = SimpleNamespace(completions=_StubCompletions())
 
 
-@pytest.mark.asyncio
 async def test_tool_call_logged_to_sidelog(monkeypatch, tmp_path):
     cfg = Config()
     cfg.llm.max_iterations = 5
@@ -98,7 +97,6 @@ async def test_tool_call_logged_to_sidelog(monkeypatch, tmp_path):
     assert isinstance(rec["duration_ms"], (int, float)) and rec["duration_ms"] >= 0.0
 
 
-@pytest.mark.asyncio
 async def test_tool_detail_screen_survives_markup_in_result(tmp_path):
     """Web/tool results contain [..] and <tags>; the detail modal must render
     them as plain text (markup=False), never crash with rich MarkupError."""
@@ -149,7 +147,6 @@ async def test_tool_detail_screen_survives_markup_in_result(tmp_path):
         await pilot.app.action_quit()
 
 
-@pytest.mark.asyncio
 async def test_turn_detail_screen_with_dict_modified_files(tmp_path):
     """modified_files entries are dicts ({path,added,removed}); the turn detail
     screen must dedup/render them without raising TypeError (dict.fromkeys on a

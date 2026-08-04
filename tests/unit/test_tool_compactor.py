@@ -16,7 +16,6 @@ def _cfg() -> Config:
     return c
 
 
-@pytest.mark.asyncio
 async def test_braces_in_result_not_doubled_in_prompt():
     """Result is a format *value*, so its braces must reach the compactor
     verbatim — never doubled to {{ }} (which corrupts JSON results)."""
@@ -36,7 +35,6 @@ async def test_braces_in_result_not_doubled_in_prompt():
     assert compacted == "2 matches: a.py, b.py"
 
 
-@pytest.mark.asyncio
 async def test_skips_short_results():
     cfg = _cfg()
     cfg.tool_compaction.min_length_to_compact = 500
@@ -47,7 +45,6 @@ async def test_skips_short_results():
     client.chat.completions.create.assert_not_called()
 
 
-@pytest.mark.asyncio
 async def test_no_shrink_keeps_original():
     cfg = _cfg()
     raw = "x" * 100
@@ -57,7 +54,6 @@ async def test_no_shrink_keeps_original():
     assert info["reason"] == "no_shrink"
 
 
-@pytest.mark.asyncio
 async def test_bad_prompt_template_falls_back(tmp_path):
     """A custom prompt with literal braces (e.g. a JSON example) makes
     str.format raise. compact_result must fall back to the raw result rather

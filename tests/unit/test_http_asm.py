@@ -55,31 +55,26 @@ async def _run(cfg, arg):
 
 
 class TestHttpCommand:
-    @pytest.mark.asyncio
     async def test_status_reports_the_flag_and_the_usage(self):
         out = await _run(_Cfg(enabled=False), "")
         assert "disabled" in out[0]["text"] and ASM_USAGE in out[0]["text"]
 
-    @pytest.mark.asyncio
     async def test_it_can_be_enabled_from_the_browser(self):
         cfg = _Cfg(enabled=False)
         out = await _run(cfg, "on")
         assert cfg.asm.enabled is True
         assert "enabled" in out[0]["text"]
 
-    @pytest.mark.asyncio
     async def test_enabling_says_it_does_not_persist(self):
         """A flag flipped to try one file must not become the project setting."""
         out = await _run(_Cfg(), "on")
         assert "persist" in out[0]["text"]
 
-    @pytest.mark.asyncio
     async def test_off_turns_it_back_off(self):
         cfg = _Cfg(enabled=True)
         await _run(cfg, "off")
         assert cfg.asm.enabled is False
 
-    @pytest.mark.asyncio
     async def test_stop_sets_the_interrupt_flag(self):
         from agent.tools.analyze_asm import get_interrupt_flag
         flag = get_interrupt_flag()
@@ -88,7 +83,6 @@ class TestHttpCommand:
         assert flag.is_set() and "resume" in out[0]["text"]
         flag.clear()
 
-    @pytest.mark.asyncio
     async def test_bad_arguments_never_start_a_run(self, monkeypatch):
         called = []
         monkeypatch.setattr("agent.tools.analyze_asm.analyze_asm",
@@ -96,7 +90,6 @@ class TestHttpCommand:
         out = await _run(_Cfg(enabled=True), "boot.asm --levels x")
         assert not called and out[-1].get("error")
 
-    @pytest.mark.asyncio
     async def test_a_run_reports_the_result(self, monkeypatch):
         monkeypatch.setattr("agent.tools.analyze_asm.analyze_asm",
                             lambda **kw: {"message": "done: 12 chunks"})
@@ -104,14 +97,12 @@ class TestHttpCommand:
         assert "analysing boot.asm" in out[0]["text"]
         assert out[-1]["text"] == "done: 12 chunks"
 
-    @pytest.mark.asyncio
     async def test_the_tools_error_reaches_the_browser(self, monkeypatch):
         monkeypatch.setattr("agent.tools.analyze_asm.analyze_asm",
                             lambda **kw: {"error": "Assembly analysis is disabled."})
         out = await _run(_Cfg(enabled=True), "boot.asm")
         assert out[-1]["error"] and "disabled" in out[-1]["text"]
 
-    @pytest.mark.asyncio
     async def test_the_progress_hook_is_released_after_a_failure(self, monkeypatch):
         """A left-behind callback would keep publishing into a dead stream."""
         import sys

@@ -61,7 +61,6 @@ def test_role_candidates_orphan_primary_falls_back_to_role_name():
     assert cands == [("verify", entry)]
 
 
-@pytest.mark.asyncio
 async def test_call_role_with_failover_switches_on_rate_limit(monkeypatch):
     from openai import RateLimitError
 
@@ -107,7 +106,6 @@ async def test_call_role_with_failover_switches_on_rate_limit(monkeypatch):
     assert is_rate_limited("http://a", "ma")
 
 
-@pytest.mark.asyncio
 async def test_call_role_with_failover_raises_when_all_candidates_fail(monkeypatch):
     entries = {"a": ModelEntry(base_url="http://a", model="ma", tier="local")}
     cfg = _cfg(entries, roles={"verify": "a"})
@@ -122,7 +120,6 @@ async def test_call_role_with_failover_raises_when_all_candidates_fail(monkeypat
             cfg, "verify", messages=[{"role": "user", "content": "hi"}])
 
 
-@pytest.mark.asyncio
 async def test_open_stream_with_failover_switches_on_connection_error(monkeypatch):
     from openai import APIConnectionError
 

@@ -72,7 +72,6 @@ def _fake_verify_sequence(results):
     return _fn, calls
 
 
-@pytest.mark.asyncio
 async def test_verify_disabled_no_subprocess_run(monkeypatch):
     cfg = Config()
     assert cfg.verify.enabled is False  # default
@@ -91,7 +90,6 @@ async def test_verify_disabled_no_subprocess_run(monkeypatch):
     assert "finished" in response
 
 
-@pytest.mark.asyncio
 async def test_no_edits_verify_not_run(monkeypatch):
     cfg = Config()
     cfg.verify.enabled = True
@@ -109,7 +107,6 @@ async def test_no_edits_verify_not_run(monkeypatch):
     assert "nothing changed" in response
 
 
-@pytest.mark.asyncio
 async def test_read_only_tool_does_not_set_dirty(monkeypatch):
     cfg = Config()
     cfg.verify.enabled = True
@@ -129,7 +126,6 @@ async def test_read_only_tool_does_not_set_dirty(monkeypatch):
     assert "looked around" in response
 
 
-@pytest.mark.asyncio
 async def test_verify_fails_then_passes_continues_turn(monkeypatch):
     cfg = Config()
     cfg.verify.enabled = True
@@ -157,7 +153,6 @@ async def test_verify_fails_then_passes_continues_turn(monkeypatch):
     assert "exit 1" in verify_notes[0]["content"]
 
 
-@pytest.mark.asyncio
 async def test_verify_fails_max_attempts_ends_turn(monkeypatch):
     cfg = Config()
     cfg.verify.enabled = True
@@ -180,7 +175,6 @@ async def test_verify_fails_max_attempts_ends_turn(monkeypatch):
     assert "failing" in response.lower()
 
 
-@pytest.mark.asyncio
 async def test_verify_timeout_treated_as_failure(monkeypatch):
     cfg = Config()
     cfg.verify.enabled = True
@@ -208,7 +202,6 @@ async def test_verify_timeout_treated_as_failure(monkeypatch):
     assert "failing" in response.lower()
 
 
-@pytest.mark.asyncio
 async def test_a_failing_verify_is_announced_while_it_happens(monkeypatch):
     """The note goes into history, so the live view has to hear about it too.
 

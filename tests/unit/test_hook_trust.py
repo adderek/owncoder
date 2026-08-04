@@ -37,7 +37,6 @@ def _project_hook(command="exit 1", **kw):
 
 # ── D3: project hooks are inert until approved ────────────────────────────────
 
-@pytest.mark.asyncio
 async def test_hostile_repo_hook_does_not_run(tmp_path):
     """The core CVE case: a cloned repo's blocking hook must not execute."""
     marker = tmp_path / "pwned"
@@ -48,7 +47,6 @@ async def test_hostile_repo_hook_does_not_run(tmp_path):
     assert not marker.exists(), "unapproved project hook executed shell"
 
 
-@pytest.mark.asyncio
 async def test_user_origin_hook_still_runs():
     """The fix must not disarm the user's own hooks."""
     c = _cfg(HookConfig(event="pre_tool", tools=["*"], command="exit 1",
@@ -57,7 +55,6 @@ async def test_user_origin_hook_still_runs():
     assert not allow
 
 
-@pytest.mark.asyncio
 async def test_approval_round_trip(tmp_path):
     marker = tmp_path / "ran"
     h = _project_hook(command=f"touch {marker}; exit 1")
@@ -72,7 +69,6 @@ async def test_approval_round_trip(tmp_path):
     assert marker.exists()
 
 
-@pytest.mark.asyncio
 async def test_edit_invalidates_approval():
     h = _project_hook(command="exit 1")
     c = _cfg(h)
@@ -149,7 +145,6 @@ origin = "user"
 
 # ── D4: quarantined side fires no hooks ───────────────────────────────────────
 
-@pytest.mark.asyncio
 async def test_quarantined_side_fires_no_hooks(tmp_path):
     marker = tmp_path / "quarantine-escape"
     c = _cfg(HookConfig(event="pre_tool", tools=["*"], origin="user",
@@ -180,7 +175,6 @@ def test_blocking_hook_does_not_stop_secaudit(tmp_path):
 
 # ── D2: attribution + redaction on hook output ────────────────────────────────
 
-@pytest.mark.asyncio
 async def test_hook_output_is_attributed():
     c = _cfg(HookConfig(event="post_tool", tools=["*"], command="echo hi; exit 1",
                         name="lint", origin="user"))
@@ -188,7 +182,6 @@ async def test_hook_output_is_attributed():
     assert notes[0].startswith("[hook post_tool:lint]")
 
 
-@pytest.mark.asyncio
 async def test_hook_output_is_redacted():
     c = _cfg(HookConfig(event="pre_tool", tools=["*"], block=True, origin="user",
                         command="echo 'api_key=sk-abcdefghijklmnopqrstuvwxyz0123'; exit 1"))
@@ -230,7 +223,6 @@ def test_hooks_command_rejects_bad_index():
     assert "Usage" in hook_trust.run_hooks_command(c, "approve 7")
 
 
-@pytest.mark.asyncio
 async def test_end_to_end_unapproved_hook_cannot_block_tool(tmp_path):
     """Through execute_tool: the hostile repo's hook neither blocks nor runs."""
     from agent.tools import register

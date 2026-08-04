@@ -439,7 +439,6 @@ class TestTruncateLargeMessages:
 class TestCompactMessagesForwarding:
     """compact_messages must persist Tier-2 facts, like idle/auto compaction."""
 
-    @pytest.mark.asyncio
     async def test_forwards_stores_to_compact(self, monkeypatch):
         import types
         import agent.memory.compactor as comp

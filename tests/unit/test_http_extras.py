@@ -151,7 +151,6 @@ class _FakeInner:
         self.injected.append(text)
 
 
-@pytest.mark.asyncio
 async def test_sidecar_server_fanouts_events_and_tracks_busy():
     from agent.ui.http_sidecar import _SidecarServer
 
@@ -187,7 +186,6 @@ async def test_sidecar_server_fanouts_events_and_tracks_busy():
     assert types[-1] == "state" and events[-1]["state"] == "idle"
 
 
-@pytest.mark.asyncio
 async def test_sidecar_server_delegates_unknown_attrs_to_inner():
     from agent.ui.http_sidecar import _SidecarServer
 
@@ -213,7 +211,6 @@ def _perm_events(wrapped, q):
     return [e for e in out if e["type"].startswith("permission")]
 
 
-@pytest.mark.asyncio
 async def test_permission_prompt_is_published_and_answered():
     from agent.ui.http_sidecar import _SidecarServer
 
@@ -235,7 +232,6 @@ async def test_permission_prompt_is_published_and_answered():
     assert done[-1] == {"type": "permission_done", "choice": "allow"}
 
 
-@pytest.mark.asyncio
 async def test_an_unknown_choice_is_refused_rather_than_becoming_a_denial():
     from agent.ui.http_sidecar import _SidecarServer
 
@@ -256,7 +252,6 @@ def test_answering_when_nothing_is_pending_is_refused():
     assert wrapped.permission_choice("allow") is False
 
 
-@pytest.mark.asyncio
 async def test_no_answer_within_the_window_fails_closed():
     from agent.ui.http_sidecar import _SidecarServer
 
@@ -267,7 +262,6 @@ async def test_no_answer_within_the_window_fails_closed():
     assert wrapped.permission_fut is None        # state cleared for the next prompt
 
 
-@pytest.mark.asyncio
 async def test_the_timeout_comes_from_the_permissions_config():
     from agent.ui.http_sidecar import _SidecarServer
 

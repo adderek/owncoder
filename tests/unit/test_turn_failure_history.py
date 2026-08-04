@@ -30,7 +30,6 @@ def _fail_with(monkeypatch, exc: BaseException):
     monkeypatch.setattr(agent_mod, "run_turn", _boom)
 
 
-@pytest.mark.asyncio
 async def test_the_question_survives_a_failed_turn(agent_in, monkeypatch):
     _fail_with(monkeypatch, RuntimeError("model died"))
     with pytest.raises(RuntimeError):
@@ -43,7 +42,6 @@ async def test_the_question_survives_a_failed_turn(agent_in, monkeypatch):
     assert "model died" in tail[1]["content"]
 
 
-@pytest.mark.asyncio
 async def test_a_stopped_turn_says_stopped_not_crashed(agent_in, monkeypatch):
     _fail_with(monkeypatch, asyncio.CancelledError())
     with pytest.raises(asyncio.CancelledError):
@@ -52,7 +50,6 @@ async def test_a_stopped_turn_says_stopped_not_crashed(agent_in, monkeypatch):
     assert agent_in.messages[-1]["content"] == "[turn did not finish: stopped]"
 
 
-@pytest.mark.asyncio
 async def test_the_next_turn_still_starts_from_an_assistant_reply(agent_in, monkeypatch):
     """Two user messages in a row is the 400 deadloop the rollback existed to
     avoid, so the note is what separates this question from the next one."""
@@ -128,7 +125,6 @@ class TestTheWorkIsKept:
         assert seen == [marker]
 
 
-@pytest.mark.asyncio
 async def test_chat_keeps_what_the_stopped_turn_had_done(agent_in, monkeypatch):
     """End to end: the sink is passed in, filled, and used when the turn dies."""
     async def _boom(*a, **kw):

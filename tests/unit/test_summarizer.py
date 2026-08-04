@@ -62,7 +62,6 @@ def _fake_registry(monkeypatch, cfg):
     monkeypatch.setattr("agent.config.make_registry", lambda c: reg)
 
 
-@pytest.mark.asyncio
 async def test_primary_success_no_fallback(monkeypatch, cfg):
     client = _FakeClient(tokens=["hello ", "world"])
     monkeypatch.setattr("agent.core.llm_client.make_llm_client",
@@ -72,7 +71,6 @@ async def test_primary_success_no_fallback(monkeypatch, cfg):
     assert client.closed is True
 
 
-@pytest.mark.asyncio
 async def test_primary_failure_falls_back_to_failover(monkeypatch, cfg):
     from openai import APIConnectionError
     failing_client = _FakeClient(raise_on_create=APIConnectionError(request=types.SimpleNamespace()))
@@ -93,7 +91,6 @@ async def test_primary_failure_falls_back_to_failover(monkeypatch, cfg):
     assert fallback_client.closed is True
 
 
-@pytest.mark.asyncio
 async def test_airgap_honored_on_fallback(monkeypatch, cfg):
     from openai import APIConnectionError
     failing_client = _FakeClient(raise_on_create=APIConnectionError(request=types.SimpleNamespace()))
@@ -114,7 +111,6 @@ async def test_airgap_honored_on_fallback(monkeypatch, cfg):
     assert seen_local_only["value"] is True
 
 
-@pytest.mark.asyncio
 async def test_gpu_slot_semaphore_unchanged_when_primary_succeeds(monkeypatch, cfg):
     """Primary path must not route through open_stream_with_failover at all
     when it succeeds — the GPU-aware pick stays untouched by W7."""

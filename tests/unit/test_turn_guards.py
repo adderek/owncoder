@@ -105,7 +105,6 @@ def _stub_tools(monkeypatch, execute):
 
 # ── 429 handling ────────────────────────────────────────────────────────────
 
-@pytest.mark.asyncio
 async def test_rate_limit_retries_then_succeeds(monkeypatch):
     cfg = _base_cfg()
     cfg.llm.rate_limit_retries = 3
@@ -122,7 +121,6 @@ async def test_rate_limit_retries_then_succeeds(monkeypatch):
     assert client.chat.completions.calls >= 3
 
 
-@pytest.mark.asyncio
 async def test_rate_limit_exhausted_raises_without_failover(monkeypatch):
     cfg = _base_cfg()
     cfg.llm.rate_limit_retries = 1
@@ -142,7 +140,6 @@ async def test_rate_limit_exhausted_raises_without_failover(monkeypatch):
 
 # ── error-streak guard ──────────────────────────────────────────────────────
 
-@pytest.mark.asyncio
 async def test_error_streak_stops_turn(monkeypatch):
     cfg = _base_cfg()
     cfg.loop_guard.error_streak_threshold = 3
@@ -160,7 +157,6 @@ async def test_error_streak_stops_turn(monkeypatch):
     assert client.chat.completions.calls == 3
 
 
-@pytest.mark.asyncio
 async def test_error_streak_resets_on_success(monkeypatch):
     cfg = _base_cfg()
     cfg.loop_guard.error_streak_threshold = 2
@@ -203,7 +199,6 @@ def test_name_cap_acknowledge_silences():
     assert d.name_capped("web_search", d.observe_name("web_search")) is False
 
 
-@pytest.mark.asyncio
 async def test_name_cap_stops_rephrased_calls(monkeypatch):
     cfg = _base_cfg()
     cfg.loop_guard.error_streak_threshold = 0  # isolate the name cap

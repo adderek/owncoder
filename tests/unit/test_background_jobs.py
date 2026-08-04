@@ -6,7 +6,6 @@ import pytest
 from agent.core import background
 
 
-@pytest.mark.asyncio
 async def test_register_list_cancel_task():
     async def sleeper():
         await asyncio.sleep(30)
@@ -21,7 +20,6 @@ async def test_register_list_cancel_task():
     assert not [j for j in background.jobs() if j["label"] == "test-sleeper"]
 
 
-@pytest.mark.asyncio
 async def test_external_job_visible_not_killable():
     jid = background.register_external("sched:test (every 6h)", "scheduler")
     try:
@@ -38,7 +36,6 @@ def test_cancel_unknown_job():
     assert not background.cancel(999999)
 
 
-@pytest.mark.asyncio
 async def test_answer_latest_unblocks_broker_ask():
     """UI answer resolves a turn blocked in NotifyBroker.ask (remote_answers +
     on_timeout='wait') instead of deadlocking the session."""

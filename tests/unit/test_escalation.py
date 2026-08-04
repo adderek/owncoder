@@ -165,7 +165,6 @@ def test_remote_strong_allowed_when_not_local_only():
 
 # ── loop-guard escalation through run_turn ───────────────────────────────────
 
-@pytest.mark.asyncio
 async def test_loop_guard_escalates_instead_of_stopping(monkeypatch):
     cfg = _tiered_config()
     cfg.loop_guard.repeat_threshold = 3
@@ -192,7 +191,6 @@ async def test_loop_guard_escalates_instead_of_stopping(monkeypatch):
     assert "strong-model" in injected[0]["content"]
 
 
-@pytest.mark.asyncio
 async def test_loop_guard_stops_when_auto_tier_disabled(monkeypatch):
     cfg = _tiered_config()
     cfg.auto_tier.enabled = False
@@ -214,7 +212,6 @@ async def test_loop_guard_stops_when_auto_tier_disabled(monkeypatch):
     assert cfg.llm.model == "fast-model"  # untouched
 
 
-@pytest.mark.asyncio
 async def test_loop_guard_privacy_gate_stops_turn(monkeypatch):
     # Real escalate_mid_turn returns None (remote strong + local-only) -> stop.
     cfg = _tiered_config(strong_local=False)
@@ -234,7 +231,6 @@ async def test_loop_guard_privacy_gate_stops_turn(monkeypatch):
 
 # ── verify-fail escalation ───────────────────────────────────────────────────
 
-@pytest.mark.asyncio
 async def test_verify_fail_escalates_before_fix_round(monkeypatch):
     cfg = _tiered_config()
     cfg.verify.enabled = True
@@ -267,7 +263,6 @@ async def test_verify_fail_escalates_before_fix_round(monkeypatch):
     assert any("switching to a stronger model" in m["content"] for m in verify_notes)
 
 
-@pytest.mark.asyncio
 async def test_only_one_escalation_per_turn(monkeypatch):
     # Loop guard escalates first; a later verify failure must not escalate again.
     cfg = _tiered_config()
@@ -292,7 +287,6 @@ async def test_only_one_escalation_per_turn(monkeypatch):
     assert counter["n"] == 1  # loop guard escalated; verify did not re-escalate
 
 
-@pytest.mark.asyncio
 async def test_read_guard_escalation_keeps_tool_pairing(monkeypatch):
     """Escalation at the read_file hard ceiling must not orphan tool_calls.
 

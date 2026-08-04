@@ -49,7 +49,6 @@ def _fake_llm(monkeypatch):
     return _install
 
 
-@pytest.mark.asyncio
 async def test_generate_writes_and_loads(tmp_path, _fake_llm):
     _fake_llm(["Hello ", "world"])
     entries = [(1, {"content": "q1"}, {"content": "a1"})]
@@ -60,7 +59,6 @@ async def test_generate_writes_and_loads(tmp_path, _fake_llm):
     assert stored["summarized_up_to_turn"] == 1
 
 
-@pytest.mark.asyncio
 async def test_generate_closes_client(tmp_path, _fake_llm):
     client = _fake_llm(["ok"])
     entries = [(1, {"content": "q1"}, {"content": "a1"})]
@@ -68,6 +66,5 @@ async def test_generate_closes_client(tmp_path, _fake_llm):
     assert client.closed is True
 
 
-@pytest.mark.asyncio
 async def test_generate_no_entries_short_circuits(tmp_path):
     assert await sumr.generate(tmp_path, [], "q", object()) == ""

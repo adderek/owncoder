@@ -141,7 +141,6 @@ def _client_returning(*outputs: str):
 
 
 class TestTwoStageCompact:
-    @pytest.mark.asyncio
     async def test_single_round_persists_tier2(self, cfg, tmp_path):
         """First compaction writes round-0001 with a knowledge draft,
         and the compacted message carries the stage-2 summary."""
@@ -181,7 +180,6 @@ class TestTwoStageCompact:
         # Draft content should stay Tier-2 only — never in the active message.
         assert stage1_draft not in compacted["content"]
 
-    @pytest.mark.asyncio
     async def test_incremental_round_feeds_previous_forward(self, cfg, tmp_path):
         """Second compaction round sees the prior draft + summary in the
         Stage-1 prompt, so facts accumulate instead of being re-derived (and gradually lost) each time."""
@@ -230,7 +228,6 @@ class TestTwoStageCompact:
         assert latest.knowledge_draft == stage1
         assert "baz.py" in latest.facts.get("files_modified", [])
 
-    @pytest.mark.asyncio
     async def test_compact_without_facts_store_still_works(self, cfg):
         """Back-compat: calls with no facts_store behave like before."""
         stage1 = "draft"
@@ -242,7 +239,6 @@ class TestTwoStageCompact:
 
 
 class TestCompactionRobustness:
-    @pytest.mark.asyncio
     async def test_looks_complete(self):
         from agent.memory.compactor import _looks_complete
 
@@ -250,7 +246,6 @@ class TestCompactionRobustness:
         assert _looks_complete("<facts>{}</facts><summary>s</summary>") is False
         assert _looks_complete("<summary>s</summary><q>q</q>") is False
 
-    @pytest.mark.asyncio
     async def test_synthesize_summary_retry_on_length(self, cfg):
         from agent.memory.compactor import _synthesize_summary
 
@@ -268,7 +263,6 @@ class TestCompactionRobustness:
         assert q == "q"
         assert client.chat.completions.create.await_count == 2
 
-    @pytest.mark.asyncio
     async def test_synthesize_summary_retry_on_incomplete(self, cfg):
         from agent.memory.compactor import _synthesize_summary
 
@@ -281,7 +275,6 @@ class TestCompactionRobustness:
         assert facts == {"a": 1}
         assert client.chat.completions.create.await_count == 2
 
-    @pytest.mark.asyncio
     async def test_synthesize_summary_fails_after_retry(self, cfg):
         from agent.memory.compactor import _synthesize_summary, CompactionError
 
@@ -295,7 +288,6 @@ class TestCompactionRobustness:
         ):
             await _synthesize_summary("draft", cfg, client)
 
-    @pytest.mark.asyncio
     async def test_analyze_transcript_stage1_failure_returns_placeholder(self, cfg):
         """Stage 1 failure must return a safe placeholder, not the raw transcript."""
         from agent.memory.compactor import _analyze_transcript
@@ -311,7 +303,6 @@ class TestCompactionRobustness:
         assert "[COMPACTION_ERROR" in result
         assert long_transcript not in result
 
-    @pytest.mark.asyncio
     async def test_analyze_transcript_stage1_failure_preserves_prev_knowledge(self, cfg):
         """Previous round's knowledge_draft is kept as prefix even when Stage 1 fails."""
         from agent.memory.compactor import _analyze_transcript
@@ -334,7 +325,6 @@ class TestCompactionRobustness:
         assert "[COMPACTION_ERROR" in result
         assert long_transcript not in result
 
-    @pytest.mark.asyncio
     async def test_compact_fallback_on_compaction_error(self, cfg, tmp_path):
         from agent.memory.compactor import compact, CompactionError
         from agent.memory.facts_store import FactsStore
@@ -360,7 +350,6 @@ class TestCompactionRobustness:
             == "[SESSION SUMMARY ERROR: stage 2 call failed: LLM error]"
         )
 
-    @pytest.mark.asyncio
     async def test_verbatim_tail_does_not_start_with_orphan_tool(self, cfg, tmp_path):
         """If the verbatim window would begin on a tool result whose assistant
         (tool_calls) got compacted away, that result must be pushed into the
@@ -399,7 +388,6 @@ class TestCheckGoalDrift:
     routes through core.llm_retry.call_role_with_failover instead of a bare,
     single-attempt AsyncOpenAI() client."""
 
-    @pytest.mark.asyncio
     async def test_returns_corrected_q_on_drift(self, cfg, monkeypatch):
         from agent.config.models import ModelEntry
         cfg.model_entries = {"default": ModelEntry(base_url="http://x/v1", model="m")}
@@ -415,7 +403,6 @@ class TestCheckGoalDrift:
         out = await _check_goal_drift("original goal", "current q", cfg, MagicMock())
         assert out == "fixed goal"
 
-    @pytest.mark.asyncio
     async def test_never_raises_when_no_model_configured(self, cfg):
         cfg.model_entries = {}
         out = await _check_goal_drift("original goal", "current q", cfg, MagicMock())

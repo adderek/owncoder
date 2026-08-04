@@ -101,7 +101,6 @@ class _StubClient:
         self.chat = SimpleNamespace(completions=_StubCompletions(tool_calls))
 
 
-@pytest.mark.asyncio
 async def test_run_turn_stops_on_loop_with_no_callback(monkeypatch):
     cfg = Config()
     cfg.loop_guard.repeat_threshold = 3
@@ -123,7 +122,6 @@ async def test_run_turn_stops_on_loop_with_no_callback(monkeypatch):
     assert sum(1 for m in out_messages if m.get("role") == "tool") < cfg.llm.max_iterations
 
 
-@pytest.mark.asyncio
 async def test_run_turn_continues_when_callback_returns_true(monkeypatch):
     cfg = Config()
     cfg.loop_guard.repeat_threshold = 3

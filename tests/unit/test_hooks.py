@@ -13,7 +13,6 @@ def _cfg(*entries):
     return c
 
 
-@pytest.mark.asyncio
 async def test_pre_hook_blocks_on_nonzero():
     c = _cfg(HookConfig(event="pre_tool", tools=["edit_file"],
                         command="echo bad; exit 1", block=True, name="deny"))
@@ -22,7 +21,6 @@ async def test_pre_hook_blocks_on_nonzero():
     assert "deny" in msg and "bad" in msg
 
 
-@pytest.mark.asyncio
 async def test_pre_hook_nonblocking_allows_despite_nonzero():
     c = _cfg(HookConfig(event="pre_tool", tools=["*"],
                         command="exit 5", block=False))
@@ -30,7 +28,6 @@ async def test_pre_hook_nonblocking_allows_despite_nonzero():
     assert allow
 
 
-@pytest.mark.asyncio
 async def test_pre_hook_only_matching_tools():
     c = _cfg(HookConfig(event="pre_tool", tools=["edit_file"],
                         command="exit 1", block=True))
@@ -38,7 +35,6 @@ async def test_pre_hook_only_matching_tools():
     assert allow  # no matching hook
 
 
-@pytest.mark.asyncio
 async def test_post_hook_notes_on_nonzero():
     c = _cfg(HookConfig(event="post_tool", tools=["*"],
                         command="echo lint-warn; exit 1", name="lint"))
@@ -46,14 +42,12 @@ async def test_post_hook_notes_on_nonzero():
     assert notes and "lint" in notes[0] and "lint-warn" in notes[0]
 
 
-@pytest.mark.asyncio
 async def test_post_hook_silent_on_success():
     c = _cfg(HookConfig(event="post_tool", tools=["*"], command="true"))
     notes = await hooks.run_post_tool(c, "edit_file", {}, "{}")
     assert notes == []
 
 
-@pytest.mark.asyncio
 async def test_env_tool_path_passed():
     c = _cfg(HookConfig(event="pre_tool", tools=["edit_file"],
                         command='test "$TOOL_PATH" = "a.py"', block=True))
@@ -62,7 +56,6 @@ async def test_env_tool_path_passed():
     assert ok_allow and not bad_allow
 
 
-@pytest.mark.asyncio
 async def test_disabled_section_is_noop():
     c = _cfg(HookConfig(event="pre_tool", tools=["*"], command="exit 1", block=True))
     c.hooks.enabled = False
@@ -70,7 +63,6 @@ async def test_disabled_section_is_noop():
     assert allow
 
 
-@pytest.mark.asyncio
 async def test_timeout_blocks_when_blocking():
     c = _cfg(HookConfig(event="pre_tool", tools=["*"],
                         command="sleep 5", block=True, timeout_s=0.3))
@@ -78,14 +70,12 @@ async def test_timeout_blocks_when_blocking():
     assert not allow and "timed out" in msg
 
 
-@pytest.mark.asyncio
 async def test_none_config_is_noop():
     allow, _ = await hooks.run_pre_tool(None, "edit_file", {})
     assert allow
     assert await hooks.run_post_tool(None, "edit_file", {}, "{}") == []
 
 
-@pytest.mark.asyncio
 async def test_end_to_end_through_execute_tool():
     from agent.tools import register
     from agent.core.tool_calls import execute_tool

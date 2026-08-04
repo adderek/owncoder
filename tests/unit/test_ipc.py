@@ -30,7 +30,6 @@ from agent.ipc.controller import run_turn_ipc
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_local_transport_send_receive():
     t = LocalTransport()
     t.send_nowait(TokenEvent("hello"))
@@ -44,7 +43,6 @@ async def test_local_transport_send_receive():
     assert received == [TokenEvent("hello"), TokenEvent("world")]
 
 
-@pytest.mark.asyncio
 async def test_local_transport_close_ends_iteration():
     t = LocalTransport()
     await t.close()
@@ -52,7 +50,6 @@ async def test_local_transport_close_ends_iteration():
     assert received == []
 
 
-@pytest.mark.asyncio
 async def test_local_transport_multiple_types():
     t = LocalTransport()
     t.send_nowait(PhaseEvent("start"))
@@ -69,7 +66,6 @@ async def test_local_transport_multiple_types():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_loop_detected_resolve_true():
     evt = LoopDetectedEvent(
         summary="read_file×3",
@@ -80,7 +76,6 @@ async def test_loop_detected_resolve_true():
     assert await evt.wait() is True
 
 
-@pytest.mark.asyncio
 async def test_loop_detected_resolve_false():
     evt = LoopDetectedEvent(
         summary="read_file×3",
@@ -91,13 +86,11 @@ async def test_loop_detected_resolve_false():
     assert await evt.wait() is False
 
 
-@pytest.mark.asyncio
 async def test_loop_detected_no_decision_returns_false():
     evt = LoopDetectedEvent(summary="x", max_count=1)
     assert await evt.wait() is False
 
 
-@pytest.mark.asyncio
 async def test_loop_detected_resolve_idempotent():
     evt = LoopDetectedEvent(
         summary="x",
@@ -155,7 +148,6 @@ def _stub_client(*responses):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_run_turn_ipc_collects_tokens(monkeypatch):
     """Tokens from streaming reach on_token callback via IPC layer."""
     from agent.config import Config
@@ -188,7 +180,6 @@ async def test_run_turn_ipc_collects_tokens(monkeypatch):
     assert tokens == ["hello", " world"]
 
 
-@pytest.mark.asyncio
 async def test_run_turn_ipc_collects_phases(monkeypatch):
     from agent.config import Config
 
@@ -214,7 +205,6 @@ async def test_run_turn_ipc_collects_phases(monkeypatch):
     assert phases == [("start", "iter 1"), ("done", "")]
 
 
-@pytest.mark.asyncio
 async def test_run_turn_ipc_propagates_exception(monkeypatch):
     from agent.config import Config
 
@@ -233,7 +223,6 @@ async def test_run_turn_ipc_propagates_exception(monkeypatch):
         )
 
 
-@pytest.mark.asyncio
 async def test_run_turn_ipc_tool_events(monkeypatch):
     from agent.config import Config
 
@@ -265,7 +254,6 @@ async def test_run_turn_ipc_tool_events(monkeypatch):
     assert results == [("read_file", True)]
 
 
-@pytest.mark.asyncio
 async def test_run_turn_ipc_usage_forwarded(monkeypatch):
     from agent.config import Config
 
@@ -295,7 +283,6 @@ async def test_run_turn_ipc_usage_forwarded(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_run_turn_ipc_loop_detected_stop(monkeypatch):
     """on_loop_detected returning False stops the worker correctly."""
     from agent.config import Config
@@ -327,7 +314,6 @@ async def test_run_turn_ipc_loop_detected_stop(monkeypatch):
     assert decisions == [False]
 
 
-@pytest.mark.asyncio
 async def test_run_turn_ipc_loop_detected_continue(monkeypatch):
     """on_loop_detected returning True lets worker continue."""
     from agent.config import Config
@@ -358,7 +344,6 @@ async def test_run_turn_ipc_loop_detected_continue(monkeypatch):
     assert decisions == [True]
 
 
-@pytest.mark.asyncio
 async def test_run_turn_ipc_loop_detected_no_callback(monkeypatch):
     """No on_loop_detected callback → decision defaults to False."""
     from agent.config import Config
@@ -394,7 +379,6 @@ async def test_run_turn_ipc_loop_detected_no_callback(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_run_turn_ipc_truncation_forwarded(monkeypatch):
     from agent.config import Config
 

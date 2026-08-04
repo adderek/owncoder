@@ -41,7 +41,6 @@ def test_local_ui_server_satisfies_protocol():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_local_ui_server_chat_delegates():
     agent = _make_agent("hello world")
     server = LocalUIServer(agent)
@@ -60,7 +59,6 @@ async def test_local_ui_server_chat_delegates():
     assert call_kwargs.kwargs["on_token"] is not None
 
 
-@pytest.mark.asyncio
 async def test_local_ui_server_chat_all_callbacks():
     agent = _make_agent("done")
     server = LocalUIServer(agent)
@@ -117,7 +115,6 @@ def test_cancel_background_delegates():
     agent.cancel_background.assert_called_once()
 
 
-@pytest.mark.asyncio
 async def test_wait_background_delegates():
     agent = _make_agent()
     server = LocalUIServer(agent)
@@ -207,7 +204,6 @@ def test_reset_messages_delegates():
     agent.reset_messages.assert_called_once()
 
 
-@pytest.mark.asyncio
 async def test_compact_messages_delegates():
     agent = _make_agent()
     agent.compact_messages = AsyncMock()

@@ -32,7 +32,6 @@ def _notes():
             {"id": "n2", "title": "B", "body": "uses redis"}]
 
 
-@pytest.mark.asyncio
 async def test_returns_ids_the_model_names(monkeypatch, cfg):
     reply = _fake_response('["n1"]')
     client = MagicMock()
@@ -45,7 +44,6 @@ async def test_returns_ids_the_model_names(monkeypatch, cfg):
     assert ids == ["n1"]
 
 
-@pytest.mark.asyncio
 async def test_falls_back_to_heuristic_on_error(monkeypatch, cfg):
     def _boom(c, base_url="", api_key=""):
         raise RuntimeError("down")
@@ -56,6 +54,5 @@ async def test_falls_back_to_heuristic_on_error(monkeypatch, cfg):
     assert isinstance(ids, list)
 
 
-@pytest.mark.asyncio
 async def test_empty_notes_short_circuits():
     assert await grade_notes("q", [], "answer", Config()) == []
