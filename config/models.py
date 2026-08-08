@@ -554,6 +554,15 @@ class PermissionsConfig:
     rules: list = field(default_factory=list)   # [[permissions.rules]] entries
     # Seconds to wait for an answer to an ask prompt before failing closed (deny).
     ask_timeout_s: float = 300.0
+    # Append security.permissions.builtin_rules() at the LOWEST precedence: a
+    # short `ask` list covering actions that cannot be undone or that leave this
+    # machine (force-push, remote branch deletion, publish, raw egress, sudo,
+    # scheduled work). Your own rules are evaluated first and override it.
+    #
+    # On by default because `rules = []` with `default = "allow"` meant this
+    # layer existed as a mechanism with no content: nothing was ever asked.
+    # Set false to opt out entirely; a project config may only turn it on.
+    builtin_rules: bool = True
 
 
 @dataclass

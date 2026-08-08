@@ -79,6 +79,94 @@ class TestEvaluate:
         assert perms.session_rules() == []
 
 
+class TestBuiltinBaseline:
+    """The default rule set. Before it, `rules = []` + `default = "allow"` meant
+    the policy layer never asked about anything."""
+
+    @pytest.mark.parametrize("argv", [
+        ["git", "push", "--force", "origin", "main"],
+        ["git", "push", "-f"],
+        ["git", "push", "--force-with-lease"],
+        ["git", "push", "--mirror", "origin"],
+        ["git", "push", "origin", "--delete", "old-branch"],
+        ["git", "push", "origin", ":old-branch"],
+        ["git", "filter-branch", "--all"],
+        ["git", "clean", "-fdx"],
+        ["git", "config", "core.hooksPath", ".githooks"],
+        ["sudo", "systemctl", "restart", "nginx"],
+        ["ssh", "box", "uptime"],
+        ["curl", "-X", "POST", "https://example.invalid/x"],
+        ["rm", "-rf", "build"],
+        ["rm", "-r", "-f", "build"],
+        ["npm", "publish"],
+        ["gh", "release", "create", "v1"],
+        ["terraform", "apply"],
+        ["kubectl", "delete", "pod", "x"],
+        ["crontab", "-e"],
+        ["/usr/bin/git", "push", "--force"],
+        ["bash", "-c", "git push --force origin main"],
+    ])
+    def test_irreversible_or_outbound_calls_ask(self, cfg, argv):
+        assert perms.evaluate("run_argv", {"argv": argv}, cfg).verdict == perms.ASK
+
+    @pytest.mark.parametrize("argv", [
+        ["ls", "-la"],
+        ["git", "status"],
+        ["git", "push", "origin", "main"],     # ordinary push: not destructive
+        ["git", "commit", "-m", "x"],
+        ["git", "reset", "--hard"],            # reflog + checkpoint journal recover it
+        ["git", "clean", "-n"],                # dry run
+        ["pytest", "-q"],
+        ["npm", "install"],
+        ["npm", "run", "build"],
+        ["rm", "stale.txt"],
+        ["rm", "-r", "build"],                 # recursive but not forced
+        ["grep", "-rf", "patterns", "src"],    # -rf on a tool that is not rm
+    ])
+    def test_everyday_calls_are_not_asked_about(self, cfg, argv):
+        """Alarm fatigue is the failure mode: a baseline that fires on routine
+        work teaches people to approve without reading."""
+        assert perms.evaluate("run_argv", {"argv": argv}, cfg).verdict == perms.ALLOW
+
+    def test_scheduling_and_command_deletion_ask(self, cfg):
+        assert perms.evaluate("schedule_task", {"spec": "@daily"}, cfg).verdict == perms.ASK
+        assert perms.evaluate("delete_command", {"name": "deploy"}, cfg).verdict == perms.ASK
+
+    def test_reading_secrets_is_left_to_the_fs_gate(self, cfg):
+        """Not in the baseline on purpose: read_deny_globs already refuses, and a
+        prompt for an already-blocked call is noise."""
+        assert perms.evaluate("read_file", {"path": ".env"}, cfg).verdict == perms.ALLOW
+
+    def test_configured_rules_win_over_the_baseline(self, cfg):
+        cfg.permissions.rules = [_rule("run_argv", perms.ALLOW, "git push*")]
+        d = perms.evaluate("run_argv", {"argv": ["git", "push", "--force"]}, cfg)
+        assert d.verdict == perms.ALLOW
+
+    def test_baseline_can_be_turned_off(self, cfg):
+        cfg.permissions.builtin_rules = False
+        assert perms.evaluate("run_argv", {"argv": ["git", "push", "--force"]},
+                              cfg).verdict == perms.ALLOW
+
+    def test_baseline_rules_are_all_valid(self, cfg):
+        for rule in perms.builtin_rules():
+            perms.validate_rule(rule, label="builtin")
+            assert rule.verdict == perms.ASK, "baseline must ask, never deny"
+            assert rule.reason, f"{rule.tool}: baseline rule with no reason"
+            assert rule.origin == "builtin"
+
+    def test_baseline_sits_last_in_precedence(self, cfg):
+        cfg.permissions.rules = [_rule("run_argv", perms.DENY, "git*")]
+        rules = perms.active_rules(cfg)
+        builtin_at = [i for i, r in enumerate(rules) if r.origin == "builtin"]
+        configured_at = [i for i, r in enumerate(rules) if r.origin == "config"]
+        assert min(builtin_at) > max(configured_at)
+
+    def test_unanswerable_asks_reports_the_baseline(self, cfg):
+        """`agent run` warns up front instead of failing at the call."""
+        perms.set_asker(None)
+        assert perms.unanswerable_asks(cfg)
+
+
 class TestBypasses:
     def test_security_suite_internal_calls_bypass(self, cfg):
         cfg.permissions.default = perms.DENY

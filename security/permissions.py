@@ -88,6 +88,78 @@ class PermissionConfigError(ValueError):
     """A malformed rule. Raised at config-load time: policy never degrades silently."""
 
 
+# ── built-in baseline ────────────────────────────────────────────────────────
+# Appended at the LOWEST precedence, after every configured rule, so anything
+# you write about the same call wins. Off with `[permissions] builtin_rules =
+# false`.
+#
+# Selection principle, and the only one: **an action nobody can undo, or one
+# whose effect leaves this machine.** Not "risky", not "advanced" — a rule that
+# fires on things people do fifty times a day trains them to approve without
+# reading, and then the rule set is worse than nothing.
+#
+# So this list deliberately does NOT cover: reading secret files (the fs
+# read-deny globs already refuse, and a second prompt for an already-blocked
+# call is pure noise), `git reset --hard` (the reflog and the checkpoint journal
+# both get it back), or ordinary web_fetch (gating the agent's own gated egress
+# tool costs utility and buys nothing the query gate does not already do).
+#
+# Verdict is `ask`, never `deny`: every one of these is something the owner
+# legitimately does. The point is that it surfaces, not that it is impossible.
+# With no interactive asker (`agent run`, CI) an `ask` resolves to deny —
+# `unanswerable_asks()` reports that up front rather than at the failing call.
+#
+# argv is matched as the joined command line, so `(?:^|[\s/])` catches both
+# `git` and `/usr/bin/git`, and also `bash -c "... git push --force"`.
+_BUILTIN: tuple[tuple[str, str, str], ...] = (
+    # (match, tool, reason)
+    (r"re:(?:^|[\s/])git\s+push\b.*(?:--force\b|--force-with-lease\b|(?<!-)-f\b|--mirror\b)",
+     "run_argv", "force-push overwrites remote history others may have pulled"),
+    (r"re:(?:^|[\s/])git\s+push\b.*(?:--delete\b|\s:\S)",
+     "run_argv", "deletes a remote branch"),
+    (r"re:(?:^|[\s/])git\s+(?:filter-branch|filter-repo)\b",
+     "run_argv", "rewrites history for every clone of this repo"),
+    (r"re:(?:^|[\s/])git\s+clean\b.*-\w*[fx]",
+     "run_argv", "deletes untracked files; git cannot get them back"),
+    (r"re:(?:^|[\s/])git\s+config\b.*(?:core\.hooksPath|alias\.|credential\.)",
+     "run_argv", "git config can install a hook or alias that runs later"),
+    (r"re:(?:^|[\s/])(?:sudo|doas|su)\b",
+     "run_argv", "runs as another user, outside every limit set for the agent"),
+    (r"re:(?:^|[\s/])(?:ssh|scp|sftp|rsync|telnet|nc|ncat|socat)\b",
+     "run_argv", "reaches another host directly, bypassing the gated web tools"),
+    (r"re:(?:^|[\s/])(?:curl|wget)\b",
+     "run_argv", "raw egress: no query gate, no secret scan, no rate limit"),
+    (r"re:(?:^|[\s/])(?:crontab|systemctl|launchctl|at)\b",
+     "run_argv", "installs something that keeps running after this session"),
+    # Lookaheads rather than alternation so the flags match in either order and
+    # whether they are bundled (-rf), split (-r -f), or spelled out.
+    (r"re:(?:^|[\s/])rm\b(?=.*(?:-\w*r|--recursive))(?=.*(?:-\w*f|--force))",
+     "run_argv", "recursive force delete"),
+    (r"re:(?:^|[\s/])(?:npm|yarn|pnpm)\s+publish\b|"
+     r"(?:^|[\s/])cargo\s+publish\b|"
+     r"(?:^|[\s/])twine\s+upload\b|"
+     r"(?:^|[\s/])(?:docker|podman)\s+push\b|"
+     r"(?:^|[\s/])gh\s+release\s+create\b",
+     "run_argv", "publishes to a public registry; releases cannot be unpublished"),
+    (r"re:(?:^|[\s/])terraform\s+(?:apply|destroy)\b|"
+     r"(?:^|[\s/])kubectl\s+(?:apply|delete|drain)\b|"
+     r"(?:^|[\s/])aws\s+\S+\s+delete",
+     "run_argv", "changes live infrastructure"),
+    ("", "schedule_task",
+     "schedules work that runs when nobody is watching"),
+    ("", "delete_command",
+     "removes a saved command; nothing restores it"),
+)
+
+
+def builtin_rules() -> list["PermissionRule"]:
+    """The baseline rule set, as PermissionRule objects tagged origin='builtin'."""
+    from agent.config.models import PermissionRule
+    return [PermissionRule(tool=tool, match=match, verdict=ASK, reason=reason,
+                           origin="builtin")
+            for match, tool, reason in _BUILTIN]
+
+
 @dataclass
 class Decision:
     verdict: str
@@ -300,10 +372,18 @@ def _matches(rule: "PermissionRule", tool: str, args: dict) -> bool:
 
 
 def active_rules(config: "Config") -> list["PermissionRule"]:
-    """Full rule list in precedence order (first match wins)."""
+    """Full rule list in precedence order (first match wins).
+
+    The built-in baseline sits last: it decides only calls that no configured
+    rule spoke about, so writing `allow` for `run_argv` with `match = "git
+    push*"` overrides it exactly as it reads.
+    """
     perms = getattr(config, "permissions", None)
     configured = list(perms.rules) if perms is not None else []
-    return _session_rules + _file_rules + configured
+    baseline = (builtin_rules()
+                if perms is not None and getattr(perms, "builtin_rules", True)
+                else [])
+    return _session_rules + _file_rules + configured + baseline
 
 
 def unanswerable_asks(config: "Config") -> list[str]:
@@ -322,10 +402,23 @@ def unanswerable_asks(config: "Config") -> list[str]:
     sources = []
     if str(getattr(perms, "default", ALLOW)) == ASK:
         sources.append("default verdict is 'ask'")
+    baseline = 0
     for rule in active_rules(config):
-        if str(getattr(rule, "verdict", "")) == ASK:
-            match = getattr(rule, "match", "") or "*"
-            sources.append(f"rule {getattr(rule, 'tool', '?')}({match})")
+        if str(getattr(rule, "verdict", "")) != ASK:
+            continue
+        if getattr(rule, "origin", "") == "builtin":
+            # Summarised, not enumerated: the baseline is a dozen-odd rules and
+            # printing each one (as a raw regex, no less) buries the rules the
+            # user actually wrote under noise they did not.
+            baseline += 1
+            continue
+        match = getattr(rule, "match", "") or "*"
+        sources.append(f"rule {getattr(rule, 'tool', '?')}({match})")
+    if baseline:
+        sources.append(
+            f"the built-in baseline ({baseline} rules: force-push, remote branch "
+            f"deletion, publish, raw egress, sudo, scheduled work — "
+            f"[permissions] builtin_rules = false to opt out)")
     return sources
 
 
