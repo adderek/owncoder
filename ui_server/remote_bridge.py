@@ -21,6 +21,7 @@ from agent.ipc.messages import (
     ToolCallEvent,
     ToolResultEvent,
     PhaseEvent,
+    InjectedMessageEvent,
     UsageEvent,
     ProgressEvent,
     ContextSizeEvent,
@@ -96,6 +97,7 @@ class RemoteBridge:
         on_progress=None,
         on_loop_detected=None,
         on_phase=None,
+        on_injected_message=None,
         on_reasoning=None,
         on_context_size=None,
         on_user_message=None,
@@ -130,6 +132,11 @@ class RemoteBridge:
             self._emit(PhaseEvent(label, detail))
             if on_phase:
                 on_phase(label, detail)
+
+        def pub_injected_message(kind: str, text: str) -> None:
+            self._emit(InjectedMessageEvent(kind, text))
+            if on_injected_message:
+                on_injected_message(kind, text)
 
         def pub_usage(data: dict) -> None:
             self._emit(UsageEvent(data))
@@ -176,6 +183,7 @@ class RemoteBridge:
             on_progress=pub_progress,
             on_loop_detected=on_loop_detected,  # bidirectional — stays local
             on_phase=pub_phase,
+            on_injected_message=pub_injected_message,
             on_reasoning=pub_reasoning,
             on_context_size=pub_context_size,
             on_user_message=on_user_message,
