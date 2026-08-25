@@ -311,10 +311,14 @@ class LocalUIServer:
 
     def get_llm_info(self, session_id: str = "") -> dict:
         cfg = self._agent.config
+        from agent.core import vision
         return {
             "model": cfg.llm.model or "",
             "ctx_window": cfg.llm.ctx_window or 0,
             "compaction_threshold": getattr(cfg.llm, "compaction_threshold", 0.75),
+            # Whether an uploaded image can go to the model as pixels, or only
+            # as a path the file tools can open. The UI says which one happened.
+            "vision": vision.supports_images(cfg),
         }
 
     def get_model_configs(self, session_id: str = "") -> dict:

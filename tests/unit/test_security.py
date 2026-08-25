@@ -222,6 +222,28 @@ class TestRunnerSandboxed:
         assert "hi" in r.stdout
         assert r.backend in ("bwrap", "firejail")
 
+    def test_sys_executable_runnable_inside_sandbox(self, project):
+        """Regression: a uv/venv interpreter outside /usr must still exec.
+
+        Before the interpreter binds, web_fetch/web_search died with
+        `bwrap: execvp <uv python>: No such file or directory`.
+        """
+        import sys as _sys
+        if sec_runner.select_backend() == "none":
+            pytest.skip("no functional sandbox backend")
+        r = sec_runner.run([_sys.executable, "-c", "print('ok')"], timeout=15)
+        assert r.returncode == 0, r.stderr
+        assert "ok" in r.stdout
+
+    def test_interpreter_paths_skip_usr_and_root(self, project):
+        import sys as _sys
+        root = sec_policy.get().root
+        paths = sec_runner._interpreter_paths(root)
+        assert all(not p.startswith("/usr") for p in paths)
+        assert all(Path(p) != root and root not in Path(p).parents for p in paths)
+        if not _sys.prefix.startswith("/usr"):
+            assert paths
+
     def test_network_off_by_default(self, project):
         if sec_runner.select_backend() == "none":
             pytest.skip("no functional sandbox backend — network test requires real isolation")

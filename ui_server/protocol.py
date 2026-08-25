@@ -112,7 +112,7 @@ class UIServerProtocol(Protocol):
     # ── read-only state accessors ─────────────────────────────────────────────
 
     def get_llm_info(self, session_id: str = "") -> dict:
-        """LLM display info: model, ctx_window, compaction_threshold."""
+        """LLM display info: model, ctx_window, compaction_threshold, vision."""
         ...
 
     def get_ui_config(self, session_id: str = "") -> dict:

@@ -26,6 +26,7 @@ from . import turn_errors
 from . import turn_guards
 from .turn_errors import NoUsableModelError  # re-exported: run_turn raises it
 from .turn_guards import MUTATING_TOOLS
+from . import vision as _vision
 from .turn_setup import normalize_api_messages, select_tools
 from .loop_detector import LoopDetector
 from .confidence import ConfidenceMonitor
@@ -324,6 +325,10 @@ async def run_turn(
                 messages = messages + drained
 
         token_est = _count_tokens_approx(messages)
+        # Images are markers in `messages` (a few tokens) but real pixels on the
+        # wire, so the text count understates the prompt by thousands of tokens.
+        # Charge them here or a couple of screenshots silently overflow the ctx.
+        token_est += _vision.estimated_image_tokens(messages, config)
         _notify_ctx(token_est)
         budget = health_adjusted_budget(
             config, confidence_monitor.signal() if confidence_monitor else None)
@@ -347,7 +352,7 @@ async def run_turn(
                 messages = _truncate_large_messages(messages, budget)
                 logger.warning("Post-truncation: %d tokens (budget %d)", _count_tokens_approx(messages), budget)
 
-        api_messages = normalize_api_messages(messages)
+        api_messages = normalize_api_messages(messages, config)
 
         # Privacy routing: if the active endpoint is remote and the outbound
         # payload carries a secret, redact / reroute-local / block per policy.

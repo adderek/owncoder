@@ -1178,6 +1178,7 @@ class _HttpUI:
         return {
             "model": info["model"],
             "ctx_window": info["ctx_window"],
+            "vision": bool(info.get("vision")),
             "tokens": self.server.token_estimate(),
             "busy": self.busy,
             "workdir": self.workdir(),
@@ -1692,10 +1693,11 @@ class _HttpUI:
         return stored_diff(sid, turn_id, file_path)
 
     # Attachments land on disk under this dir (relative to the session's
-    # workdir) rather than going inline to the LLM — the turn engine's
-    # message content is plain strings (no multimodal path), so a saved file
-    # plus a text reference the user can send lets the agent's existing
-    # file-reading tools pick it up, same as any other project file.
+    # workdir); message content stays a plain string, so what the draft gets is
+    # a text reference the agent's file tools can open. An *image* gets the
+    # `[image: path]` marker instead, which core/vision.py expands into a real
+    # multimodal block at the API boundary when the active model has vision —
+    # and leaves as a readable path when it does not.
     _UPLOAD_DIR = ".agent/uploads"
     _UPLOAD_MAX_BYTES = 20 * 1024 * 1024
 
@@ -1726,7 +1728,19 @@ class _HttpUI:
             logger.exception("http ui: upload failed")
             return {"ok": False, "msg": f"save failed: {exc}"}
         rel = f"{self._UPLOAD_DIR}/{unique}"
-        return {"ok": True, "path": rel, "bytes": len(raw)}
+        from agent.core.vision import IMAGE_EXTS
+        is_image = dest.suffix.lower() in IMAGE_EXTS
+        return {"ok": True, "path": rel, "bytes": len(raw),
+                "kind": "image" if is_image else "file",
+                "vision": bool(is_image and self._vision_on())}
+
+    def _vision_on(self) -> bool:
+        """Does the active model accept image blocks? (drives the upload notice)"""
+        try:
+            return bool(self.server.get_llm_info().get("vision"))
+        except Exception:
+            logger.debug("http ui: vision capability lookup failed", exc_info=True)
+            return False
 
     def session_action(self, payload: dict) -> dict:
         """Session list ops from the browser: new / rename / hide / autoname / switch."""

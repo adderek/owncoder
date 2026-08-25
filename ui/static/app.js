@@ -30,6 +30,7 @@ let turn = null;          // active work fold: {details, body, tools, steps, t0,
 let lastTurn = null;      // the round before it, still open until this one starts
 let foldJournal = 'on_next_round';  // from /api/state; see _HttpUI._fold_journal
 let busyFlag = false;
+let visionOn = false;   // active model accepts image blocks (drives the attach notice)
 
 // Markdown rendering (esc / renderMd) lives in md.js, loaded before this file.
 
@@ -2795,6 +2796,7 @@ function replayTranscriptInner(messages) {
 
 function applyState(s) {
   document.getElementById('model').textContent = s.model;
+  visionOn = !!s.vision;
   if (s.models && s.models.llm) {
     // Hover the model chip for the full role table (llm/emb/sum + availability).
     const tip = Object.entries(s.models).map(([role, c]) => {
@@ -2803,7 +2805,8 @@ function applyState(s) {
       return role + ': ' + mark + ' ' + (c.model || '-') +
              (c.ctx_window ? '  ctx=' + c.ctx_window : '');
     }).join('\n');
-    document.getElementById('model').title = tip;
+    document.getElementById('model').title =
+      tip + '\nvision: ' + (visionOn ? 'yes (images sent inline)' : 'no (images sent as paths)');
   }
   const wd = s.workdir || '';
   const wdel = document.getElementById('workdir');
@@ -2984,9 +2987,28 @@ async function send() {
 
 document.getElementById('send').onclick = send;
 
-// Attachments: uploaded to .agent/uploads (not sent inline to the model —
-// there's no multimodal path), then a text reference is inserted into the
-// draft so the agent's normal file-reading tools can pick it up.
+// Attachments: uploaded to .agent/uploads, then a reference is inserted into
+// the draft. An image gets an `[image: path]` marker, which the server expands
+// into a real multimodal block when the model has vision; anything else (and an
+// image on a text-only model) stays a path the agent's file tools can open.
+// ATTACHREF_START — pure, so the tests can run it under node.
+// An image gets the `[image: path]` marker the server expands into a real
+// multimodal block; anything else gets a plain path. The note says which of the
+// two happened: "this model cannot see the screenshot I just pasted" is the
+// most confusing part of attaching one to a local text-only model.
+function attachRef(r, name) {
+  const image = r.kind === 'image';
+  const marker = (image ? '[image: ' : '[attached: ') + r.path + ']';
+  const how = !image ? '' : (r.vision
+    ? ' \u2014 sent to the model as an image'
+    : ' \u2014 this model has no vision: sent as a path only'
+      + ' (set vision = "on" for the model entry, or switch to a vision model)');
+  return {marker: marker,
+          note: (image ? '\ud83d\uddbc ' : '\ud83d\udcce ')
+                + 'uploaded ' + name + ' \u2192 ' + r.path + how};
+}
+// ATTACHREF_END
+
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const r = new FileReader();
@@ -3003,10 +3025,11 @@ async function uploadOne(file) {
     body: JSON.stringify({filename: file.name, data}),
   })).json();
   if (!r.ok) { row('sys error', null, 'upload failed: ' + (r.msg || 'unknown error')); return; }
+  const ref = attachRef(r, file.name);
   const sep = input.value && !input.value.endsWith('\n') ? '\n' : '';
-  input.value += sep + '[attached: ' + r.path + ']';
+  input.value += sep + ref.marker;
   input.dispatchEvent(new Event('input'));
-  row('sys', null, '📎 uploaded ' + file.name + ' → ' + r.path);
+  row('sys', null, ref.note);
 }
 async function uploadFiles(files) {
   for (const f of files) {
