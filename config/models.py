@@ -146,6 +146,11 @@ class ToolsConfig:
     search_parents: bool = True
     refactor_hint_min_lines: int = 400   # file must be at least this many lines
     refactor_hint_min_edits: int = 4     # agent must have edited it at least this many times
+    # After this many unbounded reads of ONE file in a session, read_file stops
+    # serving content for it and returns only the outline: a model paging a file
+    # this often is hunting for a symbol, which find_symbol/grep_code answer in
+    # one call. 0 disables the wall (hints alone still fire).
+    outline_only_after_reads: int = 0
     revisions: RevisionsConfig = field(default_factory=RevisionsConfig)
 
 

@@ -291,3 +291,58 @@ class TestIndexCoverageFormatting:
         text = _format_index_coverage(coverage)
         assert text.count("file(s)") <= _COVERAGE_MAX_DIRS + 2
         assert "5 more directories" in text
+
+
+class TestOutlineOnlyWall:
+    """With tools.outline_only_after_reads set, the Nth unbounded read of one
+    file stops serving content and hands back the map instead."""
+
+    @pytest.fixture(autouse=True)
+    def _wall(self, tmp_path):
+        from agent.core.tool_hints import reset_tool_hints, tool_hints
+        from agent.tools.files import setup as files_setup
+
+        cfg = Config()
+        cfg.tools.working_dir = str(tmp_path)
+        cfg.tools.agent_dir = str(tmp_path / ".agent")
+        cfg.tools.outline_only_after_reads = 2
+        files_setup(cfg)
+        reset_tool_hints()
+        # read_file itself does not count; the hint layer does, as in production.
+        self._count = lambda path: tool_hints("read_file", {"path": path}, {"content": ""})
+        yield
+        reset_tool_hints()
+
+    def test_wall_serves_outline_only(self, work):
+        (work / "m.py").write_text("def alpha():\n    return 1\n\ndef beta():\n    return 2\n")
+        for _ in range(2):
+            r = read_file("m.py")
+            assert "def alpha" in r["content"]
+            self._count("m.py")
+        r = read_file("m.py")
+        assert r["metadata"]["outline_only"] is True
+        assert "outline only" in r["content"]
+        assert "find_symbol" in r["content"]
+        assert "1: def alpha" in r["content"]
+        assert "return 1" not in r["content"]
+
+    def test_ranged_read_still_works_behind_the_wall(self, work):
+        (work / "m.py").write_text("def alpha():\n    return 1\n")
+        for _ in range(3):
+            self._count("m.py")
+        r = read_file("m.py", start_line=1, end_line=2)
+        assert "return 1" in r["content"]
+        assert not r["metadata"].get("outline_only")
+
+    def test_other_files_unaffected(self, work):
+        (work / "m.py").write_text("def alpha():\n    return 1\n")
+        (work / "n.py").write_text("def gamma():\n    return 3\n")
+        for _ in range(3):
+            self._count("m.py")
+        r = read_file("n.py")
+        assert "return 3" in r["content"]
+
+    def test_disabled_by_default(self, work):
+        from agent.config import Config as _C
+        cfg = _C()
+        assert cfg.tools.outline_only_after_reads == 0

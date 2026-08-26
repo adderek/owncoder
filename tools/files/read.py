@@ -116,6 +116,32 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
             f"read offset={el_show + 1} for more]"
         )
 
+    # Repeatedly reading one whole file is symbol-hunting, not reading. Past the
+    # configured limit the unbounded read serves the map only; ranged reads keep
+    # working, so the model can still fetch the lines the outline names.
+    wall = 0
+    try:
+        from .paths import _config as _files_config
+        wall = int(getattr(_files_config.tools, "outline_only_after_reads", 0)) if _files_config else 0
+    except Exception:
+        wall = 0
+    if wall and start_line is None and end_line is None:
+        from agent.core.tool_hints import read_count
+        seen = read_count(path)
+        if seen >= wall:
+            from .outline import outline as _outline, format_outline as _fmt
+            entries = _outline(text, max_entries=_OUTLINE_ENTRIES)
+            return _with_rev({
+                "content": (
+                    f"[{fpath.name} · {total} lines · read {seen}× this session — "
+                    f"outline only. Read a range (start_line/end_line) for content, "
+                    f"or call find_symbol/grep_code to locate what you are looking for.]\n"
+                    + (_fmt(entries) if entries else "(no landmarks found)")
+                ),
+                "metadata": {"total_lines": total, "file_size": filesize,
+                             "outline": entries, "outline_only": True},
+            }, path, fpath, text)
+
     if start_line is None and end_line is None and total > 500:
         head_lines = lines[:READ_WINDOW_LINES]
         numbered = "\n".join(f"{i + 1}:{l}" for i, l in enumerate(head_lines))

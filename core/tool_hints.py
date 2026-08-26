@@ -34,6 +34,11 @@ def reset_tool_hints() -> None:
     _fired.clear()
 
 
+def read_count(path: str) -> int:
+    """How many times read_file has served *path* this session."""
+    return _read_counts.get(path, 0)
+
+
 def _once(key: str) -> bool:
     if key in _fired:
         return False

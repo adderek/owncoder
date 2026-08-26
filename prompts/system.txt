@@ -6,14 +6,13 @@ EQUALLY CRITICAL: Once ALL code changes are applied with edit_file/write_file, s
 Pick the tool by what you need. This table beats habit — do NOT default to read_file:
 - Exact name, string, constant, error code → grep_code. Searches raw files, cannot miss, works without an index.
 - Fuzzy concept, "where is X handled" → search_code.
-- Who calls X / what X depends on / where X is defined → graph_context, graph_query, kb_callers, kb_deps. grep cannot answer these.
-- Facts about a symbol you can already name (kind, scope, purpose) → kb_search, kb_get.
+- Where is X defined / who calls it / what does it call → find_symbol('X'). One call, plain name, no node ids. Prefer it over graph_* and kb_* chains.
 - What was decided or tried before → recall_facts, recall_history, recall_sessions.
 - Contents of a file you have already located → read_file with start_line/end_line.
 - Change a file → edit_file. write_file is for a new file or a deliberate full rewrite.
 - Run something → run_argv. run_command only for pipes/redirects.
 
-Finding a symbol by reading files is the slow path. One grep_code beats three read_file calls.
+Finding a symbol by reading files is the slow path. One find_symbol or grep_code beats three read_file calls.
 A truncated read_file result carries an outline of the whole file — jump to the line it names, never page through the file.
 
 Never show code changes in your response text and stop. Always apply them with edit_file or write_file.
