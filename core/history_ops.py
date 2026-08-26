@@ -5,7 +5,7 @@ import logging
 import re
 from pathlib import Path
 
-from .streaming import _is_narrating_tool_use
+from .streaming import _is_narrating_tool_use, _has_pseudo_tool_tag
 
 logger = logging.getLogger(__name__)
 
@@ -14,8 +14,32 @@ _EXTRACT_SHRINK_RATIO = 0.25
 _PROSE_BULLET_THRESHOLD = 0.40
 
 _FILE_RE = re.compile(
-    r"\b([a-zA-Z0-9./\-_]+\.(?:sh|bash|py|js|mjs|cjs|ts|jsx|tsx|go|rs|java|kt|c|cpp|h|hpp|rb|toml|yaml|yml|json|md|txt))\b"
+    r"(?<![\w.\-/])(/?[a-zA-Z0-9./\-_]+\.(?:sh|bash|py|js|mjs|cjs|ts|jsx|tsx|go|rs|java|kt|c|cpp|h|hpp|rb|toml|yaml|yml|json|md|txt|html|htm|css))\b"
 )
+
+# URLs and HTML/markdown link targets contain path-like text that _FILE_RE
+# happily matches (e.g. "cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"
+# out of a <script src=...> tag). Blank them out before scanning for filenames.
+_URLISH_RE = re.compile(
+    r"""(?:[a-zA-Z][a-zA-Z0-9+.\-]*://\S+)"""
+    r"""|(?:\b(?:src|href|url|action|from|import)\s*=\s*\\?["'][^"'\\]*)""",
+    re.IGNORECASE,
+)
+
+# "example.com/x/y.js" — a hostname, not a path we should ever write to.
+_HOSTNAME_HEAD_RE = re.compile(
+    r"^(?:www\.)?[a-zA-Z0-9\-]+(?:\.[a-zA-Z0-9\-]+)+/", re.IGNORECASE
+)
+
+
+def _mask_urls(text: str) -> str:
+    """Replace URL/attribute-value spans with spaces, preserving offsets."""
+    return _URLISH_RE.sub(lambda m: " " * len(m.group(0)), text)
+
+
+def _find_filenames(text: str) -> list[str]:
+    """_FILE_RE hits in *text*, with URL-borne and hostname-headed ones dropped."""
+    return [c for c in _FILE_RE.findall(_mask_urls(text)) if not _HOSTNAME_HEAD_RE.match(c)]
 
 
 def _merge_consecutive_assistants(messages: list[dict]) -> list[dict]:
@@ -296,6 +320,19 @@ def _apply_code_from_history(
     side_log=None,
     turn_id: int | None = None,
 ) -> tuple[str, dict | None] | None:
+    # A message that wrote tool calls as XML tags (<write_file path=... content=...>)
+    # cannot be mined safely: the "code" lives inside an attribute value, so any
+    # block we pull out is a truncated, backslash-escaped fragment. Let the turn
+    # loop nudge for a real tool call instead of writing that fragment to disk.
+    last_assistant = next(
+        (m.get("content") or "" for m in reversed(messages)
+         if m.get("role") == "assistant" and (m.get("content") or "").strip()),
+        "",
+    )
+    if _has_pseudo_tool_tag(last_assistant):
+        logger.warning("[extract] refused: response wrote tool calls as XML tags, not real calls")
+        return None
+
     result = extract_last_code_block(messages)
     if not result:
         return None
@@ -314,6 +351,22 @@ def _apply_code_from_history(
         return None
 
     p = Path(filename)
+    if not p.is_absolute():
+        try:
+            from agent.tools.files.paths import _working_dir
+            p = _working_dir() / p
+        except Exception:
+            p = Path.cwd() / p
+    # Narration fallback exists to recover an edit the model described instead of
+    # calling; it must never mint a new directory tree. A path whose parent does
+    # not exist is almost always a misparse (a URL, a made-up path) rather than a
+    # file the model meant to write.
+    if not p.exists() and not p.parent.is_dir():
+        logger.warning(
+            "[extract] refused write to %s: parent directory does not exist "
+            "(narration fallback does not create directory trees)", filename,
+        )
+        return None
     existing_len = 0
     if p.exists() and p.is_file():
         try:
@@ -365,9 +418,9 @@ def extract_last_code_block(messages: list[dict]) -> tuple[str, str] | None:
         code = m.group(1).strip()
         pre = content[max(0, m.start() - 200):m.start()]
         post = content[m.end():m.end() + 80]
-        candidates = _FILE_RE.findall(pre) + _FILE_RE.findall(post)
+        candidates = _find_filenames(pre) + _find_filenames(post)
         if candidates:
-            pre_hits = _FILE_RE.findall(pre)
+            pre_hits = _find_filenames(pre)
             filename = pre_hits[-1] if pre_hits else candidates[0]
             if code:
                 return filename, code
@@ -389,8 +442,12 @@ def extract_last_code_block(messages: list[dict]) -> tuple[str, str] | None:
         return None
 
     code = max(indented, key=len).strip()
-    same_msg_hits = _FILE_RE.findall(content)
+    # Prefer the filename mentioned closest *before* the block, matching the
+    # fenced branch — the first name in the message is often unrelated context.
+    block_start = content.find(code.splitlines()[0].strip()) if code.splitlines() else -1
+    pre_hits = _find_filenames(content[:block_start]) if block_start > 0 else []
+    same_msg_hits = pre_hits or _find_filenames(content)
     if not same_msg_hits:
         logger.debug(f"[extract] indented code found ({len(code)} chars) but no filename in same message")
         return None
-    return same_msg_hits[0], code
+    return (pre_hits[-1] if pre_hits else same_msg_hits[0]), code

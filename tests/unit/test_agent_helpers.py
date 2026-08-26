@@ -464,3 +464,44 @@ class TestCompactMessagesForwarding:
             "project_memory_store": "PMS",
             "session_id": "sid",
         }
+
+
+class TestPseudoToolTags:
+    def test_filename_from_script_src_url_is_ignored(self):
+        content = (
+            "Updating index.html now:\n"
+            '<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>\n'
+            "```js\nconst scene = new THREE.Scene();\n```"
+        )
+        from agent.core.history_ops import extract_last_code_block
+        result = extract_last_code_block([{"role": "assistant", "content": content}])
+        assert result is not None
+        filename, _ = result
+        assert filename == "index.html"
+
+    def test_bare_url_is_not_a_filename(self):
+        from agent.core.history_ops import _find_filenames
+        assert _find_filenames("see https://example.com/docs/setup.py for details") == []
+        assert _find_filenames("edit src/setup.py please") == ["src/setup.py"]
+
+    def test_absolute_path_keeps_leading_slash(self):
+        from agent.core.history_ops import _find_filenames
+        assert _find_filenames("write /home/u/proj/main.py") == ["/home/u/proj/main.py"]
+
+    def test_pseudo_tool_tag_detected_outside_fences(self):
+        from agent.core.streaming import _has_pseudo_tool_tag, _is_narrating_tool_use
+        text = '<web_search query="roman amphitheatre">fabricated results</web_search>'
+        assert _has_pseudo_tool_tag(text)
+        assert _is_narrating_tool_use(text)
+
+    def test_pseudo_tool_tag_ignored_inside_fences(self):
+        from agent.core.streaming import _has_pseudo_tool_tag
+        text = "The parser handles this form:\n```\n<write_file path=\"x.py\">\n```\n"
+        assert not _has_pseudo_tool_tag(text)
+
+    def test_pseudo_tool_tag_replaced_by_marker(self):
+        from agent.core.streaming import _mark_unexecuted_tool_tags
+        text = '<web_fetch url="https://x.test/">Amphitheatres were introduced...</web_fetch>'
+        out = _mark_unexecuted_tool_tags(text)
+        assert "Amphitheatres" not in out
+        assert "NOT executed" in out

@@ -13,7 +13,7 @@ from openai import APIConnectionError, APIError, APITimeoutError, BadRequestErro
 
 from .prompts import _build_call_kwargs, apply_prompt_hints, _log_llm_request
 from .tool_calls import _tool_result_message, _FakeToolCall, execute_tool, _parse_raw_tool_calls
-from .streaming import _stream_response, _strip_tool_blocks, _is_narrating_tool_use, _has_unexecuted_agent_exec, _mark_unexecuted_agent_exec, _gpu_slot, build_streamed_choice, StreamStalledError
+from .streaming import _stream_response, _strip_tool_blocks, _is_narrating_tool_use, _has_unexecuted_agent_exec, _has_pseudo_tool_tag, _mark_unexecuted_agent_exec, _gpu_slot, build_streamed_choice, StreamStalledError
 from .cache_tracker import check_cache, mark_request
 from .history_ops import (
     _merge_consecutive_assistants, _collapse_tool_rounds, _truncate_large_messages,
@@ -953,11 +953,12 @@ async def run_turn(
             if on_tool_call:
                 on_tool_call("⟳ nudge", "")
             messages = messages_with_current
-            if _has_unexecuted_agent_exec(content):
+            if _has_unexecuted_agent_exec(content) or _has_pseudo_tool_tag(content):
                 nudge_text = (
-                    "You wrote an <agent_exec> tag as plain text, including a made-up result. "
+                    "You wrote a tool call as plain text (an <agent_exec> or <tool_name ...> tag), "
+                    "including a made-up result. "
                     "It was NOT executed — no tool ran and any result you stated is fabricated. "
-                    "Never write <agent_exec> tags or invent results; call the tool properly now."
+                    "Never write tool tags or invent results; call the tool properly now."
                 )
             else:
                 nudge_text = "Call the tool now. Do not describe it, execute it."
@@ -991,11 +992,11 @@ async def run_turn(
 
         if not content.strip():
             logger.warning("run_turn: model returned empty/blank response (finish_reason=%r)", finish_reason)
-        if _has_unexecuted_agent_exec(content):
+        if _has_unexecuted_agent_exec(content) or _has_pseudo_tool_tag(content):
             # Nudges exhausted (or fallback disabled) and the tag survived:
             # it never executed, so don't show its fabricated result as fact
             # or store it verbatim where future turns would imitate it.
-            logger.warning("run_turn: unexecuted <agent_exec> tag in final content — replacing with marker")
+            logger.warning("run_turn: unexecuted tool tag in final content — replacing with marker")
             content = _mark_unexecuted_agent_exec(content)
         content_parts.append(content)
         messages = messages + [stamp_reasoning({"role": "assistant", "content": content})]

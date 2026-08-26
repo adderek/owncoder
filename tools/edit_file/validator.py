@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .matcher import (
-    _count_lines, _find_exact, _find_loose_v2, _range_to_offsets,
-    _candidate, _MAX_CANDIDATES,
+    _count_lines, _find_exact, _find_loose_v2, _find_near_misses,
+    _range_to_offsets, _candidate, _MAX_CANDIDATES,
 )
 
 logger = logging.getLogger(__name__)
@@ -269,12 +269,22 @@ def _validate_chunk(
 
     if not spans:
         fuzzy = _find_loose_v2(original, anchor, lo, hi)
+        near_miss = False
+        if not fuzzy:
+            # Typo'd / lightly-drifted anchor: report the closest real text so
+            # the next call can quote it, instead of a blind re-read.
+            fuzzy = _find_near_misses(original, anchor, lo, hi)
+            near_miss = bool(fuzzy)
         candidates = [_candidate(original, s, e, i) for i, (s, e) in enumerate(fuzzy[:_MAX_CANDIDATES])] if fuzzy else []
         structure = _structural_index(original)
         detail = (
             "anchor not present in file (exact search%s). Re-read the file and re-quote."
             % (" + loose fallback" if mode == "loose" else "")
         )
+        if near_miss:
+            detail += (
+                " Similar text exists — see fuzzy_candidates and re-quote one of them exactly."
+            )
         if not candidates and structure:
             detail += " File contains: " + ", ".join(
                 f"{s['kind']} {s['name']} (line {s['line']})" for s in structure if s['kind'] != '...'
