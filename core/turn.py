@@ -30,7 +30,7 @@ from . import vision as _vision
 from .turn_setup import normalize_api_messages, select_tools
 from .loop_detector import LoopDetector
 from .confidence import ConfidenceMonitor
-from .context_budget import health_adjusted_budget, effective_ctx_window
+from .context_budget import compaction_trigger_budget, effective_ctx_window
 from . import context_state
 
 if TYPE_CHECKING:
@@ -355,7 +355,7 @@ async def run_turn(
         # Charge them here or a couple of screenshots silently overflow the ctx.
         token_est += _vision.estimated_image_tokens(messages, config)
         _notify_ctx(token_est)
-        budget = health_adjusted_budget(
+        budget = compaction_trigger_budget(
             config, confidence_monitor.signal() if confidence_monitor else None)
         # Publish the budget so read_file can price a whole-file read against
         # the remaining headroom instead of discovering it after compaction.
@@ -503,7 +503,7 @@ async def run_turn(
                 if _count_tokens_approx(messages) >= old_count:
                     messages = _truncate_large_messages(messages, budget)
                 token_est = _count_tokens_approx(messages)
-                budget = health_adjusted_budget(
+                budget = compaction_trigger_budget(
                     config,
                     confidence_monitor.signal() if confidence_monitor else None)
                 if token_est > budget:
@@ -819,7 +819,10 @@ async def run_turn(
 
             token_est = _count_tokens_approx(messages)
             _notify_ctx(token_est)
-            token_threshold = int(config.llm.ctx_window * config.llm.compaction_threshold)
+            # Same trigger as the pre-flight check, so compaction does not fire
+            # at a different number depending on where in the turn it is tested.
+            token_threshold = compaction_trigger_budget(
+                config, confidence_monitor.signal() if confidence_monitor else None)
             msg_threshold = config.llm.compaction_message_threshold
             if msg_threshold <= 0:
                 # Auto: ~1 message per 1000 tokens at the compaction threshold.

@@ -24,24 +24,36 @@ _PATTERNS: list[tuple[str, re.Pattern]] = [
     # const foo = (a) => / const foo = function / let foo = async (
     ("func", re.compile(r"^(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?(?:function\b|\([^)]*\)\s*=>|\w+\s*=>)")),
     ("type", re.compile(r"^(?:export\s+)?(?:type|interface|struct|enum)\s+(\w+)")),
-    ("heading", re.compile(r"^(#{1,4})\s+(.+)")),                      # markdown
 ]
+
+# Markdown headings only apply to markdown: "# comment" is a heading there and
+# an ordinary comment in Python, shell, TOML and YAML, where treating it as a
+# landmark turns every comment line into an outline entry.
+_HEADING_RE = re.compile(r"^(#{1,4})\s+(.+)")
+_MARKDOWN_SUFFIXES = {".md", ".markdown", ".mdx", ".rst"}
 
 _MAX_NAME = 80
 
 
-def outline(text: str, max_entries: int = 20) -> list[dict]:
+def outline(text: str, max_entries: int = 20, filename: str | None = None) -> list[dict]:
     """File landmarks as [{line, kind, name, indent, text}], in file order.
+
+    *filename* enables language-specific rules (markdown headings); without it
+    only the language-agnostic patterns apply.
 
     Truncation appends a single {"kind": "..."} entry naming how many were
     dropped, matching what edit_file has always returned.
     """
+    patterns = list(_PATTERNS)
+    if filename and any(filename.lower().endswith(sfx) for sfx in _MARKDOWN_SUFFIXES):
+        patterns.append(("heading", _HEADING_RE))
+
     out: list[dict] = []
     for lineno, line in enumerate(text.splitlines(), 1):
         stripped = line.strip()
         if not stripped:
             continue
-        for kind, pat in _PATTERNS:
+        for kind, pat in patterns:
             m = pat.match(stripped)
             if not m:
                 continue

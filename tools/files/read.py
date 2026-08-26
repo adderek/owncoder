@@ -130,7 +130,7 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
         seen = read_count(path)
         if seen >= wall:
             from .outline import outline as _outline, format_outline as _fmt
-            entries = _outline(text, max_entries=_OUTLINE_ENTRIES)
+            entries = _outline(text, max_entries=_OUTLINE_ENTRIES, filename=fpath.name)
             return _with_rev({
                 "content": (
                     f"[{fpath.name} · {total} lines · read {seen}× this session — "
@@ -155,7 +155,7 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
             and not snap.would_survive(context_state.estimate_tokens(filesize))):
         from .outline import outline as _outline, format_outline as _fmt
         cost = context_state.estimate_tokens(filesize)
-        entries = _outline(text, max_entries=_OUTLINE_ENTRIES)
+        entries = _outline(text, max_entries=_OUTLINE_ENTRIES, filename=fpath.name)
         window_end = min(total, READ_WINDOW_LINES)
         head = "\n".join(f"{i + 1}:{l}" for i, l in enumerate(lines[:window_end]))
         return _with_rev({
@@ -178,7 +178,7 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
         # without it the model pages blindly (read 1-200, 300-400, 400-450...)
         # hunting for a landmark whose line number we already know.
         from .outline import outline as _outline, format_outline as _fmt
-        entries = _outline(text, max_entries=_OUTLINE_ENTRIES)
+        entries = _outline(text, max_entries=_OUTLINE_ENTRIES, filename=fpath.name)
         body = _make_header(1, READ_WINDOW_LINES) + "\n" + numbered
         if entries:
             body += (

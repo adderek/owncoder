@@ -24,10 +24,10 @@ def _unescape_model_json(s: str) -> str:
     return re.sub(r"\\([ntr\"\\])", lambda m: _UNESCAPE_MAP[m.group(1)], s)
 
 
-def _structural_index(text: str, max_entries: int = 20) -> list[dict]:
+def _structural_index(text: str, max_entries: int = 20, filename: str | None = None) -> list[dict]:
     """File outline: definitions and section banners with line numbers."""
     from agent.tools.files.outline import outline
-    return outline(text, max_entries=max_entries)
+    return outline(text, max_entries=max_entries, filename=filename)
 
 
 def _adjust_replacement_indent(
@@ -259,7 +259,7 @@ def _validate_chunk(
             fuzzy = _find_near_misses(original, anchor, lo, hi)
             near_miss = bool(fuzzy)
         candidates = [_candidate(original, s, e, i) for i, (s, e) in enumerate(fuzzy[:_MAX_CANDIDATES])] if fuzzy else []
-        structure = _structural_index(original)
+        structure = _structural_index(original, filename=path)
         detail = (
             "anchor not present in file (exact search%s). Re-read the file and re-quote."
             % (" + loose fallback" if mode == "loose" else "")

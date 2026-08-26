@@ -413,6 +413,81 @@ def _index_round_to_project(
         pass
 
 
+# ── File ledger ─────────────────────────────────────────────────────────────
+# Compaction summarises file contents away, and the model's usual response is to
+# read the same files again — which is what filled the window in the first
+# place. Carrying a map of what was read (path, size, and the file's landmarks
+# as they are on disk NOW) makes the re-read unnecessary rather than merely
+# discouraged: the model can go straight to a range.
+
+_LEDGER_TOOLS = ("read_file", "edit_file", "write_file", "patch_file", "replace_text")
+_LEDGER_MAX_FILES = 8
+_LEDGER_MAX_ENTRIES = 10
+_LEDGER_MAX_CHARS = 2000
+
+
+def _ledger_paths(messages: list[dict]) -> list[str]:
+    """Paths touched by file tools in *messages*, most recent first, deduped."""
+    seen: list[str] = []
+    for m in reversed(messages):
+        for tc in m.get("tool_calls") or []:
+            fn = (tc.get("function") or {}) if isinstance(tc, dict) else {}
+            if fn.get("name") not in _LEDGER_TOOLS:
+                continue
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            for candidate in ([args] if isinstance(args, dict) else []) + list(
+                    args.get("chunks", []) if isinstance(args, dict) else []):
+                path = candidate.get("path") if isinstance(candidate, dict) else None
+                if path and path not in seen:
+                    seen.append(path)
+    return seen
+
+
+def _file_ledger(messages: list[dict], config) -> str:
+    """Render the ledger section, or "" when there is nothing worth carrying."""
+    paths = _ledger_paths(messages)
+    if not paths:
+        return ""
+    try:
+        from agent.tools.files.outline import outline as _outline
+    except Exception:
+        return ""
+
+    working_dir = Path(getattr(getattr(config, "tools", None), "working_dir", ".") or ".")
+    lines: list[str] = []
+    for path in paths[:_LEDGER_MAX_FILES]:
+        fpath = Path(path)
+        if not fpath.is_absolute():
+            fpath = working_dir / fpath
+        try:
+            if not fpath.is_file():
+                continue
+            text = fpath.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        total = len(text.splitlines())
+        entries = _outline(text, max_entries=_LEDGER_MAX_ENTRIES, filename=fpath.name)
+        landmarks = ", ".join(
+            f"{e['line']}:{e['name']}" for e in entries if e["kind"] != "..."
+        )
+        line = f"{path} · {total} lines"
+        if landmarks:
+            line += f" · {landmarks}"
+        lines.append(line)
+        if sum(len(x) for x in lines) > _LEDGER_MAX_CHARS:
+            break
+    if not lines:
+        return ""
+    return (
+        "\n\n[FILES ALREADY READ — their contents were summarised away, but they are "
+        "unchanged on disk. Line numbers below are current: read the range you need "
+        "instead of reading a whole file again.]\n" + "\n".join(lines)
+    )
+
+
 # ── Public entry point ──────────────────────────────────────────────────────
 
 
@@ -579,6 +654,10 @@ async def compact(
     )
     if q_view:
         compacted_content += f"\n\n[OUTSTANDING USER INTENT]\n{q_view}"
+    try:
+        compacted_content += _file_ledger(to_compact, config)
+    except Exception:
+        logger.debug("compact: file ledger failed (ignored)", exc_info=True)
 
     # Marked so a replayed session can say where history was compacted rather
     # than silently showing fewer rounds than the live view had.

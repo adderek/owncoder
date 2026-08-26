@@ -253,6 +253,19 @@ class TestOutline:
         src = "export const load = async () => {}\nfunction plain(a) {}\n"
         assert [e["name"] for e in outline(src)] == ["load", "plain"]
 
+    def test_markdown_headings_need_a_markdown_filename(self):
+        from agent.tools.files.outline import outline
+        src = "# Rough note about the parser\ndef alpha():\n    pass\n"
+        # Python comment — not a landmark.
+        assert [e["name"] for e in outline(src, filename="m.py")] == ["alpha"]
+        # Same text in markdown — a heading.
+        names = [e["name"] for e in outline(src, filename="README.md")]
+        assert "Rough note about the parser" in names
+
+    def test_no_filename_skips_markdown_rules(self):
+        from agent.tools.files.outline import outline
+        assert outline("# just a comment\n") == []
+
     def test_section_banners(self):
         from agent.tools.files.outline import outline
         src = "// === OSWIETLENIE ===\n# --- DOMKI ---\n"
