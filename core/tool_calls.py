@@ -447,6 +447,7 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
         if isinstance(result, dict):
             rules.log_action(name, args, result)
             result = _maybe_add_refactor_hints(name, result, config)
+            result = _maybe_add_tool_hints(name, args, result)
 
         serialised = json.dumps(result, ensure_ascii=False)
 
@@ -535,6 +536,21 @@ def _extract_edited_paths(tool_name: str, result: dict) -> list[str]:
                 if isinstance(p, str) and p not in paths:
                     paths.append(p)
     return paths
+
+
+def _maybe_add_tool_hints(tool_name: str, args: dict, result: dict) -> dict:
+    """Append just-in-time routing hints (wrong tool for the job, blind paging)."""
+    try:
+        from agent.core.tool_hints import tool_hints
+        hints = tool_hints(tool_name, args, result)
+        if hints:
+            result = dict(result)
+            result["_hints"] = list(result.get("_hints") or []) + hints
+    except Exception:
+        # Advisory only — a bug here must never fail the call, but log it so it
+        # does not become a silent permanent no-op.
+        logger.debug("tool-hint generation failed for %s (ignored)", tool_name, exc_info=True)
+    return result
 
 
 def _maybe_add_refactor_hints(tool_name: str, result: dict, config) -> dict:

@@ -46,8 +46,10 @@ def write_file(path: str, content: str, expect_rev: str | None = None) -> dict:
 
     fpath.parent.mkdir(parents=True, exist_ok=True)
 
+    replaced_lines = 0
     if fpath.exists():
         original = fpath.read_text(encoding="utf-8", errors="replace")
+        replaced_lines = len(original.splitlines())
         _undo_stack[path] = original
         diff_lines = list(
             difflib.unified_diff(
@@ -97,4 +99,9 @@ def write_file(path: str, content: str, expect_rev: str | None = None) -> dict:
         rules.note_file_created()
 
     _log_edit("write_file", path, "ok", expect_rev=expect_rev)
-    return {"ok": path, "diff": diff_summary}
+    result = {"ok": path, "diff": diff_summary}
+    if replaced_lines:
+        # How much existing content this call replaced wholesale — read by the
+        # tool-hint layer to suggest edit_file for large in-place rewrites.
+        result["replaced_lines"] = replaced_lines
+    return result
