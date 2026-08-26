@@ -30,7 +30,8 @@ from . import vision as _vision
 from .turn_setup import normalize_api_messages, select_tools
 from .loop_detector import LoopDetector
 from .confidence import ConfidenceMonitor
-from .context_budget import health_adjusted_budget
+from .context_budget import health_adjusted_budget, effective_ctx_window
+from . import context_state
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
@@ -68,6 +69,30 @@ async def _post_turn_capture_and_summarize(
                     logger.debug("_post_turn_capture_and_summarize: on_summarized callback error (ignored)")
     except Exception:
         logger.exception("_post_turn_capture_and_summarize: error (ignored)")
+
+
+# Usage fraction at which the model is told where it stands. Below this the
+# notice is pure overhead; above it the model still has room to change tactics.
+_BUDGET_NOTICE_FRAC = 0.60
+_BUDGET_NOTICE_KIND = "context_budget"
+
+
+def _apply_budget_notice(messages: list[dict], config, injected) -> list[dict]:
+    """Keep at most one live context-budget notice at the tail of history.
+
+    The prompt prefix stays byte-identical (prompt caching depends on it), so
+    the notice rides at the end and the previous one is dropped rather than
+    accumulating a stale trail of percentages.
+    """
+    snap = context_state.current()
+    kept = [m for m in messages if m.get("_injected_kind") != _BUDGET_NOTICE_KIND]
+    if snap is None or snap.window <= 0 or snap.fraction < _BUDGET_NOTICE_FRAC:
+        return kept
+    # Never split an assistant tool_calls message from its tool results — a
+    # user message wedged in between is an invalid exchange for most APIs.
+    if kept and kept[-1].get("role") == "assistant" and kept[-1].get("tool_calls"):
+        return kept
+    return kept + [injected(_BUDGET_NOTICE_KIND, context_state.format_budget_line(snap))]
 
 
 def _run_verify_command(command: str, cwd: str, timeout_s: int) -> tuple[int, str]:
@@ -332,6 +357,10 @@ async def run_turn(
         _notify_ctx(token_est)
         budget = health_adjusted_budget(
             config, confidence_monitor.signal() if confidence_monitor else None)
+        # Publish the budget so read_file can price a whole-file read against
+        # the remaining headroom instead of discovering it after compaction.
+        context_state.publish(token_est, budget, effective_ctx_window(config))
+        messages = _apply_budget_notice(messages, config, _injected)
         _defer, _defer_why = (
             prompt_cache.defer_for_cache(config, messages, token_est, budget)
             if token_est > budget else (False, ""))
@@ -345,6 +374,7 @@ async def run_turn(
             logger.warning("Pre-flight: estimated %d tokens exceeds budget %d, compacting...", token_est, budget)
             _phase("compact", f"{token_est}→budget {budget}")
             messages = await compact(messages, config, client, facts_store=facts_store, turn_index=turn_index, project_memory_store=project_memory_store, session_id=session_id)
+            context_state.note_compaction()
             token_est = _count_tokens_approx(messages)
             _phase("compact_done", f"{token_est} tokens")
             if token_est > budget:
@@ -469,6 +499,7 @@ async def run_turn(
                 _phase("compact", "context exceeded, retrying")
                 old_count = _count_tokens_approx(messages)
                 messages = await compact(messages, config, client, facts_store=facts_store, turn_index=turn_index, project_memory_store=project_memory_store, session_id=session_id)
+                context_state.note_compaction()
                 if _count_tokens_approx(messages) >= old_count:
                     messages = _truncate_large_messages(messages, budget)
                 token_est = _count_tokens_approx(messages)
@@ -797,6 +828,7 @@ async def run_turn(
             if token_est > token_threshold or len(messages) > msg_threshold:
                 _phase("compact", f"post-tool at {token_est} tokens")
                 messages = await compact(messages, config, client, facts_store=facts_store, turn_index=turn_index, project_memory_store=project_memory_store, session_id=session_id)
+                context_state.note_compaction()
                 _phase("compact_done", f"{_count_tokens_approx(messages)} tokens")
             _justify_pending_content = None
             _justify_messages_snapshot = None

@@ -142,6 +142,35 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
                              "outline": entries, "outline_only": True},
             }, path, fpath, text)
 
+    # Price the read against the remaining headroom. A file that does not fit
+    # is worse than useless: it lands, pushes the turn over the compaction
+    # threshold, and is summarised away — after which the model reads it again.
+    snap = None
+    try:
+        from agent.core import context_state
+        snap = context_state.current()
+    except Exception:
+        snap = None
+    if (snap is not None and snap.window > 0 and start_line is None and end_line is None
+            and not snap.would_survive(context_state.estimate_tokens(filesize))):
+        from .outline import outline as _outline, format_outline as _fmt
+        cost = context_state.estimate_tokens(filesize)
+        entries = _outline(text, max_entries=_OUTLINE_ENTRIES)
+        window_end = min(total, READ_WINDOW_LINES)
+        head = "\n".join(f"{i + 1}:{l}" for i, l in enumerate(lines[:window_end]))
+        return _with_rev({
+            "content": (
+                f"[{fpath.name} · {total} lines · ~{cost} tokens, but only ~{snap.headroom} "
+                f"tokens of context remain before compaction. Serving the first {window_end} "
+                f"lines and the outline instead — reading it whole would be summarised away "
+                f"and lost. Read the range you need, or call find_symbol.]\n" + head
+                + (("\n\n[outline of the whole file]\n" + _fmt(entries)) if entries else "")
+            ),
+            "metadata": {"total_lines": total, "file_size": filesize, "outline": entries,
+                         "budget_limited": True, "estimated_tokens": cost,
+                         "headroom_tokens": snap.headroom},
+        }, path, fpath, text)
+
     if start_line is None and end_line is None and total > 500:
         head_lines = lines[:READ_WINDOW_LINES]
         numbered = "\n".join(f"{i + 1}:{l}" for i, l in enumerate(head_lines))

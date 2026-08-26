@@ -27,6 +27,7 @@ class TestRepeatedReads:
             assert _read() == []
         hint = _read()
         assert hint and "grep_code" in hint[0]
+        assert "3×" in hint[0]
         assert "outline" in hint[0]
 
     def test_fires_once_per_path(self):

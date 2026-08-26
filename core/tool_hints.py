@@ -14,6 +14,8 @@ import re
 
 # Session state. Reset via reset_tool_hints() on session start.
 _read_counts: dict[str, int] = {}
+# Compaction count at the time each path was last read.
+_read_compactions: dict[str, int] = {}
 _fired: set[str] = set()
 
 # read_file calls on one path before the "you are hunting, not reading" hint.
@@ -31,7 +33,30 @@ _STRUCTURAL_PATTERN_RE = re.compile(
 def reset_tool_hints() -> None:
     """Clear per-session state (session start, tests)."""
     _read_counts.clear()
+    _read_compactions.clear()
     _fired.clear()
+
+
+def _compacted_since_read(path: str) -> bool:
+    """True if compaction ran after this path was last read, so its content is
+    no longer in context even though the model saw it earlier."""
+    try:
+        from agent.core import context_state
+    except Exception:
+        return False
+    snap = context_state.current()
+    if snap is None or not snap.compactions:
+        return False
+    return _read_compactions.get(path, -1) < snap.compactions
+
+
+def _stamp_read(path: str) -> None:
+    try:
+        from agent.core import context_state
+        snap = context_state.current()
+    except Exception:
+        return
+    _read_compactions[path] = snap.compactions if snap else 0
 
 
 def read_count(path: str) -> int:
@@ -64,11 +89,20 @@ def tool_hints(tool_name: str, args: dict, result: dict) -> list[str]:
     if tool_name == "read_file":
         path = str(args.get("path") or "")
         if path:
+            already_read = _read_counts.get(path, 0) > 0
             _read_counts[path] = _read_counts.get(path, 0) + 1
             n = _read_counts[path]
+            stale = already_read and _compacted_since_read(path)
+            _stamp_read(path)
+            if stale and _once(f"recompact:{path}"):
+                hints.append(
+                    f"[tool-hint] {path} was read before and elided by compaction. Reading it "
+                    f"whole again will be elided again — that is a loop. Read only the range you "
+                    f"need, or call find_symbol to get the line directly."
+                )
             if n >= _READ_HINT_THRESHOLD and _once(f"read:{path}"):
                 hints.append(
-                    f"[tool-hint] {n}th read_file of {path}. If you are hunting for a symbol, "
+                    f"[tool-hint] read_file called {n}× on {path}. If you are hunting for a symbol, "
                     f"grep_code(pattern='<name>', path='{path}') returns the line directly; "
                     f"the outline in a truncated read lists the landmarks."
                 )
