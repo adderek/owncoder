@@ -11,6 +11,10 @@ from .paths import _resolve, _working_dir, _undo_stack
 # unit — keep the two in sync via this constant.
 READ_WINDOW_LINES = 200
 
+# Landmarks listed alongside a truncated read. Enough to cover a big module,
+# small enough that the map never competes with the content for attention.
+_OUTLINE_ENTRIES = 40
+
 
 def _format_size(bytes_val: int) -> str:
     for unit in ["B", "KB", "MB", "GB"]:
@@ -115,9 +119,21 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
     if start_line is None and end_line is None and total > 500:
         head_lines = lines[:READ_WINDOW_LINES]
         numbered = "\n".join(f"{i + 1}:{l}" for i, l in enumerate(head_lines))
+        # Only the first window is served, so hand over a map of the rest:
+        # without it the model pages blindly (read 1-200, 300-400, 400-450...)
+        # hunting for a landmark whose line number we already know.
+        from .outline import outline as _outline, format_outline as _fmt
+        entries = _outline(text, max_entries=_OUTLINE_ENTRIES)
+        body = _make_header(1, READ_WINDOW_LINES) + "\n" + numbered
+        if entries:
+            body += (
+                "\n\n[outline of the whole file — read the range you need, "
+                "do not page through it]\n" + _fmt(entries)
+            )
         return _with_rev({
-            "content": _make_header(1, READ_WINDOW_LINES) + "\n" + numbered,
-            "metadata": {"total_lines": total, "file_size": filesize},
+            "content": body,
+            "metadata": {"total_lines": total, "file_size": filesize,
+                         "outline": entries},
         }, path, fpath, text)
 
     past_eof = False

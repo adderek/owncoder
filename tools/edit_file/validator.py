@@ -25,26 +25,9 @@ def _unescape_model_json(s: str) -> str:
 
 
 def _structural_index(text: str, max_entries: int = 20) -> list[dict]:
-    """Extract file outline: class/function/method definitions with line numbers."""
-    lines = text.splitlines()
-    out: list[dict] = []
-    for lineno, line in enumerate(lines, 1):
-        stripped = line.strip()
-        # Class definitions
-        m = re.match(r"^(?:class\s+(\w+))", stripped)
-        if m:
-            indent = len(line) - len(line.lstrip())
-            out.append({"line": lineno, "kind": "class", "name": m.group(1), "indent": indent, "text": stripped[:80]})
-            continue
-        # Function/method definitions
-        m = re.match(r"^(?:async\s+)?def\s+(\w+)", stripped)
-        if m:
-            indent = len(line) - len(line.lstrip())
-            out.append({"line": lineno, "kind": "def", "name": m.group(1), "indent": indent, "text": stripped[:80]})
-    if len(out) > max_entries:
-        out = out[:max_entries]
-        out.append({"line": -1, "kind": "...", "name": f"... ({len(lines) - max_entries} more entries truncated)", "indent": 0, "text": ""})
-    return out
+    """File outline: definitions and section banners with line numbers."""
+    from agent.tools.files.outline import outline
+    return outline(text, max_entries=max_entries)
 
 
 def _adjust_replacement_indent(
