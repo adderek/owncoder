@@ -46,6 +46,21 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _warm_openai_submodules() -> None:
+    """Import openai.resources.* on the calling thread.
+
+    Kept lazy at module level on purpose — importing the SDK is not free and the
+    compiler may never run — but it must happen on ONE thread before any other
+    can race it. Failures here are not fatal: the worker will simply import as
+    before, which is no worse than not calling this at all.
+    """
+    try:
+        import openai.resources.chat        # noqa: F401
+        import openai.resources.embeddings  # noqa: F401
+    except Exception:  # pragma: no cover - SDK layout differs / not installed
+        pass
+
+
 def _do_compile(name: str, original: str, config: "Config") -> str:
     """Call the model to produce the compiled variant.
 
@@ -185,6 +200,16 @@ def _spawn_compile(key: str, name: str, original: str, config: "Config") -> None
         finally:
             with _s._lock:
                 _s._in_flight.discard(key)
+
+    # Warm openai's lazily-loaded resource submodules on THIS thread before the
+    # worker starts. The SDK defers openai.resources.* until first attribute
+    # access, so a compile thread touching .chat while the RAG embedder touches
+    # .embeddings has each side holding one module lock and waiting for the
+    # other; CPython spots the cycle and raises "deadlock detected by
+    # _ModuleLock('openai.resources.embeddings')" instead of hanging. Reproduced
+    # 6/6 without this, 0/8 with it. Once both are in sys.modules every later
+    # importer takes the fast path.
+    _warm_openai_submodules()
 
     t = threading.Thread(target=_run, name=f"compile-{name}", daemon=True)
     t.start()
