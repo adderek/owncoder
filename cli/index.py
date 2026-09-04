@@ -369,7 +369,15 @@ def cmd_index_update(args, config):
     embedder = Embedder(config.embeddings)
     archive = _open_archive(config)
 
-    if changed is not None and not changed:
+    # `git diff` reports what moved since HEAD, which says nothing about whether
+    # those files ever reached the index. On a CLEAN tree that made --update a
+    # no-op even when the index was completely empty: it printed "up to date"
+    # and exited 0 over zero indexed chunks. Benign on a working checkout (which
+    # is usually dirty), fatal for anything that indexes a freshly reset tree --
+    # models-test builds exactly that, so every benchmark run it did was scored
+    # with search_code silently degraded to grep. Trust the shortcut only once
+    # the index actually holds something.
+    if changed is not None and not changed and store.stats().get("files", 0) > 0:
         console.print("No changed files detected. Index is up to date.")
     else:
         stats = index_directory(root=config.tools.working_dir, store=store, embedder=embedder, cfg=config.rag)
