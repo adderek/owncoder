@@ -110,6 +110,26 @@ def _run_verify_command(command: str, cwd: str, timeout_s: int) -> tuple[int, st
         return 1, f"[verify] command timed out after {timeout_s}s\n{out}{err}"
 
 
+def _is_tool_call_parse_error(exc: BaseException) -> bool:
+    """True for a 5xx whose body says the model's tool call would not parse.
+
+    Content failure, not transport failure: the endpoint answered, the response
+    was simply unusable. Matched on the message because that is all the server
+    gives us — llama.cpp sends type "server_error" for this alongside genuine
+    internal errors, so the type alone cannot separate them.
+    """
+    body = getattr(exc, "body", None)
+    msg = ""
+    if isinstance(body, dict):
+        err = body.get("error")
+        if isinstance(err, dict):
+            msg = str(err.get("message") or "")
+    if not msg:
+        msg = str(exc)
+    low = msg.lower()
+    return "parse tool call" in low or "tool call arguments as json" in low
+
+
 async def run_turn(
     messages: list[dict],
     config: "Config",
@@ -276,6 +296,7 @@ async def run_turn(
     _tier_escalated = False  # auto-tier: at most one mid-turn fast->strong switch
     failover_count = 0       # remote->local failovers taken this turn
     rate_limit_count = 0     # 429 backoff-retries taken this turn
+    toolparse_retry_count = 0  # unparseable-tool-call retries taken this turn
     _error_streak = 0        # consecutive iterations where every tool call errored
 
     def _loop_guard_escalation_note() -> dict:
@@ -561,6 +582,38 @@ async def run_turn(
             # state (retry / enable an online model) instead of crashing.
             raise turn_errors.no_usable_model_error(config, e) from e
         except (APIConnectionError, APITimeoutError, InternalServerError, APIError) as e:
+            # A 500 whose body says the TOOL CALL would not parse is not an
+            # endpoint failure: the server generated fine and then choked on what
+            # the model produced. llama.cpp reports it as
+            #   500 Failed to parse tool call arguments as JSON: ...
+            #       invalid string: missing closing quote
+            # which is what a run into the output-token cap looks like — the
+            # arguments are cut off mid-string. Observed on Ornith-1.5-9B, which
+            # fell into a repetition loop inside a write_file argument and
+            # generated to exactly max_output_tokens (8192).
+            #
+            # Treating that as "endpoint down" put the model on cooldown and,
+            # with failover off, aborted the run with NoUsableModelError — a
+            # message that sends whoever reads it looking at the server, which is
+            # the one thing that was working. Tell the model what went wrong
+            # instead and let it try a smaller call.
+            if _is_tool_call_parse_error(e) and toolparse_retry_count < 2:
+                toolparse_retry_count += 1
+                logger.warning("unparseable tool call from model (attempt %d) — "
+                               "asking for a shorter one", toolparse_retry_count)
+                _phase("tool_parse_retry", f"{toolparse_retry_count}/2")
+                messages = messages + [{
+                    "role": "user",
+                    "content": (
+                        "Your last tool call could not be executed: its JSON arguments "
+                        "were cut off before the closing quote, which happens when the "
+                        "response runs into the output-token limit. Send the call again "
+                        "with a shorter argument — if you are writing a file, write it in "
+                        "several smaller calls rather than one long one, and do not repeat "
+                        "the same line many times."
+                    ),
+                }]
+                continue
             # Plain APIError covers server errors delivered inside a 200 SSE
             # stream body (openai raises the base class there, not
             # InternalServerError) plus any remaining status errors not
