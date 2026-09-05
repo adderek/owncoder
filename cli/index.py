@@ -350,7 +350,6 @@ def cmd_index_update(args, config):
     from agent.rag.embedder import Embedder
     from agent.tools.rules import load_rules
     from rich.console import Console
-    import subprocess
 
     console = Console()
 
@@ -364,38 +363,24 @@ def cmd_index_update(args, config):
     # previous run's answer retrievable via search_code.
     load_rules(config.tools.working_dir)
 
-    try:
-        import os as _os
-        result = subprocess.run(
-            ["git", "diff", "--name-only", "HEAD"],
-            cwd=config.tools.working_dir,
-            capture_output=True, text=True,
-            timeout=15, env={**_os.environ, "GIT_TERMINAL_PROMPT": "0"},
-        )
-        changed = [f.strip() for f in result.stdout.splitlines() if f.strip()]
-    except Exception:
-        changed = None
-
     store = VectorStore(config.rag)
     embedder = Embedder(config.embeddings)
     archive = _open_archive(config)
 
-    # `git diff` reports what moved since HEAD, which says nothing about whether
-    # those files ever reached the index. On a CLEAN tree that made --update a
-    # no-op even when the index was completely empty: it printed "up to date"
-    # and exited 0 over zero indexed chunks. Benign on a working checkout (which
-    # is usually dirty), fatal for anything that indexes a freshly reset tree --
-    # models-test builds exactly that, so every benchmark run it did was scored
-    # with search_code silently degraded to grep. Trust the shortcut only once
-    # the index actually holds something.
-    if changed is not None and not changed and store.stats().get("files", 0) > 0:
-        console.print("No changed files detected. Index is up to date.")
-    else:
-        stats = index_directory(root=config.tools.working_dir, store=store, embedder=embedder, cfg=config.rag)
-        emb_summary = ""
-        if embedder.call_count > 0:
-            emb_summary = f"  [dim]emb: {embedder.call_count} vecs @ {embedder.rate:.1f}/s ({embedder.endpoint})[/dim]"
-        console.print(f"Updated: {stats['indexed']} files re-indexed, {stats['skipped']} unchanged.{emb_summary}")
+    # No `git diff --name-only HEAD` shortcut here any more. It asked the wrong
+    # question: git reports what moved since HEAD, which says nothing about what
+    # reached the INDEX. Two ways it was wrong, both silent —
+    #   * clean tree, empty index -> "up to date" over zero chunks, exit 0;
+    #   * clean tree, COMMITTED change -> the new content never gets embedded,
+    #     so the index keeps describing the previous state of the file.
+    # index_directory() already skips unchanged files by mtime and then by
+    # content checksum, which is the same saving computed from the right input,
+    # so the shortcut bought only a directory walk and cost correctness.
+    stats = index_directory(root=config.tools.working_dir, store=store, embedder=embedder, cfg=config.rag)
+    emb_summary = ""
+    if embedder.call_count > 0:
+        emb_summary = f"  [dim]emb: {embedder.call_count} vecs @ {embedder.rate:.1f}/s ({embedder.endpoint})[/dim]"
+    console.print(f"Updated: {stats['indexed']} files re-indexed, {stats['skipped']} unchanged.{emb_summary}")
 
     # Resume any pending summarization left over from an interrupted run.
     if config.summarization.enabled:
