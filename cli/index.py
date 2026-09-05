@@ -348,10 +348,21 @@ def cmd_index_update(args, config):
     from agent.rag.indexer import index_directory, prune_index
     from agent.rag.store import VectorStore
     from agent.rag.embedder import Embedder
+    from agent.tools.rules import load_rules
     from rich.console import Console
     import subprocess
 
     console = Console()
+
+    # index_directory() filters through get_rules(), which returns a PERMISSIVE
+    # DEFAULT until someone calls load_rules() — and only cmd_init and
+    # cmd_index_stats ever did. So `--stats` honoured .agent.ignore while
+    # `--update`, dispatched straight here from cli/main.py, did not: on
+    # models-test's fixture, stats said "14 files on disk" and update indexed 27,
+    # the extra 13 being the harness's own runs/ artifacts and .pytest_cache.
+    # 65% of that index was other runs' audit logs and solution diffs, i.e. the
+    # previous run's answer retrievable via search_code.
+    load_rules(config.tools.working_dir)
 
     try:
         import os as _os
@@ -419,9 +430,15 @@ def cmd_index_update(args, config):
 def cmd_index_prune(args, config):
     from agent.rag.indexer import prune_index
     from agent.rag.store import VectorStore
+    from agent.tools.rules import load_rules
     from rich.console import Console
 
     console = Console()
+
+    # Same omission as cmd_index_update: prune's whole job is "archive chunks
+    # that are missing or NOW MATCH .agent.ignore", which it cannot do while the
+    # rules are an unloaded permissive default.
+    load_rules(config.tools.working_dir)
     store = VectorStore(config.rag)
     archive = _open_archive(config)
 
