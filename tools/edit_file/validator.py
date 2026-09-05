@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .matcher import (
-    _count_lines, _find_exact, _find_loose_v2, _range_to_offsets,
-    _candidate, _MAX_CANDIDATES,
+    _count_lines, _find_exact, _find_loose_v2, _find_near_misses,
+    _range_to_offsets, _candidate, _MAX_CANDIDATES,
 )
 
 logger = logging.getLogger(__name__)
@@ -24,27 +24,10 @@ def _unescape_model_json(s: str) -> str:
     return re.sub(r"\\([ntr\"\\])", lambda m: _UNESCAPE_MAP[m.group(1)], s)
 
 
-def _structural_index(text: str, max_entries: int = 20) -> list[dict]:
-    """Extract file outline: class/function/method definitions with line numbers."""
-    lines = text.splitlines()
-    out: list[dict] = []
-    for lineno, line in enumerate(lines, 1):
-        stripped = line.strip()
-        # Class definitions
-        m = re.match(r"^(?:class\s+(\w+))", stripped)
-        if m:
-            indent = len(line) - len(line.lstrip())
-            out.append({"line": lineno, "kind": "class", "name": m.group(1), "indent": indent, "text": stripped[:80]})
-            continue
-        # Function/method definitions
-        m = re.match(r"^(?:async\s+)?def\s+(\w+)", stripped)
-        if m:
-            indent = len(line) - len(line.lstrip())
-            out.append({"line": lineno, "kind": "def", "name": m.group(1), "indent": indent, "text": stripped[:80]})
-    if len(out) > max_entries:
-        out = out[:max_entries]
-        out.append({"line": -1, "kind": "...", "name": f"... ({len(lines) - max_entries} more entries truncated)", "indent": 0, "text": ""})
-    return out
+def _structural_index(text: str, max_entries: int = 20, filename: str | None = None) -> list[dict]:
+    """File outline: definitions and section banners with line numbers."""
+    from agent.tools.files.outline import outline
+    return outline(text, max_entries=max_entries, filename=filename)
 
 
 def _adjust_replacement_indent(
@@ -269,12 +252,22 @@ def _validate_chunk(
 
     if not spans:
         fuzzy = _find_loose_v2(original, anchor, lo, hi)
+        near_miss = False
+        if not fuzzy:
+            # Typo'd / lightly-drifted anchor: report the closest real text so
+            # the next call can quote it, instead of a blind re-read.
+            fuzzy = _find_near_misses(original, anchor, lo, hi)
+            near_miss = bool(fuzzy)
         candidates = [_candidate(original, s, e, i) for i, (s, e) in enumerate(fuzzy[:_MAX_CANDIDATES])] if fuzzy else []
-        structure = _structural_index(original)
+        structure = _structural_index(original, filename=path)
         detail = (
             "anchor not present in file (exact search%s). Re-read the file and re-quote."
             % (" + loose fallback" if mode == "loose" else "")
         )
+        if near_miss:
+            detail += (
+                " Similar text exists — see fuzzy_candidates and re-quote one of them exactly."
+            )
         if not candidates and structure:
             detail += " File contains: " + ", ".join(
                 f"{s['kind']} {s['name']} (line {s['line']})" for s in structure if s['kind'] != '...'

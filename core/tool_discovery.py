@@ -31,6 +31,9 @@ CORE_TOOLS: frozenset[str] = frozenset({
     "edit_file",
     "search_code",
     "grep_code",
+    # One call answers "where is X / who calls it / what does it call", which is
+    # otherwise a chain across six kb_*/graph_* tools nobody routes to correctly.
+    "find_symbol",
     "list_files",
     "run_argv",
     "run_command",
@@ -47,7 +50,7 @@ CORE_TOOLS: frozenset[str] = frozenset({
 # A matcher is either a prefix string (endswith-aware) or an exact name set.
 _CATEGORIES: list[tuple[str, str, tuple[str, ...], frozenset[str]]] = [
     ("read & search code", "find/inspect code before editing",
-     (), frozenset({"read_file", "search_code", "grep_code", "list_files",
+     (), frozenset({"read_file", "search_code", "grep_code", "find_symbol", "list_files",
                     "search_archive", "retrieve_output", "project_file_stats",
                     "explore"})),
     ("edit code", "apply changes to files",

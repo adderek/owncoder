@@ -13,7 +13,7 @@ from openai import APIConnectionError, APIError, APITimeoutError, BadRequestErro
 
 from .prompts import _build_call_kwargs, apply_prompt_hints, _log_llm_request
 from .tool_calls import _tool_result_message, _FakeToolCall, execute_tool, _parse_raw_tool_calls
-from .streaming import _stream_response, _strip_tool_blocks, _is_narrating_tool_use, _has_unexecuted_agent_exec, _mark_unexecuted_agent_exec, _gpu_slot, build_streamed_choice, StreamStalledError
+from .streaming import _stream_response, _strip_tool_blocks, _is_narrating_tool_use, _has_unexecuted_agent_exec, _has_pseudo_tool_tag, _mark_unexecuted_agent_exec, _gpu_slot, build_streamed_choice, StreamStalledError
 from .cache_tracker import check_cache, mark_request
 from .history_ops import (
     _merge_consecutive_assistants, _collapse_tool_rounds, _truncate_large_messages,
@@ -26,10 +26,12 @@ from . import turn_errors
 from . import turn_guards
 from .turn_errors import NoUsableModelError  # re-exported: run_turn raises it
 from .turn_guards import MUTATING_TOOLS
+from . import vision as _vision
 from .turn_setup import normalize_api_messages, select_tools
 from .loop_detector import LoopDetector
 from .confidence import ConfidenceMonitor
-from .context_budget import health_adjusted_budget
+from .context_budget import compaction_trigger_budget, effective_ctx_window
+from . import context_state
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
@@ -67,6 +69,30 @@ async def _post_turn_capture_and_summarize(
                     logger.debug("_post_turn_capture_and_summarize: on_summarized callback error (ignored)")
     except Exception:
         logger.exception("_post_turn_capture_and_summarize: error (ignored)")
+
+
+# Usage fraction at which the model is told where it stands. Below this the
+# notice is pure overhead; above it the model still has room to change tactics.
+_BUDGET_NOTICE_FRAC = 0.60
+_BUDGET_NOTICE_KIND = "context_budget"
+
+
+def _apply_budget_notice(messages: list[dict], config, injected) -> list[dict]:
+    """Keep at most one live context-budget notice at the tail of history.
+
+    The prompt prefix stays byte-identical (prompt caching depends on it), so
+    the notice rides at the end and the previous one is dropped rather than
+    accumulating a stale trail of percentages.
+    """
+    snap = context_state.current()
+    kept = [m for m in messages if m.get("_injected_kind") != _BUDGET_NOTICE_KIND]
+    if snap is None or snap.window <= 0 or snap.fraction < _BUDGET_NOTICE_FRAC:
+        return kept
+    # Never split an assistant tool_calls message from its tool results — a
+    # user message wedged in between is an invalid exchange for most APIs.
+    if kept and kept[-1].get("role") == "assistant" and kept[-1].get("tool_calls"):
+        return kept
+    return kept + [injected(_BUDGET_NOTICE_KIND, context_state.format_budget_line(snap))]
 
 
 def _run_verify_command(command: str, cwd: str, timeout_s: int) -> tuple[int, str]:
@@ -324,9 +350,17 @@ async def run_turn(
                 messages = messages + drained
 
         token_est = _count_tokens_approx(messages)
+        # Images are markers in `messages` (a few tokens) but real pixels on the
+        # wire, so the text count understates the prompt by thousands of tokens.
+        # Charge them here or a couple of screenshots silently overflow the ctx.
+        token_est += _vision.estimated_image_tokens(messages, config)
         _notify_ctx(token_est)
-        budget = health_adjusted_budget(
+        budget = compaction_trigger_budget(
             config, confidence_monitor.signal() if confidence_monitor else None)
+        # Publish the budget so read_file can price a whole-file read against
+        # the remaining headroom instead of discovering it after compaction.
+        context_state.publish(token_est, budget, effective_ctx_window(config))
+        messages = _apply_budget_notice(messages, config, _injected)
         _defer, _defer_why = (
             prompt_cache.defer_for_cache(config, messages, token_est, budget)
             if token_est > budget else (False, ""))
@@ -340,6 +374,7 @@ async def run_turn(
             logger.warning("Pre-flight: estimated %d tokens exceeds budget %d, compacting...", token_est, budget)
             _phase("compact", f"{token_est}→budget {budget}")
             messages = await compact(messages, config, client, facts_store=facts_store, turn_index=turn_index, project_memory_store=project_memory_store, session_id=session_id)
+            context_state.note_compaction()
             token_est = _count_tokens_approx(messages)
             _phase("compact_done", f"{token_est} tokens")
             if token_est > budget:
@@ -347,7 +382,7 @@ async def run_turn(
                 messages = _truncate_large_messages(messages, budget)
                 logger.warning("Post-truncation: %d tokens (budget %d)", _count_tokens_approx(messages), budget)
 
-        api_messages = normalize_api_messages(messages)
+        api_messages = normalize_api_messages(messages, config)
 
         # Privacy routing: if the active endpoint is remote and the outbound
         # payload carries a secret, redact / reroute-local / block per policy.
@@ -464,10 +499,11 @@ async def run_turn(
                 _phase("compact", "context exceeded, retrying")
                 old_count = _count_tokens_approx(messages)
                 messages = await compact(messages, config, client, facts_store=facts_store, turn_index=turn_index, project_memory_store=project_memory_store, session_id=session_id)
+                context_state.note_compaction()
                 if _count_tokens_approx(messages) >= old_count:
                     messages = _truncate_large_messages(messages, budget)
                 token_est = _count_tokens_approx(messages)
-                budget = health_adjusted_budget(
+                budget = compaction_trigger_budget(
                     config,
                     confidence_monitor.signal() if confidence_monitor else None)
                 if token_est > budget:
@@ -783,7 +819,10 @@ async def run_turn(
 
             token_est = _count_tokens_approx(messages)
             _notify_ctx(token_est)
-            token_threshold = int(config.llm.ctx_window * config.llm.compaction_threshold)
+            # Same trigger as the pre-flight check, so compaction does not fire
+            # at a different number depending on where in the turn it is tested.
+            token_threshold = compaction_trigger_budget(
+                config, confidence_monitor.signal() if confidence_monitor else None)
             msg_threshold = config.llm.compaction_message_threshold
             if msg_threshold <= 0:
                 # Auto: ~1 message per 1000 tokens at the compaction threshold.
@@ -792,6 +831,7 @@ async def run_turn(
             if token_est > token_threshold or len(messages) > msg_threshold:
                 _phase("compact", f"post-tool at {token_est} tokens")
                 messages = await compact(messages, config, client, facts_store=facts_store, turn_index=turn_index, project_memory_store=project_memory_store, session_id=session_id)
+                context_state.note_compaction()
                 _phase("compact_done", f"{_count_tokens_approx(messages)} tokens")
             _justify_pending_content = None
             _justify_messages_snapshot = None
@@ -948,11 +988,12 @@ async def run_turn(
             if on_tool_call:
                 on_tool_call("⟳ nudge", "")
             messages = messages_with_current
-            if _has_unexecuted_agent_exec(content):
+            if _has_unexecuted_agent_exec(content) or _has_pseudo_tool_tag(content):
                 nudge_text = (
-                    "You wrote an <agent_exec> tag as plain text, including a made-up result. "
+                    "You wrote a tool call as plain text (an <agent_exec> or <tool_name ...> tag), "
+                    "including a made-up result. "
                     "It was NOT executed — no tool ran and any result you stated is fabricated. "
-                    "Never write <agent_exec> tags or invent results; call the tool properly now."
+                    "Never write tool tags or invent results; call the tool properly now."
                 )
             else:
                 nudge_text = "Call the tool now. Do not describe it, execute it."
@@ -986,11 +1027,11 @@ async def run_turn(
 
         if not content.strip():
             logger.warning("run_turn: model returned empty/blank response (finish_reason=%r)", finish_reason)
-        if _has_unexecuted_agent_exec(content):
+        if _has_unexecuted_agent_exec(content) or _has_pseudo_tool_tag(content):
             # Nudges exhausted (or fallback disabled) and the tag survived:
             # it never executed, so don't show its fabricated result as fact
             # or store it verbatim where future turns would imitate it.
-            logger.warning("run_turn: unexecuted <agent_exec> tag in final content — replacing with marker")
+            logger.warning("run_turn: unexecuted tool tag in final content — replacing with marker")
             content = _mark_unexecuted_agent_exec(content)
         content_parts.append(content)
         messages = messages + [stamp_reasoning({"role": "assistant", "content": content})]

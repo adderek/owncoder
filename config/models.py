@@ -30,6 +30,10 @@ class LLMConfig:
     goal_max_iterations: int = 200     # hard ceiling when goal is set
     temperature: float = 0.7
     seed: int | None = None
+    # Send images inline to this endpoint. "auto" = decide from the model id
+    # (core/vision.hints_vision); "on"/"off" force it. A wrong "on" is a hard
+    # 400 from the backend, so auto never guesses yes without a hint.
+    vision: str = "auto"          # auto | on | off
     think_level: str = "normal"
     think_budget: int = -1          # token budget for thinking; -1 = unlimited / server default
     narration_fallback: bool = True
@@ -142,6 +146,11 @@ class ToolsConfig:
     search_parents: bool = True
     refactor_hint_min_lines: int = 400   # file must be at least this many lines
     refactor_hint_min_edits: int = 4     # agent must have edited it at least this many times
+    # After this many unbounded reads of ONE file in a session, read_file stops
+    # serving content for it and returns only the outline: a model paging a file
+    # this often is hunting for a symbol, which find_symbol/grep_code answer in
+    # one call. 0 disables the wall (hints alone still fire).
+    outline_only_after_reads: int = 0
     revisions: RevisionsConfig = field(default_factory=RevisionsConfig)
 
 
@@ -554,6 +563,15 @@ class PermissionsConfig:
     rules: list = field(default_factory=list)   # [[permissions.rules]] entries
     # Seconds to wait for an answer to an ask prompt before failing closed (deny).
     ask_timeout_s: float = 300.0
+    # Append security.permissions.builtin_rules() at the LOWEST precedence: a
+    # short `ask` list covering actions that cannot be undone or that leave this
+    # machine (force-push, remote branch deletion, publish, raw egress, sudo,
+    # scheduled work). Your own rules are evaluated first and override it.
+    #
+    # On by default because `rules = []` with `default = "allow"` meant this
+    # layer existed as a mechanism with no content: nothing was ever asked.
+    # Set false to opt out entirely; a project config may only turn it on.
+    builtin_rules: bool = True
 
 
 @dataclass
@@ -696,6 +714,7 @@ class AgentConfig:
     narration_fallback: bool = True
     auto_detect_ctx: bool = True
     think_level: str = "normal"
+    vision: str = "auto"  # auto | on | off — bridged onto config.llm (see LLMConfig.vision)
     # Stream-wedge detection knobs; bridged onto config.llm by the loader
     # (mirrors LLMConfig — [agent] is the TOML section users set these in).
     stream_stall_seconds: int = 90
@@ -727,6 +746,7 @@ class ModelEntry:
     # Decision-maker scoring fields
     params_b: float = 0.0        # model size in billions of parameters (0 = unknown)
     thinking: bool = False       # supports extended thinking / chain-of-thought
+    vision: str = ""             # "" = inherit [agent].vision; auto | on | off
     local: bool = False          # runs locally (no network cost / latency)
     cache_ttl: int = 300         # prompt cache TTL in seconds; 0 = disable cache tracking
     cache_breakpoints: str = ""  # "" = inherit [agent]; off | anthropic (see LLMConfig)
@@ -1109,6 +1129,26 @@ class PrivacyConfig:
 
 
 @dataclass
+class VisionConfig:
+    """Images in the prompt — see core/vision.py.
+
+    Whether images are *sent at all* is a property of the active model, not of
+    this section: [agent].vision (or per-entry `vision`) decides that, defaulting
+    to a model-id hint. These knobs only shape what a sent image looks like.
+
+    max_side downscaling needs Pillow (optional, not a dependency). Without it
+    an oversized file is skipped with a message rather than blowing the context
+    window — a 4K screenshot is several thousand tokens on most backends.
+    """
+    enabled: bool = True
+    max_side: int = 1568       # longest edge, px (0 = never resize)
+    max_bytes: int = 5_000_000  # per-image cap after resizing
+    max_images: int = 4        # per request
+    keep_last_turns: int = 2   # older turns fall back to their text `[image: path]` marker
+    detail: str = "auto"       # auto | low | high (OpenAI-style; ignored by llama.cpp)
+
+
+@dataclass
 class SchedulerConfig:
     """Scheduled jobs (cron-like + delayed prompts) — core/scheduler.py.
 
@@ -1220,6 +1260,7 @@ class Config:
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     hooks: HooksConfig = field(default_factory=HooksConfig)
     credpool: CredPoolConfig = field(default_factory=CredPoolConfig)
+    vision: VisionConfig = field(default_factory=VisionConfig)
     # Runtime (non-persisted) flag: True while the active session pins every LLM
     # call to a LOCAL endpoint (private session mode). Set by
     # Agent.set_session_mode("private"); read by mid-turn routing so an auto-tier

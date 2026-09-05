@@ -15,8 +15,11 @@ from agent.cli.run import _warn_unanswerable_asks
 from agent.security import permissions as perms
 
 
-def _config(default="allow", rules=()):
-    return N(permissions=N(default=default, rules=list(rules), ask_timeout_s=300.0))
+def _config(default="allow", rules=(), builtin_rules=False):
+    """Baseline off by default here: these tests are about how the *user's* own
+    rules are reported. TestBuiltinBaselineReporting turns it back on."""
+    return N(permissions=N(default=default, rules=list(rules), ask_timeout_s=300.0,
+                           builtin_rules=builtin_rules))
 
 
 def _rule(tool, match="", verdict="ask"):
@@ -58,6 +61,27 @@ class TestUnanswerableAsks:
 
     def test_a_config_without_permissions_is_not_an_error(self):
         assert perms.unanswerable_asks(N()) == []
+
+
+class TestBuiltinBaselineReporting:
+    """The baseline is a dozen-odd rules. Enumerating them — as raw regexes —
+    would bury the rules the user wrote under noise they did not write."""
+
+    def test_baseline_is_one_summary_line(self):
+        sources = perms.unanswerable_asks(_config(builtin_rules=True))
+        assert len(sources) == 1
+        assert "built-in baseline" in sources[0]
+        assert "builtin_rules = false" in sources[0], "must say how to opt out"
+
+    def test_user_rules_are_still_listed_individually(self):
+        sources = perms.unanswerable_asks(
+            _config(rules=[_rule("run_command", "git push")], builtin_rules=True))
+        assert "rule run_command(git push)" in sources
+        assert any("built-in baseline" in s for s in sources)
+
+    def test_no_regex_leaks_into_the_warning(self):
+        for line in perms.unanswerable_asks(_config(builtin_rules=True)):
+            assert "re:" not in line and "(?:" not in line
 
     def test_a_matchless_rule_reads_as_every_call(self):
         assert perms.unanswerable_asks(_config(rules=[_rule("web_fetch")])) \

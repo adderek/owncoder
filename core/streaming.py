@@ -81,6 +81,26 @@ _BARE_TOOL_CALL_RE = re.compile(
     re.MULTILINE,
 )
 
+# Tool names written as XML tags in prose, e.g.
+#   <web_search query="...">...fabricated results...</web_search>
+#   <write_file path="..." content="...">
+# The parser never produced a call from these (it knows <agent_exec>,
+# <function=name> and JSON forms), so the tag — and any result the model wrote
+# inside it — is pure narration. Seen on heavily quantised Qwen3.5 (IQ2_S).
+_PSEUDO_TOOL_TAG_RE = re.compile(
+    r"<(write_file|edit_file|patch_file|read_file|list_files|run_command|run_argv"
+    r"|search_code|search_archive|web_fetch|web_search|git_diff|git_log|git_status"
+    r"|git_blame|git_related_files|replace_symbol|undo_file|save_note)"
+    r"(?=[\s>])"
+)
+
+
+def _has_pseudo_tool_tag(text: str) -> bool:
+    """True if a tool name appears as an XML tag outside ``` code fences."""
+    parts = text.split("```")
+    return any(_PSEUDO_TOOL_TAG_RE.search(p) for p in parts[::2])
+
+
 # Role labels that leak as residue right after a control token (e.g. "<|im_start|>thought").
 # Only stripped when adjacent to a control token — a bare occurrence in prose is real text.
 _ROLE_ALT = r"thought|user|assistant|system|tool"
@@ -177,21 +197,32 @@ def _mark_unexecuted_agent_exec(text: str) -> str:
     never executed. Leaving them verbatim shows the model's fabricated result
     to the user as if real, and re-seeds the format for future imitation.
     """
+    return _mark_unexecuted_tool_tags(text)
+
+
+def _mark_unexecuted_tool_tags(text: str) -> str:
+    """Mark every unexecuted tool tag: <agent_exec> and bare tool-name tags
+    (<write_file ...>, <web_search ...>) alike. Neither form ever ran, so any
+    result written inside one is fabricated."""
     _AV = r'(?:"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|[^>\'"])*'
     note = _UNEXECUTED_EXEC_NOTE
 
-    def _sub(seg: str) -> str:
-        seg = re.sub(r'<agent_exec\b' + _AV + r'\s*/>', note, seg, flags=re.DOTALL)
-        seg = re.sub(r'<agent_exec\b' + _AV + r'\s*>.*?</agent_exec>', note, seg, flags=re.DOTALL)
+    def _sub(seg: str, tag: str) -> str:
+        seg = re.sub(r'<' + tag + r'\b' + _AV + r'\s*/>', note, seg, flags=re.DOTALL)
+        seg = re.sub(r'<' + tag + r'\b' + _AV + r'\s*>.*?</' + tag + r'>', note, seg, flags=re.DOTALL)
         # Malformed tail: tag opened but never closed before end of segment
-        seg = re.sub(r'<agent_exec\b' + _AV + r'\s*>?(?:(?!</agent_exec>).)*$', note, seg, flags=re.DOTALL)
+        seg = re.sub(r'<' + tag + r'\b' + _AV + r'\s*>?(?:(?!</' + tag + r'>).)*$', note, seg, flags=re.DOTALL)
         return seg
 
     # Leave ``` code fences untouched — quoted tags there are content, not calls.
     parts = text.split("```")
     for i in range(0, len(parts), 2):
-        if "<agent_exec" in parts[i]:
-            parts[i] = _sub(parts[i])
+        seg = parts[i]
+        if "<agent_exec" in seg:
+            seg = _sub(seg, "agent_exec")
+        for m in set(_PSEUDO_TOOL_TAG_RE.findall(seg)):
+            seg = _sub(seg, m)
+        parts[i] = seg
     return "```".join(parts).strip()
 
 
@@ -230,6 +261,9 @@ def _is_narrating_tool_use(text: str) -> bool:
     # malformed args) — the model wrote a tool call as text, often with a
     # fabricated result. Treat as narration so the turn loop re-prompts.
     if _has_unexecuted_agent_exec(text):
+        return True
+    # Same failure, different syntax: <write_file ...>, <web_search ...> etc.
+    if _has_pseudo_tool_tag(text):
         return True
     lower = text.lower()
     if any(phrase in lower for phrase in _NARRATION_PHRASES):

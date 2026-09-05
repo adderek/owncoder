@@ -98,6 +98,52 @@ reason = "pushes publish"   # optional; shown in the ask prompt / deny error
 - `ask` — fire the ask flow (below). Timeout/no-answer resolves to **deny**
   (fail closed).
 
+## The built-in baseline
+
+Rules shipped in code (`permissions.builtin_rules()`), appended at the
+**lowest** precedence — after session grants, `.agent/permissions.json`, and
+every config layer. A configured rule about the same call always wins, so
+`tool = "run_argv", match = "git push*", verdict = "allow"` overrides the
+baseline exactly as it reads. `[permissions] builtin_rules = false` removes it;
+a project layer may turn it on, never off (same narrowing rule as everything
+else from a cloned repo).
+
+Without it this layer was a mechanism with no content: `rules = []` and
+`default = "allow"` meant nothing was ever asked, and every claim about the
+agent behaving carefully was a claim about the model's weights rather than
+about this codebase.
+
+**Inclusion criterion, and the only one: the action cannot be undone, or its
+effect leaves this machine.** Force-push, remote branch deletion, history
+rewrite, `git clean -f`, `git config` of hooks/aliases, sudo, raw egress
+(curl/wget/ssh/scp/nc), publish to a registry, infrastructure apply/destroy,
+recursive force delete, scheduled work, saved-command deletion.
+
+Deliberately excluded, and the reasons matter as much as the list:
+
+- **Reading secret files** — `read_deny_globs` already refuses at the fs gate.
+  A prompt for a call that is about to be blocked anyway is pure noise.
+- **`git reset --hard`** — the reflog and the checkpoint journal both recover it.
+- **Ordinary `web_fetch`** — the query gate already sanitises it, and gating the
+  agent's own gated egress costs utility for nothing. The baseline covers the
+  *bypass* path (`curl`, `ssh`) instead, which the query gate never sees.
+- **`npm install`, builds, tests, plain `git push`** — routine.
+
+The failure mode being designed against is alarm fatigue. A baseline that fires
+on work people do fifty times a day trains them to approve without reading, and
+a rule set that is approved without reading is worse than no rule set, because
+it produces a safety claim nothing is honouring.
+
+Every rule is `ask`, never `deny`: each is something the owner legitimately
+does. The point is that it surfaces, not that it is impossible — the local-first
+owner may always reconfigure their own agent, and pretending otherwise would be
+the theatre this design avoids elsewhere.
+
+With no interactive asker (`agent run`, CI) an `ask` resolves to deny.
+`unanswerable_asks()` reports the baseline as **one summary line** rather than
+enumerating fifteen raw regexes, so the rules the user actually wrote stay
+visible in the warning.
+
 ## Composition with existing modes — the narrowing invariant
 
 **Invariant: permission rules can only narrow, never widen.** Enforced

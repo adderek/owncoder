@@ -524,3 +524,27 @@ def test_every_ui_callback_reaches_the_agent():
     assert server_cbs <= proto_cbs, (
         f"LocalUIServer.chat takes what the protocol does not declare: "
         f"{sorted(server_cbs - proto_cbs)}")
+
+
+def test_remote_bridge_accepts_and_forwards_every_protocol_callback():
+    """RemoteBridge wraps the inner UIServer, so a callback it forgets is a
+    TypeError at the first turn of any relayed session — how
+    `on_injected_message` broke `run_ui` under the HTTP loop.
+    """
+    import inspect
+    from agent.ui_server.protocol import UIServerProtocol
+    from agent.ui_server.remote_bridge import RemoteBridge
+
+    def callbacks(fn):
+        return {p for p in inspect.signature(fn).parameters if p.startswith("on_")}
+
+    proto_cbs = callbacks(UIServerProtocol.chat)
+    bridge_cbs = callbacks(RemoteBridge.chat)
+    assert not proto_cbs - bridge_cbs, (
+        f"RemoteBridge.chat cannot pass: {sorted(proto_cbs - bridge_cbs)}")
+
+    # …and each one must reach the inner server, directly or via a pub_ wrapper.
+    src = inspect.getsource(RemoteBridge.chat)
+    for cb in sorted(proto_cbs):
+        assert f"{cb}={cb}" in src or f"{cb}=pub_{cb[3:]}" in src, (
+            f"accepted but never forwarded: {cb}")

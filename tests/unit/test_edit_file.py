@@ -93,6 +93,28 @@ class TestAnchorNotFound:
         assert "error" in r
         assert any(e["kind"] == "anchor_not_found" for e in r["errors"])
 
+    def test_typo_anchor_reports_near_miss_candidate(self, work):
+        # Session 20260826T202043_fed4: anchor "// --- DOMKE ---" for a file
+        # containing "// --- DOMKI ---" produced zero candidates, so the model
+        # re-read the whole file to find a one-character typo.
+        (work / "f.js").write_text(
+            "const a = 1;\n        // --- DOMKI ---\n        function createHouse() {}\n"
+        )
+        r = edit_file([{"path": "f.js", "anchor": "// --- DOMKE ---", "replacement": "x"}])
+        assert "error" in r
+        e = r["errors"][0]
+        assert e["kind"] == "anchor_not_found"
+        assert e["fuzzy_candidates"], "near-miss anchor must be reported back"
+        assert "DOMKI" in e["fuzzy_candidates"][0]["match"]
+        assert "Similar text exists" in e["detail"]
+        # Report only — the file is untouched.
+        assert "DOMKI" in (work / "f.js").read_text()
+
+    def test_unrelated_anchor_reports_no_candidates(self, work):
+        (work / "f.py").write_text("def alpha():\n    return 1\n")
+        r = edit_file([{"path": "f.py", "anchor": "zzzz qqqq wwww", "replacement": "x"}])
+        assert not r["errors"][0]["fuzzy_candidates"]
+
     def test_no_write_on_anchor_not_found(self, work):
         original = "hello world\n"
         (work / "f.py").write_text(original)

@@ -319,3 +319,37 @@ def test_apply_code_writes_side_log_row(tmp_path, monkeypatch, reset_file_tool_s
     assert row["turn"] == 3
     assert row["arguments"]["path"] == "hello.py"
     assert row["result"]["outcome"] == "ok"
+
+
+def test_apply_code_refuses_pseudo_tool_tag_response(tmp_path, monkeypatch, reset_file_tool_state):
+    """Session 20260826T202043_fed4: a quantised model wrote its whole turn as
+    <web_search ...>/<write_file path=... content=...> tags with fabricated
+    results. The fallback mined an attribute-embedded fragment and wrote it to
+    a path taken from a <script src=...> URL. Nothing may be written now."""
+    monkeypatch.chdir(tmp_path)
+    from agent.core.history_ops import _apply_code_from_history
+
+    content = (
+        '<write_file path="app.py" content="<!DOCTYPE html>\n'
+        '    <script src=\\"https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js\\"></script>\n'
+        '    const scene = new THREE.Scene();\n'
+        '    scene.add(x);\n'
+        '">\n'
+    )
+    messages = [{"role": "assistant", "content": content}]
+    assert _apply_code_from_history(messages, on_tool_call=None) is None
+    assert not (tmp_path / "cdnjs.cloudflare.com").exists()
+    assert not (tmp_path / "app.py").exists()
+
+
+def test_apply_code_refuses_when_parent_dir_missing(tmp_path, monkeypatch, reset_file_tool_state):
+    """The fallback recovers a described edit; it never mints directory trees."""
+    monkeypatch.chdir(tmp_path)
+    from agent.core.history_ops import _apply_code_from_history
+
+    messages = [{
+        "role": "assistant",
+        "content": "Let me write vendor/libs/three/setup.py:\n```python\nprint('x')\n```",
+    }]
+    assert _apply_code_from_history(messages, on_tool_call=None) is None
+    assert not (tmp_path / "vendor").exists()

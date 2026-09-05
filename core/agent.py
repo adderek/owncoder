@@ -267,6 +267,10 @@ class Agent:
         try:
             from agent.tools.files.hint import reset_session_hints
             reset_session_hints()
+            from agent.core.tool_hints import reset_tool_hints
+            reset_tool_hints()
+            from agent.core import context_state
+            context_state.reset()
         except Exception:
             pass
 

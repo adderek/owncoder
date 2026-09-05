@@ -69,13 +69,17 @@ def select_tools(all_schemas: list[dict], config: "Config",
     return tools, _refresh, compaction_on
 
 
-def normalize_api_messages(messages: list[dict]) -> list[dict]:
+def normalize_api_messages(messages: list[dict], config=None) -> list[dict]:
     """Strip internal keys and apply model-quirk fixups to produce API-ready messages.
 
     Pure transform (no side effects): drops _-prefixed keys, surfaces stored
     reasoning, merges consecutive assistants, merges leading system messages,
     strips a trailing prefill assistant, and fills reasoning_content for
     thinking-mode sessions.
+
+    With *config*, `[image: path]` markers in user text are also expanded into
+    multimodal content blocks — but only here, on the wire copy, and only when
+    the active model has vision (core/vision.py explains why).
     """
     def _to_api_msg(m: dict) -> dict:
         result = {k: v for k, v in m.items() if not k.startswith("_")}
@@ -110,4 +114,7 @@ def normalize_api_messages(messages: list[dict]) -> list[dict]:
             else m
             for m in api_messages
         ]
+    if config is not None:
+        from agent.core import vision
+        api_messages = vision.expand_image_markers(api_messages, config)
     return api_messages

@@ -38,6 +38,51 @@ def _find_loose_v2(hay: str, needle: str, lo: int, hi: int) -> list[tuple[int, i
     return [(m.start() + lo, m.end() + lo) for m in re.finditer(pattern, window)]
 
 
+# Near-miss reporting only: a typo'd anchor ("// --- DOMKE ---" for
+# "// --- DOMKI ---") matches neither exact nor whitespace-loose search, and the
+# model is left re-reading the file blind. These spans are NEVER edited — they
+# are handed back as fuzzy_candidates so the next call can quote the real text.
+_NEAR_MISS_RATIO = 0.75
+_NEAR_MISS_MAX_LINES = 20_000
+
+
+def _find_near_misses(hay: str, needle: str, lo: int, hi: int,
+                      limit: int = _MAX_CANDIDATES) -> list[tuple[int, int]]:
+    """Line-window spans in hay[lo:hi] similar to *needle*, best first."""
+    from difflib import SequenceMatcher
+
+    target = needle.strip("\n")
+    if not target.strip():
+        return []
+    window = hay[lo:hi]
+    # Offset of each line start within `window`, plus a trailing sentinel.
+    starts = [0]
+    for i, ch in enumerate(window):
+        if ch == "\n":
+            starts.append(i + 1)
+    if len(starts) > _NEAR_MISS_MAX_LINES:
+        return []
+    n = max(1, _count_lines(target))
+    sm = SequenceMatcher(a=target, autojunk=False)
+    scored: list[tuple[float, int, int]] = []
+    for i in range(len(starts)):
+        start = starts[i]
+        end = starts[i + n] if i + n < len(starts) else len(window)
+        if start >= end:
+            continue
+        chunk = window[start:end].strip("\n")
+        if not chunk.strip():
+            continue
+        sm.set_seq2(chunk)
+        if sm.real_quick_ratio() < _NEAR_MISS_RATIO or sm.quick_ratio() < _NEAR_MISS_RATIO:
+            continue
+        ratio = sm.ratio()
+        if ratio >= _NEAR_MISS_RATIO:
+            scored.append((ratio, start + lo, end + lo))
+    scored.sort(key=lambda t: -t[0])
+    return [(s, e) for _, s, e in scored[:limit]]
+
+
 def _line_of_offset(text: str, off: int) -> int:
     return text.count("\n", 0, off) + 1
 

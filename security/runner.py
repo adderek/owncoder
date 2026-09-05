@@ -20,6 +20,7 @@ import resource
 import shutil
 import signal
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -239,6 +240,44 @@ def _secret_mask_paths(root: Path) -> list[Path]:
     return matches
 
 
+def _interpreter_paths(root: Path) -> list[str]:
+    """Dirs the sandbox must expose so a non-/usr Python can be exec'd.
+
+    Tools (web_fetch, web_search) run ``sys.executable`` inside the sandbox.
+    With a uv-managed or venv interpreter that binary lives outside both /usr
+    and the project root, so bwrap failed with
+    ``execvp ...: No such file or directory``.
+
+    The whole symlink chain matters, not just the final target: a venv's
+    ``bin/python`` points at a versioned-alias dir (``cpython-3.11-...`` ->
+    ``cpython-3.11.15-...``) and the alias path must exist inside the sandbox
+    too, or exec fails on the unresolvable hop. Paths under the project root
+    are skipped — the rw root bind already covers them and a read-only
+    re-bind would break writes.
+    """
+    cands: set[str] = {sys.prefix, sys.base_prefix}
+    hop = Path(sys.executable)
+    for _ in range(16):
+        cands.add(str(hop.parent.parent))
+        if not hop.is_symlink():
+            break
+        target = Path(os.readlink(hop))
+        hop = target if target.is_absolute() else (hop.parent / target)
+    cands.add(str(Path(sys.executable).resolve().parent.parent))
+
+    out: list[str] = []
+    for c in sorted(cands):
+        if not c or c == "/usr" or c.startswith("/usr/"):
+            continue
+        cp = Path(c)
+        if cp == root or root in cp.parents:
+            continue
+        if not cp.exists():
+            continue
+        out.append(c)
+    return out
+
+
 def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool, seccomp_fd: int | None = None) -> list[str]:
     pol = policy.get()
     root = pol.root
@@ -268,6 +307,8 @@ def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool, seccomp_fd: int | 
         "--bind", str(root), str(root),
         "--chdir", str(cwd),
     ]
+    for p in _interpreter_paths(root):
+        a += ["--ro-bind-try", p, p]
     # Layer read-only overlays over sensitive paths. --ro-bind-try skips missing paths.
     for rel in _PROTECTED_PATHS:
         p = root / rel
@@ -301,6 +342,8 @@ def _firejail_argv(argv: list[str], *, cwd: Path, network: bool) -> list[str]:
         f"--whitelist={pol.root}",
         f"--chdir={cwd}",
     ]
+    for p in _interpreter_paths(pol.root):
+        a += [f"--whitelist={p}", f"--read-only={p}"]
     # Mark the same sensitive paths read-only inside firejail.
     for rel in _PROTECTED_PATHS:
         p = pol.root / rel

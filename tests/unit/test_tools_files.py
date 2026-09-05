@@ -201,3 +201,161 @@ class TestWriteFileGuards:
             assert "error" in r
         finally:
             get_rules().config.max_write_size = original_limit
+
+
+class TestTruncatedReadOutline:
+    """A truncated read must hand back a map of the rest of the file, so the
+    model jumps to the landmark instead of paging (session 20260826T202043_fed4:
+    three reads — 1-200, 300-400, 400-450 — to find "// --- DOMKI ---")."""
+
+    def _big_js(self) -> str:
+        parts = ["// header\n" * 10]
+        parts.append("// === LIGHTING ===\n")
+        parts.append("function createLight() {\n  return 1;\n}\n")
+        parts.append("const filler = 0;\n" * 500)
+        parts.append("// --- DOMKI ---\n")
+        parts.append("function createHouse(x, z) {\n  return x;\n}\n")
+        return "".join(parts)
+
+    def test_outline_lists_landmarks_beyond_the_window(self, work):
+        (work / "scene.js").write_text(self._big_js())
+        r = read_file("scene.js")
+        content = r["content"]
+        assert "outline of the whole file" in content
+        assert "section DOMKI" in content
+        assert "func createHouse" in content
+        names = {e["name"] for e in r["metadata"]["outline"]}
+        assert {"LIGHTING", "DOMKI", "createLight", "createHouse"} <= names
+        # The landmark is past the served window — the line number is the point.
+        domki = next(e for e in r["metadata"]["outline"] if e["name"] == "DOMKI")
+        assert domki["line"] > 200
+
+    def test_ranged_read_has_no_outline(self, work):
+        (work / "scene.js").write_text(self._big_js())
+        r = read_file("scene.js", start_line=1, end_line=20)
+        assert "outline of the whole file" not in r["content"]
+
+    def test_small_file_read_unchanged(self, work):
+        (work / "small.py").write_text("def a():\n    return 1\n")
+        r = read_file("small.py")
+        assert "outline of the whole file" not in r["content"]
+        assert "def a" in r["content"]
+
+
+class TestOutline:
+    def test_python_defs_and_classes(self):
+        from agent.tools.files.outline import outline
+        entries = outline("class Foo:\n    def bar(self):\n        pass\n")
+        assert [(e["kind"], e["name"]) for e in entries] == [("class", "Foo"), ("def", "bar")]
+
+    def test_js_arrow_and_function(self):
+        from agent.tools.files.outline import outline
+        src = "export const load = async () => {}\nfunction plain(a) {}\n"
+        assert [e["name"] for e in outline(src)] == ["load", "plain"]
+
+    def test_markdown_headings_need_a_markdown_filename(self):
+        from agent.tools.files.outline import outline
+        src = "# Rough note about the parser\ndef alpha():\n    pass\n"
+        # Python comment — not a landmark.
+        assert [e["name"] for e in outline(src, filename="m.py")] == ["alpha"]
+        # Same text in markdown — a heading.
+        names = [e["name"] for e in outline(src, filename="README.md")]
+        assert "Rough note about the parser" in names
+
+    def test_no_filename_skips_markdown_rules(self):
+        from agent.tools.files.outline import outline
+        assert outline("# just a comment\n") == []
+
+    def test_section_banners(self):
+        from agent.tools.files.outline import outline
+        src = "// === OSWIETLENIE ===\n# --- DOMKI ---\n"
+        assert [(e["kind"], e["name"]) for e in outline(src)] == [
+            ("section", "OSWIETLENIE"), ("section", "DOMKI")]
+
+    def test_truncation_marker(self):
+        from agent.tools.files.outline import outline
+        src = "".join(f"def f{i}():\n    pass\n" for i in range(30))
+        entries = outline(src, max_entries=5)
+        assert len(entries) == 6
+        assert entries[-1]["kind"] == "..."
+        assert "25 more" in entries[-1]["name"]
+
+
+class TestIndexCoverageFormatting:
+    def test_root_files_are_not_reported_as_directories(self):
+        from agent.cli.chat import _get_index_coverage, _format_index_coverage
+
+        class _Store:
+            def list_paths(self):
+                return ["/w/collect.py", "/w/AGENTS.md", "/w/agent/core/turn.py"]
+
+        coverage = _get_index_coverage(_Store(), "/w")
+        assert coverage == {".": 2, "agent": 1}
+        text = _format_index_coverage(coverage)
+        assert "collect.py/" not in text
+        assert "(repository root): 2 file(s)" in text
+        assert "agent/: 1 file(s)" in text
+        assert "3 indexed file(s)" in text
+
+    def test_long_directory_list_is_capped(self):
+        from agent.cli.chat import _format_index_coverage, _COVERAGE_MAX_DIRS
+
+        coverage = {f"d{i}": 1 for i in range(_COVERAGE_MAX_DIRS + 5)}
+        text = _format_index_coverage(coverage)
+        assert text.count("file(s)") <= _COVERAGE_MAX_DIRS + 2
+        assert "5 more directories" in text
+
+
+class TestOutlineOnlyWall:
+    """With tools.outline_only_after_reads set, the Nth unbounded read of one
+    file stops serving content and hands back the map instead."""
+
+    @pytest.fixture(autouse=True)
+    def _wall(self, tmp_path):
+        from agent.core.tool_hints import reset_tool_hints, tool_hints
+        from agent.tools.files import setup as files_setup
+
+        cfg = Config()
+        cfg.tools.working_dir = str(tmp_path)
+        cfg.tools.agent_dir = str(tmp_path / ".agent")
+        cfg.tools.outline_only_after_reads = 2
+        files_setup(cfg)
+        reset_tool_hints()
+        # read_file itself does not count; the hint layer does, as in production.
+        self._count = lambda path: tool_hints("read_file", {"path": path}, {"content": ""})
+        yield
+        reset_tool_hints()
+
+    def test_wall_serves_outline_only(self, work):
+        (work / "m.py").write_text("def alpha():\n    return 1\n\ndef beta():\n    return 2\n")
+        for _ in range(2):
+            r = read_file("m.py")
+            assert "def alpha" in r["content"]
+            self._count("m.py")
+        r = read_file("m.py")
+        assert r["metadata"]["outline_only"] is True
+        assert "outline only" in r["content"]
+        assert "find_symbol" in r["content"]
+        assert "1: def alpha" in r["content"]
+        assert "return 1" not in r["content"]
+
+    def test_ranged_read_still_works_behind_the_wall(self, work):
+        (work / "m.py").write_text("def alpha():\n    return 1\n")
+        for _ in range(3):
+            self._count("m.py")
+        r = read_file("m.py", start_line=1, end_line=2)
+        assert "return 1" in r["content"]
+        assert not r["metadata"].get("outline_only")
+
+    def test_other_files_unaffected(self, work):
+        (work / "m.py").write_text("def alpha():\n    return 1\n")
+        (work / "n.py").write_text("def gamma():\n    return 3\n")
+        for _ in range(3):
+            self._count("m.py")
+        r = read_file("n.py")
+        assert "return 3" in r["content"]
+
+    def test_disabled_by_default(self, work):
+        from agent.config import Config as _C
+        cfg = _C()
+        assert cfg.tools.outline_only_after_reads == 0

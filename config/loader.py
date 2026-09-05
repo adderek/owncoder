@@ -27,6 +27,7 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_LLM_THINK_BUDGET": ("llm", "think_budget"),
         "AGENT_LLM_AUTO_DETECT_CTX": ("agent", "auto_detect_ctx"),
         "AGENT_LLM_NARRATION_FALLBACK": ("agent", "narration_fallback"),
+        "AGENT_VISION": ("agent", "vision"),
         "AGENT_LOOP_GUARD_ENABLED": ("loop_guard", "enabled"),
         "AGENT_LOOP_GUARD_WINDOW": ("loop_guard", "window"),
         "AGENT_LOOP_GUARD_THRESHOLD": ("loop_guard", "repeat_threshold"),
@@ -256,6 +257,7 @@ def _merge(config: Config, data: dict) -> None:
         ("output_store", config.output_store),
         ("turn_signals", config.turn_signals),
         ("ui_server", config.ui_server),
+        ("vision", config.vision),
     ):
         section_data = data.get(section_name, {})
         _merge_obj(obj, section_data, path=f"{section_name}.")
@@ -271,7 +273,7 @@ _KNOWN_SECTIONS = {
     "explore", "web_search", "concurrency", "kb", "aei", "notify", "mcp",
     "speech", "auto_tier", "failover", "privacy", "scheduler", "hooks",
     "credpool", "permissions", "tool_discovery", "summarization", "output_store",
-    "turn_signals", "ui_server", "models",
+    "turn_signals", "ui_server", "models", "vision",
 }
 
 
@@ -345,6 +347,7 @@ def _merge_permissions(config: Config, layers: list[tuple[dict, bool]]) -> None:
     fresh = PermissionsConfig()
     config.permissions.default = fresh.default
     config.permissions.ask_timeout_s = fresh.ask_timeout_s
+    config.permissions.builtin_rules = fresh.builtin_rules
 
     collected: list[list[PermissionRule]] = []
     for data, is_project in layers:
@@ -362,6 +365,15 @@ def _merge_permissions(config: Config, layers: list[tuple[dict, bool]]) -> None:
         timeout = section.get("ask_timeout_s")
         if isinstance(timeout, (int, float)) and not is_project:
             config.permissions.ask_timeout_s = float(timeout)
+        builtin = section.get("builtin_rules")
+        if isinstance(builtin, bool):
+            # Narrowing only: a cloned repo may turn the baseline on, never off.
+            if is_project and not builtin:
+                _config_problem(
+                    "[permissions] builtin_rules = false from a project config "
+                    "is ignored — project rules may only narrow")
+            else:
+                config.permissions.builtin_rules = builtin
 
         layer_rules: list[PermissionRule] = []
         for item in section.get("rules", []) or []:
@@ -567,6 +579,11 @@ def _apply_entry_to_llm(config: Config, name: str, entry: "ModelEntry") -> None:
     config.llm.cache_ttl = entry.cache_ttl
     if entry.cache_breakpoints:      # "" = inherit whatever [agent] set
         config.llm.cache_breakpoints = entry.cache_breakpoints
+    # "" = inherit [agent].vision. Assigned unconditionally (not only when set)
+    # because this also runs on a live `/model use` switch: leaving the previous
+    # entry's value behind would send images to a text-only model.
+    _tagged_vision = "on" if "vision" in [str(t).lower() for t in (entry.tags or [])] else ""
+    config.llm.vision = entry.vision or _tagged_vision or config.agent.vision
     config.llm.max_output_tokens = entry.max_output_tokens
     config.llm.temperature = entry.temperature
     config.llm.seed = entry.seed
@@ -608,6 +625,8 @@ def _apply_model_entry_to_llm(config: Config) -> None:
     config.llm.compaction_threshold = config.agent.compaction_threshold
     config.llm.compaction_message_threshold = config.agent.compaction_message_threshold
     config.llm.narration_fallback = config.agent.narration_fallback
+    if default_entry is None:   # with an entry, _apply_entry_to_llm already did this
+        config.llm.vision = config.agent.vision
     config.llm.auto_detect_ctx = config.agent.auto_detect_ctx
     config.llm.think_level = config.agent.think_level
     config.llm.stream_stall_seconds = config.agent.stream_stall_seconds

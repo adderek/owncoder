@@ -9,8 +9,12 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+# Directories listed individually before the tail is summarised as a count.
+_COVERAGE_MAX_DIRS = 25
+
+
 def _get_index_coverage(store, working_dir: str) -> dict[str, int]:
-    """Return {top-level-dir-or-file: indexed_file_count} for injecting into context."""
+    """Return {top-level-dir: indexed_file_count}; root-level files count under "."."""
     if store is None:
         return {}
     try:
@@ -20,13 +24,35 @@ def _get_index_coverage(store, working_dir: str) -> dict[str, int]:
         for p in paths:
             try:
                 rel = Path(p).relative_to(wd)
-                top = rel.parts[0] if len(rel.parts) > 1 else str(rel)
+                # A file at the root has one part and is NOT a directory —
+                # counting it as its own "directory" turned the coverage list
+                # into one bogus "collect.py/: 1 file(s)" line per file.
+                top = rel.parts[0] if len(rel.parts) > 1 else "."
             except ValueError:
-                top = Path(p).name
+                top = "."
             coverage[top] = coverage.get(top, 0) + 1
         return coverage
     except Exception:
         return {}
+
+
+def _format_index_coverage(coverage: dict[str, int]) -> str:
+    """Render coverage as a map the model can route on: biggest areas first."""
+    total = sum(coverage.values())
+    root_n = coverage.get(".", 0)
+    dirs = sorted(((d, n) for d, n in coverage.items() if d != "."),
+                  key=lambda t: (-t[1], t[0]))
+    lines = [f"# Index coverage\nSemantic search available over {total} indexed file(s)."]
+    shown = dirs[:_COVERAGE_MAX_DIRS]
+    if shown:
+        lines.append("Top-level directories:")
+        lines += [f"  {d}/: {n} file(s)" for d, n in shown]
+    if len(dirs) > len(shown):
+        rest = sum(n for _, n in dirs[len(shown):])
+        lines.append(f"  ... {len(dirs) - len(shown)} more directories ({rest} file(s))")
+    if root_n:
+        lines.append(f"  (repository root): {root_n} file(s)")
+    return "\n".join(lines)
 
 
 def _bg_update_index(store, embedder, config, result: dict) -> None:
@@ -326,8 +352,7 @@ def cmd_chat(args, config):
     # Inject index coverage as system context so agent knows what's indexed.
     _coverage = _get_index_coverage(store, config.tools.working_dir)
     if _coverage:
-        _cov_lines = "\n".join(f"  {d}/: {n} file(s)" for d, n in sorted(_coverage.items()))
-        _cov_msg = f"# Index coverage\nIndexed directories (semantic search available):\n{_cov_lines}"
+        _cov_msg = _format_index_coverage(_coverage)
     else:
         _cov_msg = (
             "# Index coverage\n"

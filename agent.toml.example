@@ -605,6 +605,16 @@ max_findings = 10       # cap on lines injected into context
 [permissions]
 default       = "allow"   # allow | ask | deny — "allow" keeps current behavior
 ask_timeout_s = 300.0     # no answer in this long = deny (fail closed)
+# A built-in `ask` baseline runs at the LOWEST precedence, so your own rules
+# below always win. It covers only actions that cannot be undone or that leave
+# this machine: force-push, remote branch deletion, history rewrites, publish to
+# a registry, sudo, raw egress (curl/ssh/nc), scheduled work. Ordinary pushes,
+# installs, builds and `git reset --hard` are NOT in it — a baseline that fires
+# on routine work just teaches you to approve without reading.
+# See `agent permissions` for the resolved list.
+builtin_rules = true
+# Note: with no interactive UI (`agent run`, CI) an `ask` denies, because nobody
+# is there to approve. `agent run` warns about that before it starts.
 
 # [[permissions.rules]]
 # tool    = "run_argv"
