@@ -575,9 +575,33 @@ async def compact(
     to_turn = turn_index if turn_index is not None else (from_turn + len(to_compact))
 
     # Stage 1
-    knowledge_draft = await _analyze_transcript(
-        transcript_text, prev_round, config, client
-    )
+    #
+    # Guarded, because compaction CALLS THE MODEL, and compaction is itself what
+    # run_turn does when the model says the context is full. An exception here
+    # is raised from inside that handler, so nothing catches it and the whole
+    # turn dies. Seen on a 24-module fixture: the model read its way to 65537
+    # tokens against a 65536 window and the run ended with an uncaught
+    #   BadRequestError: request (65537 tokens) exceeds the available context
+    # which reads as a model failure and is not one.
+    #
+    # If the analysis cannot run, we still have to return something shorter than
+    # what we were given, so fall through to the truncation path below rather
+    # than propagating.
+    try:
+        knowledge_draft = await _analyze_transcript(
+            transcript_text, prev_round, config, client
+        )
+    except Exception as e:                                  # noqa: BLE001
+        logger.warning("compact: stage 1 failed (%s: %s) — falling back to "
+                       "truncation", type(e).__name__, e)
+        result = list(hard_rules_msgs)
+        if system_msg:
+            result.append(system_msg)
+        result.append({"role": "assistant",
+                       "content": f"[SESSION SUMMARY UNAVAILABLE: {type(e).__name__}]",
+                       "_compaction_marker": True})
+        result.extend(_truncate_tool_results_in(verbatim, max_chars=2000))
+        return result
     # Strip entity markers before saving to Tier-2 facts and feeding Stage 2.
     if _entities:
         knowledge_draft = _protector.unprotect_text(knowledge_draft)
@@ -587,8 +611,12 @@ async def compact(
         facts, summary, q_view = await _synthesize_summary(
             knowledge_draft, config, client
         )
-    except CompactionError as e:
-        logger.warning("compact: stage 2 failed, falling back to error summary: %s", e)
+    except (CompactionError, Exception) as e:               # noqa: BLE001
+        # Was CompactionError only, which let an API-level failure -- notably a
+        # context-exceeded 400 raised by the summariser itself -- escape the same
+        # way stage 1's did.
+        logger.warning("compact: stage 2 failed (%s), falling back to error summary: %s",
+                       type(e).__name__, e)
         error_msg = {"role": "assistant", "content": f"[SESSION SUMMARY ERROR: {e}]",
                      "_compaction_marker": True}
         result = list(hard_rules_msgs)
