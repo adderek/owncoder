@@ -699,4 +699,32 @@ async def compact(
         result.append(system_msg)
     result.append(compacted_msg)
     result.extend(verbatim)
+
+    # Compaction must not produce a conversation with no user turn in it.
+    #
+    # It can, and it is not idempotent: the summary goes in as an ASSISTANT
+    # message, so the first pass folds the user's question into it, and a second
+    # pass over that history finds last_user_idx = None and has nothing left to
+    # preserve. Qwen-style templates walk the messages backwards looking for the
+    # last user query and raise when there is none -- llama-server then answers
+    # 500 with `Jinja Exception: No user query found in messages.` and the whole
+    # run is lost.
+    #
+    # Rare until now only because compaction rarely ran: the pre-flight estimate
+    # ignored the ~13k-token tools payload, so the budget was crossed far later
+    # than it should have been. Charging it correctly made this fire on 2 of 3
+    # long runs.
+    #
+    # The repair is deliberately the smallest one that restores the contract:
+    # put the most recent real user turn back, verbatim. It only runs when the
+    # result is already invalid, so it cannot change a conversation that was
+    # fine.
+    if not any(m.get("role") == "user" for m in result):
+        last_user = next((m for m in reversed(messages)
+                          if m.get("role") == "user"), None)
+        if last_user is not None:
+            logger.warning(
+                "compact: no user message survived — reinstating the last one "
+                "so the chat template can find a query")
+            result.append(dict(last_user))
     return result

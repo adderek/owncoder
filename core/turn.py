@@ -76,6 +76,39 @@ async def _post_turn_capture_and_summarize(
 _BUDGET_NOTICE_FRAC = 0.60
 _BUDGET_NOTICE_KIND = "context_budget"
 
+_TOOL_SCHEMA_TOKENS: dict[tuple[str, ...], int] = {}
+
+
+def _tool_schema_tokens(tools) -> int:
+    """Token cost of the `tools` payload, which never appears in `messages`.
+
+    The pre-flight estimate counted the conversation and nothing else, but every
+    request also ships the full JSON schema of each offered tool. That is 82
+    tools and ~13k tokens here -- a fifth of a 64k slot, charged on every call
+    and invisible to the budget. The effect is not a rare overflow: compaction
+    fires ~13k tokens late on EVERY turn, so the agent runs that much closer to
+    the ceiling than its own budget notice claims. It showed up as a hard
+    rejection only once (a 67903-token request against a 65536-token slot, with
+    no "Pre-flight ... compacting" line before it, because the estimate had
+    stayed under the 49152 trigger the whole time).
+
+    Same reasoning as the image charge below: what goes on the wire has to be
+    counted, not just what is in the message list.
+
+    Cached on the tuple of tool names, since progressive disclosure changes the
+    offered set between iterations but the schemas themselves do not.
+    """
+    if not tools:
+        return 0
+    key = tuple(t.get("function", {}).get("name", "") for t in tools)
+    hit = _TOOL_SCHEMA_TOKENS.get(key)
+    if hit is None:
+        hit = _count_tokens_approx([{"content": json.dumps(tools)}])
+        _TOOL_SCHEMA_TOKENS[key] = hit
+    return hit
+
+
+
 
 def _apply_budget_notice(messages: list[dict], config, injected) -> list[dict]:
     """Keep at most one live context-budget notice at the tail of history.
@@ -375,6 +408,8 @@ async def run_turn(
         # wire, so the text count understates the prompt by thousands of tokens.
         # Charge them here or a couple of screenshots silently overflow the ctx.
         token_est += _vision.estimated_image_tokens(messages, config)
+        # Likewise the tool schemas: never in `messages`, always on the wire.
+        token_est += _tool_schema_tokens(tools)
         _notify_ctx(token_est)
         budget = compaction_trigger_budget(
             config, confidence_monitor.signal() if confidence_monitor else None)
