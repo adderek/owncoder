@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agent._tokens import count_tokens_approx as _count_tokens_approx
+
+logger = logging.getLogger(__name__)
+_warned_missing_grammar: set[str] = set()
 
 if TYPE_CHECKING:
     from agent.config import RAGConfig
@@ -61,6 +65,11 @@ CHUNK_NODE_TYPES = {
 
 _parser_cache: dict = {}
 
+# Grammars shipped in the optional `lang` extra; the rest are hard dependencies.
+_OPTIONAL_GRAMMARS = frozenset(
+    {"javascript", "typescript", "rust", "go", "java", "kotlin"}
+)
+
 
 def _chunk_id(path: str, start_byte: int) -> str:
     return hashlib.sha256(f"{path}:{start_byte}".encode()).hexdigest()[:16]
@@ -88,7 +97,21 @@ def _get_parser(language: str):
             _parser_cache[language] = None
             return None
         import importlib
-        mod = importlib.import_module(mod_name)
+        try:
+            mod = importlib.import_module(mod_name)
+        except ImportError:
+            # Silent fallback to line-based chunks would hide a degraded index,
+            # so say once per language what is missing and how to fix it.
+            if language not in _warned_missing_grammar:
+                _warned_missing_grammar.add(language)
+                extra = " (pip install 'local-code-agent[lang]')" if language in _OPTIONAL_GRAMMARS else ""
+                logger.warning(
+                    "tree-sitter grammar %s not installed%s — falling back to "
+                    "line-based chunking for %s files",
+                    mod_name, extra, language,
+                )
+            _parser_cache[language] = None
+            return None
         lang = Language(mod.language())
         parser = Parser(lang)
         _parser_cache[language] = parser

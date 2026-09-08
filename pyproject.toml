@@ -5,20 +5,13 @@ requires-python = ">=3.11"
 dependencies = [
     "tree-sitter>=0.21",
     "tree-sitter-python",
-    "tree-sitter-javascript",
-    "tree-sitter-typescript",
     "tree-sitter-c",
     "tree-sitter-cpp",
-    "tree-sitter-rust",
-    "tree-sitter-go",
-    "tree-sitter-java",
-    "tree-sitter-kotlin",
     "tree-sitter-bash",
     "sqlite-vec>=0.1",
     "openai>=1.0",
     "textual>=0.50",
     "tiktoken>=0.6",
-    "gitpython>=3.1",
     "rich>=13.0",
     "pathspec>=0.12",
     "watchdog>=3.0",
@@ -30,6 +23,16 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-watch>=4.2",
+]
+# Extra grammars for projects that are not Python/C/C++/bash. The chunker falls
+# back to line-based splitting when a grammar is missing, so these are optional.
+lang = [
+    "tree-sitter-javascript",
+    "tree-sitter-typescript",
+    "tree-sitter-rust",
+    "tree-sitter-go",
+    "tree-sitter-java",
+    "tree-sitter-kotlin",
 ]
 graph = [
     "graphifyy>=0.1.14",

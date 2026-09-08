@@ -113,3 +113,32 @@ class TestWantedFile:
     def test_binary_never_wanted(self, tmp_path, cfg):
         png = tmp_path / "i.png"; png.write_bytes(b"\x89PNG")
         assert not _wanted_file(png, None, True, cfg)
+
+
+class TestMissingGrammarFallback:
+    """Optional grammars (the `lang` extra) must degrade loudly, not silently."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_cache(self):
+        from agent.rag import chunker
+        chunker._parser_cache.clear()
+        chunker._warned_missing_grammar.clear()
+        yield
+        chunker._parser_cache.clear()
+        chunker._warned_missing_grammar.clear()
+
+    def test_missing_optional_grammar_warns_once_with_extra_hint(self, monkeypatch, caplog):
+        import importlib
+        from agent.rag import chunker
+
+        def boom(name, *a, **k):
+            raise ImportError(name)
+
+        monkeypatch.setattr(importlib, "import_module", boom)
+        with caplog.at_level("WARNING", logger="agent.rag.chunker"):
+            assert chunker._get_parser("kotlin") is None
+            assert chunker._get_parser("kotlin") is None
+        msgs = [r.getMessage() for r in caplog.records]
+        assert len(msgs) == 1
+        assert "tree_sitter_kotlin" in msgs[0]
+        assert "[lang]" in msgs[0]
