@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -94,6 +95,34 @@ class TestBuildArgv:
         vpy.chmod(0o755)
         argv = _build_argv("pytest", str(tmp_path), "")
         assert argv[0] == str(vpy)
+
+    def test_activated_virtualenv_used_when_project_has_none(self, tmp_path, monkeypatch):
+        venv = tmp_path / "elsewhere"
+        vpy = venv / "bin" / "python"
+        vpy.parent.mkdir(parents=True)
+        vpy.write_text("#!/bin/sh\n")
+        vpy.chmod(0o755)
+        monkeypatch.setenv("VIRTUAL_ENV", str(venv))
+        argv = _build_argv("pytest", str(tmp_path), "")
+        assert argv[0] == str(vpy)
+
+    def test_falls_back_to_running_interpreter_when_python3_lacks_pytest(
+        self, tmp_path, monkeypatch
+    ):
+        """A system python3 without pytest reports a missing module, which reads
+        as a broken suite. The agent's own interpreter provably has it."""
+        import agent.tools.run_tests.main as mod
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+        monkeypatch.setattr(mod, "_can_import", lambda interpreter, module: False)
+        argv = _build_argv("pytest", str(tmp_path), "")
+        assert argv[0] == sys.executable
+
+    def test_system_python3_kept_when_it_can_import(self, tmp_path, monkeypatch):
+        import agent.tools.run_tests.main as mod
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+        monkeypatch.setattr(mod, "_can_import", lambda interpreter, module: True)
+        argv = _build_argv("pytest", str(tmp_path), "")
+        assert argv[0] == "python3"
 
     def test_go_run_filter(self, tmp_path):
         argv = _build_argv("go", str(tmp_path), "TestFoo")

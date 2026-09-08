@@ -448,7 +448,10 @@ def entry_available(entry, timeout: int = 2, ttl: float = _AVAIL_TTL) -> bool:
     """Best-effort: is this entry's endpoint up and advertising its model?
 
     Cached per base_url for *ttl* seconds. An endpoint that answers /models but
-    does not list the configured model counts as unavailable. Never raises.
+    does not list the configured model counts as unavailable — unless the entry
+    sets ``assume_available``, for the endpoints that serve models they do not
+    publish (dated preview aliases, private deployments, curated gateway
+    catalogs). The endpoint must still answer either way. Never raises.
     """
     import time as _t
     base_url = getattr(entry, "base_url", "") or ""
@@ -465,6 +468,8 @@ def entry_available(entry, timeout: int = 2, ttl: float = _AVAIL_TTL) -> bool:
         _AVAIL_CACHE[base_url] = (now, ids)
     if ids is None:
         return False
+    if getattr(entry, "assume_available", False):
+        return True
     model = getattr(entry, "model", "") or ""
     return model_in_server(model, ids) if model else True
 
@@ -659,18 +664,25 @@ def check_model_availability(config: "Config", timeout: int = 3) -> dict[str, bo
             cache[base_url] = list_endpoint_models(base_url, api_key, timeout)
         return cache[base_url]
 
+    def _live(entry, ids: set | None) -> bool:
+        """Endpoint answered, and it lists the model (or the entry waives that)."""
+        if ids is None:
+            return False
+        return bool(getattr(entry, "assume_available", False)
+                    or model_in_server(getattr(entry, "model", "") or "", ids))
+
     llm = getattr(config, "llm", None)
     emb = getattr(config, "embeddings", None)
 
     # --- main LLM ---
     if llm and llm.base_url:
         ids = _models_for(llm.base_url, getattr(llm, "api_key", ""))
-        out["llm"] = bool(ids is not None and model_in_server(llm.model or "", ids))
+        out["llm"] = _live(llm, ids)
 
     # --- embeddings ---
     if emb and emb.base_url:
         ids = _models_for(emb.base_url, getattr(emb, "api_key", ""))
-        out["emb"] = bool(ids is not None and model_in_server(emb.model or "", ids))
+        out["emb"] = _live(emb, ids)
 
     # --- summarizer ---
     roles = getattr(config, "model_roles", {}) or {}
@@ -685,7 +697,7 @@ def check_model_availability(config: "Config", timeout: int = 3) -> dict[str, bo
             out["sum"] = out["llm"]
     elif sum_entry.base_url:
         ids = _models_for(sum_entry.base_url, getattr(sum_entry, "api_key", ""))
-        out["sum"] = bool(ids is not None and model_in_server(sum_entry.model or "", ids))
+        out["sum"] = _live(sum_entry, ids)
 
     return out
 

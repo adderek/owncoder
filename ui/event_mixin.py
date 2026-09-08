@@ -175,6 +175,18 @@ def write_changeset_rows(app, _cw, chat_log, cs, rollup: str = "") -> None:
         _cw(f"  [{t.text_dim}]{_escape(rollup)}[/{t.text_dim}]")
 
 
+def _write_turn_crash_report(app, err: BaseException):
+    """Persist a failed turn's traceback; returns the path (or None)."""
+    try:
+        from agent.core.crash_report import write_crash_report
+        cfg = getattr(getattr(app, "_server", None), "_agent", None)
+        return write_crash_report(err, getattr(cfg, "config", None),
+                                  context="chat worker turn")
+    except Exception:
+        logger.exception("failed to write turn crash report")
+        return None
+
+
 class EventHandlerMixin:
     """Textual event handlers for agent tool/stream/worker events."""
 
@@ -417,7 +429,13 @@ class EventHandlerMixin:
                 if err else ""
             )
             logger.error("chat worker error: %s\n%s", err, tb)
+            # The chat line carries one readable sentence; the traceback goes to
+            # a file. A TUI cannot scroll back over a 200-line dump, so printing
+            # one here would lose it — the pointer is what makes it recoverable.
             response = f"[{t.error}]Error: {_escape(str(err))}[/{t.error}]"
+            report = _write_turn_crash_report(self, err) if err is not None else None
+            if report is not None:
+                response += f"\n[{t.text_dim}]traceback: {_escape(str(report))}[/{t.text_dim}]"
             is_error = True
         else:
             logger.info("chat worker cancelled")

@@ -44,6 +44,9 @@ class LLMConfig:
     # markers outright. "anthropic" emits cache_control blocks.
     cache_breakpoints: str = "off"   # off | anthropic
     gpu: bool = False             # True when resolved default entry is in [concurrency].gpu_pool
+    # Mirrors ModelEntry.assume_available for the resolved default entry, so a
+    # status probe judges the active model the same way routing does.
+    assume_available: bool = False
     request_timeout: int = 600    # hard ceiling (s) for a single LLM request; 0 = SDK default
     stream_stall_seconds: int = 90  # mid-stream gap (after first token) before declaring a wedge (0 = off)
     stream_ttft_seconds: int = 600  # wait for FIRST token before declaring a wedge; prefill on a big
@@ -761,6 +764,13 @@ class ModelEntry:
     # priced→"paid", otherwise reachable cloud→"free". Override to force a tier
     # (e.g. a free-but-rate-limited provider you want grouped as "free").
     tier: str = ""              # "" | "local" | "free" | "paid"
+    # Skip the "is it in /models?" half of the availability probe. Some
+    # endpoints serve a model without listing it — DeepSeek's dated preview
+    # aliases, private deployments, gateways that publish a curated catalog.
+    # The entry is then dropped as unavailable even though calls to it succeed.
+    # With this set the endpoint must still answer (and not be rate-limited);
+    # only the catalog match is waived.
+    assume_available: bool = False
 
 
 @dataclass

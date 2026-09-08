@@ -147,7 +147,10 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                 from agent.core.crash_report import write_crash_report
                 cfg = getattr(getattr(self, "_server", None), "_agent", None)
                 cfg = getattr(cfg, "config", None)
-                path = write_crash_report(error, cfg) if cfg is not None else None
+                # cfg may be None (a wrapped server, a crash before wiring) —
+                # write_crash_report then falls back to ./.agent/crashes, which
+                # still beats dumping thousands of lines onto the screen.
+                path = write_crash_report(error, cfg)
             except Exception:
                 path = None
             from rich.text import Text
@@ -830,7 +833,9 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
                 )
             except ValueError as exc:
                 # e.g. private-mode endpoint refusal — surface, don't crash.
-                t = self._t
+                # NB: no local `t` here — assigning one would make every nested
+                # callback above (on_loop_detected & co) see an unbound local
+                # instead of the theme from the enclosing scope.
                 self._write_chat(f"[{t.warning}]⚠ {exc}[/{t.warning}]")
                 return ""
             if self._session is not None:
@@ -952,12 +957,22 @@ def run_ui(agent: "Agent", session=None):
             logger.exception("http sidecar: failed to start; continuing without it")
 
     if mode == "textual":
+        from pathlib import Path
+        from agent.cli.logging_setup import stderr_sink
+        sink_path = (Path(agent.config.tools.working_dir)
+                     / agent.config.tools.agent_dir / "stderr.log")
         try:
             app = _build_textual_app(agent, session=session, server=server)
-            app.run()
-            return app._session
         except ImportError:
             print("Textual not available, falling back to simple mode.")
             return asyncio.run(simple_loop(agent, session=session, server=server))
+        # Anything written to stderr while Textual holds the screen is painted
+        # over the UI and then repainted away — divert it to a file for the run.
+        size_before = sink_path.stat().st_size if sink_path.exists() else 0
+        with stderr_sink(sink_path):
+            app.run()
+        if sink_path.exists() and sink_path.stat().st_size > size_before:
+            print(f"stderr during this session: {sink_path}")
+        return app._session
     else:
         return asyncio.run(simple_loop(agent, session=session, server=server))

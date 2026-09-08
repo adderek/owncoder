@@ -16,6 +16,7 @@ from agent.tools._common import read_deny_globs as _read_deny_globs, is_read_pro
 from agent.tools.rules import get_rules
 
 _config = None
+_GREP_REGEX_FLAG: str | None = None
 
 _EXCLUDE_DIRS = (".git", "__pycache__", "node_modules", ".agent", ".venv", "venv", "build", "dist")
 
@@ -23,6 +24,19 @@ _DEFAULT_MAX = 60
 _CONTEXT_DEFAULT_MAX = 20   # lower match cap when each hit carries context lines
 _MAX_LINE_LEN = 300
 _MAX_CONTEXT_CHARS = 2000   # per-match context cap
+
+
+def _grep_regex_flag() -> str:
+    """``-P`` when the system grep speaks PCRE, else ``-E``. Probed once."""
+    global _GREP_REGEX_FLAG
+    if _GREP_REGEX_FLAG is None:
+        try:
+            proc = subprocess.run(["grep", "-P", "-q", "-e", "x"], input="x\n",
+                                  text=True, capture_output=True, timeout=5)
+            _GREP_REGEX_FLAG = "-P" if proc.returncode == 0 else "-E"
+        except Exception:
+            _GREP_REGEX_FLAG = "-E"
+    return _GREP_REGEX_FLAG
 
 
 def setup(config) -> None:
@@ -130,6 +144,12 @@ def grep_code(
         cmd = ["grep", "-rnI", "--color=never"]
         if fixed_string:
             cmd.append("-F")
+        else:
+            # Without a flag, grep reads BRE, where `(?:…)`, `\s`, `+` and `|`
+            # are literal text: a pattern written for ripgrep then matches
+            # nothing and reports no error. PCRE keeps the two backends
+            # agreeing; ERE is the fallback where -P is unavailable.
+            cmd.append(_grep_regex_flag())
         if case_insensitive:
             cmd.append("-i")
         if file_glob:

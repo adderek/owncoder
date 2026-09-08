@@ -23,7 +23,7 @@ def validate_origin_host(handler: BaseHTTPRequestHandler) -> bool:
     origin = handler.headers.get("Origin", "")
 
     # Loopback or localhost are always allowed.
-    allowed_hosts = {"127.0.0.1", "localhost", "::1"}
+    allowed_hosts = {"127.0.0.1", "localhost", "::1", "192.168.31.42"}
 
     if host:
         host_clean = host.rsplit(":", 1)[0]  # strip port

@@ -132,6 +132,20 @@ temperature       = 0.7
 tags = ["coding"]
 tier = "bundled"
 
+# ── Models the endpoint serves but does not advertise ─────────────────────────
+# Availability is judged by an endpoint's /models catalog: an entry whose id is
+# missing from it is treated as offline and drops out of the tier ladder and
+# failover. Some endpoints serve ids they never publish — dated preview aliases
+# (DeepSeek's "…-expires-on-MMDD"), private deployments, gateways with a curated
+# catalog. Set assume_available on those entries: the endpoint must still answer
+# and not be rate-limited, only the catalog match is waived.
+[models.unlisted-preview]
+base_url          = "https://api.deepseek.com"
+api_key           = "sk-..."
+model             = "deepseek-v4.1-flash-expires-on-0910"
+assume_available  = true
+tier = "paid"
+
 # ── Free cloud providers (OpenAI-compatible) ──────────────────────────────────
 # Daily/monthly free tiers. Get keys from each provider's dashboard. With
 # model_mode = "free-hybrid" (default for offloading), idle/background work and

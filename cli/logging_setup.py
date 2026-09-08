@@ -4,6 +4,7 @@ import logging
 import sys
 import threading
 import traceback
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -183,3 +184,51 @@ def _setup_logging(agent_dir: str | None = None, logs_cfg=None,
         lvl = getattr(logging, str(source_level).upper(), None)
         if lvl is not None:
             logging.getLogger(source_name).setLevel(lvl)
+
+
+@contextmanager
+def stderr_sink(path: Path):
+    """Divert stderr to ``path`` for the duration of a full-screen UI.
+
+    Textual owns the terminal, but the root stderr handler (and any library that
+    writes to ``sys.stderr`` directly) does not know that: a single
+    ``logger.exception`` paints a multi-screen traceback over the TUI, which the
+    next repaint then scribbles out — unreadable, and gone. Point both at a file
+    instead, so the text survives and the screen stays intact.
+
+    Best-effort: if the file cannot be opened the block still runs, unredirected.
+    """
+    fh = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Appended to across sessions, so it keeps the previous run's crash —
+        # but start over once it stops being something a human would open.
+        mode = "w" if path.exists() and path.stat().st_size > 4 * 1024 * 1024 else "a"
+        fh = path.open(mode, encoding="utf-8", errors="replace")
+    except Exception:
+        yield None
+        return
+
+    real_stderr = sys.stderr
+    swapped: list[logging.StreamHandler] = []
+    try:
+        fh.write(f"\n=== {datetime.now().isoformat(timespec='seconds')} — session start ===\n")
+        fh.flush()
+        for handler in logging.getLogger().handlers:
+            if isinstance(handler, logging.StreamHandler) and handler.stream is real_stderr:
+                handler.setStream(fh)
+                swapped.append(handler)
+        sys.stderr = fh
+        yield fh
+    finally:
+        sys.stderr = real_stderr
+        for handler in swapped:
+            try:
+                handler.setStream(real_stderr)
+            except Exception:
+                pass
+        try:
+            fh.flush()
+            fh.close()
+        except Exception:
+            pass

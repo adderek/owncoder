@@ -588,6 +588,7 @@ def _apply_entry_to_llm(config: Config, name: str, entry: "ModelEntry") -> None:
     config.llm.temperature = entry.temperature
     config.llm.seed = entry.seed
     config.llm.gpu = name in config.concurrency.gpu_pool
+    config.llm.assume_available = getattr(entry, "assume_available", False)
 
 
 def _resolve_default_entry(config: Config) -> str:

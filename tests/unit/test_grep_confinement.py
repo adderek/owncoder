@@ -168,3 +168,25 @@ class TestAllTextFiles:
         paths = {r["path"] for r in res["results"]}
         assert "cfg.example" in paths
         assert "img.png" not in paths
+
+
+class TestGrepRegexDialect:
+    r"""Both backends must accept the same patterns.
+
+    ripgrep reads PCRE-ish syntax; a bare `grep` reads BRE, where `(?:…)`, `\s`
+    and `|` are literal characters. A pattern like find_symbol's definition
+    regex then matches nothing and reports no error — a silent wrong answer,
+    which is worse than a failure.
+    """
+
+    def test_non_capturing_group_and_alternation_match(self, grep_config, project_dir):
+        (project_dir / "m.py").write_text("class Widget:\n    pass\n")
+        pattern = r"(?:^|\s)(?:def|class)\s+Widget\b"
+        result = grep_mod.grep_code(pattern=pattern)
+        assert result.get("results"), f"no match for {pattern!r} via {result.get('source')}"
+        assert result["results"][0]["line"] == 1
+
+    def test_fixed_string_still_literal(self, grep_config, project_dir):
+        (project_dir / "lit.py").write_text("a(?:b)c\n")
+        result = grep_mod.grep_code(pattern="a(?:b)c", fixed_string=True)
+        assert len(result.get("results", [])) == 1

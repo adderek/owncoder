@@ -25,7 +25,9 @@ import asyncio
 import os
 import re
 import subprocess
+import sys
 import time
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
 from agent.tools import register
@@ -45,12 +47,38 @@ def setup(config: "Config") -> None:
     _config = config
 
 
-def _project_python(root: str) -> str:
-    """Project venv interpreter when present, else system python3."""
+@lru_cache(maxsize=16)
+def _can_import(interpreter: str, module: str) -> bool:
+    """Whether ``interpreter`` can import ``module``. Cached; failures are False."""
+    try:
+        return subprocess.run(
+            [interpreter, "-c", f"import {module}"],
+            capture_output=True, timeout=15,
+        ).returncode == 0
+    except Exception:
+        return False
+
+
+def _project_python(root: str, module: str = "") -> str:
+    """Interpreter for ``-m <module>``, preferring the project's own environment.
+
+    Order: project venv → activated VIRTUAL_ENV → system python3 → the
+    interpreter running the agent. The last two swap places when python3 cannot
+    import the module: a bare python3 without pytest installed reports "No
+    module named pytest", which reads like a broken suite rather than a missing
+    dependency, and the agent's own interpreter demonstrably has it.
+    """
     for rel in (".venv/bin/python", "venv/bin/python"):
         p = os.path.join(root, rel)
         if os.access(p, os.X_OK):
             return p
+    venv = os.environ.get("VIRTUAL_ENV")
+    if venv:
+        p = os.path.join(venv, "bin", "python")
+        if os.access(p, os.X_OK):
+            return p
+    if module and not _can_import("python3", module):
+        return sys.executable or "python3"
     return "python3"
 
 
@@ -110,7 +138,7 @@ def _build_argv(framework: str, root: str, pattern: str) -> list[str]:
     if framework == "pytest":
         # -l (--showlocals): locals in failure tracebacks — post-mortem variable
         # state in one shot, the batch-evidence substitute for a debugger.
-        argv = [_project_python(root), "-m", "pytest", "-q", "--no-header", "-l"]
+        argv = [_project_python(root, "pytest"), "-m", "pytest", "-q", "--no-header", "-l"]
         if pattern:
             # A path-ish pattern targets files/dirs; anything else is a -k expression.
             if "/" in pattern or pattern.endswith(".py"):
@@ -119,7 +147,7 @@ def _build_argv(framework: str, root: str, pattern: str) -> list[str]:
                 argv += ["-k", pattern]
         return argv
     if framework == "unittest":
-        argv = [_project_python(root), "-m", "unittest", "discover", "-v"]
+        argv = [_project_python(root, "unittest"), "-m", "unittest", "discover", "-v"]
         if pattern:
             argv += ["-p", pattern]
         return argv
