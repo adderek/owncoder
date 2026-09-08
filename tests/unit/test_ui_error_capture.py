@@ -126,7 +126,7 @@ def test_worker_error_points_at_a_file_not_the_screen(tmp_path):
     assert "worker-boom-98765" in response
     assert "Traceback (most recent call last)" not in response
 
-    reports = list((tmp_path / ".agent" / "crashes").glob("crash-*.txt"))
+    reports = list((tmp_path / ".agent" / "diagnostics" / "crashes").glob("crash-*.txt"))
     assert len(reports) == 1
     assert str(reports[0]) in response
     assert "Traceback (most recent call last)" in reports[0].read_text(encoding="utf-8")

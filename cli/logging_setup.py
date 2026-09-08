@@ -24,9 +24,11 @@ def _write_exception_dump(
             # log — an off-the-record session leaves none of it behind.
             return None
         if config is not None:
-            dump_dir = Path(config.tools.working_dir) / config.tools.agent_dir
+            base_dir = Path(config.tools.working_dir) / config.tools.agent_dir
         else:
-            dump_dir = Path(".agent")
+            base_dir = Path(".agent")
+        from agent.diag_paths import exception_dump_dir
+        dump_dir = exception_dump_dir(base_dir)
         dump_dir.mkdir(parents=True, exist_ok=True)
 
         ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
@@ -64,7 +66,13 @@ def _write_exception_dump(
                 lines.append(f"(error reading log: {le})")
             lines.append("")
 
-        vault.write_text(dump_path, "\n".join(lines) + "\n")
+        text = "\n".join(lines) + "\n"
+        try:
+            from agent.security.redaction import redact
+            text = redact(text, config)
+        except Exception:
+            pass
+        vault.write_text(dump_path, text)
         return dump_path
     except Exception:
         return None

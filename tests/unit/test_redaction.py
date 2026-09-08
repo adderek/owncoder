@@ -116,7 +116,7 @@ def test_failure_report_redacts_on_disk(tmp_path):
     assert secret not in content
     assert "REDACTED" in content
     # index.jsonl too
-    idx = (tmp_path / ".agent" / "failures" / "index.jsonl").read_text()
+    idx = (tmp_path / ".agent" / "diagnostics" / "failures" / "index.jsonl").read_text()
     assert secret not in idx
 
 

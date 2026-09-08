@@ -202,6 +202,9 @@ aside.resizing { transition: none; }   /* no lag while dragging */
              white-space: nowrap; flex: 1; }
 .mbtn { background: var(--panel2); border: 1px solid var(--border); color: var(--dim);
         font-size: 10px; padding: 1px 7px; border-radius: 5px; cursor: pointer; }
+.msel { background: var(--panel2); border: 1px solid var(--border); color: var(--dim);
+        font-size: 10px; padding: 1px 4px; border-radius: 5px; cursor: pointer; max-width: 150px; }
+.msel:hover { color: var(--fg); border-color: var(--accent); filter: none; }
 .mbtn:hover { color: var(--fg); border-color: var(--accent); filter: none; }
 /* Live request activity: pulsing dot + count while a model has calls in flight. */
 .mrow .mrun { display: none; align-items: center; gap: 3px; color: var(--link);

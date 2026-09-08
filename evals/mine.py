@@ -1,7 +1,7 @@
 """Turn recorded failures into eval tasks.
 
 `failure_report.py` has been writing every invalid tool call, tool exception and
-runtime exception to `.agent/failures/` for a long time, and `agent diag`
+runtime exception to `.agent/diagnostics/failures/` for a long time, and `agent diag`
 summarises them per project. Nothing closed the loop: the failures that recur
 most often were never the ones the eval suite covered, so harness and prompt
 changes were gated on tasks chosen by hand rather than on what actually breaks.
@@ -177,10 +177,19 @@ class Mode:
         }
 
 
+def _project_of(directory: str) -> Path:
+    """Project root for a failures dir, tolerating the diagnostics/ nesting."""
+    agent_dir = Path(directory).parent
+    if agent_dir.name == "diagnostics":
+        agent_dir = agent_dir.parent
+    return agent_dir.parent
+
+
 def failure_dirs(projects: list[Path]) -> list[Path]:
+    from agent.diag_paths import FAILURES, read_dir
     out = []
     for project in projects:
-        candidate = project / ".agent" / "failures"
+        candidate = read_dir(project / ".agent", FAILURES)
         if candidate.is_dir():
             out.append(candidate)
     return out
@@ -277,7 +286,7 @@ def annotate_staleness(modes: list[Mode], last_changed=None) -> None:
         directory = sample.get("_dir")
         if not directory:
             continue
-        project = Path(directory).parent.parent
+        project = _project_of(directory)
         mode.files = implicated_files(sample, project)
         if not mode.files and mode.tool:
             # No traceback — the invalid-tool-call case, and the majority of

@@ -197,27 +197,17 @@ _SECRET_SCAN_FILE_CAP = 50_000
 _SECRET_MASK_MATCH_CAP = 500
 
 
-def _secret_mask_paths(root: Path) -> list[Path]:
-    """Return concrete files under *root* matching the read-deny secret globs.
+def _matching_paths(root: Path, globs: list[str]) -> list[Path]:
+    """Concrete existing files under *root* matching any glob in *globs*.
 
-    The fs gate (fs._is_read_protected) blocks the agent's *Python* file tools
-    from reading these, but the sandbox bind-mounts the project root read-write,
-    so a shell `cat .env` would otherwise bypass that protection. We mask each
-    matching file with /dev/null inside the sandbox to close the gap.
-
-    Matching mirrors fs._is_read_protected: a glob matches on either the
-    root-relative path or the bare filename. Bounded so it can't hang on a
+    A glob matches on either the root-relative path or the bare filename, mirroring
+    fs._is_write_protected / fs._is_read_protected. Bounded so it can't hang on a
     huge tree.
     """
     import fnmatch as _fnmatch
-    from . import fs as _fs
 
-    globs = policy.get().cfg.read_deny_globs
-    if globs is None:
-        globs = _fs._DEFAULT_READ_DENY_GLOBS
     if not globs:
         return []
-
     matches: list[Path] = []
     scanned = 0
     for dirpath, dirnames, filenames in os.walk(root):
@@ -227,6 +217,11 @@ def _secret_mask_paths(root: Path) -> list[Path]:
         for fn in filenames:
             scanned += 1
             if scanned > _SECRET_SCAN_FILE_CAP:
+                logger.warning(
+                    "path-glob scan hit %d-file cap under %s — matching files "
+                    "beyond the cap were NOT masked / made read-only (globs: %s)",
+                    _SECRET_SCAN_FILE_CAP, root, ", ".join(globs),
+                )
                 return matches
             p = Path(dirpath) / fn
             try:
@@ -236,8 +231,72 @@ def _secret_mask_paths(root: Path) -> list[Path]:
             if any(_fnmatch.fnmatch(rel, g) or _fnmatch.fnmatch(fn, g) for g in globs):
                 matches.append(p)
                 if len(matches) >= _SECRET_MASK_MATCH_CAP:
+                    logger.warning(
+                        "path-glob scan hit %d-match cap under %s — additional "
+                        "matching files were NOT masked / made read-only",
+                        _SECRET_MASK_MATCH_CAP, root,
+                    )
                     return matches
     return matches
+
+
+def _secret_mask_paths(root: Path) -> list[Path]:
+    """Return concrete files under *root* matching the read-deny secret globs.
+
+    The fs gate (fs._is_read_protected) blocks the agent's *Python* file tools
+    from reading these, but the sandbox bind-mounts the project root read-write,
+    so a shell `cat .env` would otherwise bypass that protection. We mask each
+    matching file with /dev/null inside the sandbox to close the gap.
+    """
+    from . import fs as _fs
+
+    globs = policy.get().cfg.read_deny_globs
+    if globs is None:
+        globs = _fs._DEFAULT_READ_DENY_GLOBS
+    return _matching_paths(root, globs)
+
+
+def _write_deny_paths(root: Path) -> list[Path]:
+    """Concrete existing paths matching the fs gate's write-deny globs.
+
+    The fs gate refuses writes to these, but only for the agent's *Python* file
+    tools: the sandbox bind-mounts the project root read-write, so a shell write
+    (`echo > .agent/path_grants.json`) bypasses the gate. We overlay each matching
+    path read-only inside the sandbox so shell writes cannot rewrite the policy
+    that binds the agent (grants, permissions, core prompt).
+
+    A `prefix/**` glob collapses to one read-only bind of the directory: binding
+    every checkpoint blob individually would blow up the bwrap argv. Paths already
+    bound via _PROTECTED_PATHS are skipped to avoid a duplicate mount target.
+    """
+    from . import fs as _fs
+
+    globs = policy.get().cfg.write_deny_globs
+    if globs is None:
+        globs = _fs._DEFAULT_WRITE_DENY_GLOBS
+    if not globs:
+        return []
+
+    protected = {root / rel for rel in _PROTECTED_PATHS}
+    out: list[Path] = []
+    file_globs: list[str] = []
+    for g in globs:
+        if g.endswith("/**"):
+            base = root / g[:-3]
+            if base.exists():
+                if base not in protected:
+                    out.append(base)
+            else:
+                file_globs.append(g)
+        else:
+            file_globs.append(g)
+
+    covered = [p for p in out]
+    for p in _matching_paths(root, file_globs):
+        if p in protected or any(d == p or d in p.parents for d in covered):
+            continue
+        out.append(p)
+    return out
 
 
 def _interpreter_paths(root: Path) -> list[str]:
@@ -313,6 +372,11 @@ def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool, seccomp_fd: int | 
     for rel in _PROTECTED_PATHS:
         p = root / rel
         a += ["--ro-bind-try", str(p), str(p)]
+    # Overlay the fs gate's write-deny paths read-only: a shell write would
+    # otherwise bypass the gate and rewrite grants/permissions/core. Paths are
+    # concrete and exist (matched by walk), so a plain --ro-bind is safe here.
+    for p in _write_deny_paths(root):
+        a += ["--ro-bind", str(p), str(p)]
     # Mask secret files (.env, keys, .ssh/*) with /dev/null so a shell read
     # can't exfiltrate what the fs gate already denies the Python file tools.
     for p in _secret_mask_paths(root):
@@ -349,6 +413,9 @@ def _firejail_argv(argv: list[str], *, cwd: Path, network: bool) -> list[str]:
         p = pol.root / rel
         if p.exists():
             a += [f"--read-only={p}"]
+    # Same write-deny overlay as bwrap — see _write_deny_paths.
+    for p in _write_deny_paths(pol.root):
+        a += [f"--read-only={p}"]
     # Mask secret files (.env, keys, .ssh/*) so shell reads can't bypass the
     # fs gate's read-deny protection. --blacklist makes the path inaccessible.
     for p in _secret_mask_paths(pol.root):

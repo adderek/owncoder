@@ -1331,13 +1331,17 @@ class _HttpUI:
             return {}
 
     def model_action(self, payload: dict) -> dict:
-        """Mutating model ops from the browser: use / toggle / mode."""
+        """Mutating model ops from the browser: use / release / toggle / mode."""
         action = str(payload.get("action") or "")
         try:
             if action == "use":
                 entry = str(payload.get("entry") or "")
                 role = str(payload.get("role") or "").strip()
                 arg = f"{role}={entry}" if role and role != "default" else entry
+                ok, msg = self._call_on_loop(self.server.set_model, arg)
+            elif action == "release":
+                role = str(payload.get("role") or "").strip()
+                arg = f"{role}=auto" if role else "auto"
                 ok, msg = self._call_on_loop(self.server.set_model, arg)
             elif action == "toggle":
                 save = bool(payload.get("save"))

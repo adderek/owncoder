@@ -300,7 +300,7 @@ def _precheck_argv(argv: list[str], network: bool, timeout: int | None,
     if not ro_ok:
         return {"error": ro_msg, "argv": argv}, 0
     net_ok, net_msg = rules.check_network_command(joined)
-    if not net_ok and network:
+    if not net_ok:
         return {"error": net_msg, "argv": argv}, 0
     need_confirm, confirm_reason = rules.check_command_confirm(joined)
     if need_confirm:

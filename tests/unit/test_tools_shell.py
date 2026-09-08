@@ -60,6 +60,7 @@ class TestRunCommandEnabled:
         cfg.tools.working_dir = str(tmp_path)
         cfg.tools.allow_shell = True
         cfg.security.allow_legacy_shell = True
+        cfg.security.require_sandbox = False  # allow "none" backend in CI
         shell_setup(cfg)
         r = run_command("echo hello")
         assert r["returncode"] == 0
@@ -79,6 +80,7 @@ class TestRunCommandEnabled:
         cfg.tools.working_dir = str(tmp_path)
         cfg.tools.allow_shell = True
         cfg.security.allow_legacy_shell = True
+        cfg.security.require_sandbox = False  # allow "none" backend in CI
         shell_setup(cfg)
         r = run_command("exit 42", cwd=str(tmp_path))
         assert r["returncode"] == 42
@@ -194,6 +196,7 @@ class TestRunArgvNetworkGuard:
         cfg.tools.working_dir = str(tmp_path)
         cfg.tools.allow_shell = True
         cfg.security.allow_legacy_shell = True
+        cfg.security.require_sandbox = False  # allow "none" backend in CI
         shell_setup(cfg)
         # python -c "print('x' * N)" — cheap, no extra deps
         r = run_command("python3 -c \"print('x' * 100000)\"")

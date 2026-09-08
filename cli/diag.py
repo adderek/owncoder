@@ -27,7 +27,8 @@ def _load_audit(agent_dir: Path) -> list[dict]:
 
 
 def _load_failures(agent_dir: Path) -> list[dict]:
-    idx = agent_dir / "failures" / "index.jsonl"
+    from agent.diag_paths import FAILURES, read_dir
+    idx = read_dir(agent_dir, FAILURES) / "index.jsonl"
     if not idx.exists():
         return []
     out = []
@@ -84,7 +85,7 @@ def cmd_diag(args: Any, config: Any) -> None:
 
     retry = _retry_stats(entries)
 
-    # Pre-execution failures (invalid_tool_call) from failures/index.jsonl.
+    # Pre-execution failures (invalid_tool_call) from diagnostics/failures/index.jsonl.
     pre_exec: dict[str, int] = Counter(
         f["tool"] for f in failures if f.get("kind") == "invalid_tool_call" and f.get("tool")
     )

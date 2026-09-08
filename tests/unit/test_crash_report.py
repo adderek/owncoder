@@ -12,7 +12,7 @@ def _cfg(tmp_path):
 
 def test_crash_dir_under_agent_dir(tmp_path):
     cfg = _cfg(tmp_path)
-    assert crash_dir(cfg) == tmp_path / ".agent" / "crashes"
+    assert crash_dir(cfg) == tmp_path / ".agent" / "diagnostics" / "crashes"
 
 
 def test_write_crash_report(tmp_path):
@@ -27,7 +27,7 @@ def test_write_crash_report(tmp_path):
     assert "ValueError: boom-token-12345" in text
     assert "context: unit test" in text
     assert "Traceback (most recent call last)" in text
-    assert path.parent == tmp_path / ".agent" / "crashes"
+    assert path.parent == tmp_path / ".agent" / "diagnostics" / "crashes"
 
 
 def test_write_crash_report_never_raises(tmp_path):

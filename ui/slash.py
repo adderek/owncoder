@@ -349,7 +349,7 @@ def _apply_model(agent, arg: str) -> tuple[bool, str]:
             f"active LLM: [bold]{cur_model}[/bold]  ({cur_url})",
             f"model-mode: {cfg.agent.model_mode}",
             f"pin: {pinned}",
-            "purpose → model matrix  (pin: /model <role>=<entry>):",
+            "purpose → model matrix  (pin: /model <role>=<entry>; release: /model <role>=auto):",
         ]
         for role, (entry_name, tier) in reg.matrix().items():
             pinned = "*" if role in cfg.model_roles else " "
@@ -380,12 +380,17 @@ def _apply_model(agent, arg: str) -> tuple[bool, str]:
         return True, _status()
 
     if entry_name == "auto":
-        if role != "default":
-            return False, "'/model auto' releases the default pin; it takes no role."
-        was = getattr(cfg, "runtime_model_pinned", False)
-        cfg.runtime_model_pinned = False
-        return True, ("model pin released — auto-tier picks per turn again."
-                      if was else "no model pin was set; auto-tier is already choosing.")
+        if role == "default":
+            was = getattr(cfg, "runtime_model_pinned", False)
+            cfg.runtime_model_pinned = False
+            return True, ("model pin released — auto-tier picks per turn again."
+                          if was else "no model pin was set; auto-tier is already choosing.")
+        # Non-default role: drop the explicit pin so the fallback ladder
+        # (ROLE_FALLBACKS, free-cloud offload) decides per call again.
+        was = cfg.model_roles.pop(role, None)
+        return True, (
+            f"role '{role}' → auto (released '{was}'; ladder picks per call)."
+            if was else f"role '{role}' was not pinned; ladder already decides.")
 
     if entry_name not in entries:
         known = ", ".join(sorted(entries))

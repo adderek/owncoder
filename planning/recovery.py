@@ -1,6 +1,6 @@
 """Crash recovery: persist a record when agent crashes, offer to resume later.
 
-A record lives at `.agent/recovery/{session_id}.json` with status:
+A record lives at `.agent/diagnostics/recovery/{session_id}.json` with status:
   - pending  — not yet acted on
   - recovered — user chose to resume
   - ignored  — user chose to skip
@@ -23,16 +23,20 @@ from pathlib import Path
 
 RECOVERY_STATUSES = ("pending", "recovered", "ignored", "resolved")
 
-_recovery_dir: Path | None = None
+_recovery_base: Path | None = None
+_recovery_config = None
 
 
-def configure(working_dir: str, agent_dir: str = ".agent") -> None:
-    global _recovery_dir
-    _recovery_dir = Path(working_dir) / agent_dir / "recovery"
+def configure(working_dir: str, agent_dir: str = ".agent", config=None) -> None:
+    global _recovery_base, _recovery_config
+    _recovery_base = Path(working_dir) / agent_dir
+    _recovery_config = config
 
 
 def _get_dir() -> Path:
-    return _recovery_dir if _recovery_dir is not None else Path(".agent") / "recovery"
+    from agent.diag_paths import RECOVERY, resolve
+    base = _recovery_base if _recovery_base is not None else Path(".agent")
+    return resolve(base, RECOVERY)
 
 
 @dataclass
@@ -76,7 +80,13 @@ def record_crash(
     d = _get_dir()
     d.mkdir(parents=True, exist_ok=True)
     p = _path_for(session_id)
-    p.write_text(json.dumps(rec.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
+    text = json.dumps(rec.to_dict(), indent=2, ensure_ascii=False)
+    try:
+        from agent.security.redaction import redact
+        text = redact(text, _recovery_config)
+    except Exception:
+        pass
+    p.write_text(text, encoding="utf-8")
     return p
 
 

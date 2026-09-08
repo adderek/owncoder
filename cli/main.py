@@ -333,9 +333,11 @@ def main() -> None:
     from agent.planning.recovery import configure as configure_recovery
     from agent.ideas import configure as configure_ideas
     configure_plans(config.tools.working_dir, config.tools.agent_dir)
-    configure_recovery(config.tools.working_dir, config.tools.agent_dir)
+    configure_recovery(config.tools.working_dir, config.tools.agent_dir, config)
     configure_ideas(config.tools.working_dir, config.tools.agent_dir)
     log_dir = Path(config.tools.working_dir) / config.tools.agent_dir
+    from agent.diag_paths import migrate_legacy
+    migrate_legacy(log_dir)
     _setup_logging(str(log_dir), config.logs, getattr(config.ui, "mode", None))
     log_path = log_dir / "agent.log"
 

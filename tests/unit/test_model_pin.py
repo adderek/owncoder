@@ -72,9 +72,26 @@ def test_model_auto_is_idempotent(cfg):
     assert ok and "no model pin" in msg
 
 
-def test_model_auto_rejects_a_role(cfg):
+def test_role_auto_releases_the_role_pin(cfg):
+    agent = _agent(cfg)
+    ok, _ = _apply_model(agent, "summarizer=strong")
+    assert ok and cfg.model_roles["summarizer"] == "strong"
+    ok, msg = _apply_model(agent, "summarizer=auto")
+    assert ok and "summarizer" in msg and "auto" in msg
+    assert "summarizer" not in cfg.model_roles
+
+
+def test_role_auto_is_idempotent(cfg):
     ok, msg = _apply_model(_agent(cfg), "summarizer=auto")
-    assert ok is False and "takes no role" in msg
+    assert ok and "not pinned" in msg
+
+
+def test_default_auto_via_role_syntax_releases_the_pin(cfg):
+    agent = _agent(cfg)
+    _apply_model(agent, "strong")
+    ok, msg = _apply_model(agent, "default=auto")
+    assert ok and "released" in msg
+    assert cfg.runtime_model_pinned is False
 
 
 def test_effort_change_releases_the_pin(cfg):

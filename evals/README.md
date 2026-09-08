@@ -118,7 +118,7 @@ adds an absolute floor on the pass rate, and can be combined with `--baseline`:
 ## Mining eval tasks from real failures (`evals/mine.py`)
 
 `failure_report.py` records every invalid tool call, tool exception and runtime
-exception under `.agent/failures/`. `evals/mine.py` clusters those records into
+exception under `.agent/diagnostics/failures/`. `evals/mine.py` clusters them into
 recurring failure *modes* — normalising away paths, numbers and timestamps so
 forty one-off records collapse into one ranked entry — and scaffolds an eval
 task from a mode you pick.

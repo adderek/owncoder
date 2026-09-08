@@ -69,6 +69,7 @@ _DEFAULT_WRITE_DENY_GLOBS: list[str] = [
     ".agent/path_grants.json",  # agent must not self-grant paths
     ".agent/permissions.json",  # agent must not rewrite the policy binding it
     ".agent/checkpoints/**",    # agent must not rewrite the record of its edits
+    ".agent/web_search/**",     # app-generated fetcher runs with network=True
 ]
 
 # The immutable core of the system prompt: human input only, so the agent's own

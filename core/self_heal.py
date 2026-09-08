@@ -54,7 +54,8 @@ def _session_start_iso(session_id: str) -> str:
 
 
 def _read_failure_index(config) -> list[dict]:
-    path = _agent_dir(config) / "failures" / "index.jsonl"
+    from agent.diag_paths import FAILURES, read_dir
+    path = read_dir(_agent_dir(config), FAILURES) / "index.jsonl"
     try:
         if not path.exists():
             return []
@@ -280,7 +281,7 @@ def format_evidence(signals: dict) -> str:
 
     failures = signals.get("failures") or []
     if failures:
-        lines.append("\n[FAILURE REPORTS] (.agent/failures/, grouped)")
+        lines.append("\n[FAILURE REPORTS] (.agent/diagnostics/failures/, grouped)")
         for f in failures:
             head = f"- x{f['count']} [{f['kind']}]"
             if f["tool"]:
@@ -291,7 +292,7 @@ def format_evidence(signals: dict) -> str:
             if f["error"]:
                 lines.append(f"    error: {f['error']}")
             if f["file"]:
-                lines.append(f"    detail: .agent/failures/{f['file']}")
+                lines.append(f"    detail: .agent/diagnostics/failures/{f['file']}")
 
     tool_errors = signals.get("tool_errors") or []
     if tool_errors:

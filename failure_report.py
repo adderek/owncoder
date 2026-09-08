@@ -1,4 +1,4 @@
-"""Persist per-event failure reports under .agent/failures/ for later analysis.
+"""Persist per-event failure reports under .agent/diagnostics/failures/.
 
 Captures:
 - invalid tool calls (unknown tool, bad JSON args, missing/unknown arguments)
@@ -72,7 +72,8 @@ def _failure_dir(config: Any = None) -> Path:
             base = Path(".agent")
     else:
         base = Path(".agent")
-    d = base / "failures"
+    from agent.diag_paths import FAILURES, resolve
+    d = resolve(base, FAILURES)
     d.mkdir(parents=True, exist_ok=True)
     return d
 

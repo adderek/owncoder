@@ -3,7 +3,7 @@
 Complements promoter.py (project facts) — this module covers agent behavior only:
 - User corrections detected in transcript
 - Repeated tool/approach mistakes in this session
-- Failure-derived patterns from .agent/failures/
+- Failure-derived patterns from .agent/diagnostics/failures/
 
 Rules stored as scope='behavioral_rule' in project MemoryStore.
 hit_count tracks corroboration: rules with hit_count >= 2 get hard-injected
@@ -229,8 +229,9 @@ def _session_start_iso(session_id: str) -> str:
 def _read_session_failures(config: "Config", session_id: str) -> str:
     """Read failure entries for session_id from the tail of index.jsonl."""
     try:
+        from agent.diag_paths import FAILURES, read_dir
         agent_dir = Path(config.tools.working_dir) / config.tools.agent_dir
-        index_path = agent_dir / "failures" / "index.jsonl"
+        index_path = read_dir(agent_dir, FAILURES) / "index.jsonl"
         if not index_path.exists():
             return ""
 

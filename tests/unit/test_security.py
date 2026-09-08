@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -290,6 +291,38 @@ class TestRunnerSandboxed:
         assert "ok" in r.stdout
 
 
+class TestSeccompCloneNamespace:
+    def test_clone3_and_namespace_clone_blocked(self, tmp_path):
+        from agent.security.seccomp_filter import _get_lib
+        if _get_lib() is None:
+            pytest.skip("libseccomp not available")
+        repo_root = Path(__file__).resolve().parents[3]
+        script = (
+            "import ctypes, os\n"
+            "from agent.security.seccomp_filter import build_filter_fd\n"
+            "fd = build_filter_fd()\n"
+            "data = os.read(fd, 1 << 20)\n"
+            "os.close(fd)\n"
+            "n = len(data) // 8\n"
+            "class P(ctypes.Structure):\n"
+            "    _fields_ = [('len', ctypes.c_ushort), ('filter', ctypes.c_void_p)]\n"
+            "buf = ctypes.create_string_buffer(data)\n"
+            "prog = P(n, ctypes.cast(buf, ctypes.c_void_p))\n"
+            "libc = ctypes.CDLL(None, use_errno=True)\n"
+            "libc.prctl(38, 1, 0, 0, 0)\n"
+            "assert libc.prctl(22, 2, ctypes.byref(prog), 0, 0) == 0\n"
+            "ctypes.set_errno(0)\n"
+            "libc.syscall(435, 0)\n"
+            "assert ctypes.get_errno() == 38, ('clone3 not blocked', ctypes.get_errno())\n"
+        )
+        env = dict(os.environ, PYTHONPATH=str(repo_root))
+        r = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True, text=True, env=env, timeout=30,
+        )
+        assert r.returncode == 0, r.stderr
+
+
 class TestRunnerHostFallback:
     def test_runs_without_backend_when_allowed(self, project):
         # Force "none" backend.
@@ -448,6 +481,42 @@ class TestSandboxSecretMasking:
         (venv / ".env").write_text("SECRET=should-not-be-walked")
         masked = sec_runner._secret_mask_paths(project)
         assert all(".venv" not in p.parts for p in masked)
+
+
+class TestSandboxWriteDenyOverlay:
+    """Shell path must not bypass the fs write-deny gate: protected paths are
+    bound read-only inside the sandbox (grants, permissions, core, fetcher)."""
+
+    def test_write_deny_paths_finds_policy_files(self, project):
+        agent_dir = project / ".agent"
+        agent_dir.mkdir()
+        (agent_dir / "path_grants.json").write_text("[]")
+        (agent_dir / "permissions.json").write_text("{}")
+        (agent_dir / "core.md").write_text("rules")
+        ws = agent_dir / "web_search"
+        ws.mkdir()
+        (ws / "_http_fetcher.py").write_text("print('x')")
+
+        found = {p.relative_to(project).as_posix()
+                 for p in sec_runner._write_deny_paths(project)}
+        assert ".agent/path_grants.json" in found
+        assert ".agent/permissions.json" in found
+        assert ".agent/core.md" in found
+        # `prefix/**` collapses to one read-only bind of the directory.
+        assert ".agent/web_search" in found
+
+    def test_bwrap_argv_binds_write_deny_readonly(self, project):
+        agent_dir = project / ".agent"
+        agent_dir.mkdir()
+        grants = agent_dir / "path_grants.json"
+        grants.write_text("[]")
+
+        argv = sec_runner._bwrap_argv(
+            ["sh", "-c", "echo x > .agent/path_grants.json"],
+            cwd=project, network=False)
+        i = argv.index(str(grants))
+        assert argv[i - 1] == "--ro-bind"
+        assert argv[i - 2] != "--ro-bind-try"
 
 
 class TestWriteDenyBasename:

@@ -2,7 +2,7 @@
 
 Textual prints a full traceback (with locals) on an unhandled exception, which
 can scroll thousands of lines off-screen and is hard to copy. Instead we write
-the report to ``<agent_dir>/crashes/crash-<ts>.txt`` and show a one-line pointer.
+the report to ``<agent_dir>/diagnostics/crashes/crash-<ts>.txt`` and show a pointer.
 """
 from __future__ import annotations
 
@@ -15,10 +15,11 @@ logger = logging.getLogger(__name__)
 
 
 def crash_dir(config) -> Path:
+    from agent.diag_paths import CRASHES, resolve
     tools = getattr(config, "tools", None)
     working_dir = getattr(tools, "working_dir", ".") or "."
     agent_dir = getattr(tools, "agent_dir", ".agent") or ".agent"
-    return Path(working_dir) / agent_dir / "crashes"
+    return resolve(Path(working_dir) / agent_dir, CRASHES)
 
 
 def write_crash_report(error: BaseException, config, *, context: str = "") -> Path | None:
@@ -44,7 +45,13 @@ def write_crash_report(error: BaseException, config, *, context: str = "") -> Pa
             lines.append(f"context: {context}")
         lines.append("")
         lines.append("".join(_tb.format_exception(type(error), error, error.__traceback__)))
-        vault.write_text(path, "\n".join(lines))
+        text = "\n".join(lines)
+        try:
+            from agent.security.redaction import redact
+            text = redact(text, config)
+        except Exception:
+            pass
+        vault.write_text(path, text)
         return path
     except Exception:
         logger.exception("failed to write crash report")

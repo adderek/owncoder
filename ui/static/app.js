@@ -1352,7 +1352,12 @@ async function loadModels(silent) {
         (d.workers ? '<span class="mep">agents:' + d.workers + '</span>' : '') +
         '</div>';
     }
-    h += '<div class="mrolesec">entries — use switches default, on/off is session-scoped</div>';
+    const pinnedMap = {};
+    (d.roles || []).forEach(r => { if (r.pinned) pinnedMap[r.role] = r.entry; });
+    const roleOpts = (d.roles || []).map(r => r.role).filter(r => r !== 'embeddings');
+    h += '<div class="mrolesec"><span style="opacity:.6">pin a model to a role from its ' +
+      'dropdown; unpinned roles follow the fallback ladder</span>' +
+      '<div style="opacity:.6">on/off is session-scoped</div></div>';
     for (const e of (d.entries || [])) {
       const off = e.status === 'off';
       const running = e.running || 0;
@@ -1382,7 +1387,13 @@ async function loadModels(silent) {
           (e.reliability.success_rate != null ? Math.round(e.reliability.success_rate * 100) + '%' : '–') +
           ' (' + e.reliability.total + ')</span>' : '') +
         (e.embeddings ? '<span class="mtier">emb</span>' :
-          '<button class="mbtn" data-use="' + esc(e.name) + '">use</button>') +
+          '<select class="msel" data-rolefor="' + esc(e.name) + '">' +
+          '<option value="">role…</option>' +
+          roleOpts.map(r => {
+            const isPinned = pinnedMap[r] === e.name;
+            return '<option value="' + esc(r) + '|' + (isPinned ? 'release' : 'use') + '">' +
+              esc((isPinned ? 'unpin as ' : 'pin as ') + r) + '</option>';
+          }).join('') + '</select>') +
         '<button class="mbtn" data-toggle="' + esc(e.name) + '" data-en="' +
           (off ? '1' : '') + '">' + (off ? 'enable' : 'disable') + '</button>' +
         (off ? '<button class="mbtn" data-save="' + esc(e.name) + '" title="persist disabled state for future sessions in this project">save</button>' : '') +
@@ -1396,8 +1407,12 @@ async function loadModels(silent) {
     const scrollTop = el.scrollTop;
     el.innerHTML = h;
     el.scrollTop = scrollTop;
-    el.querySelectorAll('[data-use]').forEach(b => b.addEventListener('click', () =>
-      modelAction({action: 'use', entry: b.dataset.use})));
+    el.querySelectorAll('[data-rolefor]').forEach(sel => sel.addEventListener('change', () => {
+      if (!sel.value) return;
+      const [role, act] = sel.value.split('|');
+      modelAction({action: act, entry: sel.dataset.rolefor, role: role});
+      sel.value = '';
+    }));
     el.querySelectorAll('[data-toggle]').forEach(b => b.addEventListener('click', () =>
       modelAction({action: 'toggle', entry: b.dataset.toggle, enabled: !!b.dataset.en})));
     el.querySelectorAll('[data-save]').forEach(b => b.addEventListener('click', () =>

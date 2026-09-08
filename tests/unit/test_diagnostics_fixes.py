@@ -30,7 +30,7 @@ def _fr_config(tmp_path):
 
 
 def _index_rows(tmp_path):
-    idx = tmp_path / ".agent" / "failures" / "index.jsonl"
+    idx = tmp_path / ".agent" / "diagnostics" / "failures" / "index.jsonl"
     return [json.loads(l) for l in idx.read_text(encoding="utf-8").splitlines()]
 
 
