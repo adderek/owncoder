@@ -22,12 +22,19 @@ blocks on it.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from agent.ipc.messages import EVENT_PROTOCOL_VERSION
 
+logger = logging.getLogger(__name__)
+
 CONTROL_TYPE = "control"
+
+# Every action the wire understands. Callers pass a subset to restrict a remote
+# client (see ControlDispatcher.allowed_actions).
+ACTIONS = ("chat", "answer", "stop", "inject", "set", "changeset_diff")
 
 # Knob name -> UIServer setter. Mirrors the slash-command surface.
 _SET_METHODS = {
@@ -110,6 +117,12 @@ class ControlDispatcher:
     ignored. `on_changeset_diff(turn, path)` answers a request for one file's
     stored diff (the changeset event carries metadata only). Returns the parsed
     ControlMsg so callers can observe what happened.
+
+    `allowed_actions` restricts what an inbound frame may do. None means every
+    action (in-process/local callers); a remote deployment passes a subset, so a
+    client token cannot mutate runtime config with `set` just because it can
+    chat. A denied frame is logged and dropped — the relay is a shared channel,
+    so raising would kill the agent's link for someone else's bad frame.
     """
 
     def __init__(
@@ -118,11 +131,13 @@ class ControlDispatcher:
         on_answer: Callable[[str, str, str], Any] | None = None,
         on_chat: Callable[[str], Awaitable[Any] | Any] | None = None,
         on_changeset_diff: Callable[[int, str], Awaitable[Any] | Any] | None = None,
+        allowed_actions: "set[str] | None" = None,
     ) -> None:
         self._server = server
         self._on_answer = on_answer
         self._on_chat = on_chat
         self._on_changeset_diff = on_changeset_diff
+        self._allowed = set(allowed_actions) if allowed_actions is not None else None
 
     async def handle(self, raw: str | dict) -> "ControlMsg | None":
         """Act on a control frame. Returns None for a frame this handler does
@@ -132,6 +147,10 @@ class ControlDispatcher:
         if not is_control(obj):
             return None
         msg = parse_control(obj)
+        if self._allowed is not None and msg.action not in self._allowed:
+            logger.warning("control: action %r not permitted for this client — dropped",
+                           msg.action)
+            return None
         if msg.action == "inject":
             self._server.inject(msg.text)
         elif msg.action == "stop":

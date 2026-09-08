@@ -23,6 +23,7 @@ import time
 from typing import Callable, TYPE_CHECKING
 
 from agent.notify.messages import Answer
+from agent.speech.stt import Transcript
 
 if TYPE_CHECKING:
     from agent.config.models import SpeechConfig
@@ -52,11 +53,16 @@ class SpeechIntake:
         on_answer: "Callable[[Answer], object]",
         on_transcript: "Callable[[str], object]",
         agent_dir: str = ".agent",
+        on_transcript_ex: "Callable[[Transcript], object] | None" = None,
     ) -> None:
         self._tx = transcriber
         self._cfg = config
         self._on_answer = on_answer
         self._on_transcript = on_transcript
+        # Optional richer sink: receives the whole Transcript (segment timings +
+        # speaker-change hint). Callers that do not care keep using
+        # ``on_transcript`` and get the plain text exactly as before.
+        self._on_transcript_ex = on_transcript_ex
         self._agent_dir = agent_dir
         self._buffers: dict[str, _Utterance] = {}
         self._tasks: set[asyncio.Task] = set()
@@ -112,13 +118,13 @@ class SpeechIntake:
             return
         try:
             loop = asyncio.get_running_loop()
-            text = await loop.run_in_executor(
-                None, self._tx.transcribe, audio, ut.fmt, ut.lang
+            result = await loop.run_in_executor(
+                None, self._transcribe, audio, ut.fmt, ut.lang
             )
         except Exception:
             logger.exception("speech: transcription failed for utterance %s", uid)
             return
-        text = (text or "").strip()
+        text = (result.text or "").strip()
         # Cache the raw audio (+ transcript) so the retranscribe_voice tool can
         # re-run recognition with a hint when a word was mis-heard.
         try:
@@ -131,13 +137,36 @@ class SpeechIntake:
             logger.info("speech: utterance %s produced no text", uid)
             return
         logger.info("speech: utterance %s → %r (answer_to=%r)", uid, text, ut.answer_to)
+        if result.multi_speaker:
+            logger.info(
+                "speech: utterance %s spans %d voices — transcript is a merge, "
+                "not one speaker",
+                uid,
+                len({s.get("speaker", 0) for s in result.segments}) or 2,
+            )
         try:
             if ut.answer_to:
-                self._on_answer(Answer(question_id=ut.answer_to, text=text, source="voice"))
+                self._on_answer(
+                    Answer(
+                        question_id=ut.answer_to,
+                        text=text,
+                        source="voice",
+                        speaker_change=result.multi_speaker,
+                    )
+                )
+            elif self._on_transcript_ex is not None:
+                self._on_transcript_ex(result)
             else:
                 self._on_transcript(text)
         except Exception:
             logger.exception("speech: routing transcript failed for %s", uid)
+
+    def _transcribe(self, audio: bytes, fmt: str, lang: str) -> Transcript:
+        """Prefer the richer ``transcribe_ex`` when the backend offers it."""
+        ex = getattr(self._tx, "transcribe_ex", None)
+        if callable(ex):
+            return ex(audio, fmt, lang)
+        return Transcript(text=self._tx.transcribe(audio, fmt, lang) or "")
 
     def _expire(self) -> None:
         ttl = self._cfg.utterance_ttl_s

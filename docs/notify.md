@@ -149,3 +149,44 @@ wscat -c ws://localhost:8970
    service holds the relay connection; questions arrive as notifications with
    option action buttons; free-text answers in-app; E2E encryption with 🔒
    indicator. See `clients/android/README.md`.
+
+## Remote UI: rendering profiles
+
+`ui_server/projection.py` turns the `ViewModel` into a per-client payload, so a
+client renders instead of re-implementing the fold and the truncation rules
+(`static/app.js` and the Android client each do that today, and they drift).
+
+| profile | client | streaming | reasoning | markdown | answer cap |
+|---|---|---|---|---|---|
+| `full` | desktop TUI / browser | yes | yes | yes | — |
+| `compact` | phone | yes | no | yes | 400 tokens |
+| `glance` | smart glasses | no | no | no | 100 tokens, last turn only, ≤3 question lines |
+
+Unicode is preserved in all profiles — monochrome is a colour-depth limit, not a
+charset limit. Unknown profile names fall back to `full`.
+
+**Profiles are a rendering contract, not a security boundary.** The name is
+self-asserted by the client and may only narrow what is displayed. Authority is
+enforced separately, below.
+
+## Remote UI: what a remote client may do
+
+A relay client token authenticates the *channel*, not the *device*. `[ui_server]
+remote_actions` therefore lists the control actions a remote client may perform;
+the default excludes `set`:
+
+```yaml
+ui_server:
+  remote: true
+  relay_url: ws://wg0:8970
+  relay_token_file: ~/.config/agent/relay.token
+  # set is omitted on purpose: a lost or unlocked phone must not be able to
+  # rewrite the model, autonomy or plan. Add it to opt in.
+  remote_actions: [chat, answer, stop, inject, changeset_diff]
+```
+
+A frame whose action is not listed is logged and dropped, never raised: the relay
+is a shared channel, so killing the agent's link over someone else's frame would
+be worse than ignoring it. The local TUI is unaffected — it does not use the
+relay. WireGuard protects the transport; e2e protects the payload from the relay
+host; this list protects the *agent's configuration* from a client.

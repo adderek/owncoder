@@ -1,7 +1,19 @@
 """Top-level conftest for agent unit tests."""
+import os
+
 import pytest
 
-from agent._test_helpers import cfg as cfg
+# OpenBLAS (numpy) sizes its per-thread arenas from the CPU count. Under the
+# agent's sandbox RLIMIT_AS that allocation fails and the interpreter aborts
+# with "OpenBLAS error: Memory allocation still failed after 10 retries",
+# taking the whole pytest process with it (test_asm_store, test_reflector,
+# anything importing numpy). One thread is enough for these tests and makes
+# the import deterministic. Must be set before numpy is first imported, which
+# is why it lives at the top of conftest rather than in a fixture.
+for _var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
+
+from agent._test_helpers import cfg as cfg  # noqa: E402  (after the env setup)
 
 
 @pytest.fixture(autouse=True)

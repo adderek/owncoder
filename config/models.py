@@ -226,6 +226,8 @@ class UIConfig:
     mode: str = "textual"  # "textual" | "simple" | "http"
     http_host: str = "0.0.0.0"  # http mode bind address ("127.0.0.1" is private, "0.0.0.0" exposes on LAN)
     http_port: int = 8180  # http mode port; walks forward up to +19 if taken
+    http_tls_cert: str = ""  # PEM cert path — enables HTTPS, required for browser microphone on a LAN IP
+    http_tls_key: str = ""  # PEM private key path
     http_sidecar: bool = False  # run a companion browser view alongside textual/simple mode (see ui/http_sidecar.py)
     allowed_hosts: list = field(default_factory=list)  # extra Origin/Host names accepted by the HTTP UI beyond loopback (e.g. ["192.168.31.42"] for LAN access); also settable via --allow-host
     q_summaries: bool = False
@@ -902,6 +904,13 @@ class UIServerConfig:
     # Human label shown for this project on remote hosts. The raw path is never
     # published, so an empty label falls back to `name`.
     project_label: str = ""
+    # Control actions a remote client may perform. `set` is excluded by default:
+    # a client token is enough to chat, but mutating runtime config (model,
+    # autonomy, plan, notify) from a phone that can be lost or left unlocked is
+    # a different trust decision. Add "set" to opt in.
+    remote_actions: list = field(default_factory=lambda: [
+        "chat", "answer", "stop", "inject", "changeset_diff",
+    ])
 
 
 @dataclass

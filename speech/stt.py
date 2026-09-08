@@ -14,6 +14,7 @@ from __future__ import annotations
 import io
 import logging
 import os
+from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable, TYPE_CHECKING
 
 # faster-whisper downloads models via huggingface_hub, whose tqdm progress bars
@@ -59,6 +60,21 @@ def _silence_tqdm_mp_lock() -> None:
     except Exception:
         pass
     _TQDM_SILENCED = True
+
+
+@dataclass
+class Transcript:
+    """One utterance's text plus optional per-segment detail.
+
+    ``segments`` carries whisper's own timings annotated with a *hint* about
+    which voice dominated that slice; ``multi_speaker`` says a second voice was
+    detected within the utterance. Both are quality signals, never identity:
+    voice is public and spoofable (see ``speech/speakers.py``).
+    """
+
+    text: str
+    segments: list[dict] = field(default_factory=list)
+    multi_speaker: bool = False
 
 
 @runtime_checkable
@@ -111,16 +127,27 @@ class FasterWhisperSTT:
         return mono, sr
 
     def transcribe(self, audio: bytes, fmt: str = "wav", language: str = "") -> str:
+        return self.transcribe_ex(audio, fmt, language).text
+
+    def transcribe_ex(
+        self, audio: bytes, fmt: str = "wav", language: str = ""
+    ) -> Transcript:
+        """Transcribe, keeping segment timings and speaker-change hints.
+
+        ``SpeechIntake`` uses this when present and falls back to
+        ``transcribe`` otherwise, so the ``Transcriber`` protocol stays as it
+        was and other backends need not implement it.
+        """
         if not audio:
-            return ""
+            return Transcript(text="")
         _silence_tqdm_mp_lock()
         try:
-            samples, _sr = self._decode(audio, fmt)
+            samples, sr = self._decode(audio, fmt)
         except ImportError:
             raise
         except Exception as exc:
             logger.warning("speech: audio decode failed (%s) — dropping utterance", exc)
-            return ""
+            return Transcript(text="")
         model = self._ensure_model()
         lang = language or self._cfg.language or None
         segments, _info = model.transcribe(
@@ -129,7 +156,48 @@ class FasterWhisperSTT:
             hotwords=(self._cfg.hotwords or None),
             initial_prompt=(self._cfg.initial_prompt or None),
         )
-        return " ".join(seg.text.strip() for seg in segments).strip()
+        raw = [
+            {
+                "start": float(getattr(seg, "start", 0.0) or 0.0),
+                "end": float(getattr(seg, "end", 0.0) or 0.0),
+                "text": seg.text.strip(),
+            }
+            for seg in segments
+        ]
+        text = " ".join(s["text"] for s in raw).strip()
+        report = _speaker_report(samples, sr)
+        if report is None:
+            return Transcript(text=text)
+        if report.multi_speaker:
+            logger.info(
+                "speech: %d voices in one utterance (change at %s)",
+                report.speaker_count,
+                report.change_points,
+            )
+        from agent.speech.speakers import label_segments
+
+        return Transcript(
+            text=text,
+            segments=label_segments(raw, report),
+            multi_speaker=report.multi_speaker,
+        )
+
+
+def _speaker_report(samples, sr):
+    """Best-effort speaker-change analysis — never fails the transcription.
+
+    Returns ``None`` when numpy is absent (incomplete ``speech`` extra), so the
+    caller degrades to plain text instead of erroring.
+    """
+    try:
+        from agent.speech.speakers import SpeakerReport, analyze
+    except Exception:
+        return None
+    try:
+        return analyze(samples, sr)
+    except Exception:
+        logger.warning("speech: speaker analysis failed — continuing", exc_info=True)
+        return SpeakerReport()
 
 
 class RealtimeSTTMic:

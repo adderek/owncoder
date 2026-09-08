@@ -4004,3 +4004,147 @@ restoreFolds();
 restoreDrawers();
 loadPlan();   // the chip must be right before anything happens   // after restoreFolds: the loaders check fold state
 init();
+
+// ── Dictation ──────────────────────────────────────────────────────────────
+// A browser cannot speak the notify relay protocol (it would need the e2e
+// key), so it records PCM, wraps it in a WAV container and POSTs it to
+// /api/voice, which hands it to the same SpeechIntake the relay feeds. A whole
+// utterance goes as one frame: the server only transcribes when it sees
+// `last`, so chunking would add complexity and save no latency.
+(function dictation() {
+  const mic = document.getElementById('mic');
+  if (!mic) return;
+  const langSel = document.getElementById('miclang');
+  const SILENCE_RMS = 0.012;   // below this a frame counts as silence
+  const SILENCE_MS = 900;      // trailing silence that ends the utterance
+  const MAX_MS = 30000;        // hard cap, so a stuck mic cannot run away
+  const MIN_MS = 300;          // shorter than this was a mis-tap
+
+  let ctx = null, stream = null, node = null, src = null;
+  let pcm = [], recording = false, spoke = false;
+  let silenceSince = 0, startedAt = 0, seq = 0;
+
+  function setState(text, live) {
+    mic.textContent = live ? '\u23fa' : '\ud83c\udfa4';
+    mic.title = text;
+    mic.style.color = live ? '#ff6a6a' : '';
+  }
+  setState('Dictate — press to record; a pause ends it', false);
+
+  function wavHeader(nSamples, rate) {
+    const buf = new ArrayBuffer(44);
+    const v = new DataView(buf);
+    const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    w(0, 'RIFF'); v.setUint32(4, 36 + nSamples * 2, true); w(8, 'WAVE');
+    w(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true);
+    v.setUint16(22, 1, true); v.setUint32(24, rate, true);
+    v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true);
+    v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, nSamples * 2, true);
+    return new Uint8Array(buf);
+  }
+
+  function toWav(chunks, rate) {
+    let n = 0;
+    for (const c of chunks) n += c.length;
+    const out = new Uint8Array(44 + n * 2);
+    out.set(wavHeader(n, rate), 0);
+    const v = new DataView(out.buffer);
+    let o = 44;
+    for (const c of chunks) {
+      for (let i = 0; i < c.length; i++, o += 2) {
+        const s = Math.max(-1, Math.min(1, c[i]));
+        v.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+      }
+    }
+    return out;
+  }
+
+  function b64(bytes) {
+    let s = '';
+    const CH = 0x8000;   // stay under the argument-count limit of apply()
+    for (let i = 0; i < bytes.length; i += CH) {
+      s += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+    }
+    return btoa(s);
+  }
+
+  async function stop() {
+    if (!recording) return;
+    recording = false;
+    const rate = ctx ? ctx.sampleRate : 16000;
+    try { node && node.disconnect(); src && src.disconnect(); } catch (e) {}
+    try { stream && stream.getTracks().forEach((t) => t.stop()); } catch (e) {}
+    try { ctx && ctx.close(); } catch (e) {}
+    ctx = stream = node = src = null;
+    const chunks = pcm;
+    pcm = [];
+    setState('Dictate — press to record; a pause ends it', false);
+    let n = 0;
+    for (const c of chunks) n += c.length;
+    if (!spoke || (n / rate) * 1000 < MIN_MS) return;   // a tap, or noise only
+    const wav = toWav(chunks, rate);
+    const uid = 'web-' + Date.now() + '-' + (++seq);
+    try {
+      const r = await (await fetch('/api/voice', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({id: uid, seq: 0, last: true, fmt: 'wav',
+                              lang: langSel ? langSel.value : '',
+                              data: b64(wav)}),
+      })).json();
+      if (!r.ok) row('sys error', null, 'dictation: ' + (r.msg || 'rejected'));
+    } catch (e) {
+      row('sys error', null, 'dictation failed: ' + e);
+    }
+  }
+
+  async function start() {
+    if (recording) { stop(); return; }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      row('sys error', null, 'dictation needs a secure context — open this UI over '
+          + 'https:// (or on localhost). Plain http:// on a LAN IP has no microphone.');
+      return;
+    }
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {channelCount: 1, echoCancellation: true, noiseSuppression: true},
+      });
+    } catch (e) {
+      row('sys error', null, 'microphone blocked: ' + e);
+      return;
+    }
+    const AC = window.AudioContext || window.webkitAudioContext;
+    ctx = new AC();
+    src = ctx.createMediaStreamSource(stream);
+    node = ctx.createScriptProcessor(4096, 1, 1);
+    // Processors only fire while connected, but routing the mic to the
+    // speakers would howl — go through a muted gain stage instead.
+    const mute = ctx.createGain();
+    mute.gain.value = 0;
+    pcm = []; spoke = false; silenceSince = 0; startedAt = performance.now();
+    recording = true;
+    setState('Recording — press to stop', true);
+    node.onaudioprocess = (ev) => {
+      if (!recording) return;
+      const d = ev.inputBuffer.getChannelData(0);
+      const frame = new Float32Array(d.length);
+      frame.set(d);
+      pcm.push(frame);
+      let sum = 0;
+      for (let i = 0; i < frame.length; i += 4) sum += frame[i] * frame[i];
+      const rms = Math.sqrt(sum / (frame.length / 4 || 1));
+      const now = performance.now();
+      if (rms > SILENCE_RMS) { spoke = true; silenceSince = 0; }
+      else if (spoke) {
+        if (!silenceSince) silenceSince = now;
+        else if (now - silenceSince > SILENCE_MS) stop();
+      }
+      if (now - startedAt > MAX_MS) stop();
+    };
+    src.connect(node);
+    node.connect(mute);
+    mute.connect(ctx.destination);
+  }
+
+  mic.addEventListener('click', start);
+})();

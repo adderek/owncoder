@@ -163,12 +163,19 @@ class Answer:
     choice: str = ""     # one of Question.options
     text: str = ""       # free-text reply (chat-capability channels)
     source: str = "user"  # "user" | "agent:<id>"
+    # Voice-only hint: a second voice was heard within the utterance. Quality
+    # signal, never identity — see speech/speakers.py. Omitted from the wire
+    # when false so existing clients see no change.
+    speaker_change: bool = False
 
     def to_wire(self) -> dict:
-        return {
+        wire = {
             "type": "answer",
             "id": self.question_id,
             "choice": self.choice,
             "text": self.text,
             "from": self.source,
         }
+        if self.speaker_change:
+            wire["speaker_change"] = True
+        return wire

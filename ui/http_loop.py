@@ -678,6 +678,16 @@ _PAGE = r"""<!DOCTYPE html>
 <div id="inputrow"><div class="row">
   <input type="file" id="attachfile" multiple style="display:none">
   <button class="icon" id="attach" title="Attach a file — saved under .agent/uploads, a reference is inserted into your message">📎</button>
+  <button class="icon" id="mic" title="Dictate — press to record; a pause ends it">🎤</button>
+  <select id="miclang" title="Dictation language — auto lets the model detect it" style="max-width:5.5em">
+    <option value="">auto</option>
+    <option value="pl">pl</option>
+    <option value="en">en</option>
+    <option value="de">de</option>
+    <option value="es">es</option>
+    <option value="fr">fr</option>
+    <option value="uk">uk</option>
+  </select>
   <textarea id="input" rows="1" placeholder="Message… (Enter to send, Shift+Enter for newline, / for commands)"></textarea>
   <button id="send">Send</button>
   <button id="continue" class="inert" title="Nudge the agent to keep going (sends 'continue')">▶ Continue</button>
@@ -816,6 +826,35 @@ class _HttpUI:
         self.loop.call_soon_threadsafe(
             self.prompt_queue.put_nowait, {"sid": sid, "text": text})
         return status
+
+    def voice_feed(self, payload: dict) -> dict:
+        """Ingest one browser-recorded audio chunk (POST /api/voice).
+
+        A browser cannot speak the notify relay protocol (that needs the e2e
+        key), so it posts chunks over the already-authenticated HTTP channel
+        and we hand them to the same SpeechIntake the relay feeds. ``feed`` is
+        sync but schedules transcription with ``create_task``, so it must run
+        on the loop thread — handler threads only marshal the call.
+        """
+        intake = getattr(self.server, "_intake", None)
+        if intake is None:
+            return {"ok": False,
+                    "msg": "speech-to-text is off ([speech] enabled = false)"}
+        uid = str(payload.get("id") or "").strip()
+        if not uid:
+            return {"ok": False, "msg": "missing utterance id"}
+        wire = {
+            "type": "voice",
+            "id": uid,
+            "seq": payload.get("seq", 0),
+            "last": bool(payload.get("last")),
+            "fmt": str(payload.get("fmt") or "wav"),
+            "lang": str(payload.get("lang") or ""),
+            "data": str(payload.get("data") or ""),
+            "answer_to": str(payload.get("answer_to") or ""),
+        }
+        self.loop.call_soon_threadsafe(intake.feed, wire)
+        return {"ok": True}
 
     def _stop_prompt_loop(self) -> None:
         """A /loop is session-bound — retire it when the session changes."""
@@ -2242,6 +2281,8 @@ def _make_handler(ui: _HttpUI):
                 fname = str(payload.get("filename") or "")
                 data = str(payload.get("data") or "")
                 self._json(ui.upload_file(fname, data))
+            elif self.path == "/api/voice":
+                self._json(ui.voice_feed(payload))
             elif self.path == "/api/heal":
                 self._json(ui.heal_action(payload))
             elif self.path == "/api/grants":
@@ -2274,16 +2315,32 @@ def _write_project_pidfile_if_enabled(agent, port: int) -> str | None:
         return None
 
 
-def _bind_server(handler, host: str, port: int) -> ThreadingHTTPServer:
-    """Bind requested port; walk forward a little if it's taken."""
+def _bind_server(handler, host: str, port: int,
+                 tls_cert: str = "", tls_key: str = "") -> ThreadingHTTPServer:
+    """Bind requested port; walk forward a little if it's taken.
+
+    With a cert+key the socket is wrapped for HTTPS. Browsers only expose
+    ``navigator.mediaDevices`` in a secure context, so dictation from a phone
+    over a LAN IP needs TLS (loopback is exempt).
+    """
     from agent.ui_server.quiet_http import QuietThreadingHTTPServer
+
+    ctx = None
+    if tls_cert and tls_key:
+        import ssl
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(tls_cert, tls_key)
 
     last_exc: OSError | None = None
     for p in range(port, port + 20):
         try:
-            return QuietThreadingHTTPServer((host, p), handler)
+            httpd = QuietThreadingHTTPServer((host, p), handler)
         except OSError as exc:
             last_exc = exc
+            continue
+        if ctx is not None:
+            httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+        return httpd
     raise last_exc  # type: ignore[misc]
 
 
@@ -3059,7 +3116,9 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
     _extra_hosts = [str(h) for h in (getattr(cfg, "allowed_hosts", None) or [])]
     if _extra_hosts:
         os.environ["AGENT_ALLOWED_HOSTS"] = ",".join(_extra_hosts)
-    httpd = _bind_server(_make_handler(ui), host, port)
+    tls_cert = str(getattr(cfg, "http_tls_cert", "") or "")
+    tls_key = str(getattr(cfg, "http_tls_key", "") or "")
+    httpd = _bind_server(_make_handler(ui), host, port, tls_cert, tls_key)
     actual_port = httpd.server_address[1]
 
     # Write a project pidfile so the router can discover this project process.
@@ -3067,9 +3126,10 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
     threading.Thread(target=httpd.serve_forever, daemon=True, name="http-ui").start()
 
     shown_host = "127.0.0.1" if host in ("0.0.0.0", "") else host
+    scheme = "https" if (tls_cert and tls_key) else "http"
     console.print(
         f"\n[bold green]HTTP UI running.[/bold green] "
-        f"Open your browser at: [bold]http://{shown_host}:{actual_port}/[/bold]"
+        f"Open your browser at: [bold]{scheme}://{shown_host}:{actual_port}/[/bold]"
     )
     if host in ("0.0.0.0", ""):
         console.print(f"[yellow]Listening on all interfaces — reachable on your LAN.[/yellow]")

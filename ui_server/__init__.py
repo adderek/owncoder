@@ -97,8 +97,13 @@ def build_ui_server(agent: "Agent") -> Any:
         except Exception:
             logger.debug("ui_server: changeset diff request failed", exc_info=True)
 
+    # Restrict what a remote client token can do (config.ui_server.remote_actions).
+    # Defaults exclude `set`, so a lost phone cannot rewrite the agent's model,
+    # autonomy or plan; the local UI is unaffected (it does not use the relay).
+    allowed = set(getattr(cfg, "remote_actions", ()) or ())
     dispatcher = ControlDispatcher(inner, on_chat=_on_remote_chat,
-                                   on_changeset_diff=_on_changeset_diff)
+                                   on_changeset_diff=_on_changeset_diff,
+                                   allowed_actions=allowed or None)
     link = RelayLink(cfg.relay_url, token, name=cfg.name,
                      on_frame=dispatcher.handle, e2e=e2e)
     if getattr(cfg, "expose_project", False):

@@ -7,6 +7,7 @@ import base64
 from agent.config.models import SpeechConfig
 from agent.notify.messages import Answer
 from agent.speech.intake import SpeechIntake
+from agent.speech.stt import Transcript
 
 
 class FakeTranscriber:
@@ -20,6 +21,23 @@ class FakeTranscriber:
         return audio.decode("utf-8", errors="replace")
 
 
+class FakeTranscriberEx(FakeTranscriber):
+    """Backend that also offers the richer ``transcribe_ex`` (duck-typed)."""
+
+    def __init__(self, multi_speaker: bool = False) -> None:
+        super().__init__()
+        self.multi_speaker = multi_speaker
+
+    def transcribe_ex(self, audio: bytes, fmt: str = "wav", language: str = "") -> Transcript:
+        self.calls.append(audio)
+        text = audio.decode("utf-8", errors="replace")
+        return Transcript(
+            text=text,
+            segments=[{"start": 0.0, "end": 1.0, "text": text, "speaker": 0}],
+            multi_speaker=self.multi_speaker,
+        )
+
+
 def _frame(uid, seq, payload, last=False, answer_to=""):
     return {
         "type": "voice", "id": uid, "seq": seq, "last": last,
@@ -28,7 +46,7 @@ def _frame(uid, seq, payload, last=False, answer_to=""):
     }
 
 
-def _intake(tx=None, **cfg_over):
+def _intake(tx=None, on_transcript_ex=None, **cfg_over):
     answers: list[Answer] = []
     transcripts: list[str] = []
     cfg = SpeechConfig(enabled=True, **cfg_over)
@@ -37,6 +55,7 @@ def _intake(tx=None, **cfg_over):
         config=cfg,
         on_answer=answers.append,
         on_transcript=transcripts.append,
+        on_transcript_ex=on_transcript_ex,
     )
     return intake, answers, transcripts
 
@@ -110,6 +129,47 @@ async def test_ttl_expiry(monkeypatch):
     await _drain()
     assert transcripts == ["fresh"]
     assert intake.pending == 0
+
+
+async def test_transcribe_ex_preferred_and_routed_to_richer_sink():
+    tx = FakeTranscriberEx()
+    rich: list[Transcript] = []
+    intake, answers, transcripts = _intake(tx=tx, on_transcript_ex=rich.append)
+    intake.feed(_frame("u1", 0, b"hello", last=True))
+    await _drain()
+    assert [t.text for t in rich] == ["hello"]
+    assert transcripts == []  # plain sink not used when the rich one is given
+    assert tx.calls == [b"hello"]  # one transcription, not two
+
+
+async def test_plain_transcriber_yields_transcript_without_segments():
+    """A backend without ``transcribe_ex`` still feeds the rich sink — just
+    with no segment detail and no speaker hint."""
+    rich: list[Transcript] = []
+    intake, answers, transcripts = _intake(on_transcript_ex=rich.append)
+    intake.feed(_frame("u1", 0, b"hello", last=True))
+    await _drain()
+    assert [t.text for t in rich] == ["hello"]
+    assert rich[0].segments == [] and rich[0].multi_speaker is False
+    assert transcripts == []
+
+
+async def test_speaker_change_marks_voice_answer():
+    tx = FakeTranscriberEx(multi_speaker=True)
+    intake, answers, transcripts = _intake(tx=tx)
+    intake.feed(_frame("u1", 0, b"yes", last=True, answer_to="q-1"))
+    await _drain()
+    assert answers[0].speaker_change is True
+    assert answers[0].to_wire()["speaker_change"] is True
+
+
+async def test_speaker_change_absent_from_wire_when_single_voice():
+    tx = FakeTranscriberEx(multi_speaker=False)
+    intake, answers, transcripts = _intake(tx=tx)
+    intake.feed(_frame("u1", 0, b"yes", last=True, answer_to="q-1"))
+    await _drain()
+    assert answers[0].speaker_change is False
+    assert "speaker_change" not in answers[0].to_wire()
 
 
 async def test_empty_and_non_voice_ignored():
