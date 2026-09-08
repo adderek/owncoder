@@ -87,3 +87,44 @@ def test_concurrent_writers_do_not_lose_rows():
     for t in threads:
         t.join()
     assert mr.reliability_summary("gpu-a")["success"] == 100
+
+
+# ── capability (malformed-call rate) ────────────────────────────────────────
+
+def test_capability_summary_empty_when_no_samples():
+    assert mr.capability_summary("gpu-a") == {
+        "ok": 0, "schema_error": 0, "total": 0, "schema_error_rate": None}
+
+
+def test_capability_records_and_rates():
+    for _ in range(9):
+        mr.record_capability("gpu-a", "ok")
+    mr.record_capability("gpu-a", "schema_error")
+    s = mr.capability_summary("gpu-a")
+    assert s["ok"] == 9
+    assert s["schema_error"] == 1
+    assert s["total"] == 10
+    assert s["schema_error_rate"] == pytest.approx(0.1)
+
+
+def test_capability_invalid_verdict_is_ignored():
+    # "other_error" is deliberately not a stored verdict: a missing file is a
+    # legitimate tool outcome, not a model defect.
+    mr.record_capability("gpu-a", "other_error")
+    assert mr.capability_summary("gpu-a")["total"] == 0
+
+
+def test_is_schema_weak_needs_min_samples():
+    for _ in range(29):
+        mr.record_capability("gpu-a", "schema_error")
+    assert mr.is_schema_weak("gpu-a") is False
+    mr.record_capability("gpu-a", "schema_error")
+    assert mr.is_schema_weak("gpu-a") is True
+
+
+def test_is_schema_weak_false_below_threshold():
+    for _ in range(40):
+        mr.record_capability("gpu-a", "ok")
+    for _ in range(4):
+        mr.record_capability("gpu-a", "schema_error")
+    assert mr.is_schema_weak("gpu-a") is False  # 4/44 ≈ 9.1% < 10%

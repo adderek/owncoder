@@ -2666,7 +2666,9 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
             agent_ = getattr(server, "_agent", None)
             side_log = getattr(agent_, "_side_log", None) if agent_ is not None else None
             pub({"type": "sys",
-                 "text": run_perf_command(getattr(side_log, "session_dir", None))})
+                 "text": run_perf_command(
+                     getattr(side_log, "session_dir", None),
+                     getattr(agent_, "_model_entry_name", None))})
     elif cmd in ("/who", "/agents"):
         cfg = _agent_config(server)
         if cfg is None:

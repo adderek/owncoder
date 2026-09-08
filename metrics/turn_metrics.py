@@ -143,13 +143,50 @@ def run_perf_all_command() -> str:
     return "\n".join(lines)
 
 
-def run_perf_command(session_dir: str | Path | None) -> str:
-    """Render a plain-text performance summary for the current session."""
+def _model_health_lines(entry_name: str) -> list[str]:
+    """Capability + transport reliability for one model entry.
+
+    Both are global (per endpoint, not per session) and both are best-effort:
+    a missing db yields no lines rather than an error in the /perf output.
+    """
+    lines: list[str] = []
+    try:
+        from agent.metrics.model_reliability import (
+            capability_summary, reliability_summary,
+        )
+    except Exception:
+        return lines
+    cap = capability_summary(entry_name)
+    if cap["total"]:
+        rate = 100.0 * (cap["schema_error_rate"] or 0.0)
+        lines.append(
+            f"  capability ({entry_name}, 7d): {cap['schema_error']}/{cap['total']} "
+            f"malformed calls ({rate:.1f}%)"
+        )
+    rel = reliability_summary(entry_name)
+    if rel["total"]:
+        sr = (f"{100 * rel['success_rate']:.0f}%"
+              if rel["success_rate"] is not None else "n/a")
+        extra = f", {rel['rate_limited']} rate-limited" if rel["rate_limited"] else ""
+        lines.append(
+            f"  reliability ({entry_name}, 24h): {sr} ok of {rel['total']} calls{extra}"
+        )
+    return lines
+
+
+def run_perf_command(session_dir: str | Path | None,
+                     entry_name: str | None = None) -> str:
+    """Render a plain-text performance summary for the current session.
+
+    *entry_name* (registry entry for the active model) adds the global
+    capability/reliability block; without it the report is session-only.
+    """
+    health = _model_health_lines(entry_name) if entry_name else []
     if not session_dir:
-        return "perf: no active session side-log."
+        return "\n".join(["perf: no active session side-log."] + health)
     s = summarize(session_dir)
     if not s["llm_calls"] and not s["tool_calls"]:
-        return "perf: no metrics recorded yet this session."
+        return "\n".join(["perf: no metrics recorded yet this session."] + health)
 
     wall = s["llm_seconds"] + s["tool_seconds"]
     lines = ["Session performance:"]
@@ -171,4 +208,5 @@ def run_perf_command(session_dir: str | Path | None) -> str:
         for name, rec in ranked[:8]:
             err = f"  {rec['errors']} err" if rec["errors"] else ""
             lines.append(f"    {name:<22} {rec['ms']:>9.0f}ms  x{rec['calls']}{err}")
+    lines.extend(health)
     return "\n".join(lines)

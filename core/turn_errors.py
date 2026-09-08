@@ -27,6 +27,7 @@ __all__ = [
     "NoUsableModelError",
     "no_usable_model_error",
     "record_model_outcome",
+    "record_model_capability",
     "mark_endpoint_cooldown",
     "try_failover",
     "retry_after_seconds",
@@ -73,6 +74,30 @@ def record_model_outcome(config: "Config", outcome: str) -> None:
         record_outcome(resolve_entry_name(config), outcome)
     except Exception:
         logger.debug("record_model_outcome(%s) failed (ignored)", outcome, exc_info=True)
+
+
+def record_model_capability(config: "Config", ok: bool, result_text: str) -> None:
+    """Record one tool-call capability sample against the active model entry.
+
+    Only successful calls and malformed calls are stored (see
+    model_reliability.CAPABILITY_VERDICTS): a tool error such as a missing
+    file is a legitimate exploration outcome, not a model defect.
+
+    Best-effort: capability stats must never be able to fail a turn.
+    """
+    try:
+        from agent.core.confidence import classify_error
+        from agent.metrics.model_reliability import record_capability
+        from agent.metrics.model_stats import resolve_entry_name
+        if ok:
+            verdict = "ok"
+        elif classify_error(result_text) == "schema":
+            verdict = "schema_error"
+        else:
+            return
+        record_capability(resolve_entry_name(config), verdict)
+    except Exception:
+        logger.debug("record_model_capability failed (ignored)", exc_info=True)
 
 
 def mark_endpoint_cooldown(config: "Config", cooldown_s: float | None = None) -> None:

@@ -69,6 +69,10 @@ class ConfidenceSignal:
     # than bad reasoning. Read by the auto-tier gate: schema-shaped failures
     # do not justify a costlier model (see classify_error).
     schema_error_share: float = 0.0
+    # True when the failures are a call-format problem and the fix is the
+    # schema reminder, not a stronger model. Dominant share, or — for a model
+    # with a recorded history of malformed calls — a single one.
+    schema_bound: bool = False
 
     @property
     def waste_rate(self) -> float:
@@ -97,8 +101,13 @@ class ConfidenceMonitor:
         dup_rate_threshold: float = 0.5,
         score_threshold: float = 0.35,
         inject_cooldown: int = 3,
+        schema_sensitive: bool = False,
     ) -> None:
         self.window = max(2, window)
+        # A model known to emit malformed calls gets the schema reminder on
+        # its first one instead of waiting for the window to fill: the
+        # reminder is cheap, re-rolling broken JSON on a strong model is not.
+        self.schema_sensitive = bool(schema_sensitive)
         # Clamp thresholds away from 0 — signal() divides by each, so a config
         # value of 0 would raise ZeroDivisionError and crash the turn.
         self.error_rate_threshold = max(1e-6, error_rate_threshold)
@@ -187,11 +196,21 @@ class ConfidenceMonitor:
         )
         score = max(0.0, 1.0 - worst * 0.5)
 
+        # Dominant-share is the general rule; a schema-sensitive model fires
+        # on any schema-shaped error, with no minimum sample requirement.
+        schema_bound = bool(
+            (schema_share >= SCHEMA_DOMINANT_SHARE and error_rate > 0.3)
+            or (self.schema_sensitive and schema_share > 0.0)
+        )
+
         triggered = (
             n >= max(2, self.window // 2)  # need enough data first
             and score < self.score_threshold
             and self._iters_since_last >= self.inject_cooldown
         )
+        if (not triggered and self.schema_sensitive and schema_share > 0.0
+                and self._iters_since_last >= self.inject_cooldown):
+            triggered = True
         return ConfidenceSignal(
             score=round(score, 3),
             error_rate=round(error_rate, 3),
@@ -201,6 +220,7 @@ class ConfidenceMonitor:
             tool_call_rate=round(calls_rate, 2),
             token_usage_rate=round(tokens_rate, 1),
             schema_error_share=round(schema_share, 3),
+            schema_bound=schema_bound,
         )
 
     def should_intervene(self) -> ConfidenceSignal:
@@ -223,7 +243,7 @@ class ConfidenceMonitor:
         if sig.tool_call_rate >= 4:
             parts.append(f"{sig.tool_call_rate:.0f} tool calls per round")
         detail = ", ".join(parts) or f"score {sig.score:.2f}"
-        if sig.schema_error_share >= SCHEMA_DOMINANT_SHARE and sig.error_rate > 0.3:
+        if sig.schema_bound:
             return (
                 f"[confidence-guard: {detail}. Most of those failures were malformed "
                 "tool calls — missing required arguments, unparseable argument JSON, or a "

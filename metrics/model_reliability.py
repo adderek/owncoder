@@ -5,6 +5,12 @@ Records success/failure/rate_limited per model entry into a shared SQLite db
 atomic-replace JSON which can lose concurrent writes). Global rather than
 per-project: model reliability is a property of the endpoint, not the
 project calling it.
+
+The same db carries a second, orthogonal signal: *capability*, the rate at
+which a model emits malformed tool calls. Transport success and call-format
+competence are independent — a local model can answer every request with a
+200 and still produce unusable argument JSON. Capability is what decides
+whether the harness pre-empts schema reminders for that model.
 """
 from __future__ import annotations
 
@@ -23,6 +29,16 @@ _schema_lock = threading.Lock()
 _schema_ready = False
 
 OUTCOMES = ("success", "failure", "rate_limited")
+
+# Capability samples kept per tool call. Only "ok" and "schema_error" are
+# stored: a tool error like a missing file is a legitimate exploration
+# outcome, not a model defect, and counting it would make a careful model
+# look weak. Capability moves far more slowly than transport reliability
+# (it is a property of the weights), hence the longer default window.
+CAPABILITY_VERDICTS = ("ok", "schema_error")
+_CAPABILITY_WINDOW_HOURS = 168
+_SCHEMA_WEAK_MIN_SAMPLES = 30
+_SCHEMA_WEAK_RATE = 0.10
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -45,6 +61,13 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
                 role       TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_calls_entry_ts ON calls(entry_name, ts);
+            CREATE TABLE IF NOT EXISTS capability (
+                entry_name TEXT NOT NULL,
+                ts         INTEGER NOT NULL,
+                verdict    TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_capability_entry_ts
+                ON capability(entry_name, ts);
         """)
         _schema_ready = True
 
@@ -102,3 +125,67 @@ def reliability_summary(entry_name: str, window_hours: int = 24) -> dict:
     except Exception:
         pass
     return result
+
+
+def record_capability(entry_name: str, verdict: str) -> None:
+    """Record one tool-call capability sample for *entry_name*.
+
+    *verdict* is "ok" or "schema_error" (a malformed call). Best-effort —
+    never raises, so a metrics write can never fail a turn.
+    """
+    if not entry_name or verdict not in CAPABILITY_VERDICTS:
+        return
+    try:
+        conn = _conn()
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO capability (entry_name, ts, verdict) VALUES (?, ?, ?)",
+            (entry_name, now, verdict),
+        )
+        conn.commit()
+        if random.randint(1, _PRUNE_SAMPLE_RATE) == 1:
+            cutoff = now - _PRUNE_AFTER_DAYS * 86400
+            conn.execute("DELETE FROM capability WHERE ts < ?", (cutoff,))
+            conn.commit()
+    except Exception:
+        pass
+
+
+def capability_summary(entry_name: str, window_hours: int = _CAPABILITY_WINDOW_HOURS) -> dict:
+    """{ok, schema_error, total, schema_error_rate} over the window."""
+    result = {"ok": 0, "schema_error": 0, "total": 0, "schema_error_rate": None}
+    try:
+        conn = _conn()
+        cutoff = int(time.time()) - window_hours * 3600
+        rows = conn.execute(
+            "SELECT verdict, COUNT(*) FROM capability "
+            "WHERE entry_name = ? AND ts >= ? GROUP BY verdict",
+            (entry_name, cutoff),
+        ).fetchall()
+        for verdict, count in rows:
+            if verdict in result:
+                result[verdict] = count
+        result["total"] = result["ok"] + result["schema_error"]
+        if result["total"]:
+            result["schema_error_rate"] = round(result["schema_error"] / result["total"], 4)
+    except Exception:
+        pass
+    return result
+
+
+def is_schema_weak(
+    entry_name: str,
+    *,
+    min_samples: int = _SCHEMA_WEAK_MIN_SAMPLES,
+    threshold: float = _SCHEMA_WEAK_RATE,
+    window_hours: int = _CAPABILITY_WINDOW_HOURS,
+) -> bool:
+    """True when *entry_name* has a recorded history of malformed tool calls.
+
+    Requires *min_samples* judged calls before it can return True, so a single
+    bad call in a fresh install does not change harness behaviour.
+    """
+    s = capability_summary(entry_name, window_hours=window_hours)
+    if s["total"] < min_samples:
+        return False
+    return (s["schema_error_rate"] or 0.0) >= threshold

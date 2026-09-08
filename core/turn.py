@@ -163,6 +163,20 @@ def _is_tool_call_parse_error(exc: BaseException) -> bool:
     return "parse tool call" in low or "tool call arguments as json" in low
 
 
+def _schema_weak(config: "Config") -> bool:
+    """True when this endpoint has a recorded history of malformed tool calls.
+
+    Best-effort: a metrics read must never be able to fail a turn, and an
+    unknown model (no history) is treated as not weak.
+    """
+    try:
+        from agent.metrics.model_reliability import is_schema_weak
+        from agent.metrics.model_stats import resolve_entry_name
+        return is_schema_weak(resolve_entry_name(config))
+    except Exception:
+        return False
+
+
 async def run_turn(
     messages: list[dict],
     config: "Config",
@@ -318,6 +332,7 @@ async def run_turn(
             dup_rate_threshold=float(conf_cfg.dup_rate_threshold),
             score_threshold=float(conf_cfg.score_threshold),
             inject_cooldown=int(conf_cfg.inject_cooldown),
+            schema_sensitive=_schema_weak(config),
         )
     if on_progress is not None:
         try:
@@ -838,6 +853,7 @@ async def run_turn(
                     prompt_compiler.record_call(ok, config)
                 except Exception:
                     logger.exception("prompt_compiler.record_call failed")
+                turn_errors.record_model_capability(config, ok, result)
                 if confidence_monitor is not None:
                     confidence_monitor.observe_result(result, is_error=not ok)
                 if not ok:
@@ -1006,8 +1022,7 @@ async def run_turn(
                     # Malformed-call failures are exempt: a costlier model does
                     # not fix missing arguments or broken argument JSON, so the
                     # schema reminder above is the whole intervention.
-                    from agent.core.confidence import SCHEMA_DOMINANT_SHARE
-                    _schema_bound = conf_sig.schema_error_share >= SCHEMA_DOMINANT_SHARE
+                    _schema_bound = conf_sig.schema_bound
                     if _schema_bound:
                         logger.warning(
                             "auto-tier: escalation skipped — %.0f%% of failures are "

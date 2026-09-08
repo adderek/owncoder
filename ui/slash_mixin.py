@@ -232,7 +232,8 @@ class SlashHandlerMixin:
             else:
                 _sl = getattr(self._server._agent, "_side_log", None)
                 _dir = getattr(_sl, "session_dir", None) if _sl is not None else None
-                self._write_sys(_escape(run_perf_command(_dir)))
+                self._write_sys(_escape(run_perf_command(
+                    _dir, getattr(self._server._agent, "_model_entry_name", None))))
 
         elif cmd in ("/modelcalls", "/mc"):
             from agent.metrics.model_calls import run_modelcalls_command

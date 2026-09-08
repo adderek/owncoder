@@ -490,7 +490,8 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                 else:
                     _sl = getattr(agent, "_side_log", None)
                     _dir = getattr(_sl, "session_dir", None) if _sl is not None else None
-                    console.print(run_perf_command(_dir))
+                    console.print(run_perf_command(
+                        _dir, getattr(agent, "_model_entry_name", None)))
 
             elif cmd in ("/modelcalls", "/mc"):
                 from agent.metrics.model_calls import run_modelcalls_command

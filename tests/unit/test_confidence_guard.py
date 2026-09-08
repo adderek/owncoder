@@ -140,6 +140,30 @@ def test_zero_threshold_does_not_crash():
     assert sig.score == 0.0  # any non-convergence pins score to the floor
 
 
+def test_schema_sensitive_fires_on_the_first_malformed_call():
+    m = _monitor(schema_sensitive=True)
+    m.observe_result('{"error": "Missing required arguments: path"}', is_error=True)
+    m.tick_iter()
+    sig = m.should_intervene()
+    assert sig.triggered
+    assert sig.schema_bound
+    assert "malformed" in ConfidenceMonitor.intervention_message(sig)
+
+
+def test_schema_sensitive_ignores_non_schema_errors():
+    m = _monitor(schema_sensitive=True)
+    m.observe_result('{"error": "File not found: /a/b.py"}', is_error=True)
+    m.tick_iter()
+    assert not m.should_intervene().schema_bound
+
+
+def test_not_schema_sensitive_waits_for_a_dominant_share():
+    m = _monitor()
+    m.observe_result('{"error": "Missing required arguments: path"}', is_error=True)
+    m.tick_iter()
+    assert not m.should_intervene().triggered
+
+
 def test_result_hash_deduplicates_identical_content():
     h1 = _result_hash("hello")
     h2 = _result_hash("hello")

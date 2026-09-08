@@ -296,6 +296,34 @@ def test_recording_an_outcome_never_raises(monkeypatch, outcome):
     turn_errors.record_model_outcome(Config(), outcome)      # no exception
 
 
+def test_capability_verdicts_skip_non_schema_tool_errors(monkeypatch):
+    """Only ok/malformed calls are capability samples — a missing file is a
+    legitimate tool outcome, not a model defect."""
+    import agent.metrics.model_stats as ms
+    from agent.metrics import model_reliability as mr
+
+    recorded = []
+    monkeypatch.setattr(ms, "resolve_entry_name", lambda config: "gpu-a")
+    monkeypatch.setattr(mr, "record_capability",
+                        lambda name, verdict: recorded.append((name, verdict)))
+    cfg = Config()
+    turn_errors.record_model_capability(cfg, True, "ok")
+    turn_errors.record_model_capability(
+        cfg, False, '{"error": "Missing required arguments: path"}')
+    turn_errors.record_model_capability(cfg, False, '{"error": "File not found"}')
+    assert recorded == [("gpu-a", "ok"), ("gpu-a", "schema_error")]
+
+
+def test_recording_capability_never_raises(monkeypatch):
+    import agent.metrics.model_stats as ms
+
+    def _boom(config):
+        raise RuntimeError("stats backend down")
+
+    monkeypatch.setattr(ms, "resolve_entry_name", _boom)
+    turn_errors.record_model_capability(Config(), True, "ok")   # no exception
+
+
 def test_marking_a_cooldown_never_raises(monkeypatch):
     from agent.config import model_probe
 
