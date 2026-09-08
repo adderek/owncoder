@@ -70,6 +70,7 @@ _DEFAULT_WRITE_DENY_GLOBS: list[str] = [
     ".agent/permissions.json",  # agent must not rewrite the policy binding it
     ".agent/checkpoints/**",    # agent must not rewrite the record of its edits
     ".agent/web_search/**",     # app-generated fetcher runs with network=True
+    ".agent/diagnostics/**",    # readable, not forgeable: crash/failure records
 ]
 
 # The immutable core of the system prompt: human input only, so the agent's own

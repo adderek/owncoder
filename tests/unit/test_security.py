@@ -505,6 +505,32 @@ class TestSandboxWriteDenyOverlay:
         # `prefix/**` collapses to one read-only bind of the directory.
         assert ".agent/web_search" in found
 
+    def test_diagnostics_dir_is_readonly_but_present(self, project):
+        """Readable, not forgeable: records can be read inside the sandbox but
+        a contaminated model cannot rewrite or delete its own failure trail."""
+        d = project / ".agent" / "diagnostics" / "failures"
+        d.mkdir(parents=True)
+        (d / "index.jsonl").write_text("{}\n")
+
+        found = {p.relative_to(project).as_posix()
+                 for p in sec_runner._write_deny_paths(project)}
+        assert ".agent/diagnostics" in found
+        argv = sec_runner._bwrap_argv(["sh", "-c", "true"], cwd=project, network=False)
+        i = argv.index(str(project / ".agent" / "diagnostics"))
+        assert argv[i - 1] == "--ro-bind"
+
+    def test_broader_glob_covers_narrower_file(self, project):
+        """A `prefix/**` dir bind must swallow a narrower file glob beneath it,
+        or the same path is bound twice and bwrap rejects the duplicate."""
+        ws = project / ".agent" / "web_search"
+        ws.mkdir(parents=True)
+        fetcher = ws / "_http_fetcher.py"
+        fetcher.write_text("x")
+
+        found = sec_runner._write_deny_paths(project)
+        assert ws in found
+        assert fetcher not in found
+
     def test_bwrap_argv_binds_write_deny_readonly(self, project):
         agent_dir = project / ".agent"
         agent_dir.mkdir()

@@ -27,17 +27,18 @@ def _load_audit(agent_dir: Path) -> list[dict]:
 
 
 def _load_failures(agent_dir: Path) -> list[dict]:
-    from agent.diag_paths import FAILURES, read_dir
-    idx = read_dir(agent_dir, FAILURES) / "index.jsonl"
-    if not idx.exists():
-        return []
+    from agent.diag_paths import FAILURES, read_dirs
     out = []
-    with idx.open(encoding="utf-8") as f:
-        for line in f:
-            try:
-                out.append(json.loads(line))
-            except json.JSONDecodeError:
-                pass
+    for directory in read_dirs(agent_dir, FAILURES):
+        idx = directory / "index.jsonl"
+        if not idx.exists():
+            continue
+        with idx.open(encoding="utf-8") as f:
+            for line in f:
+                try:
+                    out.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
     return out
 
 

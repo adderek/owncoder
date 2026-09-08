@@ -12,6 +12,8 @@ def _isolated_db(tmp_path, monkeypatch):
     each test starts clean."""
     monkeypatch.setattr(mr, "_DB_PATH", tmp_path / "model_reliability.db")
     monkeypatch.setattr(mr, "_schema_ready", False)
+    monkeypatch.setattr(mr, "_db_ident", None)
+    mr.reset_schema_weak_latch()
     if hasattr(mr._local, "conn"):
         del mr._local.conn
     yield
@@ -125,6 +127,35 @@ def test_is_schema_weak_needs_min_samples():
 def test_is_schema_weak_false_below_threshold():
     for _ in range(40):
         mr.record_capability("gpu-a", "ok")
-    for _ in range(4):
-        mr.record_capability("gpu-a", "schema_error")
-    assert mr.is_schema_weak("gpu-a") is False  # 4/44 ≈ 9.1% < 10%
+    mr.record_capability("gpu-a", "schema_error")
+    assert mr.is_schema_weak("gpu-a") is False  # 1/41 ≈ 2.4% < 3%
+
+
+def test_is_schema_weak_hysteresis_holds_inside_the_band():
+    for _ in range(40):
+        mr.record_capability("gpu-a", "ok")
+    for _ in range(3):
+        mr.record_capability("gpu-a", "schema_error")  # 3/43 ≈ 7%
+    assert mr.is_schema_weak("gpu-a") is True
+
+    # Push the rate into [clear, entry) — the verdict must not flap, or the
+    # system prompt is rewritten every turn and the prompt cache thrashes.
+    for _ in range(107):
+        mr.record_capability("gpu-a", "ok")  # 3/150 = 2.0%
+    s = mr.capability_summary("gpu-a")
+    assert 0.015 <= s["schema_error_rate"] < 0.03
+    assert mr.is_schema_weak("gpu-a") is True
+
+    for _ in range(60):
+        mr.record_capability("gpu-a", "ok")  # 3/210 ≈ 1.4%
+    assert mr.capability_summary("gpu-a")["schema_error_rate"] < 0.015
+    assert mr.is_schema_weak("gpu-a") is False
+
+
+def test_conn_reopens_when_db_file_is_replaced():
+    """A deleted/replaced db must not leave writes in an orphaned inode."""
+    mr.record_capability("gpu-a", "ok")
+    assert mr.capability_summary("gpu-a")["total"] == 1
+    mr._DB_PATH.unlink()
+    mr.record_capability("gpu-a", "ok")
+    assert mr.capability_summary("gpu-a")["total"] == 1

@@ -27,6 +27,12 @@ _PRUNE_SAMPLE_RATE = 200  # ~1-in-N writes triggers a prune sweep
 _local = threading.local()
 _schema_lock = threading.Lock()
 _schema_ready = False
+# (device, inode) of the db file the cached connections were opened against.
+_db_ident: tuple[int, int] | None = None
+
+# Per-model weak verdict, latched to stop threshold flapping.
+_weak_lock = threading.Lock()
+_weak_latch: dict[str, bool] = {}
 
 OUTCOMES = ("success", "failure", "rate_limited")
 
@@ -38,7 +44,15 @@ OUTCOMES = ("success", "failure", "rate_limited")
 CAPABILITY_VERDICTS = ("ok", "schema_error")
 _CAPABILITY_WINDOW_HOURS = 168
 _SCHEMA_WEAK_MIN_SAMPLES = 30
-_SCHEMA_WEAK_RATE = 0.10
+# Share of tool calls that must be malformed before the harness pre-empts a
+# schema reminder. Deliberately low: the denominator is *every* tool call, and
+# a merely-weak local model mangles well under 1 in 10 — a threshold that
+# never fires is indistinguishable from no feature.
+_SCHEMA_WEAK_RATE = 0.03
+# Hysteresis: once weak, stay weak until the rate drops clearly below the
+# entry threshold. Flapping rewrites the system prompt every turn and
+# invalidates the prompt cache each time it flips.
+_SCHEMA_WEAK_CLEAR_RATE = 0.015
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -72,14 +86,41 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         _schema_ready = True
 
 
+def _db_identity() -> tuple[int, int] | None:
+    try:
+        st = _DB_PATH.stat()
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino)
+
+
 def _conn() -> sqlite3.Connection:
-    if not hasattr(_local, "conn"):
+    """Thread-local connection, reopened when the db file is replaced.
+
+    A cached handle keeps the *deleted* inode alive, so after a ``rm`` or a
+    restore every write lands in an orphan file and the metric dies with no
+    exception at all. Comparing (device, inode) catches that; the schema flag
+    must be cleared too or the fresh file never gets its DDL.
+    """
+    global _db_ident, _schema_ready
+    ident = _db_identity()
+    conn = getattr(_local, "conn", None)
+    if conn is not None and ident != _db_ident:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        conn = None
+        _local.conn = None
+        _schema_ready = False
+    if conn is None:
         _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         from agent.core.sqlite_util import open_threadlocal_conn
         conn = open_threadlocal_conn(str(_DB_PATH))
         _ensure_schema(conn)
         _local.conn = conn
-    return _local.conn
+        _db_ident = _db_identity()
+    return conn
 
 
 def record_outcome(entry_name: str, outcome: str, role: str = "") -> None:
@@ -173,19 +214,40 @@ def capability_summary(entry_name: str, window_hours: int = _CAPABILITY_WINDOW_H
     return result
 
 
+def reset_schema_weak_latch(entry_name: str = "") -> None:
+    """Drop the latched weak verdict (for *entry_name*, or all)."""
+    with _weak_lock:
+        if entry_name:
+            _weak_latch.pop(entry_name, None)
+        else:
+            _weak_latch.clear()
+
+
 def is_schema_weak(
     entry_name: str,
     *,
     min_samples: int = _SCHEMA_WEAK_MIN_SAMPLES,
     threshold: float = _SCHEMA_WEAK_RATE,
+    clear_threshold: float = _SCHEMA_WEAK_CLEAR_RATE,
     window_hours: int = _CAPABILITY_WINDOW_HOURS,
 ) -> bool:
     """True when *entry_name* has a recorded history of malformed tool calls.
 
     Requires *min_samples* judged calls before it can return True, so a single
-    bad call in a fresh install does not change harness behaviour.
+    bad call in a fresh install does not change harness behaviour. The verdict
+    is latched with hysteresis: it turns on at *threshold* and only off once
+    the rate falls below *clear_threshold*, so a model sitting on the boundary
+    does not flip the system prompt every turn.
     """
     s = capability_summary(entry_name, window_hours=window_hours)
     if s["total"] < min_samples:
         return False
-    return (s["schema_error_rate"] or 0.0) >= threshold
+    rate = s["schema_error_rate"] or 0.0
+    with _weak_lock:
+        latched = _weak_latch.get(entry_name, False)
+        if rate >= threshold:
+            latched = True
+        elif rate < clear_threshold:
+            latched = False
+        _weak_latch[entry_name] = latched
+        return latched

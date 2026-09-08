@@ -4,7 +4,8 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from agent.diag_paths import FAILURES, diagnostics_dir, migrate_legacy, read_dir, resolve
+from agent.diag_paths import (FAILURES, diagnostics_dir, migrate_legacy,
+                              read_dir, read_dirs, resolve)
 
 
 def _cfg(tmp_path, api_key="local"):
@@ -42,6 +43,49 @@ def test_migrate_legacy_moves_records(tmp_path):
 
     assert not legacy.exists()
     assert (resolve(tmp_path / ".agent", FAILURES) / "index.jsonl").is_file()
+
+
+def test_read_dirs_unions_canonical_and_legacy(tmp_path):
+    base = tmp_path / ".agent"
+    legacy = base / FAILURES
+    canonical = resolve(base, FAILURES)
+    legacy.mkdir(parents=True)
+    canonical.mkdir(parents=True)
+    assert read_dirs(base, FAILURES) == [canonical, legacy]
+
+
+def test_migrate_merges_into_existing_canonical_dir(tmp_path):
+    """A pre-existing canonical dir must not block migration, and files with
+    no counterpart must still move — the old directory-level rename stranded
+    the whole stream in that case."""
+    base = tmp_path / ".agent"
+    legacy = base / FAILURES
+    canonical = resolve(base, FAILURES)
+    legacy.mkdir(parents=True)
+    canonical.mkdir(parents=True)
+    (legacy / "old.jsonl").write_text("old", encoding="utf-8")
+    (canonical / "new.jsonl").write_text("new", encoding="utf-8")
+
+    migrate_legacy(base)
+
+    assert sorted(p.name for p in canonical.iterdir()) == ["new.jsonl", "old.jsonl"]
+    assert not legacy.exists()
+
+
+def test_migrate_keeps_legacy_dir_when_a_file_conflicts(tmp_path):
+    base = tmp_path / ".agent"
+    legacy = base / FAILURES
+    canonical = resolve(base, FAILURES)
+    legacy.mkdir(parents=True)
+    canonical.mkdir(parents=True)
+    (legacy / "index.jsonl").write_text("old", encoding="utf-8")
+    (canonical / "index.jsonl").write_text("new", encoding="utf-8")
+
+    migrate_legacy(base)
+
+    assert (canonical / "index.jsonl").read_text(encoding="utf-8") == "new"
+    # Nothing was lost, so the legacy dir stays for readers to union.
+    assert (legacy / "index.jsonl").is_file()
 
 
 def test_crash_report_redacts_config_secret(tmp_path):

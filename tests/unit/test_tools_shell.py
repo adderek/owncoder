@@ -99,7 +99,36 @@ class TestRunCommandEnabled:
         assert any("transcript_test" in entry.get("cmd", "") for entry in t)
 
 
-class TestTranslateToArgv:
+class TestNetworkPrecheck:
+    """`network=false` must be enforced, not merely recorded.
+
+    The precheck runs unconditionally, so a boundary that forbids network
+    blocks the command even on the 'none' backend, where there is no network
+    namespace to unshare and egress would otherwise just happen.
+    """
+
+    def _cfg(self, tmp_path):
+        cfg = Config()
+        cfg.tools.working_dir = str(tmp_path)
+        cfg.tools.allow_shell = True
+        cfg.security.allow_legacy_shell = True
+        cfg.security.require_sandbox = False
+        shell_setup(cfg)
+        return cfg
+
+    def test_network_command_blocked_when_boundary_denies(self, tmp_path):
+        from agent.tools.rules import BoundaryConfig, Rules
+        from agent.tools.rules.core import get_rules, set_rules
+
+        self._cfg(tmp_path)
+        prev = get_rules()
+        set_rules(Rules(boundary=BoundaryConfig(allow_network=False)))
+        try:
+            r = run_argv(["curl", "http://example.com"])
+        finally:
+            set_rules(prev)
+        assert "error" in r
+        assert "Network access denied" in r["error"]
     """Shell operators must be detected so run_command rejects them and steers
     to run_argv — input redirects must mirror output redirects."""
 

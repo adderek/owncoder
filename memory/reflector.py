@@ -227,28 +227,15 @@ def _session_start_iso(session_id: str) -> str:
 
 
 def _read_session_failures(config: "Config", session_id: str) -> str:
-    """Read failure entries for session_id from the tail of index.jsonl."""
+    """Read failure entries for session_id from the tails of index.jsonl."""
     try:
-        from agent.diag_paths import FAILURES, read_dir
+        from agent.diag_paths import FAILURES, read_dirs
         agent_dir = Path(config.tools.working_dir) / config.tools.agent_dir
-        index_path = read_dir(agent_dir, FAILURES) / "index.jsonl"
-        if not index_path.exists():
-            return ""
-
-        file_size = index_path.stat().st_size
-        lines_raw: list[str] = []
-        with index_path.open("rb") as fbin:
-            if file_size > _FAILURES_TAIL_BYTES:
-                fbin.seek(-_FAILURES_TAIL_BYTES, 2)
-                fbin.readline()  # discard partial first line
-            lines_raw = fbin.read().decode("utf-8", errors="replace").splitlines()
-
-        recs = []
-        for line in lines_raw:
-            try:
-                recs.append(json.loads(line))
-            except Exception:
-                pass
+        recs: list[dict] = []
+        for directory in read_dirs(agent_dir, FAILURES):
+            recs.extend(_read_index_tail(directory / "index.jsonl"))
+        # Both layouts may hold records; order oldest first so the tail is recent.
+        recs.sort(key=lambda r: str(r.get("ts") or ""))
 
         def _fmt(rec: dict) -> str:
             kind = rec.get("kind", "")
@@ -268,6 +255,24 @@ def _read_session_failures(config: "Config", session_id: str) -> str:
         return "\n".join(lines[:20])
     except Exception:
         return ""
+
+
+def _read_index_tail(index_path: Path) -> list[dict]:
+    """Parse the tail of one index.jsonl, tolerating partial and bad lines."""
+    if not index_path.exists():
+        return []
+    with index_path.open("rb") as fbin:
+        if index_path.stat().st_size > _FAILURES_TAIL_BYTES:
+            fbin.seek(-_FAILURES_TAIL_BYTES, 2)
+            fbin.readline()  # discard partial first line
+        lines_raw = fbin.read().decode("utf-8", errors="replace").splitlines()
+    out = []
+    for line in lines_raw:
+        try:
+            out.append(json.loads(line))
+        except Exception:
+            pass
+    return out
 
 
 def _parse_rules(raw: str) -> list[dict]:

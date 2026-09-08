@@ -14,10 +14,12 @@ Layout::
     <agent_dir>/diagnostics/failures/    <ts>-<kind>-*.json + index.jsonl
     <agent_dir>/diagnostics/recovery/    <session_id>.json
 
-Writers always use ``resolve()`` (the new path). Readers use ``read_dir()``,
-which falls back to the legacy top-level directory so data written by an older
-version is still found. ``migrate_legacy()`` moves it over; reads never rename
-anything, so a reader can't pull a directory out from under a live writer.
+Writers always use ``resolve()`` (the new path). Readers use ``read_dirs()``,
+which returns *every* existing location, canonical first: ``migrate_legacy()``
+is best-effort, so a legacy directory can survive next to the canonical one and
+a reader that looked at only one of them would silently lose records. Reads
+never rename anything, so a reader can't pull a directory out from under a live
+writer.
 """
 from __future__ import annotations
 
@@ -45,31 +47,60 @@ def resolve(base: Path, name: str) -> Path:
 
 
 def read_dir(base: Path, name: str) -> Path:
-    """Location to read the *name* stream from: canonical, else legacy."""
-    new = resolve(base, name)
-    if new.exists():
-        return new
-    legacy = base / name
-    return legacy if legacy.exists() else new
+    """Canonical location if it exists, else the legacy one, else canonical."""
+    dirs = read_dirs(base, name)
+    return dirs[0] if dirs else resolve(base, name)
+
+
+def read_dirs(base: Path, name: str) -> list[Path]:
+    """Every existing location for the *name* stream, canonical first.
+
+    Both may exist: migration merges per file and is best-effort, so a legacy
+    directory can outlive the canonical one. Readers must union them —
+    otherwise records written by an older version vanish the moment anything
+    creates the canonical directory.
+    """
+    out: list[Path] = []
+    for d in (resolve(base, name), base / name):
+        if d.is_dir() and d not in out:
+            out.append(d)
+    return out
 
 
 def migrate_legacy(base: Path) -> None:
-    """Move legacy top-level diagnostics into ``diagnostics/`` (best-effort)."""
+    """Merge legacy top-level diagnostics into ``diagnostics/`` (best-effort).
+
+    Per *file*, not per directory: one failed rename must not strand the rest
+    of the stream, and a pre-existing canonical directory must not block
+    migration the way a directory-level ``rename`` would.
+    """
     for name in STREAMS:
-        legacy = base / name
-        new = resolve(base, name)
-        if legacy.exists() and not new.exists():
-            _move(legacy, new)
+        _merge_dir(base / name, resolve(base, name))
     _migrate_exception_dumps(base)
 
 
-def _move(legacy: Path, new: Path) -> None:
+def _merge_dir(legacy: Path, new: Path) -> None:
+    if not legacy.is_dir():
+        return
     try:
-        new.parent.mkdir(parents=True, exist_ok=True)
-        legacy.rename(new)
-        logger.info("diagnostics: moved %s -> %s", legacy, new)
+        new.mkdir(parents=True, exist_ok=True)
     except OSError as e:
-        logger.warning("diagnostics: could not move %s to %s: %s", legacy, new, e)
+        logger.warning("diagnostics: could not create %s: %s", new, e)
+        return
+    for p in sorted(legacy.iterdir()):
+        target = new / p.name
+        if target.exists():
+            continue
+        try:
+            p.rename(target)
+        except OSError as e:
+            logger.warning("diagnostics: could not move %s to %s: %s", p, target, e)
+    try:
+        legacy.rmdir()  # succeeds only when every file moved
+    except OSError:
+        pass
+    else:
+        logger.info("diagnostics: merged %s -> %s", legacy, new)
 
 
 def exception_dump_dir(base: Path) -> Path:
@@ -84,7 +115,14 @@ def _migrate_exception_dumps(base: Path) -> None:
     new = exception_dump_dir(base)
     try:
         new.mkdir(parents=True, exist_ok=True)
-        for p in legacy:
-            p.rename(new / p.name)
     except OSError as e:
-        logger.warning("diagnostics: could not move exception dumps: %s", e)
+        logger.warning("diagnostics: could not create %s: %s", new, e)
+        return
+    for p in legacy:
+        target = new / p.name
+        if target.exists():
+            continue
+        try:
+            p.rename(target)
+        except OSError as e:
+            logger.warning("diagnostics: could not move %s to %s: %s", p, target, e)

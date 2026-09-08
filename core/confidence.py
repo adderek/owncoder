@@ -47,9 +47,17 @@ _SCHEMA_ERROR_MARKERS = (
 SCHEMA_DOMINANT_SHARE = 0.5
 
 
+# Only the head of a result is classified. Tool errors are short, whereas a
+# large payload that merely *quotes* a marker — a file dump, an eval fixture,
+# a tool echoing source — must not read as a malformed call. The verdict now
+# feeds the capability metric and the pre-emptive schema guard, so a false
+# positive changes harness behaviour rather than just a log line.
+_CLASSIFY_SCAN_CHARS = 400
+
+
 def classify_error(result_text: str) -> str:
     """Classify an error result: "schema" (bad call) or "other"."""
-    low = result_text.lower()
+    low = result_text[:_CLASSIFY_SCAN_CHARS].lower()
     return "schema" if any(m in low for m in _SCHEMA_ERROR_MARKERS) else "other"
 
 

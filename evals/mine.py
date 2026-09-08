@@ -186,12 +186,11 @@ def _project_of(directory: str) -> Path:
 
 
 def failure_dirs(projects: list[Path]) -> list[Path]:
-    from agent.diag_paths import FAILURES, read_dir
-    out = []
+    """Every failures dir per project, canonical and legacy alike."""
+    from agent.diag_paths import FAILURES, read_dirs
+    out: list[Path] = []
     for project in projects:
-        candidate = read_dir(project / ".agent", FAILURES)
-        if candidate.is_dir():
-            out.append(candidate)
+        out.extend(read_dirs(project / ".agent", FAILURES))
     return out
 
 

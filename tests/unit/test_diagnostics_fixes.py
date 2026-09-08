@@ -143,6 +143,14 @@ def test_malformed_calls_do_not_count_as_non_convergence():
     assert env.should_intervene().schema_error_share == 0.0
 
 
+def test_quoted_schema_marker_deep_in_a_payload_is_not_a_call_error():
+    """A tool echoing a large file that merely mentions a marker must not read
+    as a malformed call — the verdict now drives the capability metric."""
+    from agent.core.confidence import classify_error
+
+    assert classify_error("x" * 500 + " missing required argument") == "other"
+
+
 # --- B6 -------------------------------------------------------------------
 
 def test_failures_fall_back_to_the_session_time_window(tmp_path):

@@ -54,8 +54,16 @@ def _session_start_iso(session_id: str) -> str:
 
 
 def _read_failure_index(config) -> list[dict]:
-    from agent.diag_paths import FAILURES, read_dir
-    path = read_dir(_agent_dir(config), FAILURES) / "index.jsonl"
+    from agent.diag_paths import FAILURES, read_dirs
+    out: list[dict] = []
+    for directory in read_dirs(_agent_dir(config), FAILURES):
+        out.extend(_read_index_tail(directory / "index.jsonl"))
+    # Union of both layouts, oldest first: callers slice the tail for "recent".
+    out.sort(key=lambda r: str(r.get("ts") or ""))
+    return out
+
+
+def _read_index_tail(path: Path) -> list[dict]:
     try:
         if not path.exists():
             return []
