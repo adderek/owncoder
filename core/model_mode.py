@@ -65,6 +65,10 @@ def _repin_roles(config: "Config") -> list[str]:
             config.model_roles[role] = name
             if role == "default":
                 _apply_entry_to_llm(config, name, entry)
+                # The pinned entry is not allowed in the new mode, so the pin is
+                # gone — do not leave auto-tier standing down for a choice that
+                # no longer holds.
+                config.runtime_model_pinned = False
             moved.append(f"{role} → {name}")
             break
     return moved

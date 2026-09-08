@@ -1282,3 +1282,11 @@ class Config:
     # and letting repo-level config alter it would hand fetched page content an
     # indirect knob. Mirrors the "quarantined side fires no hooks" decision.
     runtime_quarantined: bool = False
+    # Runtime (non-persisted) flag: True once the user picks the default model
+    # by hand (`/model <entry>`, or the HTTP UI's picker). Auto-tier then leaves
+    # the choice alone — its per-turn ladder pick and its mid-turn escalation
+    # both stand down — until `/model auto` or an `/effort` change hands control
+    # back. A pin written in config is deliberately NOT this: it is the starting
+    # point auto-tier is meant to refine, whereas this one was typed mid-session
+    # against whatever auto-tier had just chosen.
+    runtime_model_pinned: bool = False

@@ -195,6 +195,7 @@ def apply_entry(agent, config: "Config", entry_name: str) -> bool:
     config.llm.ctx_window = e.ctx_window
     config.llm.max_output_tokens = e.max_output_tokens
     config.llm.temperature = e.temperature
+    config.llm.assume_available = getattr(e, "assume_available", False)
     config.model_roles["default"] = entry_name
 
     if endpoint_changed:
@@ -209,6 +210,11 @@ def select_for_turn(config: "Config", user_text: str, source: str) -> Optional[s
     """
     cfg = getattr(config, "auto_tier", None)
     if cfg is None or not cfg.enabled:
+        return None
+    if getattr(config, "runtime_model_pinned", False):
+        # The user picked this model by hand mid-session. Overriding it here is
+        # how a `/model` switch used to silently evaporate on the next turn.
+        logger.debug("auto-tier: standing down — default model pinned by /model")
         return None
     if getattr(cfg, "ladder", False):
         # Ladder mode tiers every source (remote_only is a legacy-mode gate).
@@ -248,6 +254,9 @@ def escalate_mid_turn(config: "Config", reason: str = "confidence"):
     """
     cfg = getattr(config, "auto_tier", None)
     if cfg is None or not cfg.enabled:
+        return None
+    if getattr(config, "runtime_model_pinned", False):
+        logger.info("auto-tier: not escalating (%s) — default model pinned by /model", reason)
         return None
     gate = {
         "confidence": getattr(cfg, "escalate_on_confidence", True),
@@ -308,6 +317,10 @@ def run_effort_command(config: "Config", arg: str = "") -> str:
         if arg not in _EFFORT_LEVELS:
             return f"unknown effort {arg!r}. valid: {', '.join(_EFFORT_LEVELS)}"
         cfg.effort = arg
+        if getattr(config, "runtime_model_pinned", False):
+            # Asking for an effort level is asking auto-tier to choose again.
+            config.runtime_model_pinned = False
+            lines.append("model pin released — auto-tier picks per turn again.")
         if not (cfg.enabled and getattr(cfg, "ladder", False)):
             cfg.enabled = True
             cfg.ladder = True

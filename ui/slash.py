@@ -80,7 +80,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/permissions", ["/perms"], "tool permissions: list | add <allow|ask|deny> <tool> [match] | default <verdict> | clear", True),
     ("/hooks", [], "shell hooks: list | approve <n> | revoke <n|digest>", True),
     ("/notify", [], "notification channels  [on | off | status]", True),
-    ("/model", [], "switch active model  [<entry> | role=<entry> | role=? | refresh]", True),
+    ("/model", [], "switch active model  [<entry> | auto | role=<entry> | role=? | refresh]", True),
     ("/models", [], "model entries: table + toggles  [table | enable <name> | disable <name>]", False),
     ("/heal", ["/introspect", "/diagnose"], "self-diagnose this session's failures and fix the root cause  [<what you observed> | why]", True),
     ("/recoveries", [], "list pending crash-recovery records", False),
@@ -342,9 +342,13 @@ def _apply_model(agent, arg: str) -> tuple[bool, str]:
         cur_model = cfg.llm.model
         cur_url = cfg.llm.base_url
         reg = make_registry(cfg)
+        pinned = ("pinned by /model — auto-tier stands down (release: /model auto)"
+                  if getattr(cfg, "runtime_model_pinned", False)
+                  else "not pinned — auto-tier picks per turn")
         lines = [
             f"active LLM: [bold]{cur_model}[/bold]  ({cur_url})",
             f"model-mode: {cfg.agent.model_mode}",
+            f"pin: {pinned}",
             "purpose → model matrix  (pin: /model <role>=<entry>):",
         ]
         for role, (entry_name, tier) in reg.matrix().items():
@@ -375,6 +379,14 @@ def _apply_model(agent, arg: str) -> tuple[bool, str]:
     if entry_name == "?":
         return True, _status()
 
+    if entry_name == "auto":
+        if role != "default":
+            return False, "'/model auto' releases the default pin; it takes no role."
+        was = getattr(cfg, "runtime_model_pinned", False)
+        cfg.runtime_model_pinned = False
+        return True, ("model pin released — auto-tier picks per turn again."
+                      if was else "no model pin was set; auto-tier is already choosing.")
+
     if entry_name not in entries:
         known = ", ".join(sorted(entries))
         return False, f"No model entry '{entry_name}'. Available: {known}"
@@ -383,6 +395,9 @@ def _apply_model(agent, arg: str) -> tuple[bool, str]:
     cfg.model_roles[role] = entry_name
 
     if role == "default":
+        # Hand-picked mid-session: auto-tier stands down (per-turn ladder pick
+        # and mid-turn escalation both) until "/model auto" or an /effort change.
+        cfg.runtime_model_pinned = True
         cfg.llm.base_url = entry.base_url
         cfg.llm.api_key = entry.api_key
         if entry.model:
@@ -390,6 +405,7 @@ def _apply_model(agent, arg: str) -> tuple[bool, str]:
         cfg.llm.ctx_window = entry.ctx_window
         cfg.llm.max_output_tokens = entry.max_output_tokens
         cfg.llm.temperature = entry.temperature
+        cfg.llm.assume_available = getattr(entry, "assume_available", False)
         # Recreate the OpenAI client with new endpoint/key
         from agent.core.llm_client import make_llm_client
         agent._client = make_llm_client(cfg, base_url=entry.base_url, api_key=entry.api_key)
@@ -397,6 +413,8 @@ def _apply_model(agent, arg: str) -> tuple[bool, str]:
             f"switched default → [bold]{entry_name}[/bold]  "
             f"model={cfg.llm.model}  url={cfg.llm.base_url}"
         )
+        if getattr(cfg.auto_tier, "enabled", False):
+            msg += "\n[dim]pinned — auto-tier stands down until /model auto[/dim]"
         used = agent.token_estimate()
         threshold = int(entry.ctx_window * cfg.llm.compaction_threshold)
         if used > threshold:

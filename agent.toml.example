@@ -210,6 +210,12 @@ tags              = ["reasoning", "background"]
 # (confidence guard, loop guard, failed [verify]) climb one rung; a fresh turn
 # re-decides, so escalation never sticks.
 #
+# Picking a model by hand with `/model <entry>` pins it: auto-tier then stands
+# down — no per-turn pick, no mid-turn escalation — until `/model auto` or an
+# `/effort` change hands control back. Without that, a hand-picked model lasted
+# exactly one turn. A `default = "<entry>"` pin written here is not a pin in
+# that sense: it is the starting point auto-tier refines.
+#
 # [auto_tier]
 # enabled = true
 # ladder  = true          # power-ladder mode (false = legacy fast/strong pair)

@@ -218,3 +218,42 @@ def test_entry_loads_the_flag_from_config(tmp_path, monkeypatch):
     cfg = load_config(project)
     assert cfg.model_entries["solo"].assume_available is True
     assert cfg.llm.assume_available is True
+
+
+def test_live_switch_carries_the_flag(monkeypatch):
+    """A `/model` switch (and auto-tier's) must copy assume_available too.
+
+    config.llm is what the status probe reads; leaving the previous entry's
+    value behind reports the newly-active model offline (or, worse, online).
+    """
+    from types import SimpleNamespace
+
+    from agent.core.model_tier import apply_entry
+    from agent.ui.slash import _apply_model
+
+    def _cfg() -> Config:
+        cfg = Config()
+        cfg.model_entries = {
+            "listed": ModelEntry(base_url="https://a.example.com", model="stable-1"),
+            "unlisted": _unlisted(assume_available=True),
+        }
+        cfg.llm.base_url = "https://a.example.com"
+        cfg.llm.model = "stable-1"
+        return cfg
+
+    monkeypatch.setattr("agent.core.llm_client.make_llm_client",
+                        lambda *a, **k: object())
+
+    cfg = _cfg()
+    agent = SimpleNamespace(config=cfg, _client=None, token_estimate=lambda: 0)
+    ok, _ = _apply_model(agent, "unlisted")
+    assert ok and cfg.llm.assume_available is True
+
+    cfg = _cfg()
+    agent = SimpleNamespace(config=cfg, _client=None)
+    assert apply_entry(agent, cfg, "unlisted") is True
+    assert cfg.llm.assume_available is True
+
+    # …and switching back clears it, rather than leaving a stale waiver behind.
+    assert apply_entry(agent, cfg, "listed") is True
+    assert cfg.llm.assume_available is False
