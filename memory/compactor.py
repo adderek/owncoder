@@ -491,6 +491,78 @@ def _file_ledger(messages: list[dict], config) -> str:
 # ── Public entry point ──────────────────────────────────────────────────────
 
 
+def _is_real_user_turn(m: dict) -> bool:
+    """A user message the chat template can anchor on, and that will still be
+    there when the request is built.
+
+    `_injected_kind` messages do not qualify even though they carry
+    `role: "user"` (core/turn.py:217). The context-budget notice is one, and
+    `_apply_budget_notice` deletes every notice at the top of the NEXT turn
+    before rebuilding the request:
+
+        kept = [m for m in messages if m.get("_injected_kind") != _BUDGET_NOTICE_KIND]
+
+    So counting it as the user turn is counting a message that is scheduled for
+    removal. That is the whole bug, and it is why five earlier hypotheses missed
+    it -- each looked at one component, and this only appears in the handoff
+    between two:
+
+      1. usage crosses 60% of the budget, so a notice is appended as `user`;
+      2. compaction folds the real user question into the ASSISTANT summary and
+         keeps the tail verbatim -- the notice included, so the result looks
+         valid and the guard stays quiet;
+      3. the next turn strips the notice, the history now has no user role at
+         all, and the template raises
+         `Jinja Exception: No user query found in messages.`
+
+    Observed exactly so in final-logs/Ornith-1.5-35B-A3B-IQ4_NL/runs/
+    lp-filter-parens_3/agent.log:
+
+        msgs=43 tail_roles=[assistant,tool,assistant,tool,user]   before
+        msgs=7  tail_roles=[assistant,tool,assistant,tool,user]   after compaction
+        msgs=8  tail_roles=[tool,assistant,tool,assistant,tool]   notice stripped
+
+    Ignoring injected messages here makes step 2 leave a real user turn behind,
+    so step 3 has nothing left to break.
+    """
+    return m.get("role") == "user" and not m.get("_injected_kind")
+
+
+def _ensure_user_turn(result: list[dict], messages: list[dict]) -> list[dict]:
+    """Guarantee the compacted history still contains a user turn.
+
+    Compaction is not idempotent: the summary goes in as an ASSISTANT message,
+    so a pass can fold the user's question into it and leave a history with no
+    user role at all. Qwen-style templates -- the ornith line carries the same
+    12-line block -- walk the messages backwards looking for the last user
+    query and raise when there is none. llama-server turns that into
+
+        500  Jinja Exception: No user query found in messages.
+
+    and the agent reports it as NoUsableModelError, which sends whoever reads
+    it looking at the server: the one thing that was working.
+
+    Measured on the 2026-09-08 four-arm run, per-arm error counts matched
+    per-arm 500 counts exactly -- 2/2, 2/2, 4/4, and 0/0 for Qwen, whose
+    shorter tool chains never reach the state. Every `error` row in that run
+    was this and nothing else, which is why the models looked like they
+    differed in reliability when they differed in chain length.
+
+    The repair is the smallest one that restores the contract: put the most
+    recent real user turn back, verbatim. It only runs when the result is
+    already invalid, so a healthy history passes through untouched.
+    """
+    if any(_is_real_user_turn(m) for m in result):
+        return result
+    last_user = next((m for m in reversed(messages)
+                      if _is_real_user_turn(m)), None)
+    if last_user is None:
+        return result
+    logger.warning("compact: no user message survived — reinstating the last "
+                   "one so the chat template can find a query")
+    return result + [dict(last_user)]
+
+
 async def compact(
     messages: list[dict],
     config: "Config",
@@ -624,7 +696,11 @@ async def compact(
             result.append(system_msg)
         result.append(error_msg)
         result.extend(_truncate_tool_results_in(verbatim, max_chars=2000))
-        return result
+        # Same contract as the normal path. This branch is not the rare one:
+        # over 80 benchmark runs it fired 5 times and the normal path's guard
+        # fired 0, because an early `return` here skipped it. Every 500 we saw
+        # came through here.
+        return _ensure_user_turn(result, messages)
 
     # Propagate original_request from previous round if synthesizer dropped it.
     prev_original = (prev_round.facts or {}).get("original_request", "") if prev_round else ""
@@ -700,31 +776,4 @@ async def compact(
     result.append(compacted_msg)
     result.extend(verbatim)
 
-    # Compaction must not produce a conversation with no user turn in it.
-    #
-    # It can, and it is not idempotent: the summary goes in as an ASSISTANT
-    # message, so the first pass folds the user's question into it, and a second
-    # pass over that history finds last_user_idx = None and has nothing left to
-    # preserve. Qwen-style templates walk the messages backwards looking for the
-    # last user query and raise when there is none -- llama-server then answers
-    # 500 with `Jinja Exception: No user query found in messages.` and the whole
-    # run is lost.
-    #
-    # Rare until now only because compaction rarely ran: the pre-flight estimate
-    # ignored the ~13k-token tools payload, so the budget was crossed far later
-    # than it should have been. Charging it correctly made this fire on 2 of 3
-    # long runs.
-    #
-    # The repair is deliberately the smallest one that restores the contract:
-    # put the most recent real user turn back, verbatim. It only runs when the
-    # result is already invalid, so it cannot change a conversation that was
-    # fine.
-    if not any(m.get("role") == "user" for m in result):
-        last_user = next((m for m in reversed(messages)
-                          if m.get("role") == "user"), None)
-        if last_user is not None:
-            logger.warning(
-                "compact: no user message survived — reinstating the last one "
-                "so the chat template can find a query")
-            result.append(dict(last_user))
-    return result
+    return _ensure_user_turn(result, messages)
