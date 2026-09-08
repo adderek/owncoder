@@ -241,6 +241,17 @@ def cmd_chat(args, config):
     if getattr(args, "http_sidecar", False):
         config.ui.http_sidecar = True
 
+    # Extra Origin/Host allow-list hosts: config (agent.toml/agent.yaml) plus
+    # any --allow-host flags. Published to the environment so validate_origin_host
+    # (and router-spawned project processes) honour it without config access.
+    for _h in (getattr(args, "allow_hosts", None) or []):
+        _h = str(_h).strip()
+        if _h and _h not in config.ui.allowed_hosts:
+            config.ui.allowed_hosts.append(_h)
+    _extra_hosts = [str(h).strip() for h in (config.ui.allowed_hosts or []) if str(h).strip()]
+    if _extra_hosts:
+        os.environ["AGENT_ALLOWED_HOSTS"] = ",".join(_extra_hosts)
+
     if _is_first_run():
         console.print(
             "[yellow]No agent.toml found.[/yellow] Using defaults "

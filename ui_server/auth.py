@@ -12,6 +12,19 @@ import secrets
 from http.server import BaseHTTPRequestHandler
 
 
+def _extra_allowed_hosts() -> set[str]:
+    """Additional allowed hosts from the AGENT_ALLOWED_HOSTS env var.
+
+    Set from config.ui.allowed_hosts at server startup (see
+    agent/ui/http_loop.py) so the allow-list is configurable via agent.toml /
+    agent.yaml or the --allow-host CLI flag instead of being hardcoded. The
+    env var is inherited by router-spawned project processes, so both the
+    router and the project processes honour it.
+    """
+    raw = os.environ.get("AGENT_ALLOWED_HOSTS", "")
+    return {h.strip() for h in raw.split(",") if h.strip()}
+
+
 def validate_origin_host(handler: BaseHTTPRequestHandler) -> bool:
     """Reject if Origin or Host header points to a non-loopback / foreign host.
 
@@ -22,8 +35,8 @@ def validate_origin_host(handler: BaseHTTPRequestHandler) -> bool:
     host = handler.headers.get("Host", "")
     origin = handler.headers.get("Origin", "")
 
-    # Loopback or localhost are always allowed.
-    allowed_hosts = {"127.0.0.1", "localhost", "::1", "192.168.31.42"}
+    # Loopback or localhost are always allowed; extra hosts come from config.
+    allowed_hosts = {"127.0.0.1", "localhost", "::1"} | _extra_allowed_hosts()
 
     if host:
         host_clean = host.rsplit(":", 1)[0]  # strip port

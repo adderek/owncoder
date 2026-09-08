@@ -3047,6 +3047,12 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
     cfg = agent.config.ui
     host = getattr(cfg, "http_host", "127.0.0.1")
     port = int(getattr(cfg, "http_port", 8180))
+    # Publish the configured extra allow-list hosts so validate_origin_host
+    # (which has no config access) accepts them, and router-spawned project
+    # processes inherit it via the environment.
+    _extra_hosts = [str(h) for h in (getattr(cfg, "allowed_hosts", None) or [])]
+    if _extra_hosts:
+        os.environ["AGENT_ALLOWED_HOSTS"] = ",".join(_extra_hosts)
     httpd = _bind_server(_make_handler(ui), host, port)
     actual_port = httpd.server_address[1]
 

@@ -257,3 +257,34 @@ def test_live_switch_carries_the_flag(monkeypatch):
     # …and switching back clears it, rather than leaving a stale waiver behind.
     assert apply_entry(agent, cfg, "listed") is True
     assert cfg.llm.assume_available is False
+
+
+def test_models_table_honours_assume_available(monkeypatch):
+    """An unlisted entry with assume_available shows live, not ✗ (any role).
+
+    Regression: the /model table's live column ignored assume_available, so a
+    served-but-unadvertised model (the exact case the flag exists for) rendered
+    as down — reading as "cannot set it as summarizer".
+    """
+    from io import StringIO
+    from rich.console import Console
+    from agent.ui.slash import _render_models_table
+
+    monkeypatch.setattr(mp, "list_endpoint_models", lambda url, key="", timeout=3: {"stable-1"})
+
+    cfg = Config()
+    cfg.model_entries = {
+        "listed": ModelEntry(base_url="http://localhost:8080/v1", model="stable-1"),
+        "assumed": ModelEntry(base_url="http://localhost:8080/v1",
+                              model="preview-alias", assume_available=True),
+        "missing": ModelEntry(base_url="http://localhost:8080/v1", model="gone"),
+    }
+    cfg.model_roles = {"default": "listed"}
+
+    buf = StringIO()
+    Console(file=buf, width=300, no_color=True).print(_render_models_table(cfg))
+    lines = [ln for ln in buf.getvalue().splitlines() if ln.strip()]
+    assumed_line = next(ln for ln in lines if ln.startswith("assumed"))
+    missing_line = next(ln for ln in lines if ln.startswith("missing"))
+    assert "✓" in assumed_line and "✗" not in assumed_line
+    assert "✗" in missing_line

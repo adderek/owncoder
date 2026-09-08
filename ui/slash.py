@@ -477,7 +477,15 @@ def _render_models_table(config: "Config", probe: bool = True):
         ids = _models_cache[e.base_url]
         if ids is None:
             return "[red]✗[/red]"  # endpoint unreachable
-        return "[green]✓[/green]" if model_in_server(e.model or "", ids) else "[red]✗[/red]"
+        if model_in_server(e.model or "", ids):
+            return "[green]✓[/green]"
+        # Served but not advertised (dated aliases, private deployments): the
+        # entry's assume_available waives the catalog check the same way
+        # entry_available/check_model_availability do — otherwise every unlisted
+        # entry (any role) shows ✗ even though calls to it succeed.
+        if getattr(e, "assume_available", False):
+            return "[green]✓[/green]"
+        return "[red]✗[/red]"
 
     tbl = Table(show_header=True, header_style="bold", box=None, pad_edge=False, collapse_padding=True)
     tbl.add_column("name", style="cyan", no_wrap=True)

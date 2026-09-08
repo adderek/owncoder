@@ -227,6 +227,7 @@ class UIConfig:
     http_host: str = "0.0.0.0"  # http mode bind address ("127.0.0.1" is private, "0.0.0.0" exposes on LAN)
     http_port: int = 8180  # http mode port; walks forward up to +19 if taken
     http_sidecar: bool = False  # run a companion browser view alongside textual/simple mode (see ui/http_sidecar.py)
+    allowed_hosts: list = field(default_factory=list)  # extra Origin/Host names accepted by the HTTP UI beyond loopback (e.g. ["192.168.31.42"] for LAN access); also settable via --allow-host
     q_summaries: bool = False
     syntax_highlight: bool = True
     show_token_count: bool = True

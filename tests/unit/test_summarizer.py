@@ -58,7 +58,8 @@ def cfg():
 @pytest.fixture(autouse=True)
 def _fake_registry(monkeypatch, cfg):
     entry = cfg.model_entries["background"]
-    reg = types.SimpleNamespace(background=entry, role=lambda *_a, **_k: entry)
+    reg = types.SimpleNamespace(background=entry, role=lambda *_a, **_k: entry,
+                                for_role=lambda name: None)
     monkeypatch.setattr("agent.config.make_registry", lambda c: reg)
 
 
@@ -129,3 +130,33 @@ async def test_gpu_slot_semaphore_unchanged_when_primary_succeeds(monkeypatch, c
     out = await sumr._call_llm_one_line(cfg, "sys", "some content")
     assert out == "ok"
     assert called["fallback"] is False
+
+
+def test_explicit_summarizer_pin_beats_background_offload(monkeypatch, cfg):
+    """A pinned summarizer entry must win over the background free-cloud offload.
+
+    Regression: ``/model summarizer=<entry>`` (or ``[models.summarizer]``) was
+    silently shadowed by ``registry.background`` whenever the mode allowed a
+    free-cloud offload, so the user could not set it as the summarizer.
+    """
+    bg = cfg.model_entries["background"]
+    summ = types.SimpleNamespace(base_url="http://summ/v1", api_key="local",
+                                 model="summ-m", ctx_window=8192, dimensions=0)
+    reg = types.SimpleNamespace(
+        background=bg, role=lambda *_a, **_k: bg,
+        for_role=lambda name: summ if name == "summarizer" else None)
+    monkeypatch.setattr("agent.config.make_registry", lambda c: reg)
+
+    entry, used_gpu = sumr._pick_summarizer_entry(cfg, "hello")
+    assert entry is summ
+    assert used_gpu is False
+
+
+def test_unpinned_summarizer_falls_back_to_background(monkeypatch, cfg):
+    bg = cfg.model_entries["background"]
+    reg = types.SimpleNamespace(
+        background=bg, role=lambda *_a, **_k: bg, for_role=lambda name: None)
+    monkeypatch.setattr("agent.config.make_registry", lambda c: reg)
+
+    entry, _ = sumr._pick_summarizer_entry(cfg, "hello")
+    assert entry is bg

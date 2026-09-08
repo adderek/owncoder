@@ -35,7 +35,12 @@ def _pick_summarizer_entry(config: "Config", content: str) -> tuple:
     from agent.config import make_registry
     from agent.core.model_status import get_counts
 
-    cpu_entry = make_registry(config).background
+    # Explicit summarizer pin wins over the background free-cloud offload:
+    # without this a `/model summarizer=<entry>` (or [models.summarizer]) pin is
+    # silently shadowed whenever the mode allows a free cloud offload, so the
+    # user "cannot set it as summarizer". Unpinned → background offload as before.
+    reg = make_registry(config)
+    cpu_entry = reg.for_role("summarizer") or reg.background
     gpu_pool = config.concurrency.gpu_pool
 
     # If no GPU pool configured, always use CPU
