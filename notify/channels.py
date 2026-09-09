@@ -81,9 +81,20 @@ class CommandChannel:
                     proc.communicate((payload + "\n").encode()), timeout=SEND_TIMEOUT_S
                 )
             except asyncio.TimeoutError:
-                proc.kill()
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except Exception:
+                    pass
                 logger.warning("notify channel %s: send timed out", self.name)
                 return False
+            except BaseException:
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except Exception:
+                    pass
+                raise
             if proc.returncode != 0:
                 logger.warning(
                     "notify channel %s: exit %s: %s",

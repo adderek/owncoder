@@ -623,10 +623,13 @@ class SlashHandlerMixin:
             from io import StringIO
             cfg = self._server._agent.config
 
-            toggled = handle_models_toggle(cfg, arg)
+            toggled = handle_models_toggle(cfg, arg, self._server._agent)
             if toggled is not None:
                 _ok, _msg = toggled
-                self._write_sys(f"[{t.success if _ok else t.warning}]{_msg}[/]")
+                from rich.markup import escape as _rich_escape
+                self._write_sys(f"[{t.success if _ok else t.warning}]{_rich_escape(_msg)}[/]")
+                if _ok:
+                    self._refresh_token_bar()
                 return
             if arg.strip() != "table":
                 # Interactive modal: click a row (or Enter) to enable/disable

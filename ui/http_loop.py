@@ -2569,7 +2569,7 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
              "  /sessions [N|all] list saved         /incognito | /private toggle mode\n"
              "  /vault [lock]     encrypted-at-rest mode (enter it from the terminal)\n"
              "models & tuning:\n"
-             "  /model switch model        /models roles; enable|disable <entry>\n"
+             "  /model switch model        /models roles; enable|disable <entry>; reload\n"
              "  /mode model-mode tiers     /effort quick|smart|deep\n"
              "  /think reasoning level     /autonomy autonomy level\n"
              "  /temp temperature          /max_tokens output token cap\n"
@@ -2675,6 +2675,16 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
         pub({"type": "sys", "text": run_modelcalls_command(arg)})
     elif cmd == "/models":
         parts = arg.split()
+        if parts and parts[0] == "reload":
+            reloader = getattr(server, "reload_model_entries", None)
+            if reloader is None:
+                pub({"type": "sys", "error": True,
+                     "text": "model reload not supported by this server"})
+            else:
+                include_project = len(parts) > 1 and parts[1] in ("project", "--project", "all")
+                ok, msg = reloader(include_project)
+                pub({"type": "sys", "error": not ok, "text": msg})
+            return
         if len(parts) == 2 and parts[0] in ("enable", "disable"):
             setter = getattr(server, "set_model_entry_enabled", None)
             if setter is None:
@@ -2692,6 +2702,7 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
             lines.append(f"{role}: {mark} {c.get('model')}  {c.get('base_url', '')}"
                          f"  ctx={c.get('ctx_window', '-')}")
         lines.append("(/models enable|disable <entry> — toggle; add -save (e.g. disable-save) to persist; models panel in Details drawer)")
+        lines.append("(/models reload — re-read [models] from config; 'reload project' also reads repo config layers)")
         pub({"type": "sys", "text": "\n".join(lines)})
     elif cmd == "/mode":
         setter = getattr(server, "set_model_mode", None)
