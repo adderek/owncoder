@@ -81,7 +81,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/hooks", [], "shell hooks: list | approve <n> | revoke <n|digest>", True),
     ("/notify", [], "notification channels  [on | off | status]", True),
     ("/model", [], "switch active model  [<entry> | role=<entry> | role=? | refresh]", True),
-    ("/models", [], "model entries: table + toggles  [table | enable <name> | disable <name>]", False),
+    ("/models", [], "model entries: table + toggles  [table | enable <name> | disable <name> | reload [project]]", False),
     ("/heal", ["/introspect", "/diagnose"], "self-diagnose this session's failures and fix the root cause  [<what you observed> | why]", True),
     ("/recoveries", [], "list pending crash-recovery records", False),
     ("/resummarize", [], "re-summarize Q/A entries with stale or missing summaries  [--force]", True),
@@ -381,6 +381,9 @@ def _apply_model(agent, arg: str) -> tuple[bool, str]:
 
     entry = entries[entry_name]
     cfg.model_roles[role] = entry_name
+    if not hasattr(cfg, "session_role_pins"):
+        cfg.session_role_pins = set()
+    cfg.session_role_pins.add(role)
 
     if role == "default":
         cfg.llm.base_url = entry.base_url
@@ -411,10 +414,40 @@ def _apply_model(agent, arg: str) -> tuple[bool, str]:
     return True, f"role '{role}' → [bold]{entry_name}[/bold]  (model={entry.model})"
 
 
-def handle_models_toggle(config: "Config", arg: str) -> tuple[bool, str] | None:
-    """Handle '/models enable|disable|enable-save|disable-save <name>'. None
-    when arg isn't a toggle (caller shows the table instead)."""
+def handle_models_reload(config: "Config", arg: str, agent=None) -> tuple[bool, str]:
+    """Handle '/models reload [project]'.
+
+    Re-reads only the [models] section of the config layers (see
+    agent.config.reload for why nothing else is reloaded). User-typed only:
+    no tool exposes slash commands to the model, and that is what stops the
+    agent from re-pointing its own endpoint by writing a config file.
+    """
+    include_project = arg.strip().lower() in ("project", "--project", "all")
+    # A reload swaps model entries under whatever is running; the turn loop
+    # reads config.llm mid-flight, so refuse rather than switch endpoints
+    # between two calls of the same turn.
+    if agent is not None and getattr(agent, "_turn_busy", False):
+        return False, "A turn is in progress — retry /models reload when it finishes."
+    from agent.config.reload import reload_models
+    ok, msg = reload_models(config, include_project=include_project)
+    if ok and agent is not None:
+        from agent.core.llm_client import make_llm_client
+        agent._client = make_llm_client(config)
+        try:
+            from agent.metrics.model_stats import resolve_entry_name
+            agent._model_entry_name = resolve_entry_name(config)
+        except Exception:
+            pass
+    return ok, msg
+
+
+def handle_models_toggle(config: "Config", arg: str, agent=None) -> tuple[bool, str] | None:
+    """Handle '/models enable|disable|enable-save|disable-save <name>' and
+    '/models reload'. None when arg isn't one of those (caller shows the
+    table instead)."""
     parts = (arg or "").split()
+    if parts and parts[0] == "reload":
+        return handle_models_reload(config, " ".join(parts[1:]), agent)
     ACTIONS = ("enable", "disable", "enable-save", "disable-save")
     if len(parts) == 2 and parts[0] in ACTIONS:
         save = parts[0].endswith("-save")

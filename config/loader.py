@@ -740,14 +740,20 @@ def load_config(extra_path: Path | list[Path] | None = None) -> Config:
             raw_data.append(data)
             perm_layers.append((data, p in project_paths))
             loaded_layers.append(str(p))
+            config.loaded_config_layers.append((str(p), _is_project))
             _check_unknown_sections(data)
             _merge(config, data)
 
     if loaded_layers:
         logger.info("config layers (later overrides earlier): %s", " -> ".join(loaded_layers))
 
-    for data in raw_data:
+    for data, is_project in perm_layers:
         _merge_models(config, data)
+        if is_project:
+            models_sec = data.get("models", {})
+            for name, val in models_sec.items():
+                if isinstance(val, dict) and "candidates" not in val:
+                    config.project_model_entries.add(name)
 
     # Bridge: populate config.llm/embeddings from model entries + config.agent
     _apply_model_entry_to_llm(config)

@@ -529,10 +529,11 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
 
             elif cmd == "/models":
                 from agent.ui.slash import _render_models_table, handle_models_toggle
-                toggled = handle_models_toggle(agent.config, arg)
+                toggled = handle_models_toggle(agent.config, arg, agent)
                 if toggled is not None:
                     ok, msg = toggled
-                    console.print(f"[{'green' if ok else 'yellow'}]{msg}[/]")
+                    from rich.markup import escape as _rich_escape
+                    console.print(f"[{'green' if ok else 'yellow'}]{_rich_escape(msg)}[/]")
                 else:
                     console.print(_render_models_table(agent.config))
 

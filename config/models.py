@@ -1222,6 +1222,15 @@ class Config:
     model_roles: dict = field(default_factory=dict)
     # role → ordered list of candidate entry names (e.g. {"default": ["gpu-gemma4", "gpu-qwen"]})
     model_pools: dict = field(default_factory=dict)
+    # Config layers that were actually read, in merge order: (path, is_project).
+    # Recorded by the loader so `/models reload` can re-read the same files
+    # without re-deriving the search order (and can skip project layers, which
+    # ship with a clone and are therefore attacker-writable).
+    loaded_config_layers: list = field(default_factory=list)
+    # Model entry names loaded from project layers (used by reload to avoid wiping them).
+    project_model_entries: set = field(default_factory=set)
+    # Roles explicitly pinned during this session via /model <role>=<entry>.
+    session_role_pins: set = field(default_factory=set)
     rag: RAGConfig = field(default_factory=RAGConfig)
     summarization: SummarizationConfig = field(default_factory=SummarizationConfig)
     tools: ToolsConfig = field(default_factory=ToolsConfig)

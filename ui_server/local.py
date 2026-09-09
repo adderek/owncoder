@@ -478,6 +478,15 @@ class LocalUIServer:
         from agent.ui.slash import _apply_model
         return _apply_model(self._agent, arg)
 
+    def reload_model_entries(self, include_project: bool = False,
+                             session_id: str = "") -> "tuple[bool, str]":
+        """Re-read [models] from the config layers. Only that section — see
+        agent.config.reload for why a full config reload is off the table."""
+        from agent.ui.slash import handle_models_reload
+        return handle_models_reload(self._agent.config,
+                                    "project" if include_project else "",
+                                    self._agent)
+
     def models_overview(self, session_id: str = "") -> dict:
         """Structured model entries + role matrix — backs management UIs
         (HTTP UI models panel). Display-safe plain data, no Rich markup."""

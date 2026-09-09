@@ -166,6 +166,11 @@ class UIServerProtocol(Protocol):
         """Switch model entry. Returns (ok, message)."""
         ...
 
+    def reload_model_entries(self, include_project: bool = False,
+                             session_id: str = "") -> "tuple[bool, str]":
+        """Re-read [models] from the config files. Returns (ok, message)."""
+        ...
+
     def set_plan(self, arg: str, session_id: str = "") -> "tuple[bool, str]":
         """Handle plan subcommands. Returns (ok, message)."""
         ...

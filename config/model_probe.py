@@ -469,9 +469,17 @@ def entry_available(entry, timeout: int = 2, ttl: float = _AVAIL_TTL) -> bool:
     return model_in_server(model, ids) if model else True
 
 
-def clear_availability_cache() -> None:
+def clear_availability_cache(include_cooldowns: bool = True) -> None:
+    """Drop cached /models answers.
+
+    ``include_cooldowns=False`` keeps the rate-limit cooldowns: a 429 is a fact
+    about the *server*, not about our cached view of it, and a caller that can
+    be triggered repeatedly (``/models reload``) must not be able to reset the
+    backoff and let the tier ladder hammer a rejecting paid endpoint.
+    """
     _AVAIL_CACHE.clear()
-    _RL_COOLDOWN.clear()
+    if include_cooldowns:
+        _RL_COOLDOWN.clear()
 
 
 # (base_url, model) -> monotonic deadline until which the pair is considered
