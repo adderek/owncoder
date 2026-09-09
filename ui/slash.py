@@ -332,6 +332,29 @@ _ROLE_ALIASES: dict[str, str] = {
 }
 
 
+def _release_role_pin(cfg, role: str) -> None:
+    """Forget that *role* was pinned by hand this session.
+
+    `session_role_pins` is what `config.reload.reload_models` consults to decide
+    whether a role assignment in the config file may overwrite a live choice:
+
+        if role in session_pins and config.model_roles.get(role) in config.model_entries:
+            continue   # live session pin takes precedence
+
+    Clearing `runtime_model_pinned` alone is not enough. The set was write-only
+    -- nothing anywhere removed from it -- so a released pin still counted as
+    live, and `/models reload` silently ignored a changed `default` role while
+    reporting success. Released has to mean released, or the file can never win
+    it back.
+
+    Only "default" carries `runtime_model_pinned`; every role carries a session
+    pin, so this is the piece that has to be role-generic.
+    """
+    pins = getattr(cfg, "session_role_pins", None)
+    if pins is not None:
+        pins.discard(role)
+
+
 def _apply_model(agent, arg: str) -> tuple[bool, str]:
     """Handle /model [role=]<entry-name>.  Returns (ok, message)."""
     cfg = agent.config
@@ -383,11 +406,13 @@ def _apply_model(agent, arg: str) -> tuple[bool, str]:
         if role == "default":
             was = getattr(cfg, "runtime_model_pinned", False)
             cfg.runtime_model_pinned = False
+            _release_role_pin(cfg, role)
             return True, ("model pin released — auto-tier picks per turn again."
                           if was else "no model pin was set; auto-tier is already choosing.")
         # Non-default role: drop the explicit pin so the fallback ladder
         # (ROLE_FALLBACKS, free-cloud offload) decides per call again.
         was = cfg.model_roles.pop(role, None)
+        _release_role_pin(cfg, role)
         return True, (
             f"role '{role}' → auto (released '{was}'; ladder picks per call)."
             if was else f"role '{role}' was not pinned; ladder already decides.")

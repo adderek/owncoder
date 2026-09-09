@@ -69,6 +69,12 @@ def _repin_roles(config: "Config") -> list[str]:
                 # gone — do not leave auto-tier standing down for a choice that
                 # no longer holds.
                 config.runtime_model_pinned = False
+                # Drop the session pin too: config.reload reads that set, not
+                # this flag, and a stale entry there would block a reload from
+                # applying the config file's own `default`.
+                pins = getattr(config, "session_role_pins", None)
+                if pins is not None:
+                    pins.discard("default")
             moved.append(f"{role} → {name}")
             break
     return moved

@@ -320,6 +320,12 @@ def run_effort_command(config: "Config", arg: str = "") -> str:
         if getattr(config, "runtime_model_pinned", False):
             # Asking for an effort level is asking auto-tier to choose again.
             config.runtime_model_pinned = False
+            # ...and the session pin has to go with it, or config.reload keeps
+            # treating the released choice as live and refuses to let a changed
+            # `default` in the config file through.
+            pins = getattr(config, "session_role_pins", None)
+            if pins is not None:
+                pins.discard("default")
             lines.append("model pin released — auto-tier picks per turn again.")
         if not (cfg.enabled and getattr(cfg, "ladder", False)):
             cfg.enabled = True
