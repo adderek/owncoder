@@ -254,12 +254,8 @@ def _build_system_prompt(
 
     current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    max_out = getattr(getattr(config, "llm", None), "max_output_tokens", None)
-    output_token_limit = f"{max_out}" if max_out else "unknown"
-
     prompt = template.format(
         current_date=current_date,
-        output_token_limit=output_token_limit,
         project_name=project_name or Path(config.tools.working_dir).resolve().name,
         working_dir=config.tools.working_dir,
         git_branch=branch,
@@ -314,6 +310,25 @@ def _build_system_prompt(
     if overlay:
         overlay = prompt_compiler.load(f"overlays/{overlay[0]}", overlay[1], config)
         prompt = f"{prompt}\n\n{overlay}"
+
+    # Opt-in output-cap hint. Appended LAST so the cap value — which changes when
+    # the active model entry/tier is switched — sits at the tail of the prompt:
+    # providers caching the stable prefix keep the whole preamble cached and only
+    # re-price this trailing line. Off by default (AgentConfig.show_output_cap).
+    if getattr(config.agent, "show_output_cap", False):
+        max_out = getattr(getattr(config, "llm", None), "max_output_tokens", None)
+        if max_out:
+            cap_line = (
+                f"Output cap: each response is limited to ~{max_out} tokens. "
+                "Do not emit one long tool call that approaches that cap — for "
+                "large files, split into several small edit_file/write_file calls."
+            )
+        else:
+            cap_line = (
+                "Output cap: responses are token-limited. For large files, split "
+                "into several small edit_file/write_file calls."
+            )
+        prompt = f"{prompt}\n\n{cap_line}"
 
     return prompt
 

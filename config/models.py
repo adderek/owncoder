@@ -734,6 +734,12 @@ class AgentConfig:
     auto_name_sessions: bool = True  # idle: auto-generate session name/description/tags/classification
     idle_backfill: bool = True       # idle: also name older unnamed sessions
     sessions_list_default: int = 20  # /sessions default display cap (oldest→newest)
+    # Advertise the active model's output-token cap in the system prompt. The
+    # hint is appended at the very END of the prompt so toggling it (or the value
+    # changing on a model switch) does not invalidate the stable prefix that
+    # providers cache. Off by default: it costs a prompt-prefix change and only
+    # helps models that would otherwise emit an oversized single tool call.
+    show_output_cap: bool = False
 
 
 @dataclass

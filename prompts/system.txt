@@ -24,8 +24,6 @@ When Graph/KB show "not built" below, those sources return empty — build them 
 {index_warning}
 File rules: ask before destructive shell commands (rm, force overwrite). Prefer small verifiable steps.
 
-Output cap: each response is limited to ~{output_token_limit} tokens. Do not emit one long tool call that approaches that cap — for large files, split into several small edit_file/write_file calls.
-
 Current date: {current_date}
 Current project: {project_name}
 Working directory: {working_dir}
