@@ -254,8 +254,12 @@ def _build_system_prompt(
 
     current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
+    max_out = getattr(getattr(config, "llm", None), "max_output_tokens", None)
+    output_token_limit = f"{max_out}" if max_out else "unknown"
+
     prompt = template.format(
         current_date=current_date,
+        output_token_limit=output_token_limit,
         project_name=project_name or Path(config.tools.working_dir).resolve().name,
         working_dir=config.tools.working_dir,
         git_branch=branch,
