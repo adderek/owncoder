@@ -720,6 +720,35 @@ async def run_turn(
                 tool_calls = [_FakeToolCall(c["name"], c["arguments"]) for c in raw]
 
         if tool_calls:
+            # finish_reason == "length" means the server cut generation off at
+            # the output-token cap: the model never emitted its own stop token.
+            # A natural stop at the boundary is reported as "stop", not
+            # "length", so this signal alone separates real truncation from a
+            # turn that merely happened to end at the limit. When the cut also
+            # broke a tool call's JSON (arguments end mid-string), the tool
+            # would otherwise run with {} and report a confusing "missing
+            # field" error that hides the real cause. Catch it here, before
+            # parse_arguments degrades it, and ask the model to retry smaller —
+            # the same budget as the llama.cpp server-side parse-error path.
+            if (finish_reason == "length"
+                    and toolparse_retry_count < 2
+                    and turn_batch.has_broken_arguments(tool_calls)):
+                toolparse_retry_count += 1
+                logger.warning("truncated tool call from model (attempt %d) — "
+                               "asking for a shorter one", toolparse_retry_count)
+                _phase("tool_parse_retry", f"{toolparse_retry_count}/2")
+                messages = messages + [{
+                    "role": "user",
+                    "content": (
+                        "Your last tool call could not be executed: its JSON arguments "
+                        "were cut off before the closing quote, which happens when the "
+                        "response runs into the output-token limit. Send the call again "
+                        "with a shorter argument — if you are writing a file, write it in "
+                        "several smaller calls rather than one long one, and do not repeat "
+                        "the same line many times."
+                    ),
+                }]
+                continue
             if loop_detector is not None:
                 triggered = turn_guards.observe_tool_calls(loop_detector, tool_calls)
                 if triggered:

@@ -53,6 +53,27 @@ def parse_arguments(tool_calls, compaction_on: bool) -> tuple[list[dict], list[s
     return parsed_args, purposes
 
 
+def has_broken_arguments(tool_calls) -> bool:
+    """True if any call's JSON arguments fail to parse.
+
+    This is the tell for a response truncated at the output-token cap: the
+    arguments end mid-string and ``json.loads`` raises. Already-parsed dict
+    arguments (some SDKs return objects) and empty arguments (a valid ``{}``)
+    are not broken.
+    """
+    for tc in tool_calls:
+        args = tc.function.arguments
+        if isinstance(args, dict):
+            continue
+        if not args:
+            continue
+        try:
+            json.loads(args)
+        except Exception:
+            return True
+    return False
+
+
 async def compact_tool_result(tc, parsed_arg: dict, purpose: str, raw: str,
                               config: "Config", client, side_log, turn_index) -> str:
     """Compact one tool result and (optionally) record the compaction to side_log."""
