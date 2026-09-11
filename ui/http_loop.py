@@ -1766,6 +1766,41 @@ class _HttpUI:
     # the clearest rendering of merges.
     _GIT_LOG_FMT = (
         "--pretty=format:%H%x00%h%x00%an%x00%ai%x00%cn%x00%ci%x00%P%x00%s%x00%b%x1e")
+    # Graph rows carry the ASCII lane prefix git drew, then \x1f, then the
+    # fields \x1e-terminated. Edge-only lines ("|\\", "| |") have no \x1f, so
+    # the caller can reproduce the exact --graph layout row by row.
+    _GIT_GRAPH_FMT = "--pretty=format:%x1f%H%x1f%h%x1f%an%x1f%ad%x1f%s%x1e"
+
+    @staticmethod
+    def _parse_git_graph(raw: str) -> list:
+        """Rows in --graph order: {prefix, hash, ...}; hash is None on lines
+        that draw lanes but no commit."""
+        rows = []
+        for line in (raw or "").split("\n"):
+            if "\x1f" not in line:
+                if line.strip():
+                    rows.append({"prefix": line, "hash": None})
+                continue
+            prefix, _, rest = line.partition("\x1f")
+            f = rest.rstrip("\x1e\r").split("\x1f")
+            if len(f) < 5:
+                continue
+            rows.append({"prefix": prefix, "hash": f[0],
+                         "short": f[1], "author": f[2], "adate": f[3],
+                         "subject": f[4]})
+        return rows
+
+    def _git_graph(self, cwd, n: int, all_branches: bool, sub: str = "") -> tuple:
+        """(raw, rows, err) for the --graph view, optionally inside a subrepo."""
+        args = ["git"]
+        if sub:
+            args += ["-C", sub]
+        args += ["log", "--graph", f"-{n}"]
+        if all_branches:
+            args.append("--all")
+        args.append(self._GIT_GRAPH_FMT)
+        raw, err = self._git_run(args, cwd)
+        return raw, self._parse_git_graph(raw), err
 
     @staticmethod
     def _git_run(args: list, cwd) -> tuple:
@@ -1831,12 +1866,10 @@ class _HttpUI:
         if all_branches:
             args.append("--all")
         out, err = self._git_run(args + [self._GIT_LOG_FMT], cwd)
-        gargs = ["git", "log", "--graph", "--oneline", "--decorate", f"-{n}"]
-        if all_branches:
-            gargs.append("--all")
-        graph, gerr = self._git_run(gargs, cwd)
+        graph, rows, gerr = self._git_graph(cwd, n, all_branches)
         return {"commits": self._parse_git_log(out), "graph": graph,
-                "submodules": subs, "error": err or gerr, "n": n, "sub": ""}
+                "graph_rows": rows, "submodules": subs,
+                "error": err or gerr, "n": n, "sub": ""}
 
     def git_submodule_log(self, sub: str, subs: list, n: int = 50) -> dict:
         """History of one submodule (`git -C <sub> log`), no checkout needed.
@@ -1848,11 +1881,10 @@ class _HttpUI:
                     "error": "unknown submodule", "n": n, "sub": sub}
         out, err = self._git_run(
             ["git", "-C", sub, "log", f"-{n}", self._GIT_LOG_FMT], cwd)
-        graph, gerr = self._git_run(
-            ["git", "-C", sub, "log", "--graph", "--oneline", "--decorate",
-             f"-{n}"], cwd)
+        graph, rows, gerr = self._git_graph(cwd, n, False, sub=sub)
         return {"commits": self._parse_git_log(out), "graph": graph,
-                "submodules": subs, "error": err or gerr, "n": n, "sub": sub}
+                "graph_rows": rows, "submodules": subs,
+                "error": err or gerr, "n": n, "sub": sub}
 
     # Attachments land on disk under this dir (relative to the session's
     # workdir); message content stays a plain string, so what the draft gets is
@@ -2312,7 +2344,7 @@ def _make_handler(ui: _HttpUI):
                     self._json({"jobs": ui.server.background_info()})
                 except Exception as exc:
                     self._json({"jobs": [], "error": str(exc)})
-            elif self.path == "/api/gitlog":
+            elif self.path.startswith("/api/gitlog"):
                 from urllib.parse import parse_qs, urlparse
                 qs = parse_qs(urlparse(self.path).query)
                 n = (qs.get("n") or ["50"])[0]

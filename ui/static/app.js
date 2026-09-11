@@ -2147,66 +2147,51 @@ function gitMsgEl(c) {
   return pre;
 }
 
-function gitNode(c, byHash, childMap, seen) {
+// One row per `git log --graph` line, in git's own order — every commit is
+// visible at once (no collapsed nesting), the ASCII lane prefix is rendered
+// verbatim so branch/merge structure lines up, and the full message is
+// revealed on click. `prefix` keeps its trailing spaces: they are the column
+// padding that keeps subjects aligned.
+function gitRowEl(row, byHash) {
   const node = document.createElement('div');
   node.className = 'gitnode';
-  const kids = childMap[c.hash] || [];
-  const row = document.createElement('div');
-  row.className = 'gitrow';
-  const caret = document.createElement('span');
-  caret.className = 'gitcaret';
-  caret.textContent = kids.length ? '▸' : '·';
+  const g = document.createElement('span');
+  g.className = 'gitgraph';
+  g.textContent = row.prefix || '';
+  node.appendChild(g);
+  if (!row.hash) { node.classList.add('gitedge'); return node; }
+  const c = byHash[row.hash] || row;
+  const rowEl = document.createElement('span');
+  rowEl.className = 'gitrow';
   const sha = document.createElement('span');
   sha.className = 'gitsha';
   sha.textContent = c.short || (c.hash || '').slice(0, 8);
   const subj = document.createElement('span');
   subj.className = 'gitsubj';
   subj.textContent = c.subject || '';
-  subj.title = c.subject || '';
   const meta = document.createElement('span');
   meta.className = 'gitmeta';
   meta.textContent = (c.author || '') + ' · ' + String(c.adate || '').slice(0, 10);
-  row.append(caret, sha, subj, meta);
-  node.appendChild(row);
+  rowEl.append(sha, subj, meta);
+  node.appendChild(rowEl);
   const full = document.createElement('div');
   full.className = 'gitfull';
   full.hidden = true;
   full.appendChild(gitMsgEl(c));
   node.appendChild(full);
-  let kidbox = null;
-  if (kids.length) {
-    kidbox = document.createElement('div');
-    kidbox.className = 'gitkids';
-    kidbox.hidden = true;
-    kids.forEach(k => {
-      if (seen[k.hash]) return;
-      seen[k.hash] = true;
-      kidbox.appendChild(gitNode(k, byHash, childMap, seen));
-    });
-    node.appendChild(kidbox);
-  }
-  row.addEventListener('click', () => {
-    full.hidden = !full.hidden;
-    if (kidbox) kidbox.hidden = full.hidden;
-    caret.textContent = kids.length ? (full.hidden ? '▸' : '▾') : '·';
-  });
+  node.addEventListener('click', () => { full.hidden = !full.hidden; });
   return node;
 }
 
-function renderGitTree(el, commits) {
+function renderGitTree(el, rows, commits) {
   const byHash = {};
-  commits.forEach(c => { byHash[c.hash] = c; });
-  const childMap = {}, childSet = {}, seen = {};
-  commits.forEach(c => {
-    (c.parents || []).forEach(p => {
-      if (byHash[p]) { (childMap[p] = childMap[p] || []).push(c); childSet[c.hash] = true; }
-    });
-  });
-  commits.forEach(c => {
-    if (childSet[c.hash] || seen[c.hash]) return;
-    seen[c.hash] = true;
-    el.appendChild(gitNode(c, byHash, childMap, seen));
-  });
+  (commits || []).forEach(c => { byHash[c.hash] = c; });
+  if (!rows || !rows.length) {
+    rows = (commits || []).map(c => ({ prefix: '* ', hash: c.hash }));
+  }
+  if (!rows.length) return false;
+  rows.forEach(r => el.appendChild(gitRowEl(r, byHash)));
+  return true;
 }
 
 async function loadGitLog(subArg) {
@@ -2235,21 +2220,11 @@ async function loadGitLog(subArg) {
       wrap.hidden = false;
     } else if (wrap) { wrap.hidden = true; }
     el.textContent = '';
-    if (d.error) { el.textContent = 'git log failed: ' + d.error; return; }
-    const commits = d.commits || [];
-    if (!commits.length) { el.textContent = 'no commits'; return; }
-    renderGitTree(el, commits);
-    if (d.graph) {
-      const det = document.createElement('details');
-      const sum = document.createElement('summary');
-      sum.className = 'gitbadge';
-      sum.textContent = 'ascii graph';
-      const pre = document.createElement('pre');
-      pre.className = 'gitraw';
-      pre.textContent = d.graph;
-      det.append(sum, pre);
-      el.appendChild(det);
-    }
+      if (d.error) { el.textContent = 'git log failed: ' + d.error; return; }
+      const commits = d.commits || [];
+      if (!renderGitTree(el, d.graph_rows || [], commits)) {
+        el.textContent = 'no commits';
+      }
   } catch (e) { if (el) el.textContent = 'failed: ' + e; }
 }
 

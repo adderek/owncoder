@@ -237,16 +237,15 @@ aside.resizing { transition: none; }   /* no lag while dragging */
 .gitsubwrap select { background: var(--bg2); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; font: inherit; padding: 1px 4px; }
 .gittree { font-family: var(--mono); font-size: 11px; line-height: 1.5; }
 .gitmsg { white-space: pre-wrap; overflow-wrap: anywhere; }
-.gitrow { display: flex; gap: 6px; align-items: baseline; cursor: pointer; border-radius: 3px; padding: 0 2px; }
-.gitrow:hover { background: var(--bg2); }
-.gittree .gitsha { color: var(--dim); flex: 0 0 auto; }
-.gittree .gitsubj { color: var(--fg); flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
-.gittree .gitmeta { color: var(--dimmer); flex: 0 0 auto; }
-.gittree .gitcaret { color: var(--dimmer); flex: 0 0 auto; width: 1em; }
-.gitkids { margin-left: 12px; border-left: 1px dashed var(--line); padding-left: 6px; }
-.gitfull { margin: 2px 0 6px 18px; color: var(--dim); }
-.gitsubnode { color: var(--accent, var(--fg)); }
-.gitraw { font-family: var(--mono); font-size: 11px; color: var(--dim); white-space: pre; overflow-x: auto; margin: 4px 0 0; }
+.gitnode { cursor: pointer; border-radius: 3px; padding: 0 2px; }
+.gitnode:hover { background: var(--bg2); }
+.gitgraph { white-space: pre; color: var(--dimmer); }
+.gitedge { cursor: default; color: var(--dimmer); }
+.gitedge:hover { background: none; }
+.gittree .gitsha { color: var(--dim); margin-right: 6px; }
+.gittree .gitsubj { color: var(--fg); }
+.gittree .gitmeta { color: var(--dimmer); margin-left: 6px; }
+.gitfull { margin: 2px 0 6px 0; color: var(--dim); }
 .gitbadge { color: var(--dimmer); font-size: 10px; }
 .sess-filter { width: 100%; box-sizing: border-box; margin-top: 6px; padding: 5px 8px;
                font: inherit; font-size: 12.5px; border-radius: 6px; border: 1px solid var(--border);
