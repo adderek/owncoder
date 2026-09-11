@@ -163,6 +163,27 @@ def _is_tool_call_parse_error(exc: BaseException) -> bool:
     return "parse tool call" in low or "tool call arguments as json" in low
 
 
+def _is_model_not_found(exc: BaseException) -> bool:
+    """True for a 400 whose body says the endpoint does not serve the model id
+    we asked for (e.g. llama.cpp/router restarted with a different alias).
+
+    The endpoint is up but the configured (base_url, model) pair cannot exist —
+    an availability failure like an unreachable host, not a content failure.
+    Matched on the message because that is all the server gives us; the body is
+    the OpenAI error envelope with type "invalid_request_error".
+    """
+    body = getattr(exc, "body", None)
+    msg = ""
+    if isinstance(body, dict):
+        err = body.get("error")
+        if isinstance(err, dict):
+            msg = str(err.get("message") or "")
+    if not msg:
+        msg = str(exc)
+    low = msg.lower()
+    return "not found" in low and ("model" in low or "no such model" in low)
+
+
 def _schema_weak(config: "Config") -> bool:
     """True when this endpoint has a recorded history of malformed tool calls.
 
@@ -345,6 +366,8 @@ async def run_turn(
     failover_count = 0       # remote->local failovers taken this turn
     rate_limit_count = 0     # 429 backoff-retries taken this turn
     toolparse_retry_count = 0  # unparseable-tool-call retries taken this turn
+    transport_retry_count = 0   # same-request retries after a dropped socket/timeout
+    self_retry_count = 0        # retries on the only live endpoint when no failover target exists
     _error_streak = 0        # consecutive iterations where every tool call errored
 
     def _loop_guard_escalation_note() -> dict:
@@ -580,6 +603,29 @@ async def run_turn(
                 if token_est > budget:
                     messages = _truncate_large_messages(messages, budget)
                 continue
+            if _is_model_not_found(e):
+                # The endpoint is up but serves no such model (a router whose
+                # aliases changed, a renamed preset). Pointing every retry at a
+                # model that cannot exist is an availability failure, not a
+                # content one — cool the pair down and fail over (or surface the
+                # recoverable no-model state) instead of crash-reporting it.
+                turn_errors.record_model_outcome(config, "failure")
+                turn_errors.mark_endpoint_cooldown(config)
+                fcfg = getattr(config, "failover", None)
+                if (fcfg is not None and fcfg.enabled
+                        and failover_count < max(1, int(fcfg.max_retries))):
+                    new_client = turn_errors.try_failover(config)
+                    if new_client is not None:
+                        client = new_client
+                        failover_count += 1
+                        _phase("failover", f"model not found → {config.llm.model}")
+                        logger.warning("failover: model not found (%s) — retrying on '%s'",
+                                       e, config.llm.model)
+                        continue
+                raise turn_errors.no_usable_model_error(
+                    config, e,
+                    reason=(f"endpoint {config.llm.base_url} does not serve model "
+                            f"'{config.llm.model}' (and no other model could take over)")) from e
             raise
         except RateLimitError as e:
             # HTTP 429 from the endpoint (common on free/shared tiers). Wait and
@@ -664,6 +710,24 @@ async def run_turn(
                     ),
                 }]
                 continue
+            # A dropped socket or a request timeout is not evidence the endpoint
+            # is down. The server may have been mid-generation when the client
+            # gave up (router reload, closed keep-alive, a LAN switch) — observed
+            # with a model streaming 91 t/s and 2193 tokens in 24s, where the
+            # only thing that failed was the connection. Retry the same request
+            # first: that is the job the SDK's own retries used to do, and they
+            # are disabled here (llm_client sets max_retries=0 on the assumption
+            # run_turn covers it — for 429 it did, for transport errors it did
+            # not).
+            if isinstance(e, (APIConnectionError, APITimeoutError)):
+                max_transport = max(0, int(getattr(config.llm, "transport_retries", 1)))
+                if transport_retry_count < max_transport:
+                    transport_retry_count += 1
+                    logger.warning("transport error on %s (%s) — retrying the same endpoint %d/%d",
+                                   config.llm.base_url, e, transport_retry_count, max_transport)
+                    _phase("transport_retry", f"{transport_retry_count}/{max_transport}")
+                    await asyncio.sleep(min(2.0, 0.5 * transport_retry_count))
+                    continue
             # Plain APIError covers server errors delivered inside a 200 SSE
             # stream body (openai raises the base class there, not
             # InternalServerError) plus any remaining status errors not
@@ -677,15 +741,28 @@ async def run_turn(
             # a router whose preset fails to load), switch to another live local
             # entry — and retry so the turn survives. Otherwise surface the error.
             fcfg = getattr(config, "failover", None)
+            new_client = None
             if (fcfg is not None and fcfg.enabled
                     and failover_count < max(1, int(fcfg.max_retries))):
                 new_client = turn_errors.try_failover(config)
-                if new_client is not None:
-                    client = new_client
-                    failover_count += 1
-                    _phase("failover", f"endpoint error → {config.llm.model}")
-                    logger.warning("failover: endpoint error (%s) — retrying on '%s'", e, config.llm.model)
-                    continue
+            if new_client is not None:
+                client = new_client
+                failover_count += 1
+                _phase("failover", f"endpoint error → {config.llm.model}")
+                logger.warning("failover: endpoint error (%s) — retrying on '%s'", e, config.llm.model)
+                continue
+            # Nothing took over — no candidate, failover off, or budget spent.
+            # The cooldown set above then buys nothing and costs the turn: this
+            # IS the only endpoint left. Drop it and give the original one more
+            # chance, once, before surfacing the recoverable no-model state.
+            turn_errors.clear_endpoint_cooldown(config)
+            if self_retry_count < 1:
+                self_retry_count += 1
+                logger.warning("no failover target for %s — cleared its cooldown, retrying the only "
+                               "endpoint once", config.llm.base_url)
+                _phase("self_retry", "no alternative — retrying the only endpoint")
+                await asyncio.sleep(1.0)
+                continue
             raise turn_errors.no_usable_model_error(config, e) from e
 
         finish_reason = getattr(choice, "finish_reason", None)

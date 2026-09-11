@@ -413,9 +413,29 @@ def _load_failed(model_info: dict) -> bool:
     return isinstance(status, dict) and bool(status.get("failed"))
 
 
+def _advertised_names(m: dict) -> list[str]:
+    """Every name an advertised model answers to: its id plus any aliases.
+
+    A llama.cpp router lists one entry per preset, and a preset configured with
+    aliases also answers to those names — the entry the operator configured may
+    well be named by an alias rather than by the id (that is what an alias is
+    for). Dropping them made such an entry read as "model not advertised", so
+    every availability probe marked it down while ordinary traffic kept working
+    (a chat completion resolves aliases; /models matching did not).
+    """
+    out = [m["id"]] if isinstance(m.get("id"), str) else []
+    for key in ("aliases", "alias"):
+        val = m.get(key)
+        if isinstance(val, str):
+            out.append(val)
+        elif isinstance(val, list):
+            out.extend(a for a in val if isinstance(a, str))
+    return out
+
+
 def list_endpoint_models(base_url: str, api_key: str = "", timeout: int = 3) -> set[str] | None:
-    """Return the set of servable model ids the endpoint advertises via
-    /v1/models (presets whose load already failed are excluded).
+    """Return the set of servable model names the endpoint advertises via
+    /v1/models (ids and aliases; presets whose load already failed are excluded).
 
     Returns None when the endpoint is unreachable (so callers can distinguish
     "offline endpoint" from "model genuinely missing").
@@ -432,8 +452,9 @@ def list_endpoint_models(base_url: str, api_key: str = "", timeout: int = 3) -> 
     except Exception:
         return None
     return {
-        m["id"] for m in _model_list(data)
-        if isinstance(m, dict) and "id" in m and not _load_failed(m)
+        name for m in _model_list(data)
+        if isinstance(m, dict) and not _load_failed(m)
+        for name in _advertised_names(m)
     }
 
 
@@ -498,6 +519,15 @@ def mark_rate_limited(base_url: str, model: str, cooldown_s: float = 300.0) -> N
     """Record a 429 for (base_url, model); treated as unavailable for cooldown_s."""
     import time as _t
     _RL_COOLDOWN[(base_url or "", model or "")] = _t.monotonic() + max(1.0, cooldown_s)
+
+
+def clear_rate_limited(base_url: str, model: str) -> None:
+    """Drop a cooldown set by mark_rate_limited for this (base_url, model).
+
+    Used by the turn loop when a cooldown would leave the turn with no endpoint
+    at all: cooling down the last live model only guarantees the turn dies.
+    """
+    _RL_COOLDOWN.pop((base_url or "", model or ""), None)
 
 
 def is_rate_limited(base_url: str, model: str) -> bool:

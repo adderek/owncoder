@@ -30,7 +30,21 @@ def is_remote_endpoint(config: "Config") -> bool:
         return bool(config.llm.base_url)
 
 
-def resolve_local_entry(config: "Config", preferred: str = "") -> Optional[str]:
+def is_active_default_pinned(config: "Config") -> bool:
+    """True when the active entry was hand-picked this session (/model <entry>
+    or a role pin), rather than left to auto-tier.
+
+    A pin is a deliberate user choice, so an automatic switch off it is a policy
+    decision (see FailoverConfig.pinned_policy) and not a repair. Kept separate
+    from the failover helpers so callers can consult it before switching.
+    """
+    if bool(getattr(config, "runtime_model_pinned", False)):
+        return True
+    pins = getattr(config, "session_role_pins", None)
+    return bool(pins) and "default" in pins
+
+
+def resolve_local_entry(config: "Config", preferred: str = "", allow_paid: bool = True) -> Optional[str]:
     """Name of a self-hosted model entry to degrade to, or None if none is live.
 
     Prefers a loopback ("local") endpoint, then a LAN ("remote", private-IP)
@@ -38,6 +52,10 @@ def resolve_local_entry(config: "Config", preferred: str = "") -> Optional[str]:
     never sends data to a third-party cloud. When the turn is pinned local-only
     (``config.runtime_local_only`` — private session mode) LAN entries are
     excluded so a private turn cannot leave the loopback interface.
+
+    *allow_paid* False also drops entries whose COST tier is "paid" (a LAN box
+    can front a paid upstream), so a turn that must not spend money stops rather
+    than silently switching to one.
 
     Availability is probed: a configured-but-down box (the exact case that made
     the crash surface) is skipped instead of being switched to blindly.
@@ -48,12 +66,14 @@ def resolve_local_entry(config: "Config", preferred: str = "") -> Optional[str]:
     # agent.config.entry_tier returns (a LAN box is "free" there, not "remote").
     from agent.config.loader import entry_tier
     from agent.config.model_probe import entry_available
+    from agent.config.registry import entry_tier as cost_tier
     entries = config.model_entries or {}
     local_only = bool(getattr(config, "runtime_local_only", False))
     allowed_tiers = ("local",) if local_only else ("local", "remote")
 
     def _usable(name: str, e) -> bool:
         return (entry_tier(e) in allowed_tiers
+                and (allow_paid or cost_tier(e) != "paid")
                 and not is_disabled(config, name)
                 and entry_available(e))
 
@@ -62,7 +82,8 @@ def resolve_local_entry(config: "Config", preferred: str = "") -> Optional[str]:
     # Two passes so a live loopback endpoint always wins over a live LAN one.
     for want in allowed_tiers:
         for name, e in entries.items():
-            if entry_tier(e) == want and not is_disabled(config, name) and entry_available(e):
+            if (entry_tier(e) == want and (allow_paid or cost_tier(e) != "paid")
+                    and not is_disabled(config, name) and entry_available(e)):
                 return name
     return None
 
@@ -89,9 +110,10 @@ def switch_to_entry(config: "Config", entry_name: str):
 
 # ── Remote → local failover ───────────────────────────────────────────────────
 
-def failover_to_local(config: "Config"):
+def failover_to_local(config: "Config", allow_paid: bool = True):
     """Degrade a dead remote endpoint to a local model for the rest of the turn.
 
+    *allow_paid* False keeps cost-tier "paid" entries out of the candidates.
     Returns a fresh local client, or None if failover is disabled, the endpoint
     is already local, or no local entry is configured.
     """
@@ -100,7 +122,8 @@ def failover_to_local(config: "Config"):
         return None
     if not is_remote_endpoint(config):
         return None
-    name = resolve_local_entry(config, getattr(cfg, "local_entry", ""))
+    name = resolve_local_entry(config, getattr(cfg, "local_entry", ""),
+                               allow_paid=allow_paid)
     if not name:
         logger.warning("failover: no local model entry configured — cannot degrade offline")
         return None
@@ -110,7 +133,7 @@ def failover_to_local(config: "Config"):
     return client
 
 
-def failover_to_alternative(config: "Config"):
+def failover_to_alternative(config: "Config", allow_paid: bool = True):
     """Rescue a turn whose *local* endpoint is failing — e.g. a router that
     accepts the request but 500s because the preset's weights are missing.
 
@@ -118,6 +141,7 @@ def failover_to_alternative(config: "Config"):
     Stays within this module's invariant — never routes toward remote — so a
     turn that privacy routing pinned to local can never leak through failover.
 
+    *allow_paid* False keeps cost-tier "paid" entries out of the candidates.
     Returns a fresh client, or None if failover is disabled or no other live
     local entry exists. Entries on failure cooldown (mark_rate_limited) are
     skipped, so the entry that just failed is never picked again this window.
@@ -127,6 +151,7 @@ def failover_to_alternative(config: "Config"):
         return None
     from agent.config.loader import entry_tier  # location tier (local/remote/cloud)
     from agent.config.model_probe import entry_available
+    from agent.config.registry import entry_tier as cost_tier
     from agent.core.model_control import is_disabled
     entries = config.model_entries or {}
     local_only = bool(getattr(config, "runtime_local_only", False))
@@ -139,6 +164,8 @@ def failover_to_alternative(config: "Config"):
         e = entries[name]
         if entry_tier(e) not in allowed_tiers or is_disabled(config, name):
             continue
+        if not allow_paid and cost_tier(e) == "paid":
+            continue
         if (e.base_url, e.model or config.llm.model) == active:
             continue
         if not entry_available(e):
@@ -150,7 +177,7 @@ def failover_to_alternative(config: "Config"):
     return None
 
 
-def failover_to_peer(config: "Config"):
+def failover_to_peer(config: "Config", allow_paid: bool = True):
     """Rescue a failing *cloud* endpoint by switching to another live cloud
     entry allowed under the current model-mode — e.g. free provider A hits its
     daily 429 cap, so the turn continues on free provider B instead of
@@ -165,6 +192,10 @@ def failover_to_peer(config: "Config"):
     mode-allowed cloud tiers. Skips disabled entries and (base_url, model)
     pairs on rate-limit/failure cooldown (mark_rate_limited), so the entry
     that just failed is never re-picked within its cooldown window.
+
+    *allow_paid* False drops the "paid" cost tier from the candidate set, so a
+    pinned turn that must not spend money stops (callers surface the no-model
+    state) rather than drifting onto a paid endpoint.
 
     Returns a fresh client, or None if failover is disabled or no live peer
     exists (callers then degrade to local as before).
@@ -183,6 +214,8 @@ def failover_to_peer(config: "Config"):
     entries = config.model_entries or {}
     mode = getattr(getattr(config, "agent", None), "model_mode", "") or "any"
     allowed = MODE_TIERS.get(mode, MODE_TIERS["any"]) - {"local"}
+    if not allow_paid:
+        allowed = allowed - {"paid"}
     if not allowed:
         return None
     active = (config.llm.base_url, config.llm.model)

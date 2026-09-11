@@ -58,6 +58,10 @@ class LLMConfig:
     #                                    falls back to stream_ttft_seconds until ~8 samples exist
     stream_stall_retries: int = 1   # retries after a stall/timeout before giving up
     rate_limit_retries: int = 3   # backoff-retries on HTTP 429 per turn before failover/surfacing
+    transport_retries: int = 1    # same-request retries on a dropped socket / request timeout before
+    #                               the endpoint is written off (cooldown + failover); 0 = mark it down
+    #                               on the first transport error. The SDK's own retries are disabled
+    #                               (llm_client max_retries=0), so this is what replaces them.
 
 
 @dataclass
@@ -754,6 +758,7 @@ class AgentConfig:
     stream_ttft_adaptive: bool = True
     stream_heartbeat_seconds: int = 20
     stream_stall_retries: int = 1
+    transport_retries: int = 1  # retries on a dropped socket/timeout before cooling the endpoint down
     autonomy: float = 0.5  # 0.0=supervised … 1.0=autopilot; >1.0 treated as percentage
     distill_skills: bool = True  # session-end: distill reusable skills into .agent/skills/
     skills_index_max: int = 40   # cap skills listed in the per-prompt index (token bound)
@@ -1157,6 +1162,17 @@ class FailoverConfig:
     enabled: bool = False
     local_entry: str = ""       # fallback entry name ("" = first local-tier entry)
     max_retries: int = 1        # at most this many remote→local switches per turn
+    # What an automatic switch is allowed to do when the active entry was
+    # hand-picked this session (/model <entry> sets runtime_model_pinned). A pin
+    # is a deliberate choice, so drifting off it is a policy decision, not a
+    # repair — and drifting onto a PAID endpoint spends the user's money.
+    #   "fallback"  — any live entry, paid included if it is what is left.
+    #   "free-only" — local/LAN/free entries only; if only paid ones are live,
+    #                 stop and surface the recoverable no-model state.
+    #   "ask"       — never switch automatically; stop and surface it.
+    # Only consulted for pinned entries — an unpinned (auto-tier) turn keeps
+    # failing over freely within its model-mode tiers.
+    pinned_policy: str = "fallback"   # fallback | free-only | ask
 
 
 @dataclass

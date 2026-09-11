@@ -1,0 +1,22 @@
+{
+  "cooldown": {
+    "exc": "Traceback (most recent call last):\n  File \"/home/adderek/src/owncoder/agent/tests/unit/test_zz_diag_probe.py\", line 52, in test_diag_cooldown_clear\n    e = _unlisted(model=\"heavy-35B\")\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/adderek/src/owncoder/agent/tests/unit/test_zz_diag_probe.py\", line 29, in _unlisted\n    return ModelEntry(base_url=\"https://api.example.com\", api_key=\"k\",\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: agent.config.models.ModelEntry() got multiple values for keyword argument 'model'\n"
+  },
+  "t_retries_1": {
+    "response": "done",
+    "calls": 3,
+    "cfg_failover_enabled": false,
+    "cfg_failover_max_retries": 1
+  },
+  "t_retries_0": {
+    "response": "done",
+    "calls": 3
+  },
+  "t_failover": {
+    "response": "done",
+    "calls": 3,
+    "switched": {},
+    "failed_pair": "('http://localhost:8080/v1', 'qwen3-coder-30b')",
+    "is_rl_after": false
+  }
+}

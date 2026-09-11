@@ -29,6 +29,7 @@ __all__ = [
     "record_model_outcome",
     "record_model_capability",
     "mark_endpoint_cooldown",
+    "clear_endpoint_cooldown",
     "try_failover",
     "retry_after_seconds",
     "is_daily_quota_429",
@@ -45,22 +46,22 @@ class NoUsableModelError(Exception):
     is an expected operational state, not a bug — UIs should surface it, not
     write a crash report.
     """
-    def __init__(self, cause: BaseException, candidates: list[str]):
+    def __init__(self, cause: BaseException, candidates: list[str], reason: str = ""):
         self.cause = cause
         self.candidates = candidates
         hint = (f" — enable one to continue: {', '.join(candidates)}"
                 if candidates else "")
         super().__init__(
-            "no enabled model is reachable (active endpoint failed and no live "
-            f"local/LAN model to fall back to){hint}")
+            (reason or ("no enabled model is reachable (active endpoint failed and "
+                        "no live local/LAN model to fall back to)")) + hint)
 
 
-def no_usable_model_error(config, cause: BaseException) -> NoUsableModelError:
+def no_usable_model_error(config, cause: BaseException, reason: str = "") -> NoUsableModelError:
     """Build a NoUsableModelError listing disabled entries the user could enable."""
     from agent.core.model_control import is_disabled
     entries = config.model_entries or {}
     candidates = [n for n in entries if is_disabled(config, n)]
-    return NoUsableModelError(cause, candidates)
+    return NoUsableModelError(cause, candidates, reason)
 
 
 def record_model_outcome(config: "Config", outcome: str) -> None:
@@ -116,6 +117,21 @@ def mark_endpoint_cooldown(config: "Config", cooldown_s: float | None = None) ->
         logger.debug("mark_endpoint_cooldown failed (ignored)", exc_info=True)
 
 
+def clear_endpoint_cooldown(config: "Config") -> None:
+    """Undo ``mark_endpoint_cooldown`` for the active endpoint.
+
+    Cooling an endpoint down is only meaningful when something else can take
+    over. When the caller just found out that nothing can, the cooldown has
+    stopped being a retry-to-revive hedge and become the thing that ends the
+    turn — so the turn loop drops it before retrying the only endpoint left.
+    """
+    try:
+        from agent.config.model_probe import clear_rate_limited
+        clear_rate_limited(config.llm.base_url, config.llm.model)
+    except Exception:
+        logger.debug("clear_endpoint_cooldown failed (ignored)", exc_info=True)
+
+
 def try_failover(config: "Config"):
     """Find another endpoint to finish the turn on; returns a client or None.
 
@@ -124,12 +140,30 @@ def try_failover(config: "Config"):
     no peer exists do we fall to local, and then — if already local, e.g. a
     router whose preset fails to load — to another live local entry.
 
+    When the active entry was pinned by the user, ``failover.pinned_policy``
+    decides how far off that pin we may drift: "ask" refuses to switch at all,
+    "free-only" keeps paid tiers out of the candidate set, "fallback" (default)
+    behaves as before. Returning None makes the caller surface the recoverable
+    no-model state, which is how the user gets asked what to do.
+
     Callers own the retry budget (``failover.max_retries``); this just picks.
     """
     from agent.core import model_routing
-    new_client = model_routing.failover_to_peer(config)
+    allow_paid = True
+    if model_routing.is_active_default_pinned(config):
+        policy = (getattr(getattr(config, "failover", None), "pinned_policy", "")
+                  or "fallback").strip().lower()
+        if policy == "ask":
+            logger.warning("failover: active model is pinned (pinned_policy=ask) — "
+                           "not switching; surfacing the no-model state instead")
+            return None
+        if policy == "free-only":
+            allow_paid = False
+            logger.info("failover: pinned entry failed, pinned_policy=free-only — "
+                        "paid endpoints excluded from the candidate set")
+    new_client = model_routing.failover_to_peer(config, allow_paid=allow_paid)
     if new_client is None:
-        new_client = model_routing.failover_to_local(config)
+        new_client = model_routing.failover_to_local(config, allow_paid=allow_paid)
     if new_client is None:
-        new_client = model_routing.failover_to_alternative(config)
+        new_client = model_routing.failover_to_alternative(config, allow_paid=allow_paid)
     return new_client

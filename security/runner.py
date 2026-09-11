@@ -234,20 +234,28 @@ def _truncated(matches: list[Path], root: Path, globs: list[str], why: str) -> l
     )
 
 
-def _matching_paths(root: Path, globs: list[str]) -> list[Path]:
+def _matching_paths(
+    root: Path, globs: list[str], *, skip_dirs: list[Path] | None = None,
+) -> list[Path]:
     """Concrete existing files under *root* matching any glob in *globs*.
 
     A glob matches on either the root-relative path or the bare filename, mirroring
     fs._is_write_protected / fs._is_read_protected. Bounded so it can't hang on a
-    huge tree.
+    huge tree. Subtrees in *skip_dirs* are not descended into: the caller already
+    covers them wholesale (a directory-level bind), so walking them would burn
+    the caps on files whose protection is not in question.
     """
     import fnmatch as _fnmatch
 
     if not globs:
         return []
+    skip = {Path(d) for d in (skip_dirs or [])}
     matches: list[Path] = []
     scanned = 0
     for dirpath, dirnames, filenames in os.walk(root):
+        if skip and Path(dirpath) in skip:
+            dirnames[:] = []
+            continue
         # Don't descend into VCS/venv noise; secrets there aren't the threat
         # model and they dominate the file count.
         dirnames[:] = [d for d in dirnames if d not in (".git", ".venv", "node_modules", "__pycache__")]
@@ -345,7 +353,20 @@ def _write_deny_paths(root: Path) -> list[Path]:
             file_globs.append(g)
 
     covered = [p for p in out]
-    for p in _matching_paths(root, file_globs):
+    # `.agent/` is bound read-only as a whole when agent_dir_read_only is on
+    # (_agent_dir_ro), which already covers every path under it — present or
+    # not. Walking it again per file is not just redundant: one session
+    # directory per run, each holding its own `memory.db` plus -wal/-shm, puts
+    # the tree past the match cap within a few hundred sessions and _truncated
+    # then refuses to run any command at all. Prune the subtree instead.
+    skip_dirs: list[Path] = []
+    ro_agent = _agent_dir_ro(pol, root)
+    if ro_agent is not None:
+        skip_dirs.append(ro_agent)
+        covered.append(ro_agent)
+        if ro_agent not in out:
+            out.append(ro_agent)
+    for p in _matching_paths(root, file_globs, skip_dirs=skip_dirs):
         if p in protected or any(d == p or d in p.parents for d in covered):
             continue
         # Scratch is exempt for the same reason the fs gate exempts it
@@ -354,6 +375,21 @@ def _write_deny_paths(root: Path) -> list[Path]:
             continue
         out.append(p)
     return out
+
+
+def write_protected_in_sandbox(path: Path, root: Path) -> bool:
+    """True when *path* is read-only inside the sandbox.
+
+    Coverage, not membership: `_write_deny_paths` returns a directory wherever
+    one bind covers a whole subtree (`.agent/` itself when
+    agent_dir_read_only is on, `.agent/checkpoints/` otherwise), so asking
+    whether a particular file is protected means asking about its ancestors
+    too.
+    """
+    path = Path(path)
+    return any(
+        d == path or d in path.parents for d in _write_deny_paths(root)
+    )
 
 
 def _interpreter_paths(root: Path) -> list[str]:

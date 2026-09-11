@@ -243,11 +243,11 @@ def test_failover_prefers_a_cloud_peer_over_degrading_to_local(monkeypatch):
 
     calls: list[str] = []
     monkeypatch.setattr(model_routing, "failover_to_peer",
-                        lambda c: calls.append("peer") or "peer-client")
+                        lambda c, **kw: calls.append("peer") or "peer-client")
     monkeypatch.setattr(model_routing, "failover_to_local",
-                        lambda c: calls.append("local") or "local-client")
+                        lambda c, **kw: calls.append("local") or "local-client")
     monkeypatch.setattr(model_routing, "failover_to_alternative",
-                        lambda c: calls.append("alt") or "alt-client")
+                        lambda c, **kw: calls.append("alt") or "alt-client")
     assert turn_errors.try_failover(Config()) == "peer-client"
     assert calls == ["peer"]
 
@@ -258,7 +258,7 @@ def test_failover_falls_through_peer_then_local_then_alternative(monkeypatch):
     calls: list[str] = []
 
     def _none(name):
-        def _f(c):
+        def _f(c, **kw):
             calls.append(name)
             return None
         return _f

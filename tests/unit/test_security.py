@@ -498,13 +498,12 @@ class TestSandboxWriteDenyOverlay:
         ws.mkdir(exist_ok=True)          # preflight already created it
         (ws / "_http_fetcher.py").write_text("print('x')")
 
-        found = {p.relative_to(project).as_posix()
-                 for p in sec_runner._write_deny_paths(project)}
-        assert ".agent/path_grants.json" in found
-        assert ".agent/permissions.json" in found
-        assert ".agent/core.md" in found
-        # `prefix/**` collapses to one read-only bind of the directory.
-        assert ".agent/web_search" in found
+        for rel in (".agent/path_grants.json", ".agent/permissions.json",
+                    ".agent/core.md",
+                    # `prefix/**` collapses to one read-only bind of the dir,
+                    # and `.agent/` itself collapses further still.
+                    ".agent/web_search"):
+            assert sec_runner.write_protected_in_sandbox(project / rel, project)
 
     def test_diagnostics_dir_is_readonly_but_present(self, project):
         """Readable, not forgeable: records can be read inside the sandbox but
@@ -885,10 +884,9 @@ class TestPromptInputsAndAuditAreNotForgeable:
         (project / ".agent" / "compiled_prompts").mkdir(parents=True, exist_ok=True)
         (project / ".agent" / "agent.preamble").write_text("x")
         (project / ".agent" / "audit.jsonl").write_text("{}\n")
-        deny = sec_runner._write_deny_paths(project)
-        assert (project / ".agent" / "agent.preamble") in deny
-        assert (project / ".agent" / "audit.jsonl") in deny
-        assert (project / ".agent" / "compiled_prompts") in deny
+        for rel in ("agent.preamble", "audit.jsonl", "compiled_prompts"):
+            assert sec_runner.write_protected_in_sandbox(
+                project / ".agent" / rel, project)
 
 
 class TestGuardsInsideGrantedPaths:
@@ -946,7 +944,21 @@ class TestMemoryIsToolMediated:
         p = project / ".agent" / "memory.db"
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_bytes(b"")
-        assert p in sec_runner._write_deny_paths(project)
+        assert sec_runner.write_protected_in_sandbox(p, project)
+
+    def test_many_session_dbs_do_not_exhaust_the_scan(self, project):
+        """One session directory per run, each with its own memory.db plus
+        -wal/-shm, used to push the write-deny walk past its match cap within a
+        few hundred sessions — and a truncated walk fails closed, so *every*
+        command was refused. `.agent/` is one read-only mount; the walk skips
+        it instead of enumerating it."""
+        for i in range(400):
+            d = project / ".agent" / "2026" / "05" / "01" / f"s{i}"
+            d.mkdir(parents=True, exist_ok=True)
+            for suffix in ("", "-wal", "-shm"):
+                (d / f"memory.db{suffix}").write_bytes(b"")
+        deny = sec_runner._write_deny_paths(project)      # must not raise
+        assert (project / ".agent") in deny
 
     def test_the_store_itself_still_writes(self, project):
         """The gate must not touch the in-process writer — it opens sqlite
@@ -1000,7 +1012,7 @@ class TestToolMediatedStores:
         p = project / ".agent" / "ideas.db"
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_bytes(b"")
-        assert p in sec_runner._write_deny_paths(project)
+        assert sec_runner.write_protected_in_sandbox(p, project)
 
     def test_the_ideas_store_itself_still_writes(self, project):
         """submit_idea runs in the host process and opens sqlite directly."""
@@ -1057,9 +1069,9 @@ class TestStartupPreflight:
         cfg = self._cfg(project)
         sec_policy.setup(cfg)
         dirs, files = preflight.required_paths(cfg)
-        deny = set(sec_runner._write_deny_paths(project))
         assert dirs and files
-        assert [p for p in dirs + files if p not in deny] == []
+        assert [p for p in dirs + files
+                if not sec_runner.write_protected_in_sandbox(p, project)] == []
 
     def test_user_content_is_never_created(self, project):
         """`.git/**` and `.claude/**` are in the deny set too, but conjuring an

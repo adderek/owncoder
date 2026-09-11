@@ -281,6 +281,11 @@ stream_ttft_seconds       = 600      # wait for FIRST token before declaring a w
 #                                      prefill on a big prompt, which emits no chunks (0 = off)
 stream_heartbeat_seconds  = 20       # emit a progress heartbeat this often while a stream is quiet (0 = off)
 stream_stall_retries      = 1        # retries after a stall before giving up
+transport_retries         = 1        # retries on a dropped socket / request timeout before the endpoint is
+#                                      written off (cooldown + failover). A transport error is not evidence
+#                                      the endpoint is down: the client may have given up mid-generation
+#                                      and the server keep going. The SDK's own retries are off, so this
+#                                      replaces them. 0 = mark the endpoint down on the first error.
 show_output_cap           = false    # append the active model's output-token cap to the
 #                                      END of the system prompt (so toggling it does not
 #                                      invalidate the cacheable prefix). Helps models that
@@ -580,13 +585,23 @@ worker_timeout_seconds = 120
 # max_concurrent = 5                   # API rate-limit headroom
 
 # ── Remote → local failover ───────────────────────────────────────────────────
-# When the active (remote) endpoint is unreachable / times out / 5xx, retry the
-# turn on a local model so the agent keeps working offline. Failover only ever
-# routes toward local, so it never weakens privacy. Off by default.
+# When the active (remote) endpoint is unreachable / times out / 5xx — or serves
+# no model under the configured id — retry the turn on another live entry so the
+# agent keeps working offline. Failover only ever routes toward local (or to a
+# cheaper cloud peer), so it never weakens privacy. Off by default.
 [failover]
 enabled     = false
 local_entry = ""        # fallback entry name ("" = first local-tier model entry)
 max_retries = 1         # at most this many remote→local switches per turn
+# What an automatic switch may do when the active entry was hand-picked this
+# session (/model <entry>). A pin is a deliberate choice, so drifting off it —
+# and especially onto a PAID endpoint — is a policy decision, not a repair:
+#   "fallback"  = switch to any live entry, paid included if that is what is left
+#   "free-only" = local/LAN/free entries only; stop and ask if only paid are live
+#   "ask"       = never switch automatically; stop and ask the user
+# Ignored when the entry was NOT pinned — an auto-tier turn keeps failing over
+# freely within its model-mode tiers.
+# pinned_policy = "fallback"
 
 # ── Per-turn privacy routing ──────────────────────────────────────────────────
 # When the active endpoint is REMOTE and the outbound payload contains a

@@ -44,6 +44,57 @@ def test_list_endpoint_models_excludes_failed_presets(monkeypatch):
     assert ids == {"good-model", "bare-model"}
 
 
+def test_list_endpoint_models_includes_aliases(monkeypatch):
+    # A router preset answers to its aliases as well as to its id. When the
+    # configured entry is named by an alias, dropping those names made the entry
+    # read as "model not advertised": every availability probe (tier ladder,
+    # failover candidates) marked it down while ordinary traffic kept working,
+    # because /chat/completions resolves aliases and the /models match did not.
+    import io
+    import json as _json
+    import urllib.request
+
+    payload = _json.dumps({"data": [
+        {"id": "ornith15-35b-q4km", "aliases": ["ornith-10-35B", "workhorse"]},
+        {"id": "other", "alias": "single-alias"},
+        {"id": "plain"},
+    ]}).encode()
+
+    class _Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=3: _Resp(payload))
+    ids = mp.list_endpoint_models("http://localhost:8081/v1")
+    assert ids == {"ornith15-35b-q4km", "ornith-10-35B", "workhorse",
+                   "other", "single-alias", "plain"}
+
+
+def test_entry_named_by_a_router_alias_is_available(monkeypatch):
+    mp.clear_availability_cache()
+    monkeypatch.setattr(mp, "list_endpoint_models",
+                        lambda url, key="", timeout=2: {"ornith15-35b-q4km", "ornith-10-35B"})
+    # NB: ModelEntry takes the model by keyword already used by `_unlisted`, so
+    # build the entry directly rather than overriding it through **kw.
+    entry = ModelEntry(base_url="https://api.example.com", api_key="k",
+                       model="ornith-10-35B")
+    assert mp.entry_available(entry) is True
+
+
+def test_clearing_a_cooldown_makes_the_pair_available_again(monkeypatch):
+    mp.clear_availability_cache()
+    monkeypatch.setattr(mp, "list_endpoint_models",
+                        lambda url, key="", timeout=2: {"heavy-35B"})
+    entry = ModelEntry(base_url="https://api.example.com", api_key="k", model="heavy-35B")
+    mp.mark_rate_limited(entry.base_url, entry.model, cooldown_s=300.0)
+    assert mp.entry_available(entry) is False
+    mp.clear_rate_limited(entry.base_url, entry.model)
+    assert mp.entry_available(entry) is True
+
+
 def test_check_availability_offline_summarizer(monkeypatch):
     cfg = Config()
     cfg.llm.base_url = "http://localhost:8080/v1"
