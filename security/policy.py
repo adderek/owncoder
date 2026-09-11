@@ -8,7 +8,7 @@ import logging
 import os
 import re
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -23,6 +23,11 @@ class Policy:
     root: Path
     agent_dir: Path
     cfg: "SecurityConfig"
+    # Root-relative write-deny globs derived from the *rest* of the config at
+    # setup time — paths that feed the system prompt live where the user
+    # configured them, and a static glob list cannot know that. Merged into
+    # the fs gate and the sandbox overlay alongside cfg.write_deny_globs.
+    extra_write_deny: list = field(default_factory=list)
 
     def env_for_child(self, host_env: dict[str, str]) -> dict[str, str]:
         deny = [re.compile(p) for p in self.cfg.env_deny_patterns]
@@ -171,13 +176,44 @@ class Policy:
 _policy: Policy | None = None
 
 
+def _prompt_input_globs(config: "Config", root: Path) -> list[str]:
+    """Root-relative write-deny globs for the files that feed the system prompt.
+
+    The preamble is read verbatim into every system-prompt build, and a cached
+    compiled prompt is served in place of the shipped one — so both are prompt
+    *input*, the same category as `.agent/core.md`, which is write-denied with
+    the note that it is human input only. Their locations are configurable
+    (``tools.preamble_path``, ``compile_prompts.cache_dir``), so the static
+    glob list in fs.py covers the defaults and this covers wherever the user
+    actually put them.
+    """
+    out: list[str] = []
+    candidates = [
+        (getattr(getattr(config, "tools", None), "preamble_path", ""), ""),
+        (getattr(getattr(config, "compile_prompts", None), "cache_dir", ""), "/**"),
+    ]
+    for raw, suffix in candidates:
+        if not raw:
+            continue
+        p = Path(raw)
+        if not p.is_absolute():
+            p = root / p
+        try:
+            rel = p.resolve().relative_to(root.resolve())
+        except (OSError, ValueError):
+            continue        # outside the project: the gate only knows root-relative
+        out.append(f"{rel.as_posix()}{suffix}")
+    return out
+
+
 def setup(config: "Config") -> Policy:
     global _policy
     root = Path(config.tools.working_dir).resolve()
     agent_dir = Path(config.tools.agent_dir)
     if not agent_dir.is_absolute():
         agent_dir = root / agent_dir
-    _policy = Policy(root=root, agent_dir=agent_dir, cfg=config.security)
+    _policy = Policy(root=root, agent_dir=agent_dir, cfg=config.security,
+                     extra_write_deny=_prompt_input_globs(config, root))
     from . import path_grants as _pg
     _pg.setup(config)
     from . import permissions as _perms

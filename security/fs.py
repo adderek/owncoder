@@ -71,6 +71,24 @@ _DEFAULT_WRITE_DENY_GLOBS: list[str] = [
     ".agent/checkpoints/**",    # agent must not rewrite the record of its edits
     ".agent/web_search/**",     # app-generated fetcher runs with network=True
     ".agent/diagnostics/**",    # readable, not forgeable: crash/failure records
+    ".agent/audit.jsonl",       # same: the record of what the agent ran
+    ".agent/audit.*.jsonl",     # rotated audit logs
+    ".agent/audit/**",
+    # Prompt input, like .agent/core.md below: the preamble is read verbatim
+    # into every system-prompt build, and a cached compiled prompt is served in
+    # place of the shipped one. Writable here means the agent can rewrite its
+    # own instructions for the next session. Configurable locations are covered
+    # dynamically — see policy._prompt_input_globs.
+    ".agent/agent.preamble",
+    ".agent/compiled_prompts/**",
+    # Memory is tool-mediated state, not a file the agent edits: `save_note`,
+    # recall and compaction go through MemoryStore in the host process, which
+    # opens sqlite directly and is unaffected by this. A raw write here is
+    # either corruption (a half-appended WAL) or the agent rewriting what it
+    # is supposed to remember. Covers -wal/-shm sidecars and the sealed
+    # `.enc` image used in vault mode.
+    ".agent/memory.db*",
+    ".agent/**/memory.db*",
 ]
 
 # The immutable core of the system prompt: human input only, so the agent's own
@@ -109,7 +127,8 @@ def _is_write_protected(root: Path, resolved: Path) -> bool:
     if globs is None:
         globs = _DEFAULT_WRITE_DENY_GLOBS
     if not globs:
-        return False
+        return False        # explicitly disabled by config — extras too
+    globs = list(globs) + list(getattr(pol, "extra_write_deny", []))
     if _under_scratch(pol, resolved):
         return False
     try:
@@ -123,6 +142,25 @@ def _is_write_protected(root: Path, resolved: Path) -> bool:
         if fnmatch.fnmatch(rel, g) or fnmatch.fnmatch(name, g):
             return True
     return False
+
+
+def _guard_base(real: Path, grant) -> Path:
+    """The directory the deny-globs are matched against for *real*.
+
+    Both guards match a glob against the path relative to a base, and bail out
+    when the path is not under that base. With the project root as the only
+    base, everything inside a user-granted directory *outside* the root fell
+    through: granting `~/work/other-repo` also handed over its `.env` and
+    dropped the write protection on its `.git/` and `agent.toml`. A grant says
+    "you may work in this directory", not "its secrets are fair game", so a
+    path outside the root is judged relative to the grant that allowed it.
+    """
+    pol = policy.get()
+    try:
+        real.relative_to(pol.root)
+        return pol.root
+    except ValueError:
+        return grant.path if grant is not None else pol.root
 
 
 def _is_read_protected(root: Path, resolved: Path) -> bool:
@@ -251,9 +289,9 @@ def safe_open(path: str | os.PathLike, mode: str = "r", *, encoding: str | None 
     if "w" in mode or "a" in mode or "+" in mode:
         if grant is not None and grant.mode != "rw":
             raise WriteProtected(f"write denied: path is in a read-only grant: {real}")
-        if _is_write_protected(pol.root, real):
+        if _is_write_protected(_guard_base(real, grant), real):
             raise WriteProtected(f"write to protected path denied: {real}")
-    elif _is_read_protected(pol.root, real):
+    elif _is_read_protected(_guard_base(real, grant), real):
         raise ReadProtected(f"secret file read blocked: {real}")
     flags = _flags_for_mode(mode)
     if not pol.cfg.follow_symlinks:

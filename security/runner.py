@@ -304,11 +304,14 @@ def _write_deny_paths(root: Path) -> list[Path]:
     """
     from . import fs as _fs
 
-    globs = policy.get().cfg.write_deny_globs
+    pol = policy.get()
+    globs = pol.cfg.write_deny_globs
     if globs is None:
         globs = _fs._DEFAULT_WRITE_DENY_GLOBS
     if not globs:
         return []
+    # Same merge as the fs gate, or the shell keeps the write the gate refuses.
+    globs = list(globs) + list(getattr(pol, "extra_write_deny", []))
 
     protected = {root / rel for rel in _PROTECTED_PATHS}
     scratch = policy.get().scratch_dir()
@@ -317,7 +320,18 @@ def _write_deny_paths(root: Path) -> list[Path]:
     for g in globs:
         if g.endswith("/**"):
             base = root / g[:-3]
-            if base.exists():
+            # A missing directory used to be left unbound, which let the shell
+            # create it and fill it: `.agent/compiled_prompts/` is read back as
+            # the system prompt, `.agent/checkpoints/` as the record of edits.
+            # Creating it here (app-owned, under .agent/, never user content)
+            # means the read-only bind always exists. "*" in the prefix can't
+            # be created, so those still fall through to the file walk.
+            if not base.exists() and "*" not in g[:-3] and _under_root(base, root):
+                try:
+                    base.mkdir(parents=True, exist_ok=True)
+                except OSError as e:
+                    logger.warning("write-deny: cannot create %s: %s", base, e)
+            if base.is_dir():
                 if base not in protected:
                     out.append(base)
             else:
@@ -373,6 +387,14 @@ def _interpreter_paths(root: Path) -> list[str]:
             continue
         out.append(c)
     return out
+
+
+def _under_root(p: Path, root: Path) -> bool:
+    try:
+        p.relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 def _under_tmp(p: Path) -> bool:

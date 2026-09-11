@@ -821,3 +821,141 @@ class TestMaskScanFailsClosed:
     def test_normal_tree_is_unaffected(self, project):
         (project / ".env").write_text("SECRET=1")
         assert sec_runner._secret_mask_paths(project) == [project / ".env"]
+
+
+class TestPromptInputsAndAuditAreNotForgeable:
+    """`.agent/core.md` is write-denied because the system prompt is human
+    input. Two other files feed that same prompt — the preamble, read verbatim
+    on every build, and the compiled-prompt cache, served in place of the
+    shipped text — and the audit log is the record of what the agent ran. All
+    three were writable by the agent and by the sandboxed shell."""
+
+    def _cfg(self, project, **over):
+        cfg = Config()
+        cfg.tools.working_dir = str(project)
+        cfg.tools.agent_dir = str(project / ".agent")
+        cfg.security.require_sandbox = False
+        for k, v in over.items():
+            head, _, tail = k.partition(".")
+            setattr(getattr(cfg, head), tail, v)
+        sec_policy.setup(cfg)
+        return cfg
+
+    def test_prompt_inputs_and_audit_are_write_denied(self, project):
+        self._cfg(project)
+        for rel in (".agent/agent.preamble",
+                    ".agent/compiled_prompts/abc.txt",
+                    ".agent/audit.jsonl",
+                    ".agent/audit.20260101T000000.jsonl",
+                    ".agent/audit/whatever.jsonl"):
+            assert sec_fs._is_write_protected(project, project / rel), rel
+
+    def test_ordinary_agent_state_stays_writable(self, project):
+        """The gate must not swallow the dirs the agent legitimately writes."""
+        self._cfg(project)
+        for rel in (".agent/ideas.db", ".agent/index.db", ".agent/tmp/scratch.txt"):
+            assert not sec_fs._is_write_protected(project, project / rel), rel
+
+    def test_custom_locations_are_covered_too(self, project):
+        """A configured preamble/cache elsewhere must not silently lose cover."""
+        self._cfg(project,
+                  **{"tools.preamble_path": str(project / "cfg" / "my.preamble"),
+                     "compile_prompts.cache_dir": "cfg/prompts"})
+        assert sec_fs._is_write_protected(project, project / "cfg" / "my.preamble")
+        assert sec_fs._is_write_protected(project, project / "cfg" / "prompts" / "x.txt")
+
+    def test_sandbox_binds_them_read_only(self, project):
+        """The fs gate only binds the agent's own tools; the shell needs the mount."""
+        self._cfg(project)
+        (project / ".agent" / "compiled_prompts").mkdir(parents=True, exist_ok=True)
+        (project / ".agent" / "agent.preamble").write_text("x")
+        (project / ".agent" / "audit.jsonl").write_text("{}\n")
+        deny = sec_runner._write_deny_paths(project)
+        assert (project / ".agent" / "agent.preamble") in deny
+        assert (project / ".agent" / "audit.jsonl") in deny
+        assert (project / ".agent" / "compiled_prompts") in deny
+
+
+class TestGuardsInsideGrantedPaths:
+    """A grant says "work in this directory", not "its secrets are fair game"."""
+
+    def _granted(self, project, tmp_path, mode="rw"):
+        from agent.security import path_grants as pg
+        other = tmp_path.parent / "other-repo"
+        shutil.rmtree(other, ignore_errors=True)
+        (other / ".git").mkdir(parents=True)
+        (other / ".env").write_text("API_KEY=leak-me")
+        (other / ".git" / "config").write_text("[core]\n")
+        (other / "agent.toml").write_text("[llm]\n")
+        (other / "src.py").write_text("print(1)")
+        pg.add_grant(other, mode)
+        return other
+
+    def test_secret_in_granted_dir_stays_blocked(self, project, tmp_path):
+        other = self._granted(project, tmp_path)
+        with pytest.raises(sec_fs.ReadProtected):
+            sec_fs.safe_open(str(other / ".env"), "r")
+
+    def test_config_in_granted_dir_stays_write_protected(self, project, tmp_path):
+        other = self._granted(project, tmp_path)
+        for rel in ("agent.toml", ".git/config"):
+            with pytest.raises(sec_fs.WriteProtected):
+                sec_fs.safe_open(str(other / rel), "w")
+
+    def test_ordinary_file_in_granted_dir_still_works(self, project, tmp_path):
+        other = self._granted(project, tmp_path)
+        with sec_fs.safe_open(str(other / "src.py"), "r") as fh:
+            assert fh.read() == "print(1)"
+        with sec_fs.safe_open(str(other / "new.py"), "w") as fh:
+            fh.write("x")
+
+
+class TestMemoryIsToolMediated:
+    """Memory is written through MemoryStore in the host process (`save_note`,
+    recall, compaction). A raw file write is either corruption or the agent
+    rewriting what it is supposed to remember."""
+
+    def test_memory_db_family_is_write_denied(self, project):
+        for rel in (".agent/memory.db", ".agent/memory.db-wal", ".agent/memory.db-shm",
+                    ".agent/memory.db.enc", ".agent/sessions/s1/memory.db"):
+            assert sec_fs._is_write_protected(project, project / rel), rel
+
+    def test_reading_memory_is_still_allowed(self, project):
+        """Write-denied, not read-denied: browsing memory must keep working."""
+        p = project / ".agent" / "memory.db"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"")
+        assert not sec_fs._is_read_protected(project, p)
+
+    def test_sandbox_binds_memory_db_read_only(self, project):
+        p = project / ".agent" / "memory.db"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"")
+        assert p in sec_runner._write_deny_paths(project)
+
+    def test_the_store_itself_still_writes(self, project):
+        """The gate must not touch the in-process writer — it opens sqlite
+        directly, which is exactly the path that stays allowed."""
+        from agent.memory.store import MemoryStore
+        store = MemoryStore(project / ".agent" / "memory.db")
+        store.add(scope="note", body="remember the milk")
+        assert store.fts_search("milk", top_k=1)
+
+
+class TestProtectedPathsCannotBeCreated:
+    """A read-only bind only covers paths that exist when the command starts,
+    so a protected path that does not exist yet was the shell's to create."""
+
+    def test_missing_protected_dirs_are_materialised(self, project):
+        deny = sec_runner._write_deny_paths(project)
+        for rel in (".agent/compiled_prompts", ".agent/checkpoints", ".agent/diagnostics"):
+            d = project / rel
+            assert d.is_dir(), rel
+            assert d in deny, rel
+
+    def test_grants_file_exists_after_setup(self, project):
+        """Otherwise a shell could write one and it would be loaded as real
+        grants at the next startup."""
+        f = project / ".agent" / "path_grants.json"
+        assert f.exists() and f.read_text() == "[]"
+        assert sec_fs._is_write_protected(project, f)

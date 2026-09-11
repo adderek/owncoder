@@ -89,6 +89,26 @@ def setup(config: "Config") -> None:
     _grants.append(g)
 
     _load()
+    _ensure_grants_file()
+
+
+def _ensure_grants_file() -> None:
+    """Materialise an empty grants file when there is none.
+
+    The sandbox binds the write-deny paths read-only, but only those that exist
+    when a command starts — a file that is merely *planned* is not a mount
+    point. So a missing grants file could be created by a sandboxed shell and
+    would be loaded as real grants at the next startup, before any of this runs.
+    An empty file closes that: from here on the path is always bound read-only.
+    """
+    if _grants_file is None or _grants_file.exists():
+        return
+    try:
+        _grants_file.parent.mkdir(parents=True, exist_ok=True)
+        _grants_file.write_text("[]", encoding="utf-8")
+        os.chmod(_grants_file, 0o600)
+    except OSError as e:
+        logger.warning("path_grants: cannot create %s: %s", _grants_file, e)
 
 
 def add_grant(path: str | Path, mode: str, origin: str = "user") -> PathGrant:
