@@ -708,3 +708,116 @@ class TestPathRequestReason:
         d = sec_policy.get().ensure_scratch()
         (d / "agent.toml").write_text("x = 1")
         assert (d / "agent.toml") not in sec_runner._write_deny_paths(project)
+
+
+class TestScratchSymlinkHardening:
+    """The sandboxed shell can write `.agent/`, so it can swap the scratch for
+    a symlink. Two verified consequences if that is trusted: bwrap binds the
+    link's *target* onto /tmp (read-write access outside the root), and
+    reset_scratch deletes the target's contents from the unconfined host
+    process. Both must be refused."""
+
+    def _victim(self, tmp_path):
+        v = tmp_path.parent / "victim-dir"
+        shutil.rmtree(v, ignore_errors=True)
+        (v / "sub").mkdir(parents=True)
+        (v / "precious.txt").write_text("keep me")
+        (v / "sub" / "also.txt").write_text("keep me too")
+        return v
+
+    def test_symlinked_scratch_is_removed_not_followed(self, project, tmp_path):
+        victim = self._victim(tmp_path)
+        d = sec_policy.get().scratch_dir()
+        shutil.rmtree(d)
+        d.symlink_to(victim, target_is_directory=True)
+
+        assert sec_policy.get().ensure_scratch() == d   # rebuilt as a real dir
+        assert not d.is_symlink() and d.is_dir()
+        assert sorted(p.name for p in victim.iterdir()) == ["precious.txt", "sub"]
+
+    def test_reset_scratch_does_not_wipe_a_symlink_target(self, project, tmp_path):
+        victim = self._victim(tmp_path)
+        d = sec_policy.get().scratch_dir()
+        shutil.rmtree(d)
+        d.symlink_to(victim, target_is_directory=True)
+
+        sec_policy.reset_scratch()
+        assert sorted(p.name for p in victim.iterdir()) == ["precious.txt", "sub"]
+        assert (victim / "sub" / "also.txt").read_text() == "keep me too"
+
+    def test_symlinked_ancestor_disables_the_scratch(self, project, tmp_path):
+        """`.agent` itself swapped: the scratch is not a link, but still lands
+        outside the project. Nothing may be created, bound or deleted there."""
+        victim = self._victim(tmp_path)
+        agent_dir = project / ".agent"
+        shutil.rmtree(agent_dir)
+        agent_dir.symlink_to(victim, target_is_directory=True)
+
+        pol = sec_policy.get()
+        assert not pol.scratch_path_is_clean()
+        assert pol.ensure_scratch() is None
+        sec_policy.reset_scratch()
+        assert sorted(p.name for p in victim.iterdir()) == ["precious.txt", "sub"]
+
+    def test_untrusted_scratch_falls_back_to_tmpfs(self, project, tmp_path, monkeypatch):
+        monkeypatch.setattr(sec_runner, "_under_tmp", lambda p: False)
+        monkeypatch.setattr(sec_policy.Policy, "ensure_scratch", lambda self: None)
+        argv = sec_runner._bwrap_argv(["true"], cwd=project, network=False)
+        i = argv.index("/tmp")
+        assert argv[i - 1] == "--tmpfs"
+
+    def test_untrusted_scratch_leaves_temp_env_alone(self, project, monkeypatch):
+        monkeypatch.setattr(sec_policy.Policy, "ensure_scratch", lambda self: None)
+        env = sec_policy.get().env_for_child({"TMPDIR": "/tmp"})
+        assert "AGENT_TMP" not in env
+        assert env["TMPDIR"] == "/tmp"   # host value, i.e. the sandbox's own tmpfs
+
+
+class TestMaskScanFailsClosed:
+    """A truncated scan means some secret stayed readable and some policy file
+    stayed writable inside the sandbox, with nothing downstream able to tell
+    that from "the tree has no more matches". Refuse rather than pretend."""
+
+    def _tree(self, project, n):
+        d = project / "many"
+        d.mkdir()
+        for i in range(n):
+            (d / f"f{i}.txt").write_text("x")
+        (project / ".env").write_text("SECRET=1")
+        return d
+
+    def test_file_cap_refuses_the_command(self, project, monkeypatch):
+        monkeypatch.setattr(sec_runner, "_SECRET_SCAN_FILE_CAP", 5)
+        self._tree(project, 20)
+        with pytest.raises(sec_runner.SandboxMaskIncomplete):
+            sec_runner._secret_mask_paths(project)
+
+    def test_match_cap_refuses_the_command(self, project, monkeypatch):
+        monkeypatch.setattr(sec_runner, "_SECRET_MASK_MATCH_CAP", 3)
+        d = project / "keys"
+        d.mkdir()
+        for i in range(10):
+            (d / f"k{i}.pem").write_text("-----BEGIN-----")
+        with pytest.raises(sec_runner.SandboxMaskIncomplete):
+            sec_runner._secret_mask_paths(project)
+
+    def test_refusal_reaches_the_tool_layer(self, project, monkeypatch):
+        # Callers already refuse to run without isolation; this must ride the
+        # same path instead of crashing the turn.
+        assert issubclass(sec_runner.SandboxMaskIncomplete, sec_runner.SandboxUnavailable)
+        monkeypatch.setattr(sec_runner, "_SECRET_SCAN_FILE_CAP", 5)
+        self._tree(project, 20)
+        monkeypatch.setattr(sec_runner, "select_backend", lambda: "bwrap")
+        with pytest.raises(sec_runner.SandboxUnavailable):
+            sec_runner._bwrap_argv(["true"], cwd=project, network=False)
+
+    def test_opt_in_fail_open_still_runs(self, project, monkeypatch):
+        monkeypatch.setattr(sec_runner, "_SECRET_SCAN_FILE_CAP", 5)
+        self._tree(project, 20)
+        sec_policy.get().cfg.mask_scan_fail_open = True
+        # Partial list, no exception — the documented escape hatch.
+        assert isinstance(sec_runner._secret_mask_paths(project), list)
+
+    def test_normal_tree_is_unaffected(self, project):
+        (project / ".env").write_text("SECRET=1")
+        assert sec_runner._secret_mask_paths(project) == [project / ".env"]

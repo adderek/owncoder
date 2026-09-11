@@ -34,6 +34,16 @@ class SandboxUnavailable(RuntimeError):
     """No suitable sandbox backend is installed."""
 
 
+class SandboxMaskIncomplete(SandboxUnavailable):
+    """The secret-mask / write-deny scan could not cover the whole tree.
+
+    Subclasses SandboxUnavailable so every caller that already refuses to run
+    without isolation refuses this too: a partial scan means some `.env` is
+    readable by the shell, or some policy file writable by it, with no visible
+    sign that the protection stopped applying.
+    """
+
+
 @dataclass
 class RunResult:
     returncode: int
@@ -197,6 +207,33 @@ _SECRET_SCAN_FILE_CAP = 50_000
 _SECRET_MASK_MATCH_CAP = 500
 
 
+def _truncated(matches: list[Path], root: Path, globs: list[str], why: str) -> list[Path]:
+    """Handle a scan that ran out of budget before covering the tree.
+
+    Fails closed by default. The caps bound how long this walk can take — it
+    runs for every command — but a truncated walk silently stops masking the
+    secrets and stops binding the policy files read-only, and nothing
+    downstream can tell that from "the tree really has no more matches". A
+    shell command is not worth running under a protection that quietly lapsed.
+    """
+    if getattr(policy.get().cfg, "mask_scan_fail_open", False):
+        logger.warning(
+            "path-glob %s under %s — matching files beyond it were NOT masked / "
+            "made read-only (globs: %s). Running anyway: "
+            "security.mask_scan_fail_open is on.",
+            why, root, ", ".join(globs),
+        )
+        return matches
+    raise SandboxMaskIncomplete(
+        f"Sandbox protection incomplete: the path-glob {why} under {root}, so "
+        f"files matching {', '.join(globs)} past that point were not masked or "
+        "made read-only. Refusing to run a command with the protection half "
+        "applied. Fix by trimming the tree (.git/.venv/node_modules are already "
+        "skipped), narrowing security.read_deny_globs / write_deny_globs, or "
+        "set security.mask_scan_fail_open = true to accept the gap."
+    )
+
+
 def _matching_paths(root: Path, globs: list[str]) -> list[Path]:
     """Concrete existing files under *root* matching any glob in *globs*.
 
@@ -217,12 +254,10 @@ def _matching_paths(root: Path, globs: list[str]) -> list[Path]:
         for fn in filenames:
             scanned += 1
             if scanned > _SECRET_SCAN_FILE_CAP:
-                logger.warning(
-                    "path-glob scan hit %d-file cap under %s — matching files "
-                    "beyond the cap were NOT masked / made read-only (globs: %s)",
-                    _SECRET_SCAN_FILE_CAP, root, ", ".join(globs),
+                return _truncated(
+                    matches, root, globs,
+                    f"scan hit the {_SECRET_SCAN_FILE_CAP}-file cap",
                 )
-                return matches
             p = Path(dirpath) / fn
             try:
                 rel = str(p.relative_to(root))
@@ -231,12 +266,10 @@ def _matching_paths(root: Path, globs: list[str]) -> list[Path]:
             if any(_fnmatch.fnmatch(rel, g) or _fnmatch.fnmatch(fn, g) for g in globs):
                 matches.append(p)
                 if len(matches) >= _SECRET_MASK_MATCH_CAP:
-                    logger.warning(
-                        "path-glob scan hit %d-match cap under %s — additional "
-                        "matching files were NOT masked / made read-only",
-                        _SECRET_MASK_MATCH_CAP, root,
+                    return _truncated(
+                        matches, root, globs,
+                        f"scan hit the {_SECRET_MASK_MATCH_CAP}-match cap",
                     )
-                    return matches
     return matches
 
 
@@ -357,8 +390,12 @@ def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool, seccomp_fd: int | 
     # A project that itself lives under /tmp is the exception: either mount over
     # /tmp would hide the project root, so it is set up before the root bind and
     # left as a plain tmpfs there.
-    if getattr(pol.cfg, "scratch_bind_tmp", True) and not _under_tmp(root):
-        tmp_op = ["--bind", str(pol.ensure_scratch()), "/tmp"]
+    # A scratch that ensure_scratch cannot vouch for (a planted symlink: bwrap
+    # would mount its target, not the scratch) is the other exception.
+    scratch = pol.ensure_scratch()
+    if (getattr(pol.cfg, "scratch_bind_tmp", True)
+            and not _under_tmp(root) and scratch is not None):
+        tmp_op = ["--bind", str(scratch), "/tmp"]
     else:
         tmp_op = ["--tmpfs", "/tmp"]
     a = [

@@ -43,11 +43,14 @@ class Policy:
         # the sandbox's per-command tmpfs. The scratch lives under the mounted
         # root, so it survives across commands and the file tools can see it
         # (the default root grant already covers it).
-        scratch = str(self.ensure_scratch())
-        out["AGENT_TMP"] = scratch
-        out["TMPDIR"] = scratch
-        out["TMP"] = scratch
-        out["TEMP"] = scratch
+        # An untrustworthy scratch (see ensure_scratch) leaves the temp vars
+        # alone: the child then uses the sandbox's own /tmp, as before.
+        scratch = self.ensure_scratch()
+        if scratch is not None:
+            out["AGENT_TMP"] = str(scratch)
+            out["TMPDIR"] = str(scratch)
+            out["TMP"] = str(scratch)
+            out["TEMP"] = str(scratch)
         return out
 
     def scratch_dir(self) -> Path:
@@ -60,13 +63,60 @@ class Policy:
         """
         return self.agent_dir / "tmp"
 
-    def ensure_scratch(self) -> Path:
+    def scratch_path_is_clean(self) -> bool:
+        """True when no path component from the root down to the scratch is a
+        symlink.
+
+        The sandboxed shell can write anywhere under the root that is not
+        explicitly bound read-only, `.agent/` included. If it swaps the scratch
+        (or any directory above it) for a symlink, the bwrap `--bind` of the
+        scratch onto /tmp follows that link at mount time — handing the shell
+        read-write access to whatever it points at — and `reset_scratch` would
+        delete the target's contents from the *host* process. Both are verified
+        attacks, not theory, so every use of the scratch re-checks the chain.
+        """
         d = self.scratch_dir()
         try:
+            rel = d.relative_to(self.root)
+        except ValueError:
+            # Scratch configured outside the project: the sandbox never mounts
+            # that side, so the shell cannot plant a link there.
+            return not d.is_symlink()
+        cur = self.root
+        for part in rel.parts:
+            cur = cur / part
+            if cur.is_symlink():
+                return False
+        return True
+
+    def ensure_scratch(self) -> Path | None:
+        """Create the scratch dir and return it, or None if it can't be trusted.
+
+        None means callers fall back to the old behaviour — a per-command tmpfs
+        /tmp and no TMPDIR override — rather than operating on a path an
+        attacker chose.
+        """
+        d = self.scratch_dir()
+        try:
+            if d.is_symlink():
+                # Never legitimate here: drop the link itself (never its target)
+                # and rebuild the directory.
+                logger.error("scratch: %s is a symlink to %s — removing it",
+                             d, os.readlink(d))
+                os.unlink(d)
+            # Checked before mkdir: creating the directory through a symlinked
+            # ancestor would already be a write outside the project root.
+            if not self.scratch_path_is_clean():
+                logger.error("scratch: %s sits under a symlinked directory — "
+                             "refusing to use it", d)
+                return None
             d.mkdir(parents=True, exist_ok=True)
             os.chmod(d, 0o700)
         except OSError as e:
             logger.warning("scratch: cannot create %s: %s", d, e)
+            return None
+        if not d.is_dir():
+            return None
         return d
 
     def _add_project_venv(self, env: dict[str, str]) -> None:
@@ -165,7 +215,13 @@ def reset_scratch() -> None:
     if _policy is None:
         return
     d = _policy.scratch_dir()
-    if not d.is_dir():
+    # Deleting through a symlink the sandboxed shell planted would wipe the
+    # link's target, from a host process that is not confined to the project.
+    # ensure_scratch removes such a link and refuses a symlinked ancestor; if
+    # it cannot hand back a trusted path, nothing here gets deleted.
+    if _policy.ensure_scratch() is None:
+        return
+    if d.is_symlink() or not d.is_dir():
         return
     try:
         children = list(d.iterdir())

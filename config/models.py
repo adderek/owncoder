@@ -515,6 +515,13 @@ class SecurityConfig:
     allow_legacy_shell: bool = False
     # Write-deny globs (root-relative). None = use built-in defaults.
     # Set to [] to disable entirely (opt-out for trusted dev environments).
+    # The per-command walk that masks secret files and binds policy files
+    # read-only inside the sandbox is capped (it runs for every command). When
+    # a repo is big enough to hit the cap, the walk is truncated and part of
+    # the tree is left unprotected: the default is to refuse the command rather
+    # than run it under a protection that silently lapsed. Set true to accept
+    # the gap and keep running. See security/runner.py::_truncated.
+    mask_scan_fail_open: bool = False
     write_deny_globs: list | None = None
     # Read-deny globs for secret files. None = use built-in defaults.
     read_deny_globs: list | None = None
