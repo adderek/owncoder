@@ -1406,6 +1406,27 @@ class _HttpUI:
                 if setter is None:
                     return {"ok": False, "msg": "server does not support model-mode"}
                 ok, msg = self._call_on_loop(setter, str(payload.get("mode") or ""))
+            elif action in ("use_all", "release_all"):
+                # Pin/release one entry across every role it can serve. The
+                # role list is the registry matrix minus the embedding role,
+                # so a model is never pinned as the embedder.
+                entry = str(payload.get("entry") or "")
+                roles = [r.get("role") for r in (self.models_info().get("roles") or [])]
+                roles = [r for r in roles if r and r != "embeddings"]
+                if action == "release_all":
+                    roles = [r for r in roles
+                             if r in {x.get("role") for x in
+                                      (self.models_info().get("roles") or [])
+                                      if x.get("pinned") and x.get("entry") == entry}]
+                if not roles:
+                    return {"ok": False, "msg": "no applicable roles"}
+                args = ([f"{r}=auto" for r in roles] if action == "release_all"
+                        else [f"{r}={entry}" for r in roles])
+                results = [self._call_on_loop(self.server.set_model, a) for a in args]
+                good = sum(1 for r in results if r[0])
+                ok = bool(results) and good == len(results)
+                act_verb = "released from" if action == "release_all" else "pinned to"
+                msg = f"{entry} {act_verb} {good}/{len(results)} roles"
             elif action == "toggle_bulk":
                 save = bool(payload.get("save"))
                 setter = getattr(

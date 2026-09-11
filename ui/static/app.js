@@ -1422,6 +1422,9 @@ async function loadModels(silent) {
         (e.embeddings ? '<span class="mtier">emb</span>' :
           '<select class="msel" data-rolefor="' + esc(e.name) + '">' +
           '<option value="">role…</option>' +
+          '<option value="*|use_all">pin as ALL roles</option>' +
+          (roleOpts.some(r => pinnedMap[r] === e.name)
+            ? '<option value="*|release_all">unpin all roles</option>' : '') +
           roleOpts.map(r => {
             const isPinned = pinnedMap[r] === e.name;
             return '<option value="' + esc(r) + '|' + (isPinned ? 'release' : 'use') + '">' +
@@ -1429,7 +1432,7 @@ async function loadModels(silent) {
           }).join('') + '</select>') +
         '<button class="mbtn" data-toggle="' + esc(e.name) + '" data-en="' +
           (off ? '1' : '') + '">' + (off ? 'enable' : 'disable') + '</button>' +
-        (off ? '<button class="mbtn" data-save="' + esc(e.name) + '" title="persist disabled state for future sessions in this project">save</button>' : '') +
+        (off ? '<button class="mbtn" data-save="' + esc(e.name) + '" title="persist THIS model as disabled for future sessions (model_state.json) — one entry, not the whole group">keep off</button>' : '') +
         '</div>';
       }
     }
@@ -1444,16 +1447,25 @@ async function loadModels(silent) {
     el.querySelectorAll('[data-rolefor]').forEach(sel => sel.addEventListener('change', () => {
       if (!sel.value) return;
       const [role, act] = sel.value.split('|');
-      modelAction({action: act, entry: sel.dataset.rolefor, role: role});
+      if (act === 'use_all' || act === 'release_all') {
+        // role is '*' here — the server expands it to every applicable role
+        // (all except the embedding role) and applies it in one action.
+        modelAction({action: act, entry: sel.dataset.rolefor});
+      } else {
+        modelAction({action: act, entry: sel.dataset.rolefor, role: role});
+      }
       sel.value = '';
     }));
+    // Compare against the literal '1': dataset values are strings, so
+    // `!!b.dataset.en` is true for the string '0' too — that made the group
+    // "disable all" button send enabled=true and turn everything ON.
     el.querySelectorAll('[data-toggle]').forEach(b => b.addEventListener('click', () =>
-      modelAction({action: 'toggle', entry: b.dataset.toggle, enabled: !!b.dataset.en})));
+      modelAction({action: 'toggle', entry: b.dataset.toggle, enabled: b.dataset.en === '1'})));
     el.querySelectorAll('[data-save]').forEach(b => b.addEventListener('click', () =>
       modelAction({action: 'toggle', entry: b.dataset.save, enabled: false, save: true})));
     el.querySelectorAll('[data-bulk]').forEach(b => b.addEventListener('click', () =>
       modelAction({action: 'toggle_bulk', entries: b.dataset.bulk.split(','),
-                   enabled: !!b.dataset.en})));
+                   enabled: b.dataset.en === '1'})));
     document.getElementById('modesel').addEventListener('change', (ev) =>
       modelAction({action: 'mode', mode: ev.target.value}));
   } catch (e) { el.textContent = 'failed: ' + e; }
