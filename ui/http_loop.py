@@ -725,6 +725,14 @@ _PAGE = r"""<!DOCTYPE html>
     <summary class="dhead">Background jobs <span id="d-bg" class="dhead-refresh" title="Refresh">⟳</span></summary>
     <div id="bgbody">—</div>
   </details>
+  <details id="gitfold" class="dfold">
+    <summary class="dhead">Git history <span id="d-git" class="dhead-refresh" title="Refresh">⟳</span></summary>
+    <div id="gitsubwrap" class="gitsubwrap" hidden>
+      <label for="gitsub">repo</label>
+      <select id="gitsub"></select>
+    </div>
+    <div id="gitbody" class="gittree">—</div>
+  </details>
 </div></aside>
 </div>
 <script src="/static/md.js" defer></script>
@@ -1751,6 +1759,101 @@ class _HttpUI:
         # same diff over the relay, and one answer means one behaviour.
         return stored_diff(sid, turn_id, file_path)
 
+    # --- git history panel -------------------------------------------------
+    # One commit per record: fields NUL-separated, records terminated by 0x1e,
+    # so a subject/body containing anything else survives intact. The raw
+    # --graph view is kept alongside the structured list because it is still
+    # the clearest rendering of merges.
+    _GIT_LOG_FMT = (
+        "--pretty=format:%H%x00%h%x00%an%x00%ai%x00%cn%x00%ci%x00%P%x00%s%x00%b%x1e")
+
+    @staticmethod
+    def _git_run(args: list, cwd) -> tuple:
+        """(stdout, stderr); never raises, so a broken git renders an error
+        line instead of a 500."""
+        import subprocess
+        try:
+            r = subprocess.run(
+                args, capture_output=True, text=True, timeout=10, cwd=cwd or None)
+            if r.returncode == 0:
+                return r.stdout, ""
+            return "", (r.stderr or "git failed").strip()
+        except Exception as exc:
+            return "", str(exc)
+
+    @staticmethod
+    def _parse_git_log(raw: str) -> list:
+        """Split NUL/RS-separated `--pretty=format` output into commit dicts."""
+        commits = []
+        for rec in (raw or "").split("\x1e"):
+            rec = rec.strip("\r\n")
+            if not rec:
+                continue
+            f = rec.split("\x00")
+            if len(f) < 9:
+                continue
+            commits.append({
+                "hash": f[0], "short": f[1],
+                "author": f[2], "adate": f[3],
+                "committer": f[4], "cdate": f[5],
+                "parents": f[6].split() if f[6] else [],
+                "subject": f[7], "body": f[8],
+            })
+        return commits
+
+    def _git_submodules(self, cwd) -> list:
+        """Registered subrepos from .gitmodules. The path list doubles as the
+        allow-list that keeps ?sub= from reaching arbitrary directories."""
+        out, _ = self._git_run(
+            ["git", "config", "--file", ".gitmodules", "--get-regexp",
+             r"^submodule\..*\.path$"], cwd)
+        subs = []
+        for line in out.splitlines():
+            parts = line.split(None, 1)
+            if len(parts) == 2:
+                name = parts[0][len("submodule."):-len(".path")]
+                subs.append({"name": name, "path": parts[1].strip()})
+        return subs
+
+    def git_log_info(self, n: int = 50, all_branches: bool = True,
+                     sub: str = "") -> dict:
+        """Structured git history for the UI: commits, the submodule list and
+        the raw `--graph` rendering. `sub` drills into one subrepo's own log."""
+        try:
+            n = max(1, min(int(n), 500))
+        except (TypeError, ValueError):
+            n = 50
+        cwd = self.workdir()
+        subs = self._git_submodules(cwd)
+        if sub:
+            return self.git_submodule_log(sub, subs, n=n)
+        args = ["git", "log", f"-{n}"]
+        if all_branches:
+            args.append("--all")
+        out, err = self._git_run(args + [self._GIT_LOG_FMT], cwd)
+        gargs = ["git", "log", "--graph", "--oneline", "--decorate", f"-{n}"]
+        if all_branches:
+            gargs.append("--all")
+        graph, gerr = self._git_run(gargs, cwd)
+        return {"commits": self._parse_git_log(out), "graph": graph,
+                "submodules": subs, "error": err or gerr, "n": n, "sub": ""}
+
+    def git_submodule_log(self, sub: str, subs: list, n: int = 50) -> dict:
+        """History of one submodule (`git -C <sub> log`), no checkout needed.
+        `sub` must be a registered submodule path — otherwise a crafted query
+        string could steer `-C` anywhere on disk."""
+        cwd = self.workdir()
+        if sub not in [s["path"] for s in subs]:
+            return {"commits": [], "graph": "", "submodules": subs,
+                    "error": "unknown submodule", "n": n, "sub": sub}
+        out, err = self._git_run(
+            ["git", "-C", sub, "log", f"-{n}", self._GIT_LOG_FMT], cwd)
+        graph, gerr = self._git_run(
+            ["git", "-C", sub, "log", "--graph", "--oneline", "--decorate",
+             f"-{n}"], cwd)
+        return {"commits": self._parse_git_log(out), "graph": graph,
+                "submodules": subs, "error": err or gerr, "n": n, "sub": sub}
+
     # Attachments land on disk under this dir (relative to the session's
     # workdir); message content stays a plain string, so what the draft gets is
     # a text reference the agent's file tools can open. An *image* gets the
@@ -2209,6 +2312,14 @@ def _make_handler(ui: _HttpUI):
                     self._json({"jobs": ui.server.background_info()})
                 except Exception as exc:
                     self._json({"jobs": [], "error": str(exc)})
+            elif self.path == "/api/gitlog":
+                from urllib.parse import parse_qs, urlparse
+                qs = parse_qs(urlparse(self.path).query)
+                n = (qs.get("n") or ["50"])[0]
+                n = int(n) if str(n).isdigit() else 50
+                all_b = (qs.get("all") or ["1"])[0] in ("1", "true", "yes")
+                sub = (qs.get("sub") or [""])[0]
+                self._json(ui.git_log_info(n=n, all_branches=all_b, sub=sub))
             elif self.path == "/api/events":
                 self._sse()
             else:

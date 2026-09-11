@@ -2134,6 +2134,125 @@ document.getElementById('tokenwrap').addEventListener('click', () => openDetails
 document.getElementById('iostats').addEventListener('click', () => openDetails(loadStats, 'statsfold'));
 // Background jobs: header chip (⚙N, hidden when idle) polled every 5s;
 // details-panel section lists jobs with per-job kill.
+// Full commit message as a literal-text node: every field goes through
+// textContent, so a message containing <script>/<img onerror> is displayed,
+// never parsed as markup. esc() only covers &,<,> anyway, so keeping the DOM
+// build text-only is the load-bearing part of the injection guard.
+function gitMsgEl(c) {
+  const pre = document.createElement('div');
+  pre.className = 'gitmsg';
+  const head = c.subject || '';
+  const body = (c.body || '').trim();
+  pre.textContent = body ? head + '\n\n' + body : head;
+  return pre;
+}
+
+function gitNode(c, byHash, childMap, seen) {
+  const node = document.createElement('div');
+  node.className = 'gitnode';
+  const kids = childMap[c.hash] || [];
+  const row = document.createElement('div');
+  row.className = 'gitrow';
+  const caret = document.createElement('span');
+  caret.className = 'gitcaret';
+  caret.textContent = kids.length ? '▸' : '·';
+  const sha = document.createElement('span');
+  sha.className = 'gitsha';
+  sha.textContent = c.short || (c.hash || '').slice(0, 8);
+  const subj = document.createElement('span');
+  subj.className = 'gitsubj';
+  subj.textContent = c.subject || '';
+  subj.title = c.subject || '';
+  const meta = document.createElement('span');
+  meta.className = 'gitmeta';
+  meta.textContent = (c.author || '') + ' · ' + String(c.adate || '').slice(0, 10);
+  row.append(caret, sha, subj, meta);
+  node.appendChild(row);
+  const full = document.createElement('div');
+  full.className = 'gitfull';
+  full.hidden = true;
+  full.appendChild(gitMsgEl(c));
+  node.appendChild(full);
+  let kidbox = null;
+  if (kids.length) {
+    kidbox = document.createElement('div');
+    kidbox.className = 'gitkids';
+    kidbox.hidden = true;
+    kids.forEach(k => {
+      if (seen[k.hash]) return;
+      seen[k.hash] = true;
+      kidbox.appendChild(gitNode(k, byHash, childMap, seen));
+    });
+    node.appendChild(kidbox);
+  }
+  row.addEventListener('click', () => {
+    full.hidden = !full.hidden;
+    if (kidbox) kidbox.hidden = full.hidden;
+    caret.textContent = kids.length ? (full.hidden ? '▸' : '▾') : '·';
+  });
+  return node;
+}
+
+function renderGitTree(el, commits) {
+  const byHash = {};
+  commits.forEach(c => { byHash[c.hash] = c; });
+  const childMap = {}, childSet = {}, seen = {};
+  commits.forEach(c => {
+    (c.parents || []).forEach(p => {
+      if (byHash[p]) { (childMap[p] = childMap[p] || []).push(c); childSet[c.hash] = true; }
+    });
+  });
+  commits.forEach(c => {
+    if (childSet[c.hash] || seen[c.hash]) return;
+    seen[c.hash] = true;
+    el.appendChild(gitNode(c, byHash, childMap, seen));
+  });
+}
+
+async function loadGitLog(subArg) {
+  const el = document.getElementById('gitbody');
+  const wrap = document.getElementById('gitsubwrap');
+  const sel = document.getElementById('gitsub');
+  try {
+    if (!document.getElementById('right').classList.contains('open') ||
+        !foldOpen('gitfold')) return;
+    const sub = (subArg !== undefined) ? subArg : (sel ? sel.value : '');
+    const d = await (await fetch('/api/gitlog' + (sub ? '?sub=' + encodeURIComponent(sub) : ''))).json();
+    const subs = d.submodules || [];
+    if (wrap && sel && subs.length) {
+      if (sel.options.length !== subs.length + 1) {
+        sel.textContent = '';
+        const root = document.createElement('option');
+        root.value = ''; root.textContent = 'superproject';
+        sel.appendChild(root);
+        subs.forEach(s => {
+          const o = document.createElement('option');
+          o.value = s.path; o.textContent = s.path;
+          sel.appendChild(o);
+        });
+      }
+      sel.value = d.sub || '';
+      wrap.hidden = false;
+    } else if (wrap) { wrap.hidden = true; }
+    el.textContent = '';
+    if (d.error) { el.textContent = 'git log failed: ' + d.error; return; }
+    const commits = d.commits || [];
+    if (!commits.length) { el.textContent = 'no commits'; return; }
+    renderGitTree(el, commits);
+    if (d.graph) {
+      const det = document.createElement('details');
+      const sum = document.createElement('summary');
+      sum.className = 'gitbadge';
+      sum.textContent = 'ascii graph';
+      const pre = document.createElement('pre');
+      pre.className = 'gitraw';
+      pre.textContent = d.graph;
+      det.append(sum, pre);
+      el.appendChild(det);
+    }
+  } catch (e) { if (el) el.textContent = 'failed: ' + e; }
+}
+
 async function loadBg() {
   const el = document.getElementById('bgbody');
   try {
@@ -2194,6 +2313,11 @@ document.getElementById('compact').addEventListener('click', async () => {
   }
 });
 wireRefresh('d-bg', loadBg);
+wireRefresh('d-git', loadGitLog);
+(function () {
+  const sel = document.getElementById('gitsub');
+  if (sel) sel.addEventListener('change', () => loadGitLog(sel.value));
+})();
 wireRefresh('d-plan', loadPlan);
 wireRefresh('d-trig', loadTriggers);
 wireRefresh('d-models', loadModels);
@@ -2213,7 +2337,7 @@ wireRefresh('d-mem', loadMemory);
 // at startup, which fires toggle for every fold that comes back open.
 [['modelsfold', loadModels], ['statsfold', loadStats], ['mcfold', loadModelCalls],
  ['ctxfold', loadContext], ['memfold', loadMemory],
- ['bgfold', loadBg]].forEach(([id, loader]) => {
+ ['bgfold', loadBg], ['gitfold', loadGitLog]].forEach(([id, loader]) => {
   const f = document.getElementById(id);
   if (f) f.addEventListener('toggle', () => { if (f.open) loader(); });
 });
