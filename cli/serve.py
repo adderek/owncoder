@@ -787,7 +787,10 @@ def cmd_serve(args, config: "Config") -> None:
     rag_db = str((Path(working_dir) / config.rag.db_path).resolve())
     asm_db = str((Path(working_dir) / config.summarization.db_path).resolve())
 
-    if not Path(rag_db).exists():
+    # The file is created empty at init so the sandbox has something to bind
+    # read-only (security/preflight.py), so "exists" no longer means "indexed"
+    # — an empty db is the un-indexed state.
+    if not Path(rag_db).exists() or Path(rag_db).stat().st_size == 0:
         console.print(f"[red]Index not found:[/red] {rag_db}")
         console.print("Run [bold]agent init[/bold] first.")
         return

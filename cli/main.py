@@ -68,6 +68,9 @@ def _resolve_project(args) -> tuple[Path | None, "Config"]:
     return project_root, config
 
 
+from agent.security.preflight import ProtectedPathsMissing as _ProtectedPathsMissing
+
+
 def _friendly_error(exc: Exception) -> str:
     """Return a human-readable error message for known exception types."""
     name = type(exc).__name__
@@ -466,6 +469,11 @@ def main() -> None:
         # CancelledError tracebacks — exit quietly with the conventional code.
         print("\nInterrupted.", file=sys.stderr)
         sys.exit(130)
+    except _ProtectedPathsMissing as exc:
+        # A refused start, not a crash: the cause is in the message and a
+        # traceback plus a crash dump would only bury it.
+        print(f"\nRefusing to start: {exc}", file=sys.stderr)
+        sys.exit(1)
     except Exception as exc:
         import logging as _logging
         dump_path = _write_exception_dump(exc, argv=sys.argv, config=config, log_path=log_path)

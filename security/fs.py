@@ -89,6 +89,16 @@ _DEFAULT_WRITE_DENY_GLOBS: list[str] = [
     # `.enc` image used in vault mode.
     ".agent/memory.db*",
     ".agent/**/memory.db*",
+    # The same rule for the other tool-mediated stores. The agent reaches them
+    # by asking for a tool — `submit_idea`, `index_code`, `save_note` — and the
+    # write is done by agent code in the host process, which opens sqlite
+    # directly and never passes through this gate. Reading stays open; only the
+    # "edit the store as a file" path is closed. Configured locations are
+    # covered dynamically — see policy._state_db_globs.
+    ".agent/ideas.db*",
+    ".agent/index.db*",
+    ".agent/index-archive.db*",
+    ".agent/summaries.db*",
 ]
 
 # The immutable core of the system prompt: human input only, so the agent's own

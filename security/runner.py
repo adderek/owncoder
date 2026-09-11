@@ -323,10 +323,15 @@ def _write_deny_paths(root: Path) -> list[Path]:
             # A missing directory used to be left unbound, which let the shell
             # create it and fill it: `.agent/compiled_prompts/` is read back as
             # the system prompt, `.agent/checkpoints/` as the record of edits.
-            # Creating it here (app-owned, under .agent/, never user content)
-            # means the read-only bind always exists. "*" in the prefix can't
-            # be created, so those still fall through to the file walk.
-            if not base.exists() and "*" not in g[:-3] and _under_root(base, root):
+            # security.preflight creates the whole set at startup (and refuses
+            # to start when it cannot); this repeats it per command so a
+            # directory deleted mid-session does not reopen the hole. "*" in
+            # the prefix can't be created, so those fall through to the walk.
+            # Only under the agent's own directory: `.git/**` and `.claude/**`
+            # are in the deny set too, and materialising an empty `.git` would
+            # break git for the user. Same rule as security.preflight.
+            if (not base.exists() and "*" not in g[:-3]
+                    and _under_root(base, pol.agent_dir)):
                 try:
                     base.mkdir(parents=True, exist_ok=True)
                 except OSError as e:

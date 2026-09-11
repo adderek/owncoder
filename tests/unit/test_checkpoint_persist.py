@@ -103,7 +103,10 @@ class TestOptOut:
         write_file("a.txt", "v1")
         ckpt.create_checkpoint("cp")
 
-        assert not store.root(cfg).exists()
+        # The directory itself is pre-created so the sandbox can bind it
+        # read-only (security/preflight.py); with persistence off it stays
+        # empty, which is what "memory only" means.
+        assert list(store.root(cfg).glob("*")) == []
         _restart(cfg)
         assert ckpt.list_checkpoints() == []
 

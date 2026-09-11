@@ -206,6 +206,43 @@ def _prompt_input_globs(config: "Config", root: Path) -> list[str]:
     return out
 
 
+def _state_db_globs(config: "Config", root: Path, agent_dir: Path) -> list[str]:
+    """Root-relative write-deny globs for the tool-mediated sqlite stores.
+
+    Memory, the idea backlog, the RAG index and the code summaries are state
+    the agent reaches by *asking for a tool* — `save_note`, `submit_idea`,
+    `index_code` — and the write is then done by agent code in the host
+    process, which opens sqlite directly, below the fs gate and outside the
+    sandbox. So a file write to one of these is never the tool path: it is
+    either corruption (a half-appended WAL) or the agent editing state it is
+    only supposed to reach through a tool call. fs.py covers the default
+    `.agent/` names; this covers a relocated agent_dir and the configured
+    locations (``rag.db_path``, ``rag.archive_db_path``,
+    ``summarization.db_path``). The trailing `*` takes the -wal/-shm sidecars
+    and the sealed `.enc` image with it.
+    """
+    out: list[str] = []
+    candidates: list[str | Path] = [
+        agent_dir / "memory.db",
+        agent_dir / "ideas.db",
+        getattr(getattr(config, "rag", None), "db_path", ""),
+        getattr(getattr(config, "rag", None), "archive_db_path", ""),
+        getattr(getattr(config, "summarization", None), "db_path", ""),
+    ]
+    for raw in candidates:
+        if not raw:
+            continue
+        p = Path(raw)
+        if not p.is_absolute():
+            p = root / p
+        try:
+            rel = p.resolve().relative_to(root.resolve())
+        except (OSError, ValueError):
+            continue        # outside the project: the gate only knows root-relative
+        out.append(f"{rel.as_posix()}*")
+    return out
+
+
 def setup(config: "Config") -> Policy:
     global _policy
     root = Path(config.tools.working_dir).resolve()
@@ -213,9 +250,15 @@ def setup(config: "Config") -> Policy:
     if not agent_dir.is_absolute():
         agent_dir = root / agent_dir
     _policy = Policy(root=root, agent_dir=agent_dir, cfg=config.security,
-                     extra_write_deny=_prompt_input_globs(config, root))
+                     extra_write_deny=(_prompt_input_globs(config, root)
+                                       + _state_db_globs(config, root, agent_dir)))
     from . import path_grants as _pg
     _pg.setup(config)
+    # Before anything can run a command: every protected path must exist, or
+    # the sandbox has nothing to bind read-only over it. Creates what is
+    # missing and refuses to continue when it cannot — see preflight.py.
+    from . import preflight as _preflight
+    _preflight.enforce(config)
     from . import permissions as _perms
     _perms.load_file_rules(config)
     # Wipe once per process: a resumed session must not find a previous run's

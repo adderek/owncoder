@@ -230,8 +230,23 @@ def cmd_init(args, config):
     load_rules(working_dir)
     _configured.touch()
 
+    # Create the protected paths now, so the sandbox has something to bind
+    # read-only over each of them from the first command onwards. A path that
+    # does not exist is not covered by the overlay, and whatever a command
+    # writes there is read back as real state at the next startup. Sessions
+    # refuse to start when this set is incomplete — see security/preflight.py.
+    from agent.security import preflight as _preflight
+    _created = _preflight.ensure(config)
+    _still_missing = _preflight.verify(config)
+
     console.print(f"[green]Initialized[/green] {Path(working_dir).resolve()}")
     console.print("  Config dir: [bold].agent/[/bold]")
+    if _created:
+        console.print(f"  Protected paths: [bold]{len(_created)}[/bold] created")
+    if _still_missing:
+        console.print("[red]  Could not create:[/red] "
+                      + ", ".join(str(p) for p in _still_missing))
+        console.print("  [red]Sessions will refuse to start until this is fixed.[/red]")
 
     skip_index = getattr(args, "skip_index", False)
     index_path = getattr(args, "path", None)

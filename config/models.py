@@ -496,6 +496,13 @@ class SecurityConfig:
     # file tools — can still find it. Off => /tmp stays a per-command tmpfs and
     # only $TMPDIR/$AGENT_TMP point at the scratch.
     scratch_bind_tmp: bool = True
+    # Refuse to start when a protected path is missing and cannot be created.
+    # The sandbox enforces the write-deny set with read-only binds, and a bind
+    # needs a mountpoint: a path that does not exist yet is writable by any
+    # command the agent runs, and is read back as real state at the next
+    # startup (grants, compiled prompts, the sqlite stores). See
+    # security/preflight.py. False downgrades the refusal to a warning.
+    require_protected_paths: bool = True
     env_allow: list = field(default_factory=lambda: [
         "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "HOME",
         "USER", "LOGNAME", "TMPDIR", "PWD", "SHELL",

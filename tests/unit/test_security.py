@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import stat
 import shutil
 import subprocess
 import sys
@@ -107,10 +108,10 @@ class TestProjectVenvOnPath:
 
     def _venv(self, project, name=".venv", pyver=None):
         bindir = project / name / "bin"
-        bindir.mkdir(parents=True)
+        bindir.mkdir(parents=True, exist_ok=True)
         (bindir / "python3").write_text("#!/bin/sh\n")
         if pyver:
-            (project / name / "lib" / pyver / "site-packages").mkdir(parents=True)
+            (project / name / "lib" / pyver / "site-packages").mkdir(parents=True, exist_ok=True)
         return bindir
 
     def _system_pyver(self):
@@ -494,7 +495,7 @@ class TestSandboxWriteDenyOverlay:
         (agent_dir / "permissions.json").write_text("{}")
         (agent_dir / "core.md").write_text("rules")
         ws = agent_dir / "web_search"
-        ws.mkdir()
+        ws.mkdir(exist_ok=True)          # preflight already created it
         (ws / "_http_fetcher.py").write_text("print('x')")
 
         found = {p.relative_to(project).as_posix()
@@ -509,7 +510,7 @@ class TestSandboxWriteDenyOverlay:
         """Readable, not forgeable: records can be read inside the sandbox but
         a contaminated model cannot rewrite or delete its own failure trail."""
         d = project / ".agent" / "diagnostics" / "failures"
-        d.mkdir(parents=True)
+        d.mkdir(parents=True, exist_ok=True)
         (d / "index.jsonl").write_text("{}\n")
 
         found = {p.relative_to(project).as_posix()
@@ -523,7 +524,7 @@ class TestSandboxWriteDenyOverlay:
         """A `prefix/**` dir bind must swallow a narrower file glob beneath it,
         or the same path is bound twice and bwrap rejects the duplicate."""
         ws = project / ".agent" / "web_search"
-        ws.mkdir(parents=True)
+        ws.mkdir(parents=True, exist_ok=True)
         fetcher = ws / "_http_fetcher.py"
         fetcher.write_text("x")
 
@@ -720,7 +721,7 @@ class TestScratchSymlinkHardening:
     def _victim(self, tmp_path):
         v = tmp_path.parent / "victim-dir"
         shutil.rmtree(v, ignore_errors=True)
-        (v / "sub").mkdir(parents=True)
+        (v / "sub").mkdir(parents=True, exist_ok=True)
         (v / "precious.txt").write_text("keep me")
         (v / "sub" / "also.txt").write_text("keep me too")
         return v
@@ -851,9 +852,10 @@ class TestPromptInputsAndAuditAreNotForgeable:
             assert sec_fs._is_write_protected(project, project / rel), rel
 
     def test_ordinary_agent_state_stays_writable(self, project):
-        """The gate must not swallow the dirs the agent legitimately writes."""
+        """The gate must not swallow what the agent legitimately writes."""
         self._cfg(project)
-        for rel in (".agent/ideas.db", ".agent/index.db", ".agent/tmp/scratch.txt"):
+        for rel in (".agent/tmp/scratch.txt", ".agent/sessions/s1/notes.txt",
+                    "src/main.py"):
             assert not sec_fs._is_write_protected(project, project / rel), rel
 
     def test_custom_locations_are_covered_too(self, project):
@@ -883,7 +885,7 @@ class TestGuardsInsideGrantedPaths:
         from agent.security import path_grants as pg
         other = tmp_path.parent / "other-repo"
         shutil.rmtree(other, ignore_errors=True)
-        (other / ".git").mkdir(parents=True)
+        (other / ".git").mkdir(parents=True, exist_ok=True)
         (other / ".env").write_text("API_KEY=leak-me")
         (other / ".git" / "config").write_text("[core]\n")
         (other / "agent.toml").write_text("[llm]\n")
@@ -942,6 +944,59 @@ class TestMemoryIsToolMediated:
         assert store.fts_search("milk", top_k=1)
 
 
+class TestToolMediatedStores:
+    """Same rule as memory for the other stores the agent reaches by asking
+    for a tool: ideas (`submit_idea`), the RAG index (`index_code`) and the
+    code summaries. The writer is agent code in the host process; a file write
+    is never the tool path."""
+
+    def _cfg(self, project, **over):
+        cfg = Config()
+        cfg.tools.working_dir = str(project)
+        cfg.tools.agent_dir = str(project / ".agent")
+        cfg.security.require_sandbox = False
+        for k, v in over.items():
+            head, _, tail = k.partition(".")
+            setattr(getattr(cfg, head), tail, v)
+        sec_policy.setup(cfg)
+        return cfg
+
+    def test_store_files_are_write_denied(self, project):
+        self._cfg(project)
+        for rel in (".agent/ideas.db", ".agent/ideas.db-wal",
+                    ".agent/index.db", ".agent/index.db-shm",
+                    ".agent/index-archive.db", ".agent/summaries.db"):
+            assert sec_fs._is_write_protected(project, project / rel), rel
+
+    def test_reading_them_is_still_allowed(self, project):
+        """The model may look inside the stores; it just may not edit them."""
+        self._cfg(project)
+        for rel in (".agent/ideas.db", ".agent/index.db"):
+            assert not sec_fs._is_read_protected(project, project / rel), rel
+
+    def test_configured_locations_are_covered(self, project):
+        """A db_path pointed elsewhere must not silently lose cover."""
+        self._cfg(project, **{"rag.db_path": "var/rag/index.db",
+                              "summarization.db_path": "var/sum.db"})
+        assert sec_fs._is_write_protected(project, project / "var" / "rag" / "index.db")
+        assert sec_fs._is_write_protected(project, project / "var" / "sum.db")
+
+    def test_sandbox_binds_them_read_only(self, project):
+        """The fs gate binds only the agent's own tools; the shell needs the mount."""
+        self._cfg(project)
+        p = project / ".agent" / "ideas.db"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"")
+        assert p in sec_runner._write_deny_paths(project)
+
+    def test_the_ideas_store_itself_still_writes(self, project):
+        """submit_idea runs in the host process and opens sqlite directly."""
+        from agent.ideas.store import IdeasStore
+        store = IdeasStore(project / ".agent" / "ideas.db")
+        store.add(title="index the parser", body="", type="idea")
+        assert store.list()
+
+
 class TestProtectedPathsCannotBeCreated:
     """A read-only bind only covers paths that exist when the command starts,
     so a protected path that does not exist yet was the shell's to create."""
@@ -959,3 +1014,93 @@ class TestProtectedPathsCannotBeCreated:
         f = project / ".agent" / "path_grants.json"
         assert f.exists() and f.read_text() == "[]"
         assert sec_fs._is_write_protected(project, f)
+
+
+class TestStartupPreflight:
+    """A read-only bind needs a mountpoint, so a protected path that does not
+    exist yet is writable by any command the agent runs — and is read back as
+    real state at the next startup. The set is created up front and its
+    presence is a startup precondition."""
+
+    def _cfg(self, project, **over):
+        cfg = Config()
+        cfg.tools.working_dir = str(project)
+        cfg.tools.agent_dir = str(project / ".agent")
+        cfg.security.require_sandbox = False
+        for k, v in over.items():
+            head, _, tail = k.partition(".")
+            setattr(getattr(cfg, head), tail, v)
+        return cfg
+
+    def test_setup_leaves_nothing_missing(self, project):
+        from agent.security import preflight
+        cfg = self._cfg(project)
+        sec_policy.setup(cfg)
+        assert preflight.verify(cfg) == []
+
+    def test_everything_required_is_bound_read_only(self, project):
+        """The point of creating them: the sandbox overlay is complete."""
+        from agent.security import preflight
+        cfg = self._cfg(project)
+        sec_policy.setup(cfg)
+        dirs, files = preflight.required_paths(cfg)
+        deny = set(sec_runner._write_deny_paths(project))
+        assert dirs and files
+        assert [p for p in dirs + files if p not in deny] == []
+
+    def test_user_content_is_never_created(self, project):
+        """`.git/**` and `.claude/**` are in the deny set too, but conjuring an
+        empty `.git` into a project that has none breaks git for the user."""
+        from agent.security import preflight
+        cfg = self._cfg(project)
+        sec_policy.setup(cfg)
+        dirs, _files = preflight.required_paths(cfg)
+        assert all(".git" not in p.parts and ".claude" not in p.parts for p in dirs)
+        assert not (project / ".git").exists()
+        assert not (project / ".claude").exists()
+
+    def test_the_shell_cannot_plant_them(self, project):
+        from agent.security import preflight
+        cfg = self._cfg(project)
+        sec_policy.setup(cfg)
+        sec_fs.init_root_pin()
+        _dirs, files = preflight.required_paths(cfg)
+        for f in files:
+            rel = f.relative_to(project)
+            r = sec_runner.run(["sh", "-c", f"echo junk > {rel}"], timeout=10)
+            assert r.returncode != 0, rel
+
+    def test_start_refuses_when_a_path_cannot_be_created(self, project):
+        from agent.security import preflight
+        cfg = self._cfg(project)
+        sec_policy.setup(cfg)
+        (project / ".agent" / "ideas.db").unlink()
+        os.chmod(project / ".agent", 0o500)
+        try:
+            with pytest.raises(preflight.ProtectedPathsMissing):
+                sec_policy.setup(cfg)
+        finally:
+            os.chmod(project / ".agent", 0o700)
+
+    def test_opt_out_downgrades_to_a_warning(self, project):
+        cfg = self._cfg(project, **{"security.require_protected_paths": False})
+        sec_policy.setup(cfg)
+        (project / ".agent" / "ideas.db").unlink()
+        os.chmod(project / ".agent", 0o500)
+        try:
+            sec_policy.setup(cfg)      # must not raise
+        finally:
+            os.chmod(project / ".agent", 0o700)
+
+    def test_created_store_files_are_private_and_empty(self, project):
+        """A zero-byte file is a valid empty sqlite db, so the stores open it
+        and build their schema exactly as they would have with no file."""
+        from agent.ideas.store import IdeasStore
+        self._cfg(project)
+        sec_policy.setup(self._cfg(project))
+        db = project / ".agent" / "ideas.db"
+        assert db.stat().st_size == 0
+        assert stat.S_IMODE(db.stat().st_mode) == 0o600
+        store = IdeasStore(db)
+        store.add(title="works", body="", type="idea")
+        assert store.list()
