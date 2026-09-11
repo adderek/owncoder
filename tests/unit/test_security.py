@@ -516,9 +516,12 @@ class TestSandboxWriteDenyOverlay:
         found = {p.relative_to(project).as_posix()
                  for p in sec_runner._write_deny_paths(project)}
         assert ".agent/diagnostics" in found
+        # Covered by the read-only bind of `.agent` itself, so it is not bound
+        # a second time — see TestAgentDirIsReadOnly.
         argv = sec_runner._bwrap_argv(["sh", "-c", "true"], cwd=project, network=False)
-        i = argv.index(str(project / ".agent" / "diagnostics"))
+        i = argv.index(str(project / ".agent"))
         assert argv[i - 1] == "--ro-bind"
+        assert str(project / ".agent" / "diagnostics") not in argv
 
     def test_broader_glob_covers_narrower_file(self, project):
         """A `prefix/**` dir bind must swallow a narrower file glob beneath it,
@@ -541,9 +544,19 @@ class TestSandboxWriteDenyOverlay:
         argv = sec_runner._bwrap_argv(
             ["sh", "-c", "echo x > .agent/path_grants.json"],
             cwd=project, network=False)
-        i = argv.index(str(grants))
+        i = argv.index(str(agent_dir))
         assert argv[i - 1] == "--ro-bind"
-        assert argv[i - 2] != "--ro-bind-try"
+
+        # With the directory bind off, each protected file is bound on its own.
+        cfg = sec_policy.get().cfg
+        cfg.agent_dir_read_only = False
+        try:
+            argv = sec_runner._bwrap_argv(["sh", "-c", "true"], cwd=project, network=False)
+            i = argv.index(str(grants))
+            assert argv[i - 1] == "--ro-bind"
+            assert argv[i - 2] != "--ro-bind-try"
+        finally:
+            cfg.agent_dir_read_only = True
 
 
 class TestWriteDenyBasename:
@@ -1104,3 +1117,57 @@ class TestStartupPreflight:
         store = IdeasStore(db)
         store.add(title="works", body="", type="idea")
         assert store.list()
+
+
+@pytest.mark.skipif(shutil.which("bwrap") is None, reason="bwrap not installed")
+class TestAgentDirIsReadOnly:
+    """Per-file binds cannot cover a file that does not exist yet: a `-wal` /
+    `-shm` sidecar between sqlite sessions, a sealed `.enc`, tomorrow's state
+    file. A read-only bind of `.agent` itself covers those too — nothing can be
+    created inside a read-only mount — while the host process, which is not in
+    the namespace, keeps writing sqlite normally."""
+
+    @pytest.fixture
+    def ready(self, project):
+        sec_fs.init_root_pin()
+        return project
+
+    def _sh(self, cmd, cwd):
+        return sec_runner.run(["sh", "-c", cmd], cwd=str(cwd), timeout=10).returncode
+
+    def test_sidecars_and_new_files_cannot_be_created(self, ready):
+        for cmd in ("echo x > .agent/memory.db-wal",
+                    "echo x > .agent/memory.db-shm",
+                    "echo x > .agent/memory.db.enc",
+                    "echo x > .agent/whatever.json",
+                    "mkdir -p .agent/evil"):
+            assert self._sh(cmd, ready) != 0, cmd
+
+    def test_reading_stays_allowed(self, ready):
+        (ready / ".agent" / "memory.db").write_bytes(b"")
+        assert self._sh("cat .agent/memory.db > /dev/null", ready) == 0
+
+    def test_scratch_stays_writable(self, ready):
+        """The one place under `.agent/` a command is meant to write — by path
+        and through the `/tmp` bind."""
+        assert self._sh('echo ok > "$AGENT_TMP/t.txt"', ready) == 0
+        assert self._sh("echo ok > /tmp/t2.txt", ready) == 0
+
+    def test_the_rest_of_the_project_stays_writable(self, ready):
+        assert self._sh("echo ok > src.txt", ready) == 0
+
+    def test_the_host_process_is_unaffected(self, ready):
+        """The mount lives in the sandbox namespace only."""
+        from agent.memory.store import MemoryStore
+        store = MemoryStore(ready / ".agent" / "memory.db")
+        store.add(scope="note", body="written while the sandbox sees read-only")
+        assert store.fts_search("sandbox", top_k=1)
+
+    def test_opt_out_falls_back_to_per_file_binds(self, ready):
+        cfg = sec_policy.get().cfg
+        cfg.agent_dir_read_only = False
+        try:
+            assert self._sh("echo x > .agent/memory.db-wal", ready) == 0
+            assert self._sh("echo x > .agent/path_grants.json", ready) != 0
+        finally:
+            cfg.agent_dir_read_only = True

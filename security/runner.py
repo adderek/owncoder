@@ -407,6 +407,28 @@ def _under_tmp(p: Path) -> bool:
     return p == tmp or tmp in p.parents
 
 
+def _agent_dir_ro(pol, root: Path) -> Path | None:
+    """The agent directory, when it should be bound read-only as a whole.
+
+    Binding the individual protected files is not enough: a bind needs a
+    mountpoint, so a file that does not exist yet — a `-wal`/`-shm` sidecar
+    sqlite has just removed, a sealed `memory.db.enc`, tomorrow's state file —
+    is the shell's to create. A read-only bind of the *directory* covers every
+    path under it, present or not, because nothing can be created inside a
+    read-only mount. The scratch is re-bound read-write on top; it is the one
+    place under `.agent/` a command is meant to write.
+
+    The host process is unaffected — the bind exists only inside the sandbox
+    namespace — so the stores keep writing sqlite normally.
+    """
+    if not getattr(pol.cfg, "agent_dir_read_only", True):
+        return None
+    agent_dir = pol.agent_dir
+    if not agent_dir.is_dir() or not _under_root(agent_dir, root):
+        return None        # outside the sandbox view: nothing to bind
+    return agent_dir
+
+
 def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool, seccomp_fd: int | None = None) -> list[str]:
     pol = policy.get()
     root = pol.root
@@ -457,10 +479,21 @@ def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool, seccomp_fd: int | 
     for rel in _PROTECTED_PATHS:
         p = root / rel
         a += ["--ro-bind-try", str(p), str(p)]
+    # The agent's own directory as one read-only mount, so nothing inside can
+    # be written *or created* — see _agent_dir_ro. The scratch goes back on top
+    # read-write.
+    ro_agent = _agent_dir_ro(pol, root)
+    if ro_agent is not None:
+        a += ["--ro-bind", str(ro_agent), str(ro_agent)]
+        if scratch is not None and _under_root(scratch, ro_agent):
+            a += ["--bind", str(scratch), str(scratch)]
     # Overlay the fs gate's write-deny paths read-only: a shell write would
     # otherwise bypass the gate and rewrite grants/permissions/core. Paths are
     # concrete and exist (matched by walk), so a plain --ro-bind is safe here.
+    # Anything under the read-only agent directory is already covered.
     for p in _write_deny_paths(root):
+        if ro_agent is not None and _under_root(p, ro_agent):
+            continue
         a += ["--ro-bind", str(p), str(p)]
     # Mask secret files (.env, keys, .ssh/*) with /dev/null so a shell read
     # can't exfiltrate what the fs gate already denies the Python file tools.
@@ -502,8 +535,18 @@ def _firejail_argv(argv: list[str], *, cwd: Path, network: bool) -> list[str]:
         p = pol.root / rel
         if p.exists():
             a += [f"--read-only={p}"]
+    # Same overlay as bwrap: the agent directory read-only as a whole, with the
+    # scratch back read-write, then whatever is left outside it.
+    ro_agent = _agent_dir_ro(pol, pol.root)
+    if ro_agent is not None:
+        a += [f"--read-only={ro_agent}"]
+        scratch = pol.ensure_scratch()
+        if scratch is not None and _under_root(scratch, ro_agent):
+            a += [f"--read-write={scratch}"]
     # Same write-deny overlay as bwrap — see _write_deny_paths.
     for p in _write_deny_paths(pol.root):
+        if ro_agent is not None and _under_root(p, ro_agent):
+            continue
         a += [f"--read-only={p}"]
     # Mask secret files (.env, keys, .ssh/*) so shell reads can't bypass the
     # fs gate's read-deny protection. --blacklist makes the path inaccessible.

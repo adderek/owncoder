@@ -503,6 +503,13 @@ class SecurityConfig:
     # startup (grants, compiled prompts, the sqlite stores). See
     # security/preflight.py. False downgrades the refusal to a warning.
     require_protected_paths: bool = True
+    # Bind <agent_dir> read-only inside the sandbox as a single mount (the
+    # scratch is re-bound read-write on top). Per-file binds cannot cover a
+    # file that does not exist yet — a `-wal`/`-shm` sidecar between sqlite
+    # sessions, a sealed `.enc`, a state file added in a later version — and a
+    # read-only *directory* covers those too. The host process is unaffected:
+    # the mount exists only inside the sandbox.
+    agent_dir_read_only: bool = True
     env_allow: list = field(default_factory=lambda: [
         "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "HOME",
         "USER", "LOGNAME", "TMPDIR", "PWD", "SHELL",
