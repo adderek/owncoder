@@ -25,6 +25,19 @@ _endpoints: dict[str, int] = {}
 _models: dict[str, int] = {}
 _listeners: list = []
 
+# Tracker label → role name the UI lists (agent.config.registry.matrix). The
+# labels above are internal and coarser than the config role sheet — a
+# GPU-routed summarizer counts as "main" so the GPU-busy check sees it — so the
+# mapping lives here, next to where the labels are produced, instead of being
+# guessed by each UI reading _counts.
+_LABEL_TO_ROLE = {
+    "main": "default",
+    "sum": "summarizer",
+    "name": "namer",
+    "emb": "embeddings",
+    "bg": "background",
+}
+
 # role → bool availability snapshot (configured model live on its endpoint).
 # Populated by best-effort probes; a missing role means "unknown / not probed".
 _availability: dict[str, bool] = {}
@@ -51,6 +64,25 @@ def get_counts() -> dict[str, int]:
     """Return role → active request count snapshot."""
     with _lock:
         return dict(_counts)
+
+
+def get_role_counts() -> dict[str, int]:
+    """Return config-role → active request count snapshot (only non-zero).
+
+    ``get_counts`` keys are internal labels ("main", "sum", …); this folds
+    them onto the role names the UI renders, so a role row can show the same
+    in-flight marker its model row does. Roles whose calls never increment a
+    counter (the single-shot judge/review/triage paths) are simply absent.
+    """
+    with _lock:
+        counts = dict(_counts)
+    out: dict[str, int] = {}
+    for label, n in counts.items():
+        if n <= 0:
+            continue
+        role = _LABEL_TO_ROLE.get(label, label)
+        out[role] = out.get(role, 0) + n
+    return out
 
 
 def get_endpoint_counts() -> dict[str, int]:

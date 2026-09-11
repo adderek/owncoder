@@ -120,6 +120,80 @@ async def test_call_role_with_failover_raises_when_all_candidates_fail(monkeypat
             cfg, "verify", messages=[{"role": "user", "content": "hi"}])
 
 
+async def test_one_shot_call_records_role_and_model_while_running(monkeypatch):
+    """The models panel keys its live marker by role and by model, so a
+    non-streamed role call must light both — and release them after."""
+    from agent.core import model_status as ms
+
+    entries = {"a": ModelEntry(base_url="http://a", model="ma", tier="local")}
+    cfg = _cfg(entries, roles={"judge": "a"})
+    seen = {}
+
+    class _Client:
+        def __init__(self):
+            self.chat = types.SimpleNamespace(
+                completions=types.SimpleNamespace(create=self._create))
+
+        async def _create(self, *, model, **k):
+            seen["roles"] = ms.get_role_counts()
+            seen["models"] = ms.get_model_counts()
+            return types.SimpleNamespace(
+                choices=[types.SimpleNamespace(message=types.SimpleNamespace(content="ok"))])
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr("agent.core.llm_client.make_llm_client",
+                        lambda c, base_url="", api_key="": _Client())
+
+    await llm_retry.call_role_with_failover(
+        cfg, "judge", messages=[{"role": "user", "content": "hi"}])
+
+    assert seen["roles"] == {"judge": 1}
+    assert seen["models"] == {"ma": 1}
+    assert ms.get_role_counts() == {}
+    assert ms.get_model_counts() == {}
+
+
+async def test_streamed_call_is_left_to_the_caller_to_record(monkeypatch):
+    """Establishing a stream is not the request: the walker must not mark it,
+    or the caller that owns the stream shows a spurious 2x for its duration."""
+    from agent.core import model_status as ms
+
+    entries = {"a": ModelEntry(base_url="http://a", model="ma", tier="local")}
+    cfg = _cfg(entries, roles={"background": "a"})
+    seen = {}
+
+    class _Stream:
+        def __aiter__(self):
+            return self._gen()
+
+        async def _gen(self):
+            yield types.SimpleNamespace(
+                choices=[types.SimpleNamespace(delta=types.SimpleNamespace(content="ok"))])
+
+    class _Client:
+        def __init__(self):
+            self.chat = types.SimpleNamespace(
+                completions=types.SimpleNamespace(create=self._create))
+
+        async def _create(self, *, model, stream, **k):
+            seen["roles"] = ms.get_role_counts()
+            return _Stream()
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr("agent.core.llm_client.make_llm_client",
+                        lambda c, base_url="", api_key="": _Client())
+
+    stream, _name, _entry, client = await llm_retry.open_stream_with_failover(
+        cfg, "background", messages=[{"role": "user", "content": "hi"}])
+    [c async for c in stream]
+    await client.close()
+    assert seen["roles"] == {}
+
+
 async def test_open_stream_with_failover_switches_on_connection_error(monkeypatch):
     from openai import APIConnectionError
 

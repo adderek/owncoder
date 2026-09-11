@@ -650,6 +650,8 @@ name = "local-code-agent"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "openai" },
     { name = "pathspec" },
     { name = "pyyaml" },
@@ -702,6 +704,7 @@ requires-dist = [
     { name = "cryptography", marker = "extra == 'vault'", specifier = ">=44" },
     { name = "faster-whisper", marker = "extra == 'speech'", specifier = ">=1.0" },
     { name = "graphifyy", marker = "extra == 'graph'", specifier = ">=0.1.14" },
+    { name = "numpy", specifier = ">=2.4.6" },
     { name = "numpy", marker = "extra == 'speech'", specifier = ">=1.24" },
     { name = "openai", specifier = ">=1.0" },
     { name = "pathspec", specifier = ">=0.12" },

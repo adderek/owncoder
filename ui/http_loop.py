@@ -1398,6 +1398,22 @@ class _HttpUI:
                 if setter is None:
                     return {"ok": False, "msg": "server does not support model-mode"}
                 ok, msg = self._call_on_loop(setter, str(payload.get("mode") or ""))
+            elif action == "toggle_bulk":
+                save = bool(payload.get("save"))
+                setter = getattr(
+                    self.server,
+                    "save_model_entry_enabled" if save else "set_model_entry_enabled",
+                    None)
+                if setter is None:
+                    return {"ok": False, "msg": "server does not support entry toggling"}
+                names = [str(n) for n in (payload.get("entries") or []) if n]
+                enabled = bool(payload.get("enabled"))
+                results = [self._call_on_loop(setter, n, enabled) for n in names]
+                good = sum(1 for r in results if r[0])
+                ok = bool(results) and good == len(results)
+                msg = (f"{good}/{len(results)} entries "
+                       f"{'enabled' if enabled else 'disabled'}"
+                       if results else "no entries selected")
             else:
                 return {"ok": False, "msg": f"unknown action {action!r}"}
         except Exception as exc:

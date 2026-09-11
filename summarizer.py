@@ -151,7 +151,7 @@ async def _try_primary(config: "Config", entry, used_gpu: bool, messages: list) 
         pass
     _ep = provider_label(entry.base_url)
     _role = "sum" if not used_gpu else "main"
-    _ms_inc(_role, _ep)
+    _ms_inc(_role, _ep, entry.model)
     try:
         async with _gpu_slot() if used_gpu else _noop():
             stream = await client.chat.completions.create(
@@ -159,7 +159,7 @@ async def _try_primary(config: "Config", entry, used_gpu: bool, messages: list) 
             )
             return await _consume_stream(stream)
     finally:
-        _ms_dec(_role, _ep)
+        _ms_dec(_role, _ep, entry.model)
         await client.close()
 
 
@@ -174,11 +174,13 @@ async def _try_fallback(config: "Config", messages: list) -> tuple[list[str], li
         local_only=_airgap_enabled(config),
     )
     _ep = provider_label(entry.base_url)
-    _ms_inc("sum", _ep)
+    # Record the entry that actually answered: after failover this is not the
+    # primary pick, and the models panel keys its live marker by model.
+    _ms_inc("sum", _ep, entry.model)
     try:
         return await _consume_stream(stream)
     finally:
-        _ms_dec("sum", _ep)
+        _ms_dec("sum", _ep, entry.model)
         await client.close()
 
 

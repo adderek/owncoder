@@ -141,7 +141,23 @@ async def _walk_candidates(config, role, kwargs, metrics_role, max_candidates, l
                     model_calls.record_entry(entry, role=metrics_role)
                 except Exception:
                     pass
-            resp = await client.chat.completions.create(model=entry.model, **kwargs)
+            # Live status, so the HTTP models panel lights the role row *and* the
+            # model row of whichever candidate answered — walked per attempt, so
+            # a ladder falling A → B shows the marker move with it. Skipped for
+            # streamed calls: this loop only establishes the stream, the caller
+            # owns the request from there and records it itself.
+            _status: tuple[str, str] | None = None
+            if not kwargs.get("stream"):
+                from agent.core.model_status import (
+                    _inc as _ms_inc, _dec as _ms_dec, provider_label,
+                )
+                _status = (provider_label(entry.base_url), entry.model)
+                _ms_inc(role, _status[0], _status[1])
+            try:
+                resp = await client.chat.completions.create(model=entry.model, **kwargs)
+            finally:
+                if _status is not None:
+                    _ms_dec(role, _status[0], _status[1])
             try:
                 from agent.metrics.model_reliability import record_outcome
                 record_outcome(name, "success", role=metrics_role)

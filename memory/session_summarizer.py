@@ -99,16 +99,9 @@ async def _call_llm(config: "Config", system: str, user_content: str) -> str:
     from agent.core.streaming import _clean_output
     from agent.core.llm_retry import open_stream_with_failover
 
-    # Best-effort status label: the primary "background" entry, even though
-    # failover may end up serving the call from a different one.
-    try:
-        from agent.config import make_registry
-        _label_model = make_registry(config).background.model
-    except Exception:
-        _label_model = None
-    _ms_inc("sum", None, _label_model)
     parts: list[str] = []
     client = None
+    _label: tuple[str, str | None, str] | None = None
     try:
         stream, _name, _entry, client = await open_stream_with_failover(
             config, "background",
@@ -119,12 +112,19 @@ async def _call_llm(config: "Config", system: str, user_content: str) -> str:
             max_tokens=_MAX_OUTPUT_TOKENS, temperature=0.3,
             metrics_role="qa-summary",
         )
+        # The stream is held by this function, so the tracker is incremented
+        # here (not in the failover walk, which only establishes it) — and
+        # against the entry that actually answered, so the models panel lights
+        # the serving model even when failover moved off the primary one.
+        _label = ("sum", None, _entry.model)
+        _ms_inc(*_label)
         async for chunk in stream:
             delta = chunk.choices[0].delta if chunk.choices else None
             if delta and delta.content:
                 parts.append(delta.content)
     finally:
-        _ms_dec("sum", None, _label_model)
+        if _label is not None:
+            _ms_dec(*_label)
         if client is not None:
             try:
                 await client.close()

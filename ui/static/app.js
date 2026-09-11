@@ -1322,7 +1322,11 @@ async function modelAction(payload) {
   } catch (e) {
     row('sys error', null, 'model action failed: ' + e);
   }
-  loadModels();
+  // Silent: a non-silent reload blanks the panel first, which resets its
+  // scroll position — so toggling a model halfway down a long list jumped
+  // back to the top. Silent keeps the scroll (the panel's own save/restore
+  // in loadModels still applies).
+  loadModels(true);
 }
 
 async function loadModels(silent) {
@@ -1339,10 +1343,19 @@ async function loadModels(silent) {
         esc(m) + '</option>').join('') + '</select></div>';
     h += '<div class="mrolesec">active: ' + esc(d.active_model || '?') + '</div>';
     if (d.roles && d.roles.length) {
+      // Same in-flight marker as the model rows: a role with requests running
+      // lights here, and its serving model lights in the list below (a ladder
+      // role lights whichever entry actually answered, plus every entry in
+      // flight when parallel calls landed on different ones).
       h += '<div class="mrolesec">roles' +
-        d.roles.map(r => '<div style="padding-left:8px">' +
-          (r.pinned ? '📌 ' : '&nbsp;&nbsp; ') + esc(r.role) + ' → ' + esc(r.entry) +
-          ' [' + esc(r.tier) + ']</div>').join('') + '</div>';
+        d.roles.map(r => {
+          const rn = r.running || 0;
+          return '<div class="mrow' + (rn ? ' busy' : '') + '" style="padding-left:8px">' +
+            '<span>' + (r.pinned ? '📌 ' : '&nbsp;&nbsp; ') + esc(r.role) + ' → ' +
+            esc(r.entry) + ' [' + esc(r.tier) + ']</span>' +
+            '<span class="mrun" title="requests in flight"><span class="mrun-dot"></span>' +
+            (rn > 1 ? rn : '') + '</span></div>';
+        }).join('') + '</div>';
     }
     const eps = d.endpoints || {};
     if (Object.keys(eps).length) {
@@ -1358,7 +1371,27 @@ async function loadModels(silent) {
     h += '<div class="mrolesec"><span style="opacity:.6">pin a model to a role from its ' +
       'dropdown; unpinned roles follow the fallback ladder</span>' +
       '<div style="opacity:.6">on/off is session-scoped</div></div>';
+    // Group rows by endpoint location (local / LAN / cloud) so a whole class
+    // can be toggled in one click — "disable all remote" over a long model
+    // list otherwise means one click per model.
+    const groupOrder = ['local', 'remote', 'cloud'];
+    const groups = {};
     for (const e of (d.entries || [])) {
+      const g = groupOrder.indexOf(e.location) >= 0 ? e.location : 'cloud';
+      (groups[g] || (groups[g] = [])).push(e);
+    }
+    const allGroups = groupOrder.concat(
+      Object.keys(groups).filter(k => groupOrder.indexOf(k) < 0));
+    for (const g of allGroups) {
+      const list = groups[g];
+      if (!list || !list.length) continue;
+      const names = list.map(e => e.name);
+      const allOff = list.every(e => e.status === 'off');
+      h += '<div class="mgroup"><span class="mglabel">' + esc(g) + ' (' + list.length +
+        ')</span><button class="mbtn" data-bulk="' + esc(names.join(',')) +
+        '" data-en="' + (allOff ? '1' : '0') + '">' +
+        (allOff ? 'enable all' : 'disable all') + '</button></div>';
+      for (const e of list) {
       const off = e.status === 'off';
       const running = e.running || 0;
       const t = e.tps || {};
@@ -1398,6 +1431,7 @@ async function loadModels(silent) {
           (off ? '1' : '') + '">' + (off ? 'enable' : 'disable') + '</button>' +
         (off ? '<button class="mbtn" data-save="' + esc(e.name) + '" title="persist disabled state for future sessions in this project">save</button>' : '') +
         '</div>';
+      }
     }
     // Skip the DOM write entirely when nothing changed — a poll landing on an
     // unchanged panel is the common case, and rewriting innerHTML every 2s
@@ -1417,6 +1451,9 @@ async function loadModels(silent) {
       modelAction({action: 'toggle', entry: b.dataset.toggle, enabled: !!b.dataset.en})));
     el.querySelectorAll('[data-save]').forEach(b => b.addEventListener('click', () =>
       modelAction({action: 'toggle', entry: b.dataset.save, enabled: false, save: true})));
+    el.querySelectorAll('[data-bulk]').forEach(b => b.addEventListener('click', () =>
+      modelAction({action: 'toggle_bulk', entries: b.dataset.bulk.split(','),
+                   enabled: !!b.dataset.en})));
     document.getElementById('modesel').addEventListener('change', (ev) =>
       modelAction({action: 'mode', mode: ev.target.value}));
   } catch (e) { el.textContent = 'failed: ' + e; }

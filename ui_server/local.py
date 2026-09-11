@@ -495,17 +495,22 @@ class LocalUIServer:
         cfg = self._agent.config
         entries = getattr(cfg, "model_entries", {}) or {}
         model_roles = getattr(cfg, "model_roles", {}) or {}
+        from agent.core.model_status import (get_model_counts, get_role_counts,
+                                             get_endpoint_counts, get_workers)
+        running = get_model_counts()
+        # Per-role in-flight count so a role row lights up for the same call its
+        # serving model row does (a ladder role lights whichever entry answered).
+        running_roles = get_role_counts()
         roles = []
         try:
             from agent.config import make_registry
             for role, (entry_name, tier) in make_registry(cfg).matrix().items():
                 roles.append({"role": role, "entry": entry_name, "tier": tier,
-                              "pinned": role in model_roles})
+                              "pinned": role in model_roles,
+                              "running": running_roles.get(role, 0)})
         except Exception:
             logger.debug("models_overview: matrix failed", exc_info=True)
         active = model_roles.get("default", "")
-        from agent.core.model_status import get_model_counts, get_endpoint_counts, get_workers
-        running = get_model_counts()
         # Session call/token tallies, folded onto entry names. Call sites are
         # inconsistent about what they put in the row's "model" field — the
         # main turn loop records the registry entry name, record_entry records
@@ -538,6 +543,10 @@ class LocalUIServer:
         except Exception:
             logger.debug("models_overview: model_stats failed", exc_info=True)
             tps_all, stats_for = {}, None
+        try:
+            from agent.config.loader import entry_tier as location_tier
+        except Exception:
+            location_tier = None
         rows = []
         for name in sorted(entries):
             e = entries[name]
@@ -554,6 +563,11 @@ class LocalUIServer:
                 "model": model,
                 "base_url": getattr(e, "base_url", "") or "",
                 "tier": entry_tier(e),
+                # Endpoint location (local / remote-LAN / cloud), distinct from
+                # the cost tier above: the models panel groups rows by it so a
+                # whole class can be toggled at once ("disable all remote").
+                "location": (location_tier(e) if location_tier
+                             else ("local" if getattr(e, "local", False) else "cloud")),
                 "status": entry_status(cfg, name, e) or "on",
                 "ctx": getattr(e, "ctx_window", 0) or 0,
                 "out": getattr(e, "max_output_tokens", 0) or 0,

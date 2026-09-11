@@ -219,6 +219,9 @@ aside.resizing { transition: none; }   /* no lag while dragging */
 }
 .mrow .mcalls { color: var(--dimmer); font-size: 10px; }
 .mrow .mtps { color: var(--dimmer); font-size: 10px; white-space: nowrap; }
+.mgroup { display: flex; gap: 6px; align-items: center; margin: 8px 0 2px;
+          color: var(--dim); text-transform: uppercase; letter-spacing: .04em; }
+.mgroup .mglabel { flex: 1; }
 .mendpoints { color: var(--dimmer); margin: 4px 0 2px; }
 .mendpoints .mep { margin-right: 8px; }
 .placeholder { color: var(--dimmer); font-style: italic; line-height: 1.6; }

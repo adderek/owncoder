@@ -43,6 +43,27 @@ def test_unpinned_auto_tier_still_chooses(cfg):
     assert select_for_turn(cfg, "refactor this module", "local") is not None
 
 
+def test_every_ui_offered_role_is_pinnable(cfg):
+    """/model must accept every role the HTTP UI's dropdown can offer.
+
+    The GUI builds its role list from registry.matrix() (ROLE_FALLBACKS); when
+    the two drifted, `judge` was shown in the panel but rejected as
+    "Unknown role 'judge'". Regression guard against that drift.
+    """
+    from agent.config.registry import ROLE_FALLBACKS
+
+    agent = _agent(cfg)
+    # registry.matrix(), which backs the GUI dropdown, is built from
+    # ROLE_FALLBACKS — that is the list the two must not drift on.
+    offered = set(ROLE_FALLBACKS) | {"default", "summarizer"}
+    for role in offered:
+        if role == "embeddings":
+            continue  # not a pinnable chat role (vector service)
+        ok, msg = _apply_model(agent, f"{role}=strong")
+        assert ok, f"role {role!r} rejected: {msg}"
+        assert cfg.model_roles[role] == "strong"
+
+
 def test_pin_stands_auto_tier_down(cfg):
     ok, msg = _apply_model(_agent(cfg), "strong")
     assert ok and cfg.runtime_model_pinned is True

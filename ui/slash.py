@@ -394,10 +394,22 @@ def _apply_model(agent, arg: str) -> tuple[bool, str]:
         role_raw, _, entry_name = v.partition("=")
         role_raw = role_raw.strip().lower()
         entry_name = entry_name.strip()
-        if role_raw not in _ROLE_ALIASES:
-            known = ", ".join(sorted(_ROLE_ALIASES))
-            return False, f"Unknown role '{role_raw}'. Known: {known}"
-        role = _ROLE_ALIASES[role_raw]
+        if role_raw in _ROLE_ALIASES:
+            role = _ROLE_ALIASES[role_raw]
+        else:
+            # The HTTP UI builds its role dropdown from the registry matrix
+            # (ROLE_FALLBACKS), so every role it can offer has to be pinnable
+            # here — otherwise the GUI offers a role `/model` rejects (this is
+            # how `judge` was shown yet rejected as "Unknown role"). Derive the
+            # fallback from that one source instead of mirroring the list.
+            try:
+                from agent.config.registry import ROLE_FALLBACKS
+            except Exception:
+                ROLE_FALLBACKS = {}
+            if role_raw not in ROLE_FALLBACKS:
+                known = ", ".join(sorted(set(_ROLE_ALIASES) | set(ROLE_FALLBACKS)))
+                return False, f"Unknown role '{role_raw}'. Known: {known}"
+            role = role_raw
 
     if entry_name == "?":
         return True, _status()

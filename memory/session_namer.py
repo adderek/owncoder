@@ -80,34 +80,20 @@ def _format_transcript(messages: list[dict]) -> str:
 
 
 async def _call_llm(config: "Config", user_content: str) -> str:
-    try:
-        from agent.core.model_status import _inc as _ms_inc, _dec as _ms_dec
-    except Exception:  # pragma: no cover - fallback when status unavailable
-        def _ms_inc(*_a, **_k) -> None: ...
-        def _ms_dec(*_a, **_k) -> None: ...
-
+    # Live status for this call is recorded by call_role_with_failover itself,
+    # against the entry that actually answers (not the pinned "namer" one),
+    # which is also what the models panel shows.
     from agent.core.llm_retry import call_role_with_failover
-    # Best-effort status label: the primary "namer" entry, even though
-    # failover may end up serving the call from a different one.
-    try:
-        from agent.config import make_registry
-        _label_model = make_registry(config).role("namer").model
-    except Exception:
-        _label_model = None
-    _ms_inc("name", None, _label_model)
-    try:
-        resp, _name, _entry = await call_role_with_failover(
-            config, "namer",
-            messages=[
-                {"role": "system", "content": _SYSTEM},
-                {"role": "user", "content": user_content[:_MAX_INPUT_CHARS]},
-            ],
-            max_tokens=_MAX_OUTPUT_TOKENS, temperature=0.2,
-            metrics_role="session-namer",
-        )
-        return (resp.choices[0].message.content or "").strip()
-    finally:
-        _ms_dec("name", None, _label_model)
+    resp, _name, _entry = await call_role_with_failover(
+        config, "namer",
+        messages=[
+            {"role": "system", "content": _SYSTEM},
+            {"role": "user", "content": user_content[:_MAX_INPUT_CHARS]},
+        ],
+        max_tokens=_MAX_OUTPUT_TOKENS, temperature=0.2,
+        metrics_role="session-namer",
+    )
+    return (resp.choices[0].message.content or "").strip()
 
 
 def _coerce_meta(raw: str) -> dict | None:

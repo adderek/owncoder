@@ -24,6 +24,17 @@ def test_endpoint_counts_track_concurrency():
     assert ms.get_endpoint_counts() == {}
 
 
+def test_role_counts_fold_labels_onto_config_roles():
+    # "main"/"sum"/"name"/"emb" are internal labels; the models panel renders
+    # config roles, so the read side maps them (chat's "main" -> "default").
+    with ms.track_sync("main"), ms.track_sync("main"), ms.track_sync("name"):
+        assert ms.get_role_counts() == {"default": 2, "namer": 1}
+    assert ms.get_role_counts() == {}
+    # A label with no role name passes through rather than being dropped.
+    with ms.track_sync("sec"):
+        assert ms.get_role_counts() == {"sec": 1}
+
+
 def test_endpoint_optional_keeps_role_counts():
     # Endpoint arg is optional; role counters still work without it.
     with ms.track_sync("main"):

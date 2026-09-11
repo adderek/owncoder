@@ -16,6 +16,7 @@ dependencies = [
     "pathspec>=0.12",
     "watchdog>=3.0",
     "pyyaml>=6.0",
+    "numpy>=2.4.6",
 ]
 
 [project.optional-dependencies]
