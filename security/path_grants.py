@@ -30,6 +30,7 @@ class PathGrant:
     mode: str       # "ro" | "rw"
     origin: str     # "default" | "user" | "agent"
     state: str      # "granted" | "pending"
+    reason: str = ""  # why the agent asked — shown to the user in the paths tab
     _dev: int | None = field(default=None, repr=False)
     _ino: int | None = field(default=None, repr=False)
 
@@ -101,7 +102,7 @@ def add_grant(path: str | Path, mode: str, origin: str = "user") -> PathGrant:
     return g
 
 
-def request_grant(path: str | Path, mode: str) -> PathGrant:
+def request_grant(path: str | Path, mode: str, reason: str = "") -> PathGrant:
     """Agent requests access to path. Returns grant with state='pending' (no access yet)."""
     resolved = Path(path).resolve()
     existing = grant_for(resolved)
@@ -110,7 +111,8 @@ def request_grant(path: str | Path, mode: str) -> PathGrant:
     for g in _grants:
         if g.path == resolved and g.state == "pending":
             return g
-    g = PathGrant(path=resolved, mode=mode, origin="agent", state="pending")
+    g = PathGrant(path=resolved, mode=mode, origin="agent", state="pending",
+                  reason=reason)
     _grants.append(g)
     _notify()
     return g

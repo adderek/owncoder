@@ -1801,10 +1801,15 @@ async function loadGrants() {
     const d = await (await fetch('/api/grants')).json();
     el.innerHTML = (d.grants || []).map(g => {
       const pend = g.state === 'pending';
+      // The agent's stated reason is the only thing that makes an approve/deny
+      // decision informed, so it rides along with the path, not just in a tooltip.
+      const why = (g.reason || '').trim();
       return '<div class="grow' + (pend ? ' pending' : '') + '" title="' +
-        esc(g.path) + (pend ? ' — requested by the agent, no access yet' : '') + '">' +
+        esc(g.path) + (pend ? ' — requested by the agent, no access yet' : '') +
+        (why ? ' — ' + esc(why) : '') + '">' +
         '<span class="gmode' + (g.mode === 'rw' ? ' rw' : '') + '">' + esc(g.mode) + '</span>' +
-        '<span class="gpath">' + esc(g.path) + '</span>' +
+        '<span class="gpath">' + esc(g.path) +
+        (why ? '<span class="greason">' + esc(why) + '</span>' : '') + '</span>' +
         (pend
           ? '<button class="sbtn" data-ga="accept" data-p="' + esc(g.path) + '" title="Grant access">✓</button>' +
             '<button class="sbtn" data-ga="reject" data-p="' + esc(g.path) + '" title="Reject request">✗</button>'

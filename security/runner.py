@@ -278,6 +278,7 @@ def _write_deny_paths(root: Path) -> list[Path]:
         return []
 
     protected = {root / rel for rel in _PROTECTED_PATHS}
+    scratch = policy.get().scratch_dir()
     out: list[Path] = []
     file_globs: list[str] = []
     for g in globs:
@@ -294,6 +295,10 @@ def _write_deny_paths(root: Path) -> list[Path]:
     covered = [p for p in out]
     for p in _matching_paths(root, file_globs):
         if p in protected or any(d == p or d in p.parents for d in covered):
+            continue
+        # Scratch is exempt for the same reason the fs gate exempts it
+        # (fs._under_scratch): a temp file named agent.toml is not policy.
+        if p == scratch or scratch in p.parents:
             continue
         out.append(p)
     return out
@@ -337,9 +342,25 @@ def _interpreter_paths(root: Path) -> list[str]:
     return out
 
 
+def _under_tmp(p: Path) -> bool:
+    tmp = Path("/tmp")
+    return p == tmp or tmp in p.parents
+
+
 def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool, seccomp_fd: int | None = None) -> list[str]:
     pol = policy.get()
     root = pol.root
+    # /tmp: either the project scratch (persists across commands, visible to the
+    # file tools) or a fresh tmpfs per command. Every run_argv is its own bwrap
+    # process, so a tmpfs /tmp is discarded the moment the command ends — which
+    # is why a model that stages a file in /tmp finds it gone on the next call.
+    # A project that itself lives under /tmp is the exception: either mount over
+    # /tmp would hide the project root, so it is set up before the root bind and
+    # left as a plain tmpfs there.
+    if getattr(pol.cfg, "scratch_bind_tmp", True) and not _under_tmp(root):
+        tmp_op = ["--bind", str(pol.ensure_scratch()), "/tmp"]
+    else:
+        tmp_op = ["--tmpfs", "/tmp"]
     a = [
         "bwrap",
         "--die-with-parent",
@@ -352,7 +373,7 @@ def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool, seccomp_fd: int | 
         "--cap-drop", "ALL",
         "--proc", "/proc",
         "--dev", "/dev",
-        "--tmpfs", "/tmp",
+        *tmp_op,
         "--tmpfs", "/run",
         "--ro-bind", "/usr", "/usr",
         "--ro-bind-try", "/etc/alternatives", "/etc/alternatives",
@@ -398,6 +419,10 @@ def _firejail_argv(argv: list[str], *, cwd: Path, network: bool) -> list[str]:
         "firejail",
         "--quiet",
         "--noprofile",
+        # No scratch bind here: firejail's --bind is root-only, so /tmp stays
+        # private and per-command under this backend. $TMPDIR/$AGENT_TMP still
+        # point at the project scratch (policy.env_for_child), which is the
+        # path the prompt tells the model to use.
         "--private-tmp",
         "--private-dev",
         "--caps.drop=all",

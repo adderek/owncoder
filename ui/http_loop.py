@@ -888,7 +888,11 @@ class _HttpUI:
         self.session = session
         try:
             from agent.security import path_grants
+            from agent.security import policy as _sec_policy
             path_grants.apply_session(getattr(session, "path_grants", None))
+            # A session boundary is a scratch boundary: the next session must
+            # not inherit temp files it never created.
+            _sec_policy.reset_scratch()
         except Exception:
             logger.exception("http ui: applying session grants failed")
         return session.id
@@ -924,7 +928,11 @@ class _HttpUI:
         self.session = session
         try:
             from agent.security import path_grants
+            from agent.security import policy as _sec_policy
             path_grants.apply_session(getattr(session, "path_grants", None))
+            # A session boundary is a scratch boundary: the next session must
+            # not inherit temp files it never created.
+            _sec_policy.reset_scratch()
         except Exception:
             logger.exception("http ui: applying session grants failed")
         return session.id
@@ -993,7 +1001,8 @@ class _HttpUI:
             "workdir": self.workdir(),
             "grants": [
                 {"path": str(g.path), "mode": g.mode,
-                 "origin": g.origin, "state": g.state}
+                 "origin": g.origin, "state": g.state,
+                 "reason": getattr(g, "reason", "")}
                 for g in path_grants.get_all()
             ],
         }

@@ -47,6 +47,11 @@ run_argv(argv, cwd=None, timeout=None, network=False)
   Execute command as argv list (no shell interpretation, sandboxed).
   For pipes/redirects: run_argv(["sh", "-c", "cmd | other"]).
   Network blocked by default — set network=True only when required (curl, git fetch).
+  Temp files: write them under $AGENT_TMP (same dir as $TMPDIR, and as /tmp
+  inside the sandbox). It is readable by the file tools and survives across
+  commands within a session, but is wiped between sessions and may be cleared
+  at any time — check a file is there before using it, never store anything
+  you need later. Requesting access to the host /tmp is not needed.
 
 git_diff(staged=False, path=None)
   Show git diff.

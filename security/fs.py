@@ -81,6 +81,27 @@ from agent.core.core_rules import WRITE_DENY_GLOBS as _CORE_WRITE_DENY_GLOBS
 _DEFAULT_WRITE_DENY_GLOBS += list(_CORE_WRITE_DENY_GLOBS)
 
 
+def _under_scratch(pol, resolved: Path) -> bool:
+    """True for paths inside the ephemeral scratch (``<agent_dir>/tmp``).
+
+    The scratch sits under `.agent/`, so the write-deny globs meant for policy
+    files there (`.agent/**/*.toml`, and the bare-name matches on `agent.toml`
+    / `AGENT.md` / `.agent.*`) would otherwise fire on a throwaway temp file
+    that happens to be named that way. Nothing in the scratch is policy: the
+    shell can already write it, and blocking only the file tools would just
+    split the two paths apart again.
+    """
+    try:
+        scratch = pol.scratch_dir()
+    except AttributeError:      # policy predating the scratch dir
+        return False
+    try:
+        resolved.relative_to(scratch)
+        return True
+    except ValueError:
+        return False
+
+
 def _is_write_protected(root: Path, resolved: Path) -> bool:
     """Return True if *resolved* matches any write-deny glob relative to *root*."""
     pol = policy.get()
@@ -88,6 +109,8 @@ def _is_write_protected(root: Path, resolved: Path) -> bool:
     if globs is None:
         globs = _DEFAULT_WRITE_DENY_GLOBS
     if not globs:
+        return False
+    if _under_scratch(pol, resolved):
         return False
     try:
         rel = str(resolved.relative_to(root))

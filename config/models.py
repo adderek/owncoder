@@ -491,6 +491,11 @@ class SecurityConfig:
     # bare `python3` would otherwise be the system one, without the project's
     # dependencies. See security/policy.py::_add_project_venv.
     project_venv_on_path: bool = True
+    # Bind the project scratch (<agent_dir>/tmp) over /tmp inside the sandbox,
+    # so a command that hardcodes /tmp writes where the next command — and the
+    # file tools — can still find it. Off => /tmp stays a per-command tmpfs and
+    # only $TMPDIR/$AGENT_TMP point at the scratch.
+    scratch_bind_tmp: bool = True
     env_allow: list = field(default_factory=lambda: [
         "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "HOME",
         "USER", "LOGNAME", "TMPDIR", "PWD", "SHELL",

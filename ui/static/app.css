@@ -314,6 +314,8 @@ aside.resizing { transition: none; }   /* no lag while dragging */
 .grow .gpath { flex: 1; color: var(--fg); overflow: hidden; text-overflow: ellipsis;
                white-space: nowrap; }
 .grow.pending .gpath { color: var(--warn); }
+.grow .greason { color: var(--dim); }
+.grow .greason::before { content: " — "; color: var(--dimmer); }
 .grow .gorigin { color: var(--dimmer); flex-shrink: 0; }
 .acc-add { display: flex; gap: 4px; margin-top: 6px; }
 .acc-add input { flex: 1; min-width: 0; background: var(--bg); color: var(--fg);

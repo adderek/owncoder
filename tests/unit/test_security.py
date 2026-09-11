@@ -489,7 +489,7 @@ class TestSandboxWriteDenyOverlay:
 
     def test_write_deny_paths_finds_policy_files(self, project):
         agent_dir = project / ".agent"
-        agent_dir.mkdir()
+        agent_dir.mkdir(exist_ok=True)   # policy.setup() already made it (scratch)
         (agent_dir / "path_grants.json").write_text("[]")
         (agent_dir / "permissions.json").write_text("{}")
         (agent_dir / "core.md").write_text("rules")
@@ -533,7 +533,7 @@ class TestSandboxWriteDenyOverlay:
 
     def test_bwrap_argv_binds_write_deny_readonly(self, project):
         agent_dir = project / ".agent"
-        agent_dir.mkdir()
+        agent_dir.mkdir(exist_ok=True)   # policy.setup() already made it (scratch)
         grants = agent_dir / "path_grants.json"
         grants.write_text("[]")
 
@@ -616,3 +616,95 @@ class TestAuditLog:
         # command's stdout must not appear — only its sha256.
         assert content.count("secret-stdout-marker") == 2
         assert "stdout_sha256" in content
+
+
+class TestScratchDir:
+    """Temp files must survive across commands and be visible to the file
+    tools — the sandbox's per-command tmpfs /tmp gave neither."""
+
+    def test_scratch_created_private(self, project):
+        d = sec_policy.get().ensure_scratch()
+        assert d == project / ".agent" / "tmp"
+        assert d.is_dir()
+        assert oct(d.stat().st_mode & 0o777) == "0o700"
+
+    def test_temp_env_points_at_scratch(self, project):
+        env = sec_policy.get().env_for_child({})
+        scratch = str(sec_policy.get().scratch_dir())
+        assert env["AGENT_TMP"] == scratch
+        assert env["TMPDIR"] == env["TMP"] == env["TEMP"] == scratch
+
+    def test_host_tmpdir_does_not_leak_in(self, project):
+        env = sec_policy.get().env_for_child({"TMPDIR": "/tmp"})
+        assert env["TMPDIR"] == str(sec_policy.get().scratch_dir())
+
+    def test_scratch_is_under_the_default_grant(self, project):
+        """No new grant needed: what the shell writes, the file tools can read."""
+        f = sec_policy.get().ensure_scratch() / "note.txt"
+        f.write_text("hi")
+        assert sec_fs.safe_resolve(str(f)).read_text() == "hi"
+
+    def test_reset_scratch_empties_but_keeps_dir(self, project):
+        d = sec_policy.get().ensure_scratch()
+        (d / "file").write_text("x")
+        (d / "sub").mkdir()
+        (d / "sub" / "deep").write_text("y")
+        sec_policy.reset_scratch()
+        assert d.is_dir()
+        assert list(d.iterdir()) == []
+
+    def test_bwrap_binds_scratch_over_tmp(self, project, monkeypatch):
+        # The fixture's root lives under /tmp; pretend otherwise, which is the
+        # normal case for a real project.
+        monkeypatch.setattr(sec_runner, "_under_tmp", lambda p: False)
+        argv = sec_runner._bwrap_argv(["true"], cwd=project, network=False)
+        i = argv.index(str(sec_policy.get().scratch_dir()))
+        assert argv[i - 1] == "--bind" and argv[i + 1] == "/tmp"
+        assert "--tmpfs" not in argv[i - 1:i + 2]
+        # Must be set up before the root bind, or it would mask the root.
+        assert i < argv.index(str(project))
+
+    def test_bwrap_keeps_tmpfs_when_project_lives_under_tmp(self, project):
+        argv = sec_runner._bwrap_argv(["true"], cwd=project, network=False)
+        i = argv.index("/tmp")
+        assert argv[i - 1] == "--tmpfs"
+
+    def test_bwrap_keeps_tmpfs_when_disabled(self, project, monkeypatch):
+        monkeypatch.setattr(sec_runner, "_under_tmp", lambda p: False)
+        sec_policy.get().cfg.scratch_bind_tmp = False
+        argv = sec_runner._bwrap_argv(["true"], cwd=project, network=False)
+        i = argv.index("/tmp")
+        assert argv[i - 1] == "--tmpfs"
+
+
+class TestPathRequestReason:
+    def test_request_without_reason_is_rejected(self, project):
+        from agent.tools.request_path import request_path_access
+        r = request_path_access(path="/var/tmp/x", mode="ro", reason="   ")
+        assert r["status"] == "error"
+        from agent.security import path_grants as pg
+        assert not pg.has_pending()
+
+    def test_reason_reaches_the_grant(self, project):
+        from agent.tools.request_path import request_path_access
+        from agent.security import path_grants as pg
+        r = request_path_access(path="/var/tmp/x", mode="ro",
+                                reason="read the crash dump the user mentioned")
+        assert r["status"] == "pending"
+        g = [g for g in pg.get_all() if g.state == "pending"][0]
+        assert g.reason == "read the crash dump the user mentioned"
+
+    def test_scratch_is_exempt_from_write_deny(self, project):
+        """A throwaway file in the scratch is not policy, whatever it is named:
+        the shell can write it, so the file tools must not refuse it."""
+        d = sec_policy.get().ensure_scratch()
+        for name in ("agent.toml", "AGENT.md", ".agent.ignore", "notes.txt"):
+            assert not sec_fs._is_write_protected(project, d / name), name
+        # …while the real config paths stay protected.
+        assert sec_fs._is_write_protected(project, project / "agent.toml")
+        assert sec_fs._is_write_protected(project, project / ".agent" / "path_grants.json")
+
+    def test_scratch_not_bound_readonly_in_sandbox(self, project):
+        d = sec_policy.get().ensure_scratch()
+        (d / "agent.toml").write_text("x = 1")
+        assert (d / "agent.toml") not in sec_runner._write_deny_paths(project)

@@ -18,7 +18,11 @@ def setup(config) -> None:
         "Request user permission to access a path outside the project root. "
         "The request appears in the paths tab for user approval. "
         "Returns immediately — the agent must retry after the user approves. "
-        "Check if access is already granted before calling."
+        "Check if access is already granted before calling. "
+        "Temporary files do NOT need this: write them to $AGENT_TMP (same as "
+        "$TMPDIR). Paths outside the project — /tmp, /var/tmp, $HOME, /etc — "
+        "need a concrete reason naming the file and what it is for; a request "
+        "without one is rejected."
     ),
     "parameters": {
         "type": "object",
@@ -34,14 +38,26 @@ def setup(config) -> None:
             },
             "reason": {
                 "type": "string",
-                "description": "Why this path is needed (shown to user)",
+                "description": (
+                    "Required. Why this path is needed — name the file and the "
+                    "task it serves. Shown to the user, who approves or not."
+                ),
             },
         },
-        "required": ["path", "mode"],
+        "required": ["path", "mode", "reason"],
     },
 })
 def request_path_access(path: str, mode: str, reason: str = "") -> dict:
     from agent.security import path_grants as _pg
+
+    reason = (reason or "").strip()
+    if not reason:
+        return {
+            "status": "error",
+            "message": ("reason is required — explain why this path is needed. "
+                        "For temporary files use $AGENT_TMP instead; it needs "
+                        "no grant."),
+        }
 
     resolved = Path(path).resolve()
 
@@ -62,7 +78,7 @@ def request_path_access(path: str, mode: str, reason: str = "") -> dict:
                 "message": "Request already pending. Waiting for user approval in paths tab.",
             }
 
-    _pg.request_grant(resolved, mode)
+    _pg.request_grant(resolved, mode, reason)
 
     msg = f"Access to '{resolved}' ({mode}) requested."
     if reason:
