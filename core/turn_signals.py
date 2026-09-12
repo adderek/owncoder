@@ -43,24 +43,52 @@ class TurnSignal:
     payload: str
 
 
+def _closing_signal_line(text: str):
+    """Match a signal ONLY as the message's closing line.
+
+    Scanning the whole body would delete a signal the author merely quoted — a
+    relayed reply, or prose discussing this format. That exactly matched the
+    reported symptom of a `>>>DONE` line vanishing from the middle of a quoted
+    passage. The documented contract is "one line, end of response", so the
+    match is limited to the last non-empty line (trailing blank lines skipped).
+
+    Returns (match, start, end) or None.
+    """
+    pos = len(text)
+    for line in reversed(text.splitlines(keepends=True)):
+        start = pos - len(line)
+        if line.strip():
+            m = _SIGNAL_LINE_RE.match(text[start:pos])
+            if m is None:
+                return None
+            return m, start, pos
+        pos = start
+    return None
+
+
 def strip_signals(text: str) -> str:
-    """Remove every signal line from text (defensive use outside parse_signal)."""
-    return _SIGNAL_LINE_RE.sub("", text).strip()
+    """Remove the closing signal line from text (defensive use outside parse_signal)."""
+    found = _closing_signal_line(text)
+    if found is None:
+        return text.strip()
+    _, start, end = found
+    return (text[:start] + text[end:]).strip()
 
 
 def parse_signal(response: str) -> tuple[str, TurnSignal | None]:
     """Return (clean_response, signal|None).
 
-    Picks the last matching signal line. Strips all signal lines from clean_response.
+    A signal counts only as the closing line; anything else is content and is
+    left untouched. The closing line alone is stripped from clean_response.
     """
-    matches = list(_SIGNAL_LINE_RE.finditer(response))
-    if not matches:
+    found = _closing_signal_line(response)
+    if found is None:
         return response, None
 
-    last = matches[-1]
-    raw_kind = last.group(1).lower()
+    m, start, end = found
+    raw_kind = m.group(1).lower()
     kind = _KIND_NORMALIZE.get(raw_kind, raw_kind)
-    payload = last.group(2).strip()
+    payload = m.group(2).strip()
 
-    clean = _SIGNAL_LINE_RE.sub("", response).strip()
+    clean = (response[:start] + response[end:]).strip()
     return clean, TurnSignal(kind=kind, payload=payload)
