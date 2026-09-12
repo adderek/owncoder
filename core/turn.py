@@ -1027,6 +1027,22 @@ async def run_turn(
                     _resp = f"{_base}\n{_sig_line}" if _base else _sig_line
                     return "".join(content_parts + [_resp]), messages
 
+            # `no_tool_needed` is the typed form of the NO_TOOL_NEEDED: sentinel
+            # below: the model asserts its prose answer stands. It is not a turn
+            # signal — no >>> token, nothing for the meta-loop — so it ends the
+            # turn with the content as written. Measured on ornith-1.0-35B: under
+            # `tool_choice: "required"` the model returns the SAME prose it gives
+            # under "auto" (420 chars both) and adds this call, so making every
+            # response class a tool costs no explanation.
+            from agent.tools.turn_signals import extract_no_tool_reason
+            _no_tool_reason = extract_no_tool_reason(tool_calls, patched_results)
+            if _no_tool_reason is not None:
+                _phase("no_tool_needed", _no_tool_reason[:80])
+                _base = (clean_content or "").strip()
+                # Fall back to the reason only when there is no prose, so the
+                # user is never handed an empty turn.
+                return "".join(content_parts + [_base or _no_tool_reason]), messages
+
             token_est = _count_tokens_approx(messages)
             _notify_ctx(token_est)
             # Same trigger as the pre-flight check, so compaction does not fire

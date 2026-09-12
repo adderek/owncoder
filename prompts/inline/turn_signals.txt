@@ -11,6 +11,13 @@ run automatically, end your response with exactly one signal line:
   >>>CROWS: <problem> — consult many small models for creative solutions
   >>>BLOCKED: <reason> | <unblocks> — dead end; what would allow progress
 
+## When no tool is needed
+
+If the turn needs no tool at all — you can answer directly, the work is already
+done, or acting would be wrong — write your answer as normal prose AND call
+`no_tool_needed(reason=...)` with a one-line reason. Your prose is what the user
+sees; the call only records that skipping tools was deliberate.
+
 Rules:
 - Signal line must be the very last non-blank line of your response.
 - Omit entirely when this is a simple answer requiring no follow-up.

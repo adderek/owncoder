@@ -39,6 +39,19 @@ SIGNAL_TOOL_KINDS: dict[str, str] = {
 }
 SIGNAL_TOOL_NAMES = frozenset(SIGNAL_TOOL_KINDS)
 
+# Deliberately NOT a signal: `no_tool_needed` carries no >>> token, does not
+# appear in _KIND_TOKEN, and never reaches the meta-loop, whose parser matches a
+# closed set (NEXT|ASK|FEEDBACK|REVIEW|DONE|CROWS|BLOCKED). It is a turn-local
+# assertion — "my answer is prose, no tool was required" — which is exactly what
+# the `NO_TOOL_NEEDED:` sentinel in core/turn.py says today.
+#
+# It exists so that EVERY legitimate response class is a tool call. Without it,
+# prose-with-justification is the one class reachable only as text, so sending
+# `tool_choice: "required"` would silently delete it and the model would lose the
+# ability to explain instead of acting. The sentinel stays as the fallback for
+# models that answer in text, same as the >>>KIND markers did.
+NO_TOOL_TOOL_NAME = "no_tool_needed"
+
 
 def build_signal_line(kind: str, payload: str) -> str:
     """Canonical one-line signal: `>>>TOKEN: payload`. Empty/unknown → ''."""
@@ -177,3 +190,45 @@ def consult_crows(topic: str) -> dict:
 def blocked(reason: str, unblock: str = "") -> dict:
     payload = f"{reason} | {unblock}" if unblock else reason
     return _emit("blocked", payload)
+
+
+@register(NO_TOOL_TOOL_NAME, {
+    "description": "State that this turn needs no tool and your prose answer stands. "
+                   "Use when the user asked a question you can answer directly, when the "
+                   "requested work is already done, or when acting would be wrong. Give the "
+                   "reason in one line. Ends this turn without running anything.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "reason": {"type": "string",
+                       "description": "One line: why no tool is needed."},
+        },
+        "required": ["reason"],
+    },
+})
+def no_tool_needed(reason: str) -> dict:
+    return {"reason": (reason or "").strip(), "ack": "no tool needed"}
+
+
+def extract_no_tool_reason(tool_calls, results) -> str | None:
+    """The reason from a `no_tool_needed` call, or None if it was not called.
+
+    Returns "" when the call was made with an unreadable/empty reason, so the
+    caller can distinguish "not called" (None) from "called without a reason".
+    """
+    for tc, result in zip(tool_calls, results):
+        if tc.function.name != NO_TOOL_TOOL_NAME:
+            continue
+        try:
+            parsed = json.loads(result)
+            if isinstance(parsed, dict) and isinstance(parsed.get("reason"), str):
+                return parsed["reason"].strip()
+        except Exception:
+            pass
+        # Result unreadable (truncated/redacted): rebuild from the call args.
+        try:
+            args = json.loads(tc.function.arguments or "{}")
+            return str(args.get("reason", "")).strip()
+        except Exception:
+            return ""
+    return None
