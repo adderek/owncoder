@@ -399,6 +399,28 @@ def _build_call_kwargs(config: "Config") -> dict:
             "_build_call_kwargs: max_output_tokens=%d > 8192 — high risk of endless generation",
             config.llm.max_output_tokens,
         )
+    # `tool_choice: "required"` is the only structural defence against a model
+    # writing a tool call as prose: llama.cpp builds the sampling grammar from the
+    # tool schemas, so an unregistered or malformed call is unreachable rather than
+    # caught afterwards by a regex. It is safe only where the endpoint honours it
+    # WITHOUT dropping content, which is a per-deployment fact, not a constant —
+    # in the cloud "required" is a contract that can be satisfied by returning
+    # tool_calls with the prose removed. Hence the probe rather than an assumption.
+    #
+    # Off by default. Measured on ornith-1.0-35B the prose survives at every
+    # temperature, but whether a weaker model answers `required` with spurious
+    # calls (a pointless read_file emitted only to satisfy it) is unmeasured, and
+    # that would trade the nudge loop for tool spam. Enabling it also zeroes
+    # confidence.schema_error_share, which the auto-tier gate reads in order NOT
+    # to escalate on format failures.
+    if str(getattr(config.llm, "tool_choice_required", "off")).lower() == "auto":
+        try:
+            from agent.config.model_probe import tool_choice_support
+            if tool_choice_support(config.llm) == "required":
+                kw["tool_choice"] = "required"
+        except Exception:
+            logger.debug("_build_call_kwargs: tool_choice probe failed", exc_info=True)
+
     seed = getattr(config.llm, "seed", None)
     if seed is not None:
         kw["seed"] = seed

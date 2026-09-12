@@ -113,3 +113,40 @@ def test_rate_limited_endpoint_is_not_probed(monkeypatch):
     monkeypatch.setattr(mp, "is_rate_limited", lambda *a, **k: True)
     _patch(monkeypatch, exc=AssertionError("must not be called"))
     assert mp.tool_choice_support(_entry()) == "auto"
+
+
+# ── the send site ───────────────────────────────────────────────────────────
+# Two gates, both required: the config flag opts in, the probe confirms this
+# endpoint honours "required" without dropping content. Either one saying no
+# leaves the request exactly as it was, so the nudge ladder stays the backstop.
+
+def _cfg(mode):
+    llm = types.SimpleNamespace(model="m", max_output_tokens=1024, ctx_window=8192,
+                                temperature=0.2, tool_choice_required=mode,
+                                base_url="http://x/v1", api_key="")
+    return types.SimpleNamespace(llm=llm)
+
+
+@pytest.mark.parametrize("mode,verdict,expected", [
+    ("off",  "required", None),        # not opted in: never sent
+    ("off",  "auto",     None),
+    ("auto", "auto",     None),        # opted in, endpoint unsafe: still not sent
+    ("auto", "required", "required"),  # both gates pass
+])
+def test_tool_choice_is_sent_only_when_both_gates_pass(monkeypatch, mode, verdict, expected):
+    from agent.core import prompts
+    monkeypatch.setattr(mp, "tool_choice_support", lambda e, **k: verdict)
+    kw = prompts._build_call_kwargs(_cfg(mode))
+    assert kw.get("tool_choice") == expected
+
+
+def test_a_probe_failure_does_not_break_the_request(monkeypatch):
+    """The probe is best-effort; an exception must leave the call unchanged rather
+    than take down the turn."""
+    from agent.core import prompts
+    def boom(*a, **k):
+        raise RuntimeError("probe exploded")
+    monkeypatch.setattr(mp, "tool_choice_support", boom)
+    kw = prompts._build_call_kwargs(_cfg("auto"))
+    assert "tool_choice" not in kw
+    assert kw["model"] == "m"

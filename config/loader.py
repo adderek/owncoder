@@ -27,6 +27,7 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_LLM_THINK_BUDGET": ("llm", "think_budget"),
         "AGENT_LLM_AUTO_DETECT_CTX": ("agent", "auto_detect_ctx"),
         "AGENT_LLM_NARRATION_FALLBACK": ("agent", "narration_fallback"),
+        "AGENT_LLM_TOOL_CHOICE_REQUIRED": ("llm", "tool_choice_required"),
         "AGENT_VISION": ("agent", "vision"),
         "AGENT_LOOP_GUARD_ENABLED": ("loop_guard", "enabled"),
         "AGENT_LOOP_GUARD_WINDOW": ("loop_guard", "window"),

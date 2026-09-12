@@ -37,6 +37,15 @@ class LLMConfig:
     think_level: str = "normal"
     think_budget: int = -1          # token budget for thinking; -1 = unlimited / server default
     narration_fallback: bool = True
+    # Send `tool_choice: "required"` when the endpoint is probed as honouring it
+    # without dropping content (agent.config.model_probe.tool_choice_support).
+    # "off" is the default until it is measured: required makes a hallucinated
+    # call unreachable at sampling time, but on a weaker model it can also
+    # produce spurious calls — a pointless read_file emitted only to satisfy the
+    # constraint — which trades the nudge loop for tool spam. It also zeroes
+    # confidence.schema_error_share, which the auto-tier gate reads to avoid
+    # escalating on format failures.
+    tool_choice_required: str = "off"   # off | auto (auto = use it where probed safe)
     cache_ttl: int = 300         # prompt cache TTL in seconds; 0 = disable cache tracking
     # Explicit prompt-cache breakpoints. "off" suits every endpoint that caches
     # prefixes automatically (OpenAI, DeepSeek, vLLM, llama.cpp) and is the only
