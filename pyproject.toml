@@ -79,6 +79,10 @@ tmp_path_retention_count = 50
 [tool.setuptools.packages.find]
 where = [".."]
 include = ["agent*"]
+# The suite is not runtime. agent/tests/{,unit,integration} carry __init__.py,
+# so `agent*` matches them and the wheel shipped the whole suite (234 entries in
+# SOURCES.txt). Keep them in the source tree / dev install, out of the artifact.
+exclude = ["agent.tests", "agent.tests.*"]
 
 [tool.setuptools.package-data]
 "agent.ui" = ["static/*.css", "static/*.js"]

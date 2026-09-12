@@ -181,7 +181,7 @@ async def test_narration_fallback_kill_switch(tmp_path, monkeypatch, reset_file_
     from agent.core.turn import run_turn
     from agent.config import Config
     from agent.tools import load_all_tools
-    from agent._test_helpers import make_response, make_client
+    from agent.tests._test_helpers import make_response, make_client
 
     monkeypatch.chdir(tmp_path)
     target = tmp_path / "app.py"
@@ -209,7 +209,7 @@ async def test_run_turn_writes_reasoning_to_side_log(tmp_path, monkeypatch, rese
     from agent.config import Config
     from agent.memory.side_log import SideLogWriter
     from agent.tools import load_all_tools
-    from agent._test_helpers import make_response, make_client
+    from agent.tests._test_helpers import make_response, make_client
 
     monkeypatch.chdir(tmp_path)
     cfg = Config()

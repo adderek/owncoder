@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from agent._test_helpers import cfg as cfg  # fixture: isolated working dir
+from agent.tests._test_helpers import cfg as cfg  # fixture: isolated working dir
 
 
 def _setup(cfg):

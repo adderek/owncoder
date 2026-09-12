@@ -13,7 +13,7 @@ import pytest
 for _var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
     os.environ.setdefault(_var, "1")
 
-from agent._test_helpers import cfg as cfg  # noqa: E402  (after the env setup)
+from agent.tests._test_helpers import cfg as cfg  # noqa: E402  (after the env setup)
 
 
 @pytest.fixture(autouse=True)

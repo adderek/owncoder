@@ -5,7 +5,7 @@ import pytest
 
 from agent.config import Config
 from agent.tool_compactor import compact_result
-from agent._test_helpers import make_response, make_client
+from agent.tests._test_helpers import make_response, make_client
 
 
 def _cfg() -> Config:

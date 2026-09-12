@@ -16,7 +16,7 @@ from agent.memory.compactor import (
     CompactionError,
 )
 from agent.memory.facts_store import FactsStore
-from agent._test_helpers import make_response, make_client
+from agent.tests._test_helpers import make_response, make_client
 
 
 class TestCountTokensApprox:
