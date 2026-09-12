@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from . import prompt_cache
 from .prompts import apply_prompt_hints, _log_llm_request, _build_call_kwargs
 from .tool_calls import _FakeToolCall, _parse_text_tool_calls, _parse_qwen_function_xml, _parse_agent_exec_xml
+from .tool_discovery import CORE_TOOLS as _CORE_TOOLS
 
 if TYPE_CHECKING:
     from agent.config import Config
@@ -72,12 +73,31 @@ _NARRATION_PHRASES = [
     "using patch_file", "using write_file",
 ]
 
+# One source for both narration patterns below. Two hand-maintained copies of
+# this list had drifted: `explore`, `find_symbol`, `find_tools` and `grep_code`
+# are in CORE_TOOLS and were in neither, so a fabricated <grep_code> reached the
+# user as a real search result with no nudge. CORE_TOOLS is imported so adding a
+# core tool covers it automatically; _EXTRA_NARRATABLE holds the on-demand tools
+# that are not core. `tool_discovery` imports nothing but __future__, so this is
+# import-safe.
+_EXTRA_NARRATABLE: frozenset[str] = frozenset({
+    "patch_file", "search_archive", "web_fetch", "web_search",
+    "git_diff", "git_log", "git_status", "git_blame", "git_related_files",
+    "replace_symbol", "undo_file",
+})
+
+#: Every tool name a model might narrate instead of calling. Longest-first so the
+#: alternation cannot match a prefix of a longer name (e.g. `git_log` before
+#: `git_logs` would truncate; ordering removes the class of bug entirely).
+_NARRATABLE_NAMES: tuple[str, ...] = tuple(
+    sorted(_CORE_TOOLS | _EXTRA_NARRATABLE, key=lambda n: (-len(n), n))
+)
+_NARRATABLE_ALT = "|".join(_NARRATABLE_NAMES)
+
 # Models that output bare Python-style function calls as text instead of invoking the tool API.
 # Matched against the stripped start of the response (first non-whitespace line).
 _BARE_TOOL_CALL_RE = re.compile(
-    r"^(write_file|edit_file|patch_file|read_file|list_files|run_command|run_argv"
-    r"|search_code|search_archive|web_fetch|web_search|git_diff|git_log|git_status"
-    r"|git_blame|git_related_files|replace_symbol|undo_file|save_note)\s*\(",
+    r"^(" + _NARRATABLE_ALT + r")\s*\(",
     re.MULTILINE,
 )
 
@@ -88,10 +108,7 @@ _BARE_TOOL_CALL_RE = re.compile(
 # <function=name> and JSON forms), so the tag — and any result the model wrote
 # inside it — is pure narration. Seen on heavily quantised Qwen3.5 (IQ2_S).
 _PSEUDO_TOOL_TAG_RE = re.compile(
-    r"<(write_file|edit_file|patch_file|read_file|list_files|run_command|run_argv"
-    r"|search_code|search_archive|web_fetch|web_search|git_diff|git_log|git_status"
-    r"|git_blame|git_related_files|replace_symbol|undo_file|save_note)"
-    r"(?=[\s>])"
+    r"<(" + _NARRATABLE_ALT + r")(?=[\s>])"
 )
 
 

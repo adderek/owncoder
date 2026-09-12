@@ -357,3 +357,41 @@ class TestStreamStallWatchdog:
         assert "first token" in beats[0][0]
         # The budget travels with the beat so the UI can show "Ns of Ms".
         assert beats[0][2] == 3
+
+
+# ── narration-pattern coverage ──────────────────────────────────────────────
+# Two hand-maintained copies of the tool-name list had drifted out of sync with
+# the registry: explore, find_symbol, find_tools and grep_code were in
+# CORE_TOOLS and in neither pattern, so a fabricated <grep_code> reached the user
+# as a genuine search result and fired no nudge. The patterns are now derived
+# from CORE_TOOLS; these tests fail if a future core tool escapes them.
+
+def test_every_core_tool_is_caught_as_a_pseudo_tag():
+    from agent.core.streaming import _PSEUDO_TOOL_TAG_RE
+    from agent.core.tool_discovery import CORE_TOOLS
+    missed = sorted(n for n in CORE_TOOLS
+                    if not _PSEUDO_TOOL_TAG_RE.search(f'<{n} arg="x">'))
+    assert not missed, f"tool names narratable as XML but not detected: {missed}"
+
+
+def test_every_core_tool_is_caught_as_a_bare_call():
+    from agent.core.streaming import _BARE_TOOL_CALL_RE
+    from agent.core.tool_discovery import CORE_TOOLS
+    missed = sorted(n for n in CORE_TOOLS
+                    if not _BARE_TOOL_CALL_RE.search(f'{n}("x")'))
+    assert not missed, f"tool names narratable as bare calls but not detected: {missed}"
+
+
+def test_fabricated_search_result_is_marked_not_passed_through():
+    """The regression that motivated this: a search tool narrated with invented
+    output must be replaced, not handed to the user as if the tool had run."""
+    from agent.core.streaming import _mark_unexecuted_tool_tags, _has_pseudo_tool_tag
+    text = 'Here is what I found:\n<grep_code pattern="login">src/auth.py:42: def login()</grep_code>\nDone.'
+    assert _has_pseudo_tool_tag(text)
+    out = _mark_unexecuted_tool_tags(text)
+    assert "src/auth.py:42" not in out, "fabricated tool output survived"
+
+
+def test_tags_inside_code_fences_are_left_alone():
+    from agent.core.streaming import _has_pseudo_tool_tag
+    assert not _has_pseudo_tool_tag('Example:\n```\n<grep_code pattern="x">\n```\n')
