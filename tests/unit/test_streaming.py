@@ -395,3 +395,50 @@ def test_fabricated_search_result_is_marked_not_passed_through():
 def test_tags_inside_code_fences_are_left_alone():
     from agent.core.streaming import _has_pseudo_tool_tag
     assert not _has_pseudo_tool_tag('Example:\n```\n<grep_code pattern="x">\n```\n')
+
+
+# ── prose vs code: the false-nudge classes ──────────────────────────────────
+# All three narration checks used to split on "```" alone, so four things read
+# as prose and produced spurious nudges. The fourth matters most: the nudge text
+# itself names <agent_exec> and <tool_name ...>, so once such a line reaches
+# history the detector can feed itself. The deadloop corpus in the agent logs has
+# `<agent_exec tool="grep_code" ...>` repeated 138 times in a single message.
+
+import pytest
+
+
+@pytest.mark.parametrize("label,text", [
+    ("inline backticks",  'Use `<grep_code pattern="x">` to search.'),
+    ("tilde fence",       'Example:\n~~~\n<grep_code pattern="x">\n~~~\n'),
+    ("indented block",    'Example:\n\n    <grep_code pattern="x">\n'),
+    ("quoted in prose",   'Do not write <grep_code ...> as text; call the tool.'),
+    ("backtick fence",    '```\n<grep_code pattern="x">\n```'),
+])
+def test_code_and_quotation_are_not_narration(label, text):
+    from agent.core.streaming import _has_pseudo_tool_tag
+    assert not _has_pseudo_tool_tag(text), f"false positive on {label}"
+
+
+@pytest.mark.parametrize("text", [
+    '<grep_code pattern="x">src/a.py:1: hit</grep_code>',
+    '<grep_code>hit</grep_code>',
+    '<write_file path="/tmp/x" content="y">',
+])
+def test_real_narration_is_still_caught(text):
+    from agent.core.streaming import _has_pseudo_tool_tag
+    assert _has_pseudo_tool_tag(text)
+
+
+def test_split_prose_code_rebuilds_the_input_exactly():
+    """_mark_unexecuted_tool_tags rewrites prose and must leave code verbatim,
+    so the segmentation has to be lossless."""
+    from agent.core.streaming import _split_prose_code
+    for t in ['a `b` c', '```\nx\n```', '~~~\ny\n~~~\n', 'p\n\n    indented\nq',
+              'unterminated ```fence', '']:
+        assert "".join(s for _, s in _split_prose_code(t)) == t
+
+
+def test_fenced_tag_survives_the_rewrite():
+    from agent.core.streaming import _mark_unexecuted_tool_tags
+    text = 'Docs:\n```\n<write_file path="x" content="y">\n```\nDone.'
+    assert '<write_file path="x" content="y">' in _mark_unexecuted_tool_tags(text)

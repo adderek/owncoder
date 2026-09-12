@@ -316,6 +316,7 @@ async def run_turn(
     nudge_count = 0
     MAX_NUDGES = 3
     _NO_TOOL_SENTINEL = "NO_TOOL_NEEDED:"
+    _no_tool_empty = 0   # no_tool_needed calls that carried no prose answer
     _justify_pending_content: str | None = None
     _justify_messages_snapshot: list | None = None  # messages state just after original response, before justify prompt
     content_parts: list[str] = []
@@ -1039,9 +1040,29 @@ async def run_turn(
             if _no_tool_reason is not None:
                 _phase("no_tool_needed", _no_tool_reason[:80])
                 _base = (clean_content or "").strip()
-                # Fall back to the reason only when there is no prose, so the
-                # user is never handed an empty turn.
-                return "".join(content_parts + [_base or _no_tool_reason]), messages
+                if _base:
+                    return "".join(content_parts + [_base]), messages
+                # No prose to stand on. The reason is protocol text ("answered
+                # directly in prose without needing file operations") — handing it
+                # over as the answer gives the user meta-commentary instead of an
+                # answer, and leaks the internal justification channel. Let the
+                # loop run once more so the model can actually answer; the signal
+                # path has the same shape, except its >>> line is stripped from
+                # history by the meta-loop and this one has nothing to strip.
+                _no_tool_empty += 1
+                if _no_tool_empty >= 2:
+                    logger.warning("no_tool_needed called twice with no content — "
+                                   "ending the turn rather than looping")
+                    note = ("[no_tool_needed was called without an answer twice; "
+                            "the turn is ending. Ask again if you still need one.]")
+                    messages = messages + [{"role": "assistant", "content": note}]
+                    return "".join(content_parts + [note]), messages
+                messages = messages + [_injected(
+                    "no_tool_empty",
+                    "You called no_tool_needed but wrote no answer. Write the answer "
+                    "as prose now; call no_tool_needed again alongside it.",
+                    _nudged=True)]
+                continue
 
             token_est = _count_tokens_approx(messages)
             _notify_ctx(token_est)

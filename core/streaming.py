@@ -112,10 +112,65 @@ _PSEUDO_TOOL_TAG_RE = re.compile(
 )
 
 
+
+# ── prose vs code, shared by every narration check ──────────────────────────
+# All three checks below used `text.split("```")` and looked at even segments.
+# That knows exactly one code syntax, so four things read as prose and produced
+# spurious nudges: inline `backticks`, ~~~ fences, indented blocks, and the model
+# quoting a tag while explaining it. The last one matters most, because the nudge
+# text itself names <agent_exec> and <tool_name ...>: once such a line is in
+# history the detector can feed itself. The deadloop corpus has
+# `<agent_exec tool="grep_code" ...>` repeated 138 times in one message.
+_CODE_REGION_RE = re.compile(
+    r"```.*?(?:```|\Z)"      # fenced block; tolerate an unterminated one
+    r"|~~~.*?(?:~~~|\Z)"
+    r"|`[^`\n]*`",            # inline code, single line only
+    re.DOTALL,
+)
+_INDENTED_LINE_RE = re.compile(r"^(?:[ ]{4,}|\t)", re.MULTILINE)
+
+
+def _split_prose_code(text: str) -> list[tuple[bool, str]]:
+    """Alternating (is_prose, segment). Concatenating the segments rebuilds
+    `text` exactly, so a caller may rewrite prose and leave code verbatim."""
+    out: list[tuple[bool, str]] = []
+    pos = 0
+    for m in _CODE_REGION_RE.finditer(text):
+        if m.start() > pos:
+            out.extend(_split_indented(text[pos:m.start()]))
+        out.append((False, m.group(0)))
+        pos = m.end()
+    if pos < len(text):
+        out.extend(_split_indented(text[pos:]))
+    return out
+
+
+def _split_indented(chunk: str) -> list[tuple[bool, str]]:
+    """Indented lines are code; keep line endings with their line."""
+    out: list[tuple[bool, str]] = []
+    for line in chunk.splitlines(keepends=True):
+        is_code = bool(_INDENTED_LINE_RE.match(line))
+        if out and out[-1][0] == (not is_code):
+            out[-1] = (not is_code, out[-1][1] + line)
+        else:
+            out.append((not is_code, line))
+    return out
+
+
+def _prose_only(text: str) -> str:
+    return "".join(s for is_prose, s in _split_prose_code(text) if is_prose)
+
+
+# A quotation is not a call. A narrated call carries an attribute (`name="v"`) or
+# closes immediately; `<grep_code ...>` with a literal ellipsis is someone talking
+# *about* the tag, which is exactly what the nudge text does.
+_PSEUDO_TOOL_CALL_RE = re.compile(
+    r"<(" + _NARRATABLE_ALT + r")(?:\s*>|\s+(?!\.\.\.)[a-zA-Z_][\w.-]*\s*=)"
+)
+
 def _has_pseudo_tool_tag(text: str) -> bool:
-    """True if a tool name appears as an XML tag outside ``` code fences."""
-    parts = text.split("```")
-    return any(_PSEUDO_TOOL_TAG_RE.search(p) for p in parts[::2])
+    """True if a tool name is written as a tag in prose, outside any code."""
+    return bool(_PSEUDO_TOOL_CALL_RE.search(_prose_only(text)))
 
 
 # Role labels that leak as residue right after a control token (e.g. "<|im_start|>thought").
@@ -231,16 +286,16 @@ def _mark_unexecuted_tool_tags(text: str) -> str:
         seg = re.sub(r'<' + tag + r'\b' + _AV + r'\s*>?(?:(?!</' + tag + r'>).)*$', note, seg, flags=re.DOTALL)
         return seg
 
-    # Leave ``` code fences untouched — quoted tags there are content, not calls.
-    parts = text.split("```")
-    for i in range(0, len(parts), 2):
-        seg = parts[i]
-        if "<agent_exec" in seg:
-            seg = _sub(seg, "agent_exec")
-        for m in set(_PSEUDO_TOOL_TAG_RE.findall(seg)):
-            seg = _sub(seg, m)
-        parts[i] = seg
-    return "```".join(parts).strip()
+    # Code stays verbatim — a tag quoted there is content, not a call.
+    out = []
+    for is_prose, seg in _split_prose_code(text):
+        if is_prose:
+            if "<agent_exec" in seg:
+                seg = _sub(seg, "agent_exec")
+            for m in set(_PSEUDO_TOOL_CALL_RE.findall(seg)):
+                seg = _sub(seg, m)
+        out.append(seg)
+    return "".join(out).strip()
 
 
 def _clean_output(text: str) -> str:
@@ -269,8 +324,7 @@ def _has_unexecuted_agent_exec(text: str) -> bool:
     quoting the tag in a code block (e.g. when working on this codebase) is
     legitimate content, not a hallucinated call.
     """
-    parts = text.split("```")
-    return any("<agent_exec" in p for p in parts[::2])
+    return "<agent_exec" in _prose_only(text)
 
 
 def _is_narrating_tool_use(text: str) -> bool:
