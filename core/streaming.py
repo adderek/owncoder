@@ -184,6 +184,36 @@ _CHATML_TOKEN_RE = re.compile(r"<\|[^>]*>(?:\s*(?i:" + _ROLE_ALT + r")\b)?")
 _THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
 
+# A deadloop repeats a whole LINE, not a token, so the token-run check below is
+# blind to it. Measured against the real loops in the agent logs: "I'll read from
+# 370 to 550." x177 -> False, `self.last_request_time = time.time()` x64 -> False.
+# Both are caught by counting repeated lines in a bounded tail instead.
+#
+# Bounds matter: this runs on the whole accumulated content for every streamed
+# token, so it is already O(n^2) in the response. The line scan therefore looks at
+# a fixed tail and a fixed number of lines, adding a constant, not another factor.
+_LINE_TAIL_CHARS = 4000      # how far back to look
+_LINE_WINDOW = 40            # qualifying lines considered
+_LINE_REPEAT_THRESHOLD = 6   # identical lines in that window to call it a loop
+_LINE_MIN_LEN = 20           # shorter lines legitimately repeat in code: }, pass, return
+
+
+def _line_repetition_guard(content: str) -> bool:
+    """True when one substantial line dominates the tail — the deadloop shape.
+
+    Counts rather than requiring adjacency: real loops interleave. The log case
+    alternated "I'll read from 370 to 550." with "Wait, I'll also check ...", which
+    a run-length check would miss. The length floor keeps `}`, `pass` and `return
+    None` from tripping it, since those repeat legitimately in generated code.
+    """
+    lines = [ln.strip() for ln in content[-_LINE_TAIL_CHARS:].splitlines()]
+    lines = [ln for ln in lines if len(ln) >= _LINE_MIN_LEN][-_LINE_WINDOW:]
+    if len(lines) < _LINE_REPEAT_THRESHOLD:
+        return False
+    from collections import Counter
+    return Counter(lines).most_common(1)[0][1] >= _LINE_REPEAT_THRESHOLD
+
+
 def _repetition_guard(content: str, threshold: int = _REPEAT_THRESHOLD) -> bool:
     """Check if last third of text repeats same word/phrase (model stuck in loop).
 
@@ -192,6 +222,8 @@ def _repetition_guard(content: str, threshold: int = _REPEAT_THRESHOLD) -> bool:
     """
     tail = content[-_CHAR_RUN_LIMIT:]
     if len(tail) >= _CHAR_RUN_LIMIT and len(set(tail)) == 1:
+        return True
+    if _line_repetition_guard(content):
         return True
     words = content.split()
     if len(words) < threshold:

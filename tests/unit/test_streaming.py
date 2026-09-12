@@ -442,3 +442,58 @@ def test_fenced_tag_survives_the_rewrite():
     from agent.core.streaming import _mark_unexecuted_tool_tags
     text = 'Docs:\n```\n<write_file path="x" content="y">\n```\nDone.'
     assert '<write_file path="x" content="y">' in _mark_unexecuted_tool_tags(text)
+
+
+# ── deadloop: a repeated LINE, not a repeated token ─────────────────────────
+# _repetition_guard only ever detected runs of one identical token (`//////`,
+# `the the the`), because it compares words[i] to words[i-1]. A deadloop repeats a
+# whole line, whose adjacent tokens differ, so none of the real loops in the agent
+# logs tripped it: "I'll read from 370 to 550." x177 -> False,
+# `self.last_request_time = time.time()` x64 -> False.
+#
+# Replayed over 648 real assistant messages from the logs, the line check fires on
+# 14 of 14 messages with >=6 repeated lines in the tail and on none of the other
+# 634. Note an offline replay UNDERSTATES a streaming guard: it sees only the final
+# text, while during streaming the loop passes through the tail.
+
+_LOOP_LINE = "I'll read from 370 to 550."
+_LOOP_CODE = "self.last_request_time = time.time()"
+
+
+@pytest.mark.parametrize("label,text", [
+    ("177x prose line, from the logs", "\n".join([_LOOP_LINE] * 177)),
+    ("64x code line, from the logs",   "\n".join([_LOOP_CODE] * 64)),
+    # The logged loop alternated two lines, so adjacency-based detection misses it.
+    ("interleaved pair",  "\n".join([_LOOP_LINE, "Wait, I'll also check the definition."] * 8)),
+    ("at the threshold",  "Analysis.\n" + "\n".join([_LOOP_LINE] * 6)),
+])
+def test_repeated_lines_are_caught(label, text):
+    from agent.core.streaming import _repetition_guard
+    assert _repetition_guard(text), label
+
+
+@pytest.mark.parametrize("label,text", [
+    ("just below the threshold", "Analysis.\n" + "\n".join([_LOOP_LINE] * 5)),
+    # Short lines repeat legitimately in generated code; the length floor covers it.
+    ("short code lines",  "\n".join(["    pass", "    return None", "    }"] * 20)),
+    ("distinct env reads", "\n".join(f'    {k} = os.environ.get("{k}")' for k in
+                                     "host port user password timeout retries region".split())),
+    ("ordinary prose",    "A normal answer with several sentences. Each one differs. "
+                          "Nothing repeats here at all."),
+])
+def test_legitimate_repetition_is_not_a_loop(label, text):
+    from agent.core.streaming import _line_repetition_guard
+    assert not _line_repetition_guard(text), label
+
+
+def test_the_line_scan_is_bounded():
+    """The guard runs on the whole accumulated content for every streamed token, so
+    it is already O(n^2); the line scan must add a constant, not another factor."""
+    from agent.core.streaming import (_LINE_TAIL_CHARS, _LINE_WINDOW,
+                                      _line_repetition_guard)
+    # A loop far outside the tail must not be found: proof the scan is bounded.
+    buried = "\n".join([_LOOP_LINE] * 50) + "\n" + ("unique filler line number %d\n" % 0) \
+             + "\n".join(f"unique filler line number {i}" for i in range(1, 400))
+    assert len(buried) > _LINE_TAIL_CHARS
+    assert not _line_repetition_guard(buried)
+    assert _LINE_WINDOW > 0
