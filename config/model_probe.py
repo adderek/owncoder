@@ -495,6 +495,123 @@ def entry_available(entry, timeout: int = 2, ttl: float = _AVAIL_TTL) -> bool:
     return model_in_server(model, ids) if model else True
 
 
+# ── tool_choice capability ────────────────────────────────────────────────────
+# `tool_choice: "required"` is the only structural defence against a model writing
+# a tool call as prose: on llama.cpp the grammar is built from the tool schemas, so
+# an unregistered or malformed call is unreachable at sampling time rather than
+# caught afterwards by a regex. But "required" is not one mechanism — it is a
+# sampling constraint on llama.cpp and a contract in the cloud, and a contract can
+# be honoured by returning tool_calls with the content dropped. That silently
+# deletes the model's ability to explain, which is the one thing we must not lose.
+#
+# So the support question has four parts, not one. Measured on
+# ornith-1.0-35B/llama.cpp, asked a question needing no tool: tool_choice "auto"
+# gave 420 characters of prose and no call, "required" gave the SAME 420 characters
+# plus a no_tool_needed call. That result is one model on one backend and does not
+# generalise, which is exactly why this is a probe and not an assumption.
+_TOOL_CHOICE_CACHE: dict[tuple[str, str], tuple[float, str]] = {}
+_TOOL_CHOICE_TTL = 900.0
+
+#: Sent with the probe. `no_tool_needed` is the real name so a model that knows the
+#: protocol behaves as it would in production; the other exists only so the
+#: endpoint sees a normal two-tool list.
+_PROBE_TOOLS = [
+    {"type": "function", "function": {
+        "name": "read_file", "description": "Read a file.",
+        "parameters": {"type": "object",
+                       "properties": {"path": {"type": "string"}},
+                       "required": ["path"]}}},
+    {"type": "function", "function": {
+        "name": "no_tool_needed",
+        "description": "State that this turn needs no tool and your prose answer stands.",
+        "parameters": {"type": "object",
+                       "properties": {"reason": {"type": "string"}},
+                       "required": ["reason"]}}},
+]
+
+#: A question no tool can answer, so a healthy endpoint must return prose. Kept
+#: short: this runs once per endpoint per TTL and should cost a few tokens.
+_PROBE_QUESTION = "In one sentence, what is a race condition? No files involved."
+
+
+def _probe_tool_choice(base_url: str, api_key: str, model: str, timeout: int) -> str:
+    """One request. Returns "required" only if all four assertions hold.
+
+    1. the endpoint accepts tool_choice="required" at all (no 4xx),
+    2. it accepts it together with `tools` — some reject that combination,
+    3. it returns a tool call,
+    4. it returns non-empty content ALONGSIDE the call, at a non-zero
+       temperature. Temperature matters: prose sits before the tool-call section,
+       so an endpoint can pass at temperature 0 and drop it under sampling.
+    """
+    url = base_url.rstrip("/") + "/chat/completions"
+    body = {
+        "model": model,
+        "messages": [{"role": "user", "content": _PROBE_QUESTION}],
+        "tools": _PROBE_TOOLS,
+        "tool_choice": "required",
+        "max_tokens": 128,
+        "temperature": 0.7,
+    }
+    try:
+        req = urllib.request.Request(
+            url, data=json.dumps(body).encode(), method="POST")
+        req.add_header("Content-Type", "application/json")
+        if api_key:
+            req.add_header("Authorization", f"Bearer {api_key}")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read())
+    except Exception:
+        # 400 on required, 400 on required+tools, timeout, unreachable — all mean
+        # the same thing to the caller: do not rely on it.
+        return "auto"
+
+    try:
+        msg = (data.get("choices") or [{}])[0].get("message") or {}
+    except Exception:
+        return "auto"
+    calls = msg.get("tool_calls") or []
+    content = (msg.get("content") or "").strip()
+    if not calls:
+        return "auto"          # asked for required, got none: contract not honoured
+    if not content:
+        return "auto"          # honoured by dropping the prose channel
+    return "required"
+
+
+def tool_choice_support(entry, timeout: int = 6,
+                        ttl: float = _TOOL_CHOICE_TTL) -> str:
+    """"required" if this endpoint enforces it without eating prose, else "auto".
+
+    Cached per (base_url, model) — capability is a property of the deployment, and
+    a llama.cpp server restarted with different flags is the only realistic way it
+    changes, which the TTL covers. Never raises; degrades to "auto", which leaves
+    the nudge ladder as the backstop.
+    """
+    import time as _t
+    base_url = getattr(entry, "base_url", "") or ""
+    model = getattr(entry, "model", "") or ""
+    if not base_url:
+        return "auto"
+    if is_rate_limited(base_url, model):
+        return "auto"
+    key = (base_url, model)
+    now = _t.monotonic()
+    hit = _TOOL_CHOICE_CACHE.get(key)
+    if hit is not None and now - hit[0] < ttl:
+        return hit[1]
+    verdict = _probe_tool_choice(base_url, getattr(entry, "api_key", "") or "",
+                                 model, timeout)
+    _TOOL_CHOICE_CACHE[key] = (now, verdict)
+    logger.debug("tool_choice probe: %s %s -> %s", base_url, model, verdict)
+    return verdict
+
+
+def clear_tool_choice_cache() -> None:
+    """Drop cached tool_choice verdicts (a server may have restarted with new flags)."""
+    _TOOL_CHOICE_CACHE.clear()
+
+
 def clear_availability_cache(include_cooldowns: bool = True) -> None:
     """Drop cached /models answers.
 
