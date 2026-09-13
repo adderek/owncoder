@@ -133,3 +133,55 @@ def test_fts_drift_detected_and_rebuilt(tmp_path):
     store.rebuild_fts()
     assert store.fts_drift() == 0
     store.close()
+
+
+def _kb_project(tmp_path, monkeypatch):
+    import json
+    from agent.tools.graph import main as gm
+    monkeypatch.setattr(gm, "_graphify_bin", lambda: None)
+    (tmp_path / "graphify-out").mkdir()
+    graph = {"nodes": [{"id": "m_alpha", "label": "alpha()", "file_type": "code",
+                        "source_file": "m.py", "source_location": "L1"}], "links": []}
+    (tmp_path / "graphify-out" / "graph.json").write_text(json.dumps(graph))
+    c = _cfg(tmp_path)
+    c.kb.enabled = True
+    c.kb.corpus_path = ".agent/kb"
+    c.rag.auto_kb_min_interval_seconds = 0
+    c.summarization.db_path = ".agent/summaries.db"
+    c.rag.db_path = ".agent/index.db"
+    return c
+
+
+def test_kb_sync_imports_graph_into_project_corpus(tmp_path, monkeypatch):
+    c = _kb_project(tmp_path, monkeypatch)
+    m = IndexMaintainer(c)
+    out = {}
+    m.sync_kb(out)
+    assert out["kb_nodes"] == 1
+    assert (tmp_path / ".agent" / "kb" / "corpus.yaml").exists()
+    from agent.tools.kb import kb_node_count
+    assert kb_node_count(c) == 1
+
+
+def test_kb_sync_skips_when_inputs_unchanged(tmp_path, monkeypatch):
+    c = _kb_project(tmp_path, monkeypatch)
+    m = IndexMaintainer(c)
+    m.sync_kb({})
+    again = {}
+    m.sync_kb(again)
+    assert "kb_nodes" not in again
+
+
+def test_kb_sync_respects_interval_and_switch(tmp_path, monkeypatch):
+    c = _kb_project(tmp_path, monkeypatch)
+    c.rag.auto_kb_min_interval_seconds = 3600
+    m = IndexMaintainer(c)
+    m.sync_kb({})
+    out = {}
+    (tmp_path / "graphify-out" / "graph.json").touch()
+    m.sync_kb(out)
+    assert "kb_nodes" not in out
+    c.rag.auto_kb = False
+    m._last_kb_sync = 0
+    m.sync_kb(out)
+    assert "kb_nodes" not in out

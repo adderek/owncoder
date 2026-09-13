@@ -92,6 +92,19 @@ def safe_embeddings_config(config: "Config", probe=None) -> tuple["EmbeddingsCon
     return None, "; ".join(reasons) or "no embeddings endpoint configured"
 
 
+def _ensure_corpus(root: Path) -> None:
+    """Create an empty corpus layout (same as `kb corpus init`) if missing."""
+    if (root / "corpus.yaml").exists():
+        return
+    from importlib import resources
+    for sub in ("live/nodes", "live/notes", "archive", "rollups"):
+        (root / sub).mkdir(parents=True, exist_ok=True)
+    (root / "corpus.yaml").write_text(
+        resources.files("kb.defaults").joinpath("corpus.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8")
+    (root / ".gitignore").write_text("index.sqlite\n.cache/\n", encoding="utf-8")
+
+
 @contextmanager
 def _try_lock(path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -144,6 +157,7 @@ class IndexMaintainer:
         self._observer = None
         self.last_skip = ""
         self.last_result: dict = {}
+        self._last_kb_sync = 0.0
 
     @property
     def lock_path(self) -> Path:
@@ -290,7 +304,76 @@ class IndexMaintainer:
                 archive.close()
         finally:
             store.close()
+        try:
+            self.sync_kb(out)
+        except Exception:
+            log.warning("rag maintainer: kb sync failed", exc_info=True)
         return out
+
+    def sync_kb(self, out: dict) -> None:
+        """Refresh the graph if sources moved, then re-import it into the KB.
+
+        Runs inside the index pass, so it shares its gates and lock. The import
+        is skipped when neither graph.json nor summaries.db changed since the
+        last one (recorded in the corpus, not inferred from its mtime — notes
+        written by the agent touch the corpus DB too).
+        """
+        import json
+        import subprocess
+        from agent.tools.kb import kb_corpus_root
+
+        cfg = self._config
+        corpus_root = kb_corpus_root(cfg)
+        if not cfg.rag.auto_kb or corpus_root is None:
+            return
+        now = time.time()
+        if now - self._last_kb_sync < cfg.rag.auto_kb_min_interval_seconds:
+            return
+        self._last_kb_sync = now
+        try:
+            from kb.api import Corpus
+            from kb.migrations.from_code import import_code, read_summaries
+        except ImportError:
+            out["kb_skipped"] = "kb package not installed"
+            return
+
+        project = Path(cfg.tools.working_dir)
+        graph = project / "graphify-out" / "graph.json"
+        from agent.tools.graph.main import _graphify_bin, _newest_source_mtime
+        graphify = _graphify_bin()
+        if graphify is not None and (not graph.exists()
+                                     or _newest_source_mtime(project) > graph.stat().st_mtime):
+            cmd = [str(graphify), "update", str(project), "--no-cluster"]
+            if not graph.exists():
+                cmd.append("--force")
+            r = subprocess.run(cmd, cwd=str(project), capture_output=True, text=True,
+                               timeout=900, preexec_fn=lambda: os.nice(10))
+            out["graph_rebuilt"] = r.returncode == 0
+        if not graph.exists():
+            out["kb_skipped"] = "no graph (graphify not installed?)"
+            return
+
+        summaries_db = Path(cfg.summarization.db_path)
+        if not summaries_db.is_absolute():
+            summaries_db = project / summaries_db
+        index_db = Path(cfg.rag.db_path)
+        if not index_db.is_absolute():
+            index_db = project / index_db
+        stamp = f"{graph.stat().st_mtime}:{summaries_db.stat().st_mtime if summaries_db.exists() else 0}"
+
+        _ensure_corpus(corpus_root)
+        with Corpus.open(corpus_root) as corpus:
+            row = corpus.conn.execute(
+                "SELECT value FROM schema_meta WHERE key = 'code_import_stamp'").fetchone()
+            if row is not None and row[0] == stamp:
+                return
+            stats = import_code(corpus.conn, json.loads(graph.read_text(encoding="utf-8")),
+                                read_summaries(summaries_db, index_db))
+            corpus.conn.execute(
+                "INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('code_import_stamp', ?)", (stamp,))
+            corpus.conn.commit()
+        out["kb_nodes"] = stats["nodes"]
+        out["kb_described"] = stats["described"]
 
     # ── loop ─────────────────────────────────────────────────────────────────
 

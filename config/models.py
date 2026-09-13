@@ -124,6 +124,11 @@ class RAGConfig:
     # A localhost embeddings server is assumed to be the CPU launcher
     # (embed_server_device) — sustained CPU embeddings can freeze the host.
     auto_index_allow_local_embed: bool = False
+    # Keep the per-project KB in step with the code: after an index pass, refresh
+    # graphify-out/graph.json when sources are newer (graphify update, niced) and
+    # re-import it with trusted summaries. At most once per interval.
+    auto_kb: bool = True
+    auto_kb_min_interval_seconds: float = 300.0
 
 
 @dataclass
