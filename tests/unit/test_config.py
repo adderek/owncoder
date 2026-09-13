@@ -317,6 +317,30 @@ class TestSummarizerPool:
         _resolve_role_pools(c)
         assert c.model_roles["embeddings"] == "cpu-embed"
 
+    def test_unreachable_embeddings_pool_describes_first_candidate(self, monkeypatch):
+        # Regression: with no candidate answering, config.embeddings kept the
+        # 768-dim dataclass default, the index (1024-dim) read as mismatched and
+        # search_code went keyword-only for the session.
+        from agent.config.loader import _embeddings_entry
+        for var in ("AGENT_EMBEDDINGS_MODEL", "AGENT_EMBEDDINGS_BASE_URL", "AGENT_EMBEDDINGS_DIMENSIONS"):
+            monkeypatch.delenv(var, raising=False)
+        c = Config()
+        c.model_pools["embeddings"] = ["cpu-embed", "remote-embed"]
+        for name, url in (("cpu-embed", "http://localhost:8082/v1"),
+                          ("remote-embed", "http://192.168.31.42:8082/v1")):
+            e = _entry("Qwen3-Embedding-0.6B-Q8_0", url)
+            e.dimensions = 1024
+            c.model_entries[name] = e
+
+        def down(*a, **kw):
+            raise OSError("down")
+        monkeypatch.setattr("urllib.request.urlopen", down)
+        _resolve_role_pools(c)
+        assert "embeddings" not in c.model_roles
+        apply_embeddings_entry(c.embeddings, _embeddings_entry(c))
+        assert c.embeddings.model == "Qwen3-Embedding-0.6B-Q8_0"
+        assert c.embeddings.dimensions == 1024
+
     def test_embeddings_env_model_survives_pinned_entry(self, monkeypatch):
         # Regression: the post-pool re-apply tested only AGENT_EMBEDDINGS_BASE_URL,
         # so an exported AGENT_EMBEDDINGS_MODEL was silently clobbered by the

@@ -671,10 +671,27 @@ def _apply_model_entry_to_llm(config: Config) -> None:
     config.llm.transport_retries = config.agent.transport_retries
 
     # Embeddings from the resolved embeddings model entry
-    emb_name = config.model_roles.get("embeddings", "embeddings")
-    emb_entry = config.model_entries.get(emb_name)
+    emb_entry = _embeddings_entry(config)
     if emb_entry is not None:
         apply_embeddings_entry(config.embeddings, emb_entry)
+
+
+def _embeddings_entry(config: Config):
+    """Entry the embeddings config should describe: pinned role, else the first
+    pool candidate, else an entry literally named "embeddings".
+
+    An unpinned pool (no candidate answered the probe, or probing has not run)
+    used to leave the EmbeddingsConfig defaults in place — a 768-dim model the
+    index was never built with, which reads as a dimension mismatch and turns
+    search_code keyword-only for the whole session. Describing the configured
+    model instead keeps the mismatch check honest; an unreachable endpoint
+    already falls back to keyword search per query.
+    """
+    name = config.model_roles.get("embeddings")
+    if name is None:
+        pool = config.model_pools.get("embeddings") or []
+        name = next((c for c in pool if c in config.model_entries), "embeddings")
+    return config.model_entries.get(name)
 
 
 # Embeddings model entry -> EmbeddingsConfig. The env var (when set) wins per
@@ -1018,8 +1035,7 @@ def check_reachability(config: Config) -> None:
     # Env precedence is handled per field inside apply_embeddings_entry; this
     # used to test only AGENT_EMBEDDINGS_BASE_URL, so a pool pin silently ate
     # an exported AGENT_EMBEDDINGS_MODEL.
-    emb_name = config.model_roles.get("embeddings")
-    emb_entry = config.model_entries.get(emb_name) if emb_name else None
+    emb_entry = _embeddings_entry(config)
     if emb_entry is not None:
         apply_embeddings_entry(config.embeddings, emb_entry)
 
