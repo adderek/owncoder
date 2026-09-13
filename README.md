@@ -58,8 +58,10 @@ Layers of code indexing / retrieval (each optional, used as needed):
 * **Summarization** — the LLM writes terse descriptions per chunk, then rolls them up into a multi-level summary pyramid
 * **Assembler analysis** — same LLM describe-and-rollup pyramid (up to 6 levels), tuned for low-structure code tree-sitter can't model
 * **Graph** — static dependency/call graph export (graphify), no model needed
-* **KB** — optional external knowledge-base corpus
+* **KB** — per-project code knowledge base (`.agent/kb`): the graph's symbols and edges, summaries that still match the code, and your saved notes attached to the code they mention. `kb_get` / `kb_callers` / `find_symbol` take plain names
 * **Memory / recall** — facts, Q&A log, and session history, distilled and compacted by the LLM
+
+While a chat is idle the agent keeps these current by itself (`agent/rag/maintainer.py`): changed files are re-indexed within seconds, the graph and KB are refreshed, and a few pending summaries are written per pass, most-used files first. It waits while a turn runs or the machine is loaded, never embeds through a localhost server (CPU embeddings can overload a desktop) and never sends code to a cloud model; `rag.auto_index`, `rag.auto_kb` and `rag.auto_describe` turn the parts off. `agent index --watch` runs the same loop without a chat.
 
 Prompts and skills/tools are **compiled per model**: the prompt-compiler compresses static prompt files for the active (model, api) pair and caches them, and tool results are compacted by the LLM before re-entering context — smaller context, same meaning.
 
