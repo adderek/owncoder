@@ -376,6 +376,11 @@ def _tier_overlay(config: "Config") -> tuple[str, str] | None:
     return (fname, text) if text else None
 
 
+#: (base_url, verdict) already reported, so the INFO line appears once per change
+#: rather than once per request.
+_TOOL_CHOICE_LOGGED: set[tuple[str, str]] = set()
+
+
 def _build_call_kwargs(config: "Config") -> dict:
     # Clamp max_tokens so prompt + completion can never exceed the context
     # window: a misconfigured entry with max_output_tokens == ctx_window makes
@@ -413,13 +418,24 @@ def _build_call_kwargs(config: "Config") -> dict:
     # that would trade the nudge loop for tool spam. Enabling it also zeroes
     # confidence.schema_error_share, which the auto-tier gate reads in order NOT
     # to escalate on format failures.
+    # Logged at INFO, once per (endpoint, verdict): a silently-inactive constraint
+    # is indistinguishable from an inactive one in the results, and a benchmark arm
+    # that measured nothing already cost a run here.
     if str(getattr(config.llm, "tool_choice_required", "off")).lower() == "auto":
+        _verdict = "error"
         try:
             from agent.config.model_probe import tool_choice_support
-            if tool_choice_support(config.llm) == "required":
+            _verdict = tool_choice_support(config.llm)
+            if _verdict == "required":
                 kw["tool_choice"] = "required"
         except Exception:
             logger.debug("_build_call_kwargs: tool_choice probe failed", exc_info=True)
+        _key = (getattr(config.llm, "base_url", ""), _verdict)
+        if _key not in _TOOL_CHOICE_LOGGED:
+            _TOOL_CHOICE_LOGGED.add(_key)
+            logger.info("tool_choice: opted in, endpoint %s probed %s -> %s",
+                        _key[0] or "?", _verdict,
+                        "sending required" if _verdict == "required" else "NOT sending")
 
     seed = getattr(config.llm, "seed", None)
     if seed is not None:
