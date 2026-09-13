@@ -23,6 +23,7 @@ import copy
 import fcntl
 import logging
 import os
+import re
 import threading
 import time
 from contextlib import contextmanager
@@ -119,6 +120,38 @@ def usage_ranked_paths(config: "Config", max_lines: int = 20000) -> list[str]:
             continue
         counts[rel] += 1
     return [p for p, _ in counts.most_common()]
+
+
+_CODE_PATH = re.compile(
+    r"(?<![\w/.-])((?:[\w.-]+/)+[\w.-]+\.(?:py|js|ts|tsx|jsx|kt|go|rs|md|toml|ya?ml|sh|json))\b")
+_CALL = re.compile(r"(?<![\w.])([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)\(\)")
+_TICKED = re.compile(r"`([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)(?:\(\))?`")
+
+
+def code_refs(text: str) -> list[str]:
+    """File paths (with a directory) and symbols (name(), `name`) a note mentions, in order."""
+    refs: list[str] = []
+    for rx in (_CODE_PATH, _CALL, _TICKED):
+        for m in rx.finditer(text or ""):
+            if m.group(1) not in refs:
+                refs.append(m.group(1))
+    return refs
+
+
+def _unambiguous(cands: list[dict], is_path: bool) -> dict | None:
+    """The one candidate a reader would mean, or None when it is a guess."""
+    if is_path:
+        files = [c for c in cands if c["kind"] in ("file", "document")]
+        return files[0] if len(files) == 1 else None
+    defs = [c for c in cands if c["kind"] in ("function", "method", "class")]
+    source = [c for c in defs if not _test_scope(c["scope"])]
+    pool = source or defs
+    return pool[0] if len(pool) == 1 else None
+
+
+def _test_scope(scope: str) -> bool:
+    parts = Path(scope).parts
+    return "tests" in parts or "test" in parts or Path(scope).name.startswith("test_")
 
 
 def is_ignored_event(path: str) -> bool:
@@ -407,7 +440,73 @@ class IndexMaintainer:
             self.sync_kb(out)
         except Exception:
             log.warning("rag maintainer: kb sync failed", exc_info=True)
+        try:
+            self.link_notes(out)
+        except Exception:
+            log.warning("rag maintainer: note linking failed", exc_info=True)
         return out
+
+    def link_notes(self, out: dict) -> None:
+        """Copy memory notes that mention code into the KB, attached to that code.
+
+        A note saved with save_note ("grant_ceiling lives in
+        agent/config/models.py, enforced by path_grants.request_grant()") is
+        only found by a memory search today. Attached to those nodes it also
+        comes back whenever the agent looks at them. Deterministic — no LLM:
+        paths and symbols the note names are resolved against the KB, and only
+        unambiguous matches are used. Each memory entry is copied once
+        (provenance memory:<id>).
+        """
+        from agent.tools.kb import kb_corpus_root
+        cfg = self._config
+        corpus_root = kb_corpus_root(cfg)
+        if not cfg.rag.auto_kb or corpus_root is None or not (corpus_root / "index.sqlite").exists():
+            return
+        try:
+            from agent.security import vault
+            if not vault.persist_allowed():
+                return
+            from kb.api import Corpus
+        except ImportError:
+            return
+        from agent.memory.store import MemoryStore
+        from agent.tools.kb import resolve_refs
+
+        mem_db = Path(cfg.tools.working_dir) / cfg.tools.agent_dir / "memory.db"
+        if not mem_db.exists():
+            return
+        store = MemoryStore(mem_db)
+        try:
+            entries = [e for scope in ("note", "project")
+                       for e in store.list_entries(scope=scope, limit=2000)]
+        finally:
+            store.close()
+        linked = 0
+        with Corpus.open(corpus_root) as corpus:
+            done = {r[0] for r in corpus.conn.execute(
+                "SELECT provenance FROM notes WHERE provenance LIKE 'memory:%'")}
+            for entry in entries:
+                prov = f"memory:{entry['id']}"
+                if prov in done:
+                    continue
+                text = f"{entry.get('title') or ''}\n{entry.get('body') or ''}"
+                targets = []
+                for ref in code_refs(text):
+                    cands = resolve_refs(corpus, ref)
+                    best = _unambiguous(cands, is_path="/" in ref or "." in ref.rsplit("/", 1)[-1][-6:])
+                    if best and best["id"] not in {t["id"] for t in targets}:
+                        targets.append(best)
+                    if len(targets) >= 8:
+                        break
+                if not targets:
+                    continue
+                body = (f"# {entry.get('title')}\n\n" if entry.get("title") else "") + (entry.get("body") or "")
+                corpus.add_note([t["id"] for t in targets], body, author="memory",
+                                kind="decision" if entry.get("scope") == "project" else "fact",
+                                provenance=prov)
+                linked += 1
+        if linked:
+            out["kb_notes_linked"] = linked
 
     def describe_some(self, out: dict, *, make_worker=None) -> None:
         """Describe a bounded batch of pending units while the gates stay open.

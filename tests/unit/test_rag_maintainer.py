@@ -271,3 +271,68 @@ def test_describe_some_prefers_used_files_and_stops_on_turn(tmp_path, monkeypatc
     m.describe_some(out, make_worker=lambda store: _FakeWorker(store, log))
     assert log == ["hot.py", "a.py"]
     assert out["described"] == 2
+
+
+def test_code_refs_extracts_paths_and_symbols():
+    from agent.rag.maintainer import code_refs
+    text = ("grant_ceiling lives in agent/config/models.py; enforced by "
+            "path_grants.request_grant() and `AuthState`. See runner.py and e.g. foo")
+    assert code_refs(text) == ["agent/config/models.py", "path_grants.request_grant", "AuthState"]
+
+
+def _linked_project(tmp_path, monkeypatch):
+    pytest = __import__("pytest")
+    pytest.importorskip("kb.migrations.from_code")
+    from kb.api import Corpus
+    from kb.migrations.from_code import import_code
+    from agent.memory.store import MemoryStore
+    graph = {"nodes": [
+        {"id": "f", "label": "models.py", "file_type": "code", "source_file": "agent/config/models.py", "source_location": "L1"},
+        {"id": "c", "label": "AuthState", "file_type": "code", "source_file": "agent/ui_server/auth.py", "source_location": "L5"},
+        {"id": "g1", "label": "helper()", "file_type": "code", "source_file": "agent/a.py", "source_location": "L1"},
+        {"id": "g2", "label": "helper()", "file_type": "code", "source_file": "agent/b.py", "source_location": "L1"},
+    ], "links": []}
+    c = _cfg(tmp_path)
+    c.kb.enabled = True
+    c.kb.corpus_path = ".agent/kb"
+    root = tmp_path / ".agent" / "kb"
+    root.mkdir(parents=True)
+    with Corpus.open(root) as corpus:
+        import_code(corpus.conn, graph)
+    store = MemoryStore(tmp_path / ".agent" / "memory.db")
+    store.add("note", "Token check in `AuthState`; config in agent/config/models.py. Uses helper().",
+              title="per-process token", entry_id="n1")
+    store.add("note", "nothing about code here", title="misc", entry_id="n2")
+    store.add("session_summary", "AuthState again", entry_id="s1")
+    store.close()
+    from agent.security import vault
+    monkeypatch.setattr(vault, "persist_allowed", lambda: True)
+    return c, root
+
+
+def test_link_notes_attaches_unambiguous_refs_once(tmp_path, monkeypatch):
+    from kb.api import Corpus
+    from kb.migrations.from_code import node_id_for
+    c, root = _linked_project(tmp_path, monkeypatch)
+    m = IndexMaintainer(c)
+    out = {}
+    m.link_notes(out)
+    assert out["kb_notes_linked"] == 1
+    with Corpus.open(root) as corpus:
+        [nid] = corpus.notes_by_provenance("memory:n1")
+        targets = {r[0] for r in corpus.conn.execute(
+            "SELECT target_ref FROM note_attachments WHERE note_id = ?", (nid,))}
+    # helper() is defined twice — a guess, so not attached
+    assert targets == {node_id_for("c"), node_id_for("f")}
+    again = {}
+    m.link_notes(again)
+    assert "kb_notes_linked" not in again
+
+
+def test_link_notes_respects_off_the_record(tmp_path, monkeypatch):
+    c, root = _linked_project(tmp_path, monkeypatch)
+    from agent.security import vault
+    monkeypatch.setattr(vault, "persist_allowed", lambda: False)
+    out = {}
+    IndexMaintainer(c).link_notes(out)
+    assert "kb_notes_linked" not in out
