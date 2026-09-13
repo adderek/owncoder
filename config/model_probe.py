@@ -37,7 +37,8 @@ _FILE_EXTS = (".gguf", ".bin", ".safetensors", ".pt", ".pth")
 
 
 def _strip_ext(name: str) -> str:
-    n = name.lower()
+    # llama-server without --alias advertises the full -m path as the id.
+    n = name.lower().replace("\\", "/").rsplit("/", 1)[-1]
     for ext in _FILE_EXTS:
         if n.endswith(ext):
             n = n[: -len(ext)]
