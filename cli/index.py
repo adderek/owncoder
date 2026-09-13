@@ -302,61 +302,35 @@ def cmd_init(args, config):
 
 
 def _watch_and_reindex(config, console, languages=None, exclude=None):
-    try:
-        from watchdog.observers import Observer
-        from watchdog.events import FileSystemEventHandler
-    except ImportError:
-        console.print("[red]watchdog not installed. Run: pip install watchdog[/red]")
-        return
+    """Foreground/daemon watch: the same gated, incremental maintainer the chat runs.
 
-    from agent.rag.indexer import index_directory
-    from agent.rag.store import VectorStore
-    from agent.rag.embedder import Embedder
-    import threading
+    Standalone there is no agent turn to wait for, but the load, endpoint-safety
+    and single-writer gates still apply — a chat session in the same project and
+    this daemon never index at once.
+    """
     import time
+    from agent.rag.maintainer import IndexMaintainer
 
-    working_dir = config.tools.working_dir
-    debounce: dict[str, float] = {}
-    lock = threading.Lock()
+    def _report(result: dict) -> None:
+        if result.get("skipped"):
+            console.print(f"[yellow]Index pass skipped: {result['skipped']}[/yellow]")
+        elif result.get("indexed") or result.get("pruned") or result.get("fts_repaired"):
+            console.print(
+                f"[green]Re-indexed {result.get('indexed', 0)} file(s)[/green]"
+                f" [dim]({result.get('chunks', 0)} chunks, {result.get('pruned', 0)} pruned,"
+                f" fts repaired {result.get('fts_repaired', 0)})[/dim]"
+            )
 
-    class _Handler(FileSystemEventHandler):
-        def on_modified(self, event):
-            if event.is_directory:
-                return
-            with lock:
-                debounce[event.src_path] = time.monotonic()
-        on_created = on_modified
-
-    observer = Observer()
-    observer.schedule(_Handler(), working_dir, recursive=True)
-    observer.start()
-    console.print(f"[dim]Watching {working_dir} for changes. Ctrl+C to stop.[/dim]")
-
+    maintainer = IndexMaintainer(config, languages=languages, exclude=exclude, on_pass=_report)
+    maintainer.start()
+    console.print(f"[dim]Watching {config.tools.working_dir} for changes. Ctrl+C to stop.[/dim]")
     try:
         while True:
             time.sleep(1)
-            now = time.monotonic()
-            with lock:
-                ready = [p for p, t in list(debounce.items()) if now - t > 1.5]
-                for p in ready:
-                    del debounce[p]
-            if ready:
-                console.print(f"[dim]Re-indexing {len(ready)} changed file(s)…[/dim]")
-                store = VectorStore(config.rag)
-                embedder = Embedder(config.embeddings)
-                index_directory(
-                    root=working_dir,
-                    store=store,
-                    embedder=embedder,
-                    cfg=config.rag,
-                    languages=languages,
-                    exclude=exclude or [],
-                )
-                store.close()
-                console.print("[green]Re-indexed.[/green]")
     except KeyboardInterrupt:
-        observer.stop()
-    observer.join()
+        pass
+    finally:
+        maintainer.stop()
 
 
 def cmd_index_update(args, config):

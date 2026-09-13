@@ -337,6 +337,7 @@ def cmd_chat(args, config):
     asm_store = None
     _bg_thread: threading.Thread | None = None
     _bg_result: dict = {}
+    _start_maintainer = False
     db_path = Path(config.rag.db_path)
     if _is_indexed and db_path.exists():
         try:
@@ -354,7 +355,10 @@ def cmd_chat(args, config):
             if config.asm.enabled:
                 from agent.rag.asm_store import AsmStore
                 asm_store = AsmStore(config.rag)
-            if _emb_action != "frozen":
+            if _emb_action != "frozen" and config.rag.auto_index:
+                # Started below, once the agent exists: it gates on turn state.
+                _start_maintainer = True
+            elif _emb_action != "frozen":
                 _bg_thread = threading.Thread(
                     target=_bg_update_index,
                     args=(store, embedder, config, _bg_result),
@@ -369,6 +373,19 @@ def cmd_chat(args, config):
 
     data_provider = LocalDataProvider(store=store, embedder=embedder, asm_store=asm_store, config=config)
     agent = Agent(config, data_provider=data_provider)
+
+    maintainer = None
+    if _start_maintainer:
+        try:
+            from agent.rag.maintainer import IndexMaintainer
+            maintainer = IndexMaintainer(
+                config,
+                is_busy=lambda: agent._turn_busy,
+                last_activity=lambda: agent._last_turn_time,
+            )
+            maintainer.start()
+        except Exception:
+            logger.warning("background index maintenance did not start", exc_info=True)
 
     # Inject index coverage as system context so agent knows what's indexed.
     _coverage = _get_index_coverage(store, config.tools.working_dir)
@@ -594,6 +611,8 @@ def cmd_chat(args, config):
             shutdown_mcp()
         except Exception:
             pass
+        if maintainer is not None:
+            maintainer.stop()
         if _bg_thread and _bg_thread.is_alive():
             _bg_thread.join(timeout=5)
         if _bg_result.get("error"):

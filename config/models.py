@@ -114,6 +114,16 @@ class RAGConfig:
     embed_server_autostart: str = "ask"
     # Per-file byte cap for generic text files (binary-sniffed; code files exempt).
     text_max_bytes: int = 256 * 1024
+    # Background index maintenance (agent/rag/maintainer.py): incremental passes
+    # shortly after files change, only while the agent is idle and the host is not
+    # loaded. Never runs the LLM summarizer — it only queues changed units.
+    auto_index: bool = True
+    auto_index_idle_seconds: float = 15.0   # quiet time after a turn before a pass
+    auto_index_poll_seconds: float = 120.0  # safety-net rescan when no change event arrives
+    auto_index_max_load: float = 0.5        # skip while 1-min loadavg > this x CPU count
+    # A localhost embeddings server is assumed to be the CPU launcher
+    # (embed_server_device) — sustained CPU embeddings can freeze the host.
+    auto_index_allow_local_embed: bool = False
 
 
 @dataclass

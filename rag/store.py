@@ -248,6 +248,25 @@ class VectorStore:
             )
         conn.commit()
 
+    def fts_drift(self) -> int:
+        """How far the keyword index disagrees with the chunks table (0 = in step).
+
+        chunks_fts is an external-content table: rows it holds for rowids that no
+        longer exist are never cleaned up by SQLite, match queries, and join to
+        whatever chunk later reuses the rowid. Counting is cheap; a full
+        integrity-check is not.
+        """
+        conn = self._conn()
+        fts = conn.execute("SELECT count(*) FROM chunks_fts_docsize").fetchone()[0]
+        chunks = conn.execute("SELECT count(*) FROM chunks").fetchone()[0]
+        return abs(fts - chunks)
+
+    def rebuild_fts(self) -> None:
+        """Rebuild the keyword index from the chunks table. Vectors are untouched."""
+        conn = self._conn()
+        conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')")
+        conn.commit()
+
     def delete_by_path(self, path: str) -> None:
         conn = self._conn()
         conn.execute("DELETE FROM file_mtimes WHERE path = ?", (path,))
