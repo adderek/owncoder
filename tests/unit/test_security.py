@@ -467,9 +467,8 @@ class TestSandboxSecretMasking:
 
     def test_secret_scan_skips_agent_dir(self, project, monkeypatch):
         # Test runs leave thousands of tmp files in the scratch (.agent/tmp,
-        # mounted as /tmp in the sandbox). Walking it burned the file cap and
-        # then refused every command, `git status` included.
-        monkeypatch.setattr(sec_runner, "_SECRET_SCAN_FILE_CAP", 20)
+        # mounted as /tmp in the sandbox). Walking it pushed the old 50k file
+        # cap and then refused every command, `git status` included.
         scratch = project / ".agent" / "tmp" / "pytest-of-user" / "pytest-0"
         scratch.mkdir(parents=True)
         for i in range(50):
@@ -814,41 +813,155 @@ class TestMaskScanFailsClosed:
         (project / ".env").write_text("SECRET=1")
         return d
 
-    def test_file_cap_refuses_the_command(self, project, monkeypatch):
-        monkeypatch.setattr(sec_runner, "_SECRET_SCAN_FILE_CAP", 5)
+    def test_time_budget_refuses_the_command(self, project):
         self._tree(project, 20)
-        with pytest.raises(sec_runner.SandboxMaskIncomplete):
+        sec_policy.get().cfg.mask_scan_timeout_s = 0
+        with pytest.raises(sec_runner.SandboxMaskIncomplete, match="time budget"):
             sec_runner._secret_mask_paths(project)
 
-    def test_match_cap_refuses_the_command(self, project, monkeypatch):
-        monkeypatch.setattr(sec_runner, "_SECRET_MASK_MATCH_CAP", 3)
+    def test_match_limit_refuses_the_command(self, project):
+        sec_policy.get().cfg.mask_scan_max_matches = 3
         d = project / "keys"
         d.mkdir()
         for i in range(10):
             (d / f"k{i}.pem").write_text("-----BEGIN-----")
-        with pytest.raises(sec_runner.SandboxMaskIncomplete):
+        with pytest.raises(sec_runner.SandboxMaskIncomplete, match="3-match limit"):
             sec_runner._secret_mask_paths(project)
 
     def test_refusal_reaches_the_tool_layer(self, project, monkeypatch):
         # Callers already refuse to run without isolation; this must ride the
         # same path instead of crashing the turn.
         assert issubclass(sec_runner.SandboxMaskIncomplete, sec_runner.SandboxUnavailable)
-        monkeypatch.setattr(sec_runner, "_SECRET_SCAN_FILE_CAP", 5)
         self._tree(project, 20)
+        sec_policy.get().cfg.mask_scan_timeout_s = 0
         monkeypatch.setattr(sec_runner, "select_backend", lambda: "bwrap")
         with pytest.raises(sec_runner.SandboxUnavailable):
             sec_runner._bwrap_argv(["true"], cwd=project, network=False)
 
-    def test_opt_in_fail_open_still_runs(self, project, monkeypatch):
-        monkeypatch.setattr(sec_runner, "_SECRET_SCAN_FILE_CAP", 5)
+    def test_opt_in_fail_open_still_runs(self, project):
         self._tree(project, 20)
-        sec_policy.get().cfg.mask_scan_fail_open = True
+        cfg = sec_policy.get().cfg
+        cfg.mask_scan_timeout_s = 0
+        cfg.mask_scan_fail_open = True
         # Partial list, no exception — the documented escape hatch.
         assert isinstance(sec_runner._secret_mask_paths(project), list)
 
     def test_normal_tree_is_unaffected(self, project):
         (project / ".env").write_text("SECRET=1")
         assert sec_runner._secret_mask_paths(project) == [project / ".env"]
+class TestMaskScanScales:
+    """The scan runs before every command, so it is bounded by time and by
+    what bwrap can take, never by how many files a repository has — a large
+    ordinary tree used to hit a fixed file cap and refuse every command."""
+
+    def _rel(self, project, paths):
+        return {p.relative_to(project).as_posix() for p in paths}
+
+    def test_file_count_alone_never_refuses(self, project):
+        from agent.security import mask_scan
+        for i in range(60):
+            sub = project / "big" / f"d{i}"
+            sub.mkdir(parents=True)
+            for j in range(100):
+                (sub / f"f{j}.txt").write_bytes(b"")
+        (project / ".env").write_text("S=1")
+        assert self._rel(project, sec_runner._secret_mask_paths(project)) == {".env"}
+        assert mask_scan.last_stats()["files"] >= 6000
+
+    @pytest.mark.parametrize("agent_dir_ro", [True, False])
+    def test_one_walk_serves_both_sets(self, project, monkeypatch, agent_dir_ro):
+        from agent.security import mask_scan
+        sec_policy.get().cfg.agent_dir_read_only = agent_dir_ro
+        (project / ".env").write_text("S=1")
+        (project / "sub").mkdir()
+        (project / "sub" / "AGENT.md").write_text("x")
+        (project / ".agent" / "path_grants.json").write_text("[]")
+        (project / ".agent" / "leftover.pem").write_text("x")
+        expected = (sec_runner._write_deny_paths(project),
+                    sec_runner._secret_mask_paths(project))
+
+        calls = []
+        real = mask_scan.scan
+        monkeypatch.setattr(mask_scan, "scan",
+                            lambda *a, **k: calls.append(1) or real(*a, **k))
+        assert sec_runner._sandbox_overlays(project) == expected
+        assert len(calls) == 1
+        deny, secrets = expected
+        assert project / "sub" / "AGENT.md" in deny
+        # The secret set never walks the agent dir, even when the write-deny set must.
+        assert self._rel(project, secrets) == {".env"}
+
+    def test_symlinks_are_masked_like_os_walk_lists_them(self, project):
+        (project / "real.txt").write_text("x")
+        (project / ".env").symlink_to("real.txt")
+        (project / "gone.pem").symlink_to("nowhere")
+        (project / "keys").mkdir()
+        (project / "dir.key").symlink_to("keys")
+        masked = self._rel(project, sec_runner._secret_mask_paths(project))
+        assert {".env", "gone.pem"} <= masked
+        assert "dir.key" not in masked       # a directory: bwrap cannot mask it with /dev/null
+
+    def test_glob_semantics_match_the_fs_gate(self, project):
+        # fnmatch's `*` crosses `/`, so `.env.*` covers a file inside `.env.d/`;
+        # the shell must not be able to read what the file tools refuse.
+        d = project / ".env.d"
+        d.mkdir()
+        (d / "secret").write_text("x")
+        assert ".env.d/secret" in self._rel(project, sec_runner._secret_mask_paths(project))
+        assert sec_fs._is_read_protected(project, d / "secret")
+
+    def test_limit_changed_at_runtime_applies_to_the_next_command(self, project):
+        for i in range(5):
+            (project / f"k{i}.pem").write_text("x")
+        assert len(sec_runner._secret_mask_paths(project)) == 5
+        sec_policy.get().cfg.mask_scan_max_matches = 2
+        with pytest.raises(sec_runner.SandboxMaskIncomplete):
+            sec_runner._secret_mask_paths(project)
+
+    def test_match_limit_is_shared_across_sets(self, project):
+        # Both sets end up in the same bwrap argument list.
+        for i in range(2):
+            (project / f"k{i}.pem").write_text("x")
+            (project / f"d{i}").mkdir()
+            (project / f"d{i}" / "AGENT.md").write_text("x")
+        sec_policy.get().cfg.mask_scan_max_matches = 3
+        sec_runner._secret_mask_paths(project)
+        sec_runner._write_deny_paths(project)
+        with pytest.raises(sec_runner.SandboxMaskIncomplete):
+            sec_runner._sandbox_overlays(project)
+
+    def test_configured_limit_is_clamped_to_bwrap_ceiling(self, project):
+        from agent.security import mask_scan
+        sec_policy.get().cfg.mask_scan_max_matches = 10 ** 6
+        sec_runner._secret_mask_paths(project)
+        assert mask_scan.last_stats()["max_matches"] == mask_scan.MAX_MATCHES_CEILING
+
+    def test_stats_record_the_scan(self, project):
+        from agent.security import mask_scan
+        (project / ".env").write_text("S=1")
+        sec_runner._sandbox_overlays(project)
+        st = mask_scan.last_stats()
+        assert st["root"] == str(project)
+        assert st["matches"]["secret"] == 1
+        assert st["files"] >= 1 and st["elapsed_ms"] >= 0
+        assert st["incomplete"] is None
+
+    def test_argv_over_the_bwrap_limit_is_refused_clearly(self, project, monkeypatch):
+        from agent.security import mask_scan
+        monkeypatch.setattr(mask_scan, "BWRAP_MAX_ARGS", 10)
+        with pytest.raises(sec_runner.SandboxUnavailable, match="arguments"):
+            sec_runner._bwrap_argv(["true"], cwd=project, network=False)
+
+    def test_sandbox_command_reports_limits_and_last_scan(self, project, monkeypatch):
+        from agent.security.sandbox_status import run_sandbox_command
+        monkeypatch.setattr(sec_runner, "select_backend", lambda: "bwrap")
+        (project / ".env").write_text("S=1")
+        out = run_sandbox_command(None, "scan")
+        for needle in ("time budget", "match limit", "last scan", "secret=1"):
+            assert needle in out, out
+        assert run_sandbox_command(None, "bogus").startswith("usage")
+
+
 
 
 class TestPromptInputsAndAuditAreNotForgeable:

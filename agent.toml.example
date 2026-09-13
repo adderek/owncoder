@@ -529,6 +529,12 @@ project_venv_on_path = true  # prepend <project>/.venv/bin (or venv/bin) to PATH
                              # invisible inside it and bare `python3` is the system interpreter
                              # without the project's dependencies — which reads to a model as
                              # "the machine needs pip install" instead of "use the venv".
+mask_scan_timeout_s   = 10.0  # before every sandboxed command the tree is walked once to find
+                              # secret files to mask and policy files to bind read-only; past
+                              # this budget the command is refused. File count is not limited.
+                              # /sandbox shows what the last scan cost.
+mask_scan_max_matches = 2000  # masks + read-only binds per command (bwrap ceiling: 2900)
+mask_scan_fail_open   = false # true: run anyway on an incomplete scan (leaves a protection gap)
 
 # ── Adaptive Emotional Intelligence ──────────────────────────────────────────
 # Controls how the agent adapts its tone and communication style.

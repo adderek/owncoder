@@ -548,11 +548,18 @@ class SecurityConfig:
     # Write-deny globs (root-relative). None = use built-in defaults.
     # Set to [] to disable entirely (opt-out for trusted dev environments).
     # The per-command walk that masks secret files and binds policy files
-    # read-only inside the sandbox is capped (it runs for every command). When
-    # a repo is big enough to hit the cap, the walk is truncated and part of
-    # the tree is left unprotected: the default is to refuse the command rather
-    # than run it under a protection that silently lapsed. Set true to accept
-    # the gap and keep running. See security/runner.py::_truncated.
+    # read-only inside the sandbox runs before every command, so it is bounded
+    # by wall time and by match count (each match is a bwrap bind; bubblewrap
+    # takes at most 9000 arguments, so the match limit is clamped to 2900).
+    # File count is not a limit. Past either bound the walk is incomplete and
+    # part of the tree is left unprotected: the default is to refuse the
+    # command rather than run it under a protection that silently lapsed. Set
+    # mask_scan_fail_open to accept the gap and keep running. Read on every
+    # command, so a runtime change applies to the next one. See
+    # security/mask_scan.py and security/runner.py::_truncated; /sandbox shows
+    # the limits and what the last scan cost.
+    mask_scan_timeout_s: float = 10.0
+    mask_scan_max_matches: int = 2000
     mask_scan_fail_open: bool = False
     write_deny_globs: list | None = None
     # Read-deny globs for secret files. None = use built-in defaults.

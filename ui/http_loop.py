@@ -3009,6 +3009,13 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
         else:
             from agent.mcp import run_mcp_command
             pub({"type": "sys", "text": await asyncio.to_thread(run_mcp_command, cfg, arg)})
+    elif cmd == "/sandbox":
+        cfg = _agent_config(server)
+        if cfg is None:
+            pub({"type": "sys", "error": True, "text": _NEEDS_LOCAL})
+        else:
+            from agent.security.sandbox_status import run_sandbox_command
+            pub({"type": "sys", "text": await asyncio.to_thread(run_sandbox_command, cfg, arg)})
     elif cmd in ("/credpool", "/creds"):
         cfg = _agent_config(server)
         if cfg is None:

@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import audit, policy, seccomp_filter
+from . import audit, mask_scan, policy, seccomp_filter
 
 logger = logging.getLogger(__name__)
 
@@ -202,19 +202,15 @@ _PROTECTED_PATHS = [
 ]
 
 
-# Bound the secret-scan so a single command never walks an unbounded tree.
-_SECRET_SCAN_FILE_CAP = 50_000
-_SECRET_MASK_MATCH_CAP = 500
-
-
-def _truncated(matches: list[Path], root: Path, globs: list[str], why: str) -> list[Path]:
+def _truncated(partial, root: Path, globs: list[str], why: str):
     """Handle a scan that ran out of budget before covering the tree.
 
-    Fails closed by default. The caps bound how long this walk can take — it
-    runs for every command — but a truncated walk silently stops masking the
-    secrets and stops binding the policy files read-only, and nothing
-    downstream can tell that from "the tree really has no more matches". A
-    shell command is not worth running under a protection that quietly lapsed.
+    Fails closed by default. The limits bound how long this walk can take — it
+    runs for every command — and how many binds bwrap can take, but a
+    truncated walk silently stops masking the secrets and stops binding the
+    policy files read-only, and nothing downstream can tell that from "the
+    tree really has no more matches". A shell command is not worth running
+    under a protection that quietly lapsed.
     """
     if getattr(policy.get().cfg, "mask_scan_fail_open", False):
         logger.warning(
@@ -223,62 +219,68 @@ def _truncated(matches: list[Path], root: Path, globs: list[str], why: str) -> l
             "security.mask_scan_fail_open is on.",
             why, root, ", ".join(globs),
         )
-        return matches
+        return partial
     raise SandboxMaskIncomplete(
         f"Sandbox protection incomplete: the path-glob {why} under {root}, so "
         f"files matching {', '.join(globs)} past that point were not masked or "
         "made read-only. Refusing to run a command with the protection half "
-        "applied. Fix by trimming the tree (.git/.venv/node_modules are already "
-        "skipped), narrowing security.read_deny_globs / write_deny_globs, or "
-        "set security.mask_scan_fail_open = true to accept the gap."
+        "applied. Fix by raising security.mask_scan_timeout_s or "
+        "security.mask_scan_max_matches (at most "
+        f"{mask_scan.MAX_MATCHES_CEILING}: bwrap's argument limit), trimming the "
+        "tree (.git/.venv/node_modules/__pycache__ are already skipped), "
+        "narrowing security.read_deny_globs / write_deny_globs, or set "
+        "security.mask_scan_fail_open = true to accept the gap. /sandbox shows "
+        "what the last scan cost."
     )
 
 
-def _matching_paths(
-    root: Path, globs: list[str], *, skip_dirs: list[Path] | None = None,
-) -> list[Path]:
-    """Concrete existing files under *root* matching any glob in *globs*.
+def _scan(root: Path, sets: dict[str, tuple[list[str], list[Path]]]) -> dict[str, list[Path]]:
+    """Walk *root* once for every glob set — see mask_scan.scan.
 
-    A glob matches on either the root-relative path or the bare filename, mirroring
-    fs._is_write_protected / fs._is_read_protected. Bounded so it can't hang on a
-    huge tree. Subtrees in *skip_dirs* are not descended into: the caller already
-    covers them wholesale (a directory-level bind), so walking them would burn
-    the caps on files whose protection is not in question.
+    The limits are read from the live config on every call, never captured,
+    so changing them at runtime applies to the next command.
     """
-    import fnmatch as _fnmatch
+    cfg = policy.get().cfg
+    result = mask_scan.scan(
+        root, sets,
+        timeout_s=mask_scan.effective_timeout(
+            getattr(cfg, "mask_scan_timeout_s", mask_scan.DEFAULT_TIMEOUT_S)),
+        max_matches=mask_scan.effective_max_matches(
+            getattr(cfg, "mask_scan_max_matches", mask_scan.DEFAULT_MAX_MATCHES)),
+    )
+    if result.stats.incomplete:
+        globs = [g for set_globs, _ in sets.values() for g in set_globs]
+        _truncated(result.matches, root, globs, result.stats.incomplete)
+    return result.matches
 
-    if not globs:
-        return []
-    skip = {Path(d) for d in (skip_dirs or [])}
-    matches: list[Path] = []
-    scanned = 0
-    for dirpath, dirnames, filenames in os.walk(root):
-        if skip and Path(dirpath) in skip:
-            dirnames[:] = []
-            continue
-        # Don't descend into VCS/venv noise; secrets there aren't the threat
-        # model and they dominate the file count.
-        dirnames[:] = [d for d in dirnames if d not in (".git", ".venv", "node_modules", "__pycache__")]
-        for fn in filenames:
-            scanned += 1
-            if scanned > _SECRET_SCAN_FILE_CAP:
-                return _truncated(
-                    matches, root, globs,
-                    f"scan hit the {_SECRET_SCAN_FILE_CAP}-file cap",
-                )
-            p = Path(dirpath) / fn
-            try:
-                rel = str(p.relative_to(root))
-            except ValueError:
-                continue
-            if any(_fnmatch.fnmatch(rel, g) or _fnmatch.fnmatch(fn, g) for g in globs):
-                matches.append(p)
-                if len(matches) >= _SECRET_MASK_MATCH_CAP:
-                    return _truncated(
-                        matches, root, globs,
-                        f"scan hit the {_SECRET_MASK_MATCH_CAP}-match cap",
-                    )
-    return matches
+
+def _sandbox_overlays(root: Path) -> tuple[list[Path], list[Path]]:
+    """(write-deny paths, secret masks) for one command, from a single walk.
+
+    Each used to walk the whole tree on its own, doubling the per-command cost.
+    """
+    plan = _write_deny_plan(root)
+    sets = {"secret": _secret_mask_spec()}
+    if plan is not None:
+        sets["write_deny"] = (plan.file_globs, plan.skip_dirs)
+    found = _scan(root, sets)
+    deny = _write_deny_finish(plan, found["write_deny"]) if plan is not None else []
+    return deny, found["secret"]
+
+
+def _secret_mask_spec() -> tuple[list[str], list[Path]]:
+    """(read-deny globs, directories not to walk) for the secret masks."""
+    from . import fs as _fs
+
+    pol = policy.get()
+    globs = pol.cfg.read_deny_globs
+    if globs is None:
+        globs = _fs._DEFAULT_READ_DENY_GLOBS
+    # The agent's own directory is not walked: it is app state, not project
+    # secrets, and it holds the scratch that the sandbox mounts as /tmp. A few
+    # test runs' tmp dirs there (plus one directory per session) pushed this
+    # walk past its old 50 000-file cap, and then every command was refused.
+    return list(globs), [pol.agent_dir]
 
 
 def _secret_mask_paths(root: Path) -> list[Path]:
@@ -289,20 +291,34 @@ def _secret_mask_paths(root: Path) -> list[Path]:
     so a shell `cat .env` would otherwise bypass that protection. We mask each
     matching file with /dev/null inside the sandbox to close the gap.
     """
-    from . import fs as _fs
-
-    pol = policy.get()
-    globs = pol.cfg.read_deny_globs
-    if globs is None:
-        globs = _fs._DEFAULT_READ_DENY_GLOBS
-    # The agent's own directory is not walked: it is app state, not project
-    # secrets, and it holds the scratch that the sandbox mounts as /tmp. A few
-    # test runs' tmp dirs there (plus one directory per session) pushed this
-    # walk past _SECRET_SCAN_FILE_CAP, and then every command was refused.
-    return _matching_paths(root, globs, skip_dirs=[pol.agent_dir])
+    return _scan(root, {"secret": _secret_mask_spec()})["secret"]
 
 
 def _write_deny_paths(root: Path) -> list[Path]:
+    """Concrete existing paths matching the fs gate's write-deny globs.
+
+    See _write_deny_plan. A command gets these from _sandbox_overlays instead,
+    which shares one walk with the secret masks.
+    """
+    plan = _write_deny_plan(root)
+    if plan is None:
+        return []
+    found = _scan(root, {"write_deny": (plan.file_globs, plan.skip_dirs)})
+    return _write_deny_finish(plan, found["write_deny"])
+
+
+@dataclass
+class _WriteDenyPlan:
+    """The part of the write-deny set that is known without walking the tree."""
+    dirs: list[Path]          # directory binds: `prefix/**` globs, `.agent/`
+    file_globs: list[str]     # still to be matched by the walk
+    skip_dirs: list[Path]     # subtrees a directory bind already covers
+    covered: list[Path]
+    protected: set[Path]
+    scratch: Path
+
+
+def _write_deny_plan(root: Path) -> "_WriteDenyPlan | None":
     """Concrete existing paths matching the fs gate's write-deny globs.
 
     The fs gate refuses writes to these, but only for the agent's *Python* file
@@ -322,7 +338,7 @@ def _write_deny_paths(root: Path) -> list[Path]:
     if globs is None:
         globs = _fs._DEFAULT_WRITE_DENY_GLOBS
     if not globs:
-        return []
+        return None
     # Same merge as the fs gate, or the shell keeps the write the gate refuses.
     globs = list(globs) + list(getattr(pol, "extra_write_deny", []))
 
@@ -371,12 +387,18 @@ def _write_deny_paths(root: Path) -> list[Path]:
         covered.append(ro_agent)
         if ro_agent not in out:
             out.append(ro_agent)
-    for p in _matching_paths(root, file_globs, skip_dirs=skip_dirs):
-        if p in protected or any(d == p or d in p.parents for d in covered):
+    return _WriteDenyPlan(out, file_globs, skip_dirs, covered, protected, scratch)
+
+
+def _write_deny_finish(plan: _WriteDenyPlan, matched: list[Path]) -> list[Path]:
+    """The plan's directory binds plus the walked matches they do not cover."""
+    out = list(plan.dirs)
+    for p in matched:
+        if p in plan.protected or any(d == p or d in p.parents for d in plan.covered):
             continue
         # Scratch is exempt for the same reason the fs gate exempts it
         # (fs._under_scratch): a temp file named agent.toml is not policy.
-        if p == scratch or scratch in p.parents:
+        if p == plan.scratch or plan.scratch in p.parents:
             continue
         out.append(p)
     return out
@@ -532,19 +554,30 @@ def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool, seccomp_fd: int | 
     # otherwise bypass the gate and rewrite grants/permissions/core. Paths are
     # concrete and exist (matched by walk), so a plain --ro-bind is safe here.
     # Anything under the read-only agent directory is already covered.
-    for p in _write_deny_paths(root):
+    deny_paths, secret_paths = _sandbox_overlays(root)
+    for p in deny_paths:
         if ro_agent is not None and _under_root(p, ro_agent):
             continue
         a += ["--ro-bind", str(p), str(p)]
     # Mask secret files (.env, keys, .ssh/*) with /dev/null so a shell read
     # can't exfiltrate what the fs gate already denies the Python file tools.
-    for p in _secret_mask_paths(root):
+    for p in secret_paths:
         a += ["--ro-bind", "/dev/null", str(p)]
     if not network:
         a += ["--unshare-net"]
     if seccomp_fd is not None:
         a += ["--add-seccomp-fd", str(seccomp_fd)]
     a += ["--"] + argv
+    if len(a) > mask_scan.BWRAP_MAX_ARGS:
+        # bwrap would fail with "Exceeded maximum number of arguments"; say why.
+        raise SandboxUnavailable(
+            f"bwrap command line has {len(a)} arguments; bubblewrap refuses more "
+            f"than {mask_scan.BWRAP_MAX_ARGS}. This tree needs "
+            f"{len(deny_paths) + len(secret_paths)} masks/read-only binds and the "
+            f"command itself has {len(argv)} arguments. Lower "
+            "security.mask_scan_max_matches, narrow read_deny_globs / "
+            "write_deny_globs, or shorten the command."
+        )
     return a
 
 
@@ -585,13 +618,14 @@ def _firejail_argv(argv: list[str], *, cwd: Path, network: bool) -> list[str]:
         if scratch is not None and _under_root(scratch, ro_agent):
             a += [f"--read-write={scratch}"]
     # Same write-deny overlay as bwrap — see _write_deny_paths.
-    for p in _write_deny_paths(pol.root):
+    deny_paths, secret_paths = _sandbox_overlays(pol.root)
+    for p in deny_paths:
         if ro_agent is not None and _under_root(p, ro_agent):
             continue
         a += [f"--read-only={p}"]
     # Mask secret files (.env, keys, .ssh/*) so shell reads can't bypass the
     # fs gate's read-deny protection. --blacklist makes the path inaccessible.
-    for p in _secret_mask_paths(pol.root):
+    for p in secret_paths:
         a += [f"--blacklist={p}"]
     if not network:
         a += ["--net=none"]

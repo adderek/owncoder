@@ -479,6 +479,10 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                 from agent.mcp import run_mcp_command
                 console.print(run_mcp_command(agent.config, arg))
 
+            elif cmd == "/sandbox":
+                from agent.security.sandbox_status import run_sandbox_command
+                console.print(run_sandbox_command(agent.config, arg), markup=False)
+
             elif cmd == "/speech":
                 from agent.speech import run_speech_command
                 console.print(run_speech_command(agent.config, arg))

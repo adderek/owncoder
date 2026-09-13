@@ -67,6 +67,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/checkpoint", ["/cp"], "checkpoint: list | new [label] | rollback <id> | prune", True),
     ("/memory", ["/mem"], "memory + index overview  [index | notes [n]]", True),
     ("/mcp", [], "show MCP server status + their tools", False),
+    ("/sandbox", [], "sandbox mask scan: limits + last scan cost  [status | scan]", True),
     ("/speech", [], "speech-to-text input status  [status]", True),
     ("/security", ["/sec", "/audit"], "security: scan|diff|triage|selfaudit|report [path] | baseline [...] | airgap [...] | integrity [seal|check] | weights [pin|verify|list] | sbom [path] | taint [path] | evolve | knowledge | verify [<i>|run] | full [path] | review [path]", True),
     ("/plan", [], "plan: new <goal> | show | steps | step <id> <status> | dep <step> <dep> | assign <step> <agent> | compact | abort | pause | stash | resume", True),
@@ -115,7 +116,7 @@ _GROUPS: dict[str, tuple[str, ...]] = {
     "privacy & access": ("/incognito", "/private", "/vault", "/paths",
                          "/permissions", "/hooks", "/credpool", "/notify"),
     "automation": ("/schedule", "/watch"),
-    "diagnostics": ("/perf", "/modelcalls", "/output", "/speech", "/wrap",
+    "diagnostics": ("/perf", "/modelcalls", "/output", "/speech", "/sandbox", "/wrap",
                     "/round-summary", "/tools", "/help"),
 }
 
@@ -143,6 +144,7 @@ _PRESETS: dict[str, tuple[tuple[str, str], ...]] = {
     "/plan": (("show", "current plan"), ("steps", "step list")),
     "/paths": (("show", "granted paths"),),
     "/vault": (("lock", "lock the vault"),),
+    "/sandbox": (("status", "limits + last scan"), ("scan", "scan the tree now")),
 }
 
 

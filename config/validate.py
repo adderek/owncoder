@@ -67,6 +67,8 @@ _RANGES: list[tuple[str, float | None, float | None]] = [
     ("security.cpu_seconds", 1, None),
     ("security.wall_seconds", 1, None),
     ("security.rss_mb", 1, None),
+    ("security.mask_scan_timeout_s", 0.1, None),
+    ("security.mask_scan_max_matches", 1, 2900),   # bwrap: at most 9000 args
 ]
 
 
