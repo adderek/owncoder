@@ -5,6 +5,11 @@ Agent-requested paths appear as 'pending' — no access until user accepts.
 
 Persistence: non-default accepted grants saved to .agent/path_grants.json.
 The file is in write-deny globs — agent file tools cannot modify it.
+
+Ceiling: when the user config sets `[[security.grant_ceiling]]` entries, every
+grant added at runtime (UI, /paths, agent request, grants file, session record)
+must lie under one of them and may not exceed its mode. Only a user config layer
+can set the ceiling — a project config is clamped by loader._clamp_project_security.
 """
 from __future__ import annotations
 
@@ -70,12 +75,65 @@ class PathGrant:
 _grants: list[PathGrant] = []
 _notify_callbacks: list[Callable] = []
 _grants_file: Path | None = None  # set by setup(); used for persistence
+#: Pre-approved ceiling from the *user* config: [(resolved path, max mode)].
+#: Empty = no ceiling configured (grants are unrestricted, as before).
+_ceiling: list[tuple[Path, str]] = []
+
+
+class CeilingError(PermissionError):
+    """A grant would exceed the user's pre-approved [security] grant_ceiling."""
+
+
+def _load_ceiling(raw) -> None:
+    """Parse `[[security.grant_ceiling]]` entries. Bad entries are skipped."""
+    global _ceiling
+    _ceiling = []
+    for item in raw or []:
+        if not isinstance(item, dict):
+            logger.warning("path_grants: ignoring bad grant_ceiling entry %r", item)
+            continue
+        p = str(item.get("path") or "").strip()
+        mode = item.get("mode")
+        if not p or mode not in ("ro", "rw"):
+            logger.warning("path_grants: ignoring bad grant_ceiling entry %r", item)
+            continue
+        _ceiling.append((Path(p).expanduser().resolve(), mode))
+
+
+def _ceiling_refusal(resolved: Path, mode: str) -> str | None:
+    """Why *resolved* at *mode* exceeds the pre-approved ceiling, or None.
+
+    The ceiling comes from the user config layer — a file outside the project
+    root, so the sandboxed shell cannot read it, and reachable by the file
+    tools only through an explicit grant. Everything minted at runtime (the
+    Access panel, `/paths add`, an agent request, a stored grants file, a
+    resumed session) is confined to it: the path must lie under a pre-approved
+    entry, and a `rw` grant needs a `rw` entry. An `ro` ceiling entry therefore
+    makes a path permanently read-only for this project.
+    """
+    if not _ceiling:
+        return None
+    for cpath, cmode in _ceiling:
+        if cpath == resolved or cpath in resolved.parents:
+            if mode == "rw" and cmode != "rw":
+                return (f"{resolved} is pre-approved read-only in the user "
+                        f"config ([security] grant_ceiling = \"{cpath}\" ro); "
+                        f"read-write needs a rw ceiling entry")
+            return None
+    return (f"{resolved} is not under any path pre-approved in the user config "
+            f"([security] grant_ceiling)")
+
+
+def ceiling() -> list[tuple[str, str]]:
+    """The configured ceiling as (path, max mode), for display in the UI."""
+    return [(str(p), m) for p, m in _ceiling]
 
 
 def setup(config: "Config") -> None:
     """Seed default grant from config root. Clears grants and re-seeds from file."""
     global _grants, _grants_file
     _grants = []
+    _load_ceiling(getattr(config.security, "grant_ceiling", None))
 
     root = Path(config.tools.working_dir).resolve()
     agent_dir = Path(config.tools.agent_dir)
@@ -114,6 +172,9 @@ def _ensure_grants_file() -> None:
 def add_grant(path: str | Path, mode: str, origin: str = "user") -> PathGrant:
     """Add/replace a granted (accessible) path."""
     resolved = Path(path).resolve()
+    refusal = _ceiling_refusal(resolved, mode)
+    if refusal:
+        raise CeilingError(refusal)
     _remove_by_path(resolved)
     g = PathGrant(path=resolved, mode=mode, origin=origin, state="granted")
     g.pin()
@@ -125,6 +186,9 @@ def add_grant(path: str | Path, mode: str, origin: str = "user") -> PathGrant:
 def request_grant(path: str | Path, mode: str, reason: str = "") -> PathGrant:
     """Agent requests access to path. Returns grant with state='pending' (no access yet)."""
     resolved = Path(path).resolve()
+    refusal = _ceiling_refusal(resolved, mode)
+    if refusal:
+        raise CeilingError(refusal)
     existing = grant_for(resolved)
     if existing is not None:
         return existing
@@ -139,9 +203,20 @@ def request_grant(path: str | Path, mode: str, reason: str = "") -> PathGrant:
 
 
 def accept_grant(path: Path) -> bool:
-    """User accepts a pending grant. Returns True if found."""
-    for g in _grants:
+    """User accepts a pending grant. Returns True if found.
+
+    Re-checked against the ceiling: the config may have been tightened between
+    the request and the click, and a pending request is data, not an approval.
+    """
+    for i, g in enumerate(_grants):
         if g.path == path and g.state == "pending":
+            refusal = _ceiling_refusal(g.path, g.mode)
+            if refusal:
+                logger.warning("path_grants: dropping pending grant %s: %s",
+                               g.path, refusal)
+                _grants.pop(i)
+                _notify()
+                return False
             g.state = "granted"
             g.pin()
             _save()
@@ -213,9 +288,23 @@ def apply_session(records: list[dict] | None) -> None:
     _grants = [g for g in _grants if g.origin == "default"]
     for r in records or []:
         try:
-            g = PathGrant(path=Path(r["path"]).resolve(),
-                          mode="rw" if r.get("mode") == "rw" else "ro",
-                          origin=str(r.get("origin") or "user"),
+            # Same field validation as _load: a record is data, and these are
+            # the two fields that decide what the grant may do. An unknown
+            # origin is dropped rather than defaulted — "agent" is a real
+            # value here, so a typo would otherwise be filed as user-made.
+            raw = str(r.get("path") or "")
+            mode = r.get("mode")
+            origin = r.get("origin")
+            if not raw or mode not in ("ro", "rw") or origin not in ("user", "agent"):
+                logger.warning("path_grants: skipping bad session grant %r", r)
+                continue
+            rp = Path(raw).resolve()
+            refusal = _ceiling_refusal(rp, mode)
+            if refusal:
+                logger.warning("path_grants: dropping session grant %s: %s",
+                               rp, refusal)
+                continue
+            g = PathGrant(path=rp, mode=mode, origin=origin,
                           state="granted")
             g.pin()
             _grants.append(g)
@@ -286,6 +375,11 @@ def _load() -> None:
                     continue
                 # Skip if path is already covered (e.g. default root)
                 if any(g.path == p for g in _grants):
+                    continue
+                refusal = _ceiling_refusal(p, mode)
+                if refusal:
+                    logger.warning("path_grants: dropping stored grant %s: %s",
+                                   p, refusal)
                     continue
                 g = PathGrant(path=p, mode=mode, origin=origin, state="granted")
                 g.pin()

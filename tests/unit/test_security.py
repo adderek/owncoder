@@ -998,6 +998,8 @@ class TestPromptInputsAndAuditAreNotForgeable:
                     "src/main.py"):
             assert not sec_fs._is_write_protected(project, project / rel), rel
 
+
+
     def test_custom_locations_are_covered_too(self, project):
         """A configured preamble/cache elsewhere must not silently lose cover."""
         self._cfg(project,
@@ -1015,6 +1017,64 @@ class TestPromptInputsAndAuditAreNotForgeable:
         for rel in ("agent.preamble", "audit.jsonl", "compiled_prompts"):
             assert sec_runner.write_protected_in_sandbox(
                 project / ".agent" / rel, project)
+
+
+class TestSessionRecordCannotForgeGrants:
+    """A session record carries the session's `path_grants` snapshot, and
+    path_grants.apply_session() re-applies it on the next switch — so a
+    writable `session.json` is a self-grant one indirection away."""
+
+    def _cfg(self, project, agent_dir: str = ""):
+        cfg = Config()
+        cfg.tools.working_dir = str(project)
+        cfg.tools.agent_dir = agent_dir or str(project / ".agent")
+        cfg.security.require_sandbox = False
+        sec_policy.setup(cfg)
+        return cfg
+
+    def test_session_record_is_write_denied(self, project):
+        self._cfg(project)
+        for rel in (".agent/2026/09/13/abc/session.json",
+                    ".agent/sessions/s1/session.json"):
+            assert sec_fs._is_write_protected(project, project / rel), rel
+
+    def test_session_sidecar_state_stays_writable(self, project):
+        """Only the record is sealed: the session's own files are the
+        agent's scratch space and must keep working."""
+        self._cfg(project)
+        for rel in (".agent/2026/09/13/abc/notes.txt",
+                    ".agent/2026/09/13/abc/qa.jsonl"):
+            assert not sec_fs._is_write_protected(project, project / rel), rel
+
+    def test_relocated_agent_dir_covers_its_records(self, project):
+        """The static glob assumes `.agent/`; a configured agent_dir needs the
+        policy-derived glob or a whole tree of records stays writable."""
+        self._cfg(project, agent_dir=str(project / ".myagent"))
+        assert sec_fs._is_write_protected(
+            project, project / ".myagent" / "2026" / "09" / "13" / "x" / "session.json")
+
+    def test_safe_open_refuses_to_write_a_session_record(self, project):
+        """The glob has to land on the file *tool* path, not just the helper."""
+        self._cfg(project)
+        d = project / ".agent" / "2026" / "09" / "13" / "abc"
+        d.mkdir(parents=True)
+        with pytest.raises(sec_fs.WriteProtected):
+            sec_fs.safe_open(str(d / "session.json"), "w")
+
+    def test_apply_session_drops_malformed_records(self, project):
+        """Defence in depth: a record that did get planted (hand-edited, or
+        written before the glob existed) is still validated on the way in."""
+        from agent.security import path_grants
+        self._cfg(project)
+        ok = (project.parent / "elsewhere").resolve()
+        path_grants.apply_session([
+            {"path": str(ok), "mode": "rw", "origin": "user"},
+            {"path": str(project.parent / "evil"), "mode": "root", "origin": "user"},
+            {"path": str(project.parent / "evil2"), "mode": "rw", "origin": "default"},
+            {"mode": "rw", "origin": "user"},
+        ])
+        granted = {str(g.path) for g in path_grants.get_all() if g.origin != "default"}
+        assert granted == {str(ok)}
 
 
 class TestGuardsInsideGrantedPaths:

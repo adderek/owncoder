@@ -1005,6 +1005,10 @@ class _HttpUI:
                  "reason": getattr(g, "reason", "")}
                 for g in path_grants.get_all()
             ],
+            # Pre-approved allowance from the user config: a grant outside it
+            # (or above its mode) is refused, so the panel needs to show it.
+            "ceiling": [{"path": p, "mode": m}
+                        for p, m in path_grants.ceiling()],
         }
 
     def grant_action(self, payload: dict) -> dict:
@@ -1026,7 +1030,10 @@ class _HttpUI:
                 if not p.exists():
                     return False, f"path does not exist: {p}"
                 mode = "rw" if payload.get("mode") == "rw" else "ro"
-                path_grants.add_grant(p, mode)
+                try:
+                    path_grants.add_grant(p, mode)
+                except path_grants.CeilingError as exc:
+                    return False, str(exc)
                 return True, f"granted {mode}: {p}"
             p = _P(raw)
             if action == "remove":
@@ -1034,7 +1041,9 @@ class _HttpUI:
                 return ok, "removed" if ok else "not found (or the default root grant)"
             if action == "accept":
                 ok = path_grants.accept_grant(p)
-                return ok, "access granted" if ok else "no such pending request"
+                return ok, ("access granted" if ok else
+                            "no such pending request (or it exceeds the "
+                            "pre-approved ceiling)")
             if action == "reject":
                 ok = path_grants.reject_grant(p)
                 return ok, "request rejected" if ok else "no such pending request"

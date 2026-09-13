@@ -74,10 +74,14 @@ class SlashHandlerMixin:
                     from agent.security import path_grants as _pg
                     from pathlib import Path as _Path
                     resolved = _Path(raw_path).resolve()
-                    _pg.add_grant(resolved, mode, origin="user")
-                    self._write_sys(
-                        f"[{t.success}]✓ Added path grant: {resolved} ({mode})[/{t.success}]"
-                    )
+                    try:
+                        _pg.add_grant(resolved, mode, origin="user")
+                    except _pg.CeilingError as exc:
+                        self._write_sys(f"[{t.warning}]⛔ {exc}[/{t.warning}]")
+                    else:
+                        self._write_sys(
+                            f"[{t.success}]✓ Added path grant: {resolved} ({mode})[/{t.success}]"
+                        )
                     self.query_one(TabbedContent).active = "tab-paths"
                     try:
                         self._reload_paths_view()

@@ -536,6 +536,25 @@ mask_scan_timeout_s   = 10.0  # before every sandboxed command the tree is walke
 mask_scan_max_matches = 2000  # masks + read-only binds per command (bwrap ceiling: 2900)
 mask_scan_fail_open   = false # true: run anyway on an incomplete scan (leaves a protection gap)
 
+# ── Pre-approved path ceiling — USER CONFIG ONLY ────────────────────
+# Lives in ~/.config/agent/agent.{toml,yaml}, NOT in a project config: a repo
+# that ships its own ceiling would be approving its own access, so a project
+# layer setting this key is ignored (with a warning).
+#
+# With entries here, every path grant added at runtime — the Access panel, the
+# agent's request_path_access tool, `paths add`, a stored path_grants.json, a
+# resumed session's snapshot — must lie under one of them, and a rw grant needs
+# a rw entry. An ro entry is therefore a permanent read-only decision that the
+# agent cannot undo. No entries (the default) = grants are unrestricted.
+#
+#   [[security.grant_ceiling]]     # read-only reference material
+#   path = "/srv/specs"
+#   mode = "ro"
+#
+#   [[security.grant_ceiling]]     # a tree the agent may also write
+#   path = "/home/me/src"
+#   mode = "rw"
+
 # ── Adaptive Emotional Intelligence ──────────────────────────────────────────
 # Controls how the agent adapts its tone and communication style.
 #

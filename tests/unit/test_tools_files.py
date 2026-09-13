@@ -69,6 +69,11 @@ class TestPathEscape:
         with pytest.raises(ValueError, match="escapes working directory"):
             read_file("/etc/passwd")
 
+    def test_rejection_names_the_fix(self, work):
+        """The error must say how to get access, not just that it is denied."""
+        with pytest.raises(ValueError, match="request_path_access"):
+            read_file("/etc/passwd")
+
     def test_relative_escape(self, work):
         with pytest.raises(ValueError, match="escapes working directory"):
             read_file("../../etc/passwd")

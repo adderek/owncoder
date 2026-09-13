@@ -68,6 +68,13 @@ _DEFAULT_WRITE_DENY_GLOBS: list[str] = [
     ".agent/**/*.toml",
     ".agent/path_grants.json",  # agent must not self-grant paths
     ".agent/permissions.json",  # agent must not rewrite the policy binding it
+    # A session record carries a `path_grants` snapshot that
+    # path_grants.apply_session() restores when the user switches to (or
+    # starts) that session — so a writable `session.json` is the same
+    # self-grant as path_grants.json, one step removed: plant the record, wait
+    # for the switch. The session's own side files (notes, transcript) stay
+    # writable; only the record the host writes is sealed.
+    ".agent/**/session.json",
     ".agent/checkpoints/**",    # agent must not rewrite the record of its edits
     ".agent/web_search/**",     # app-generated fetcher runs with network=True
     ".agent/diagnostics/**",    # readable, not forgeable: crash/failure records

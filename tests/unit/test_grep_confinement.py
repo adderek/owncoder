@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from agent.security import fs as sec_fs
+from agent.security import policy as sec_policy
 from agent.tools.search import grep as grep_mod
 from agent.config.models import Config, ToolsConfig
 
@@ -56,6 +58,43 @@ class TestGrepConfinement:
         )
         assert "error" not in result
         assert result["count"] >= 1
+
+
+class TestGrepPathGrants:
+    """A path the user granted stays searchable; an ungranted one does not."""
+
+    @pytest.fixture
+    def external(self, tmp_path_factory):
+        d = tmp_path_factory.mktemp("external")
+        (d / "notes.txt").write_text("GRANTED_MARKER = 1\n")
+        return d
+
+    @pytest.fixture
+    def granted_project(self, project_dir, external, monkeypatch):
+        monkeypatch.setattr(sec_fs, "_root_dev", None)
+        monkeypatch.setattr(sec_fs, "_root_ino", None)
+        cfg = Config()
+        cfg.tools.working_dir = str(project_dir)
+        cfg.tools.agent_dir = str(project_dir / ".agent")
+        cfg.security.require_sandbox = False
+        sec_policy.setup(cfg)
+        sec_fs.init_root_pin()
+        grep_mod.setup(cfg)
+        yield external
+        sec_policy._policy = None
+        sec_fs._root_dev = None
+        sec_fs._root_ino = None
+
+    def test_ungranted_external_blocked(self, granted_project):
+        result = grep_mod.grep_code("GRANTED_MARKER", path=str(granted_project))
+        assert "error" in result
+
+    def test_granted_external_allowed(self, granted_project):
+        from agent.security import path_grants as _pg
+        _pg.add_grant(granted_project, "ro", origin="user")
+        result = grep_mod.grep_code("GRANTED_MARKER", path=str(granted_project))
+        assert "error" not in result, result
+        assert result["count"] == 1
 
 
 class TestGrepReadDeny:

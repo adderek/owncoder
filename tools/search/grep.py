@@ -12,7 +12,11 @@ import subprocess
 from pathlib import Path
 
 from agent.tools import register
-from agent.tools._common import read_deny_globs as _read_deny_globs, is_read_protected as _is_read_protected
+from agent.tools._common import (
+    read_deny_globs as _read_deny_globs,
+    is_read_protected as _is_read_protected,
+    is_path_allowed as _is_path_allowed,
+)
 from agent.tools.rules import get_rules
 
 _config = None
@@ -109,18 +113,17 @@ def grep_code(
         search_root = Path(working_dir) / search_root
     search_root = search_root.resolve()
 
-    # Confine to project root — reject paths outside working_dir.
-    # Uses a manual check (not security.fs.safe_resolve) so the result is always
-    # relative to *this tool's* working_dir, not the shared security policy root.
-    root = Path(working_dir).resolve()
-    try:
-        search_root.relative_to(root)
-    except ValueError:
-        if search_root != root:
-            return {
-                "error": f"path escapes project root: {path!r} -> {search_root}",
-                "pattern": pattern,
-            }
+    # Confine to *this tool's* working_dir or a path the user granted
+    # (`/paths add`, request_path_access) — a manual check, not
+    # security.fs.safe_resolve, so the result stays relative to working_dir
+    # rather than the shared security policy root.
+    if not _is_path_allowed(search_root, working_dir):
+        return {
+            "error": (f"path escapes project root: {path!r} -> {search_root} "
+                      f"(no path grant covers it; request access with "
+                      f"request_path_access or /paths add)"),
+            "pattern": pattern,
+        }
 
     context_lines = max(0, min(int(context_lines or 0), 10))
     limit = max_results or (_CONTEXT_DEFAULT_MAX if context_lines else _DEFAULT_MAX)

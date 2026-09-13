@@ -528,6 +528,16 @@ class SecurityConfig:
     # read-only *directory* covers those too. The host process is unaffected:
     # the mount exists only inside the sandbox.
     agent_dir_read_only: bool = True
+    # Ceiling for runtime path grants: a list of {"path", "mode"} entries the
+    # user pre-approves in the *user* config layer (~/.config/agent/… —
+    # invisible to the sandbox, unreachable for the file tools). Every grant
+    # added at runtime — Access panel, /paths, an agent request — must lie
+    # under one of these entries and may not raise the mode: an `ro` entry can
+    # never become a `rw` grant. A project config may not set this at all (see
+    # loader._clamp_project_security), so a hostile repo cannot widen its own
+    # access. Empty (the default) = no ceiling, grants are unrestricted.
+    # See security/path_grants.py::_ceiling_refusal.
+    grant_ceiling: list = field(default_factory=list)
     env_allow: list = field(default_factory=lambda: [
         "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "HOME",
         "USER", "LOGNAME", "TMPDIR", "PWD", "SHELL",

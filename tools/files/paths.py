@@ -62,7 +62,22 @@ def _resolve(path: str) -> Path:
         # tools layer is mid-reset (e.g. in a test fixture) and the pinned
         # security root may point at a stale tmp_path.
         if _config is not None and _sec_policy.is_configured():
-            return _sec_fs.safe_resolve(path)
+            try:
+                return _sec_fs.safe_resolve(path)
+            except _sec_fs.PathEscape:
+                # Gate is live and says no. Surface it here: falling through to
+                # the local check below would report the same rejection without
+                # the one thing that fixes it — the path is outside the project
+                # root and needs a grant (request_path_access / `/paths add`).
+                raise ValueError(
+                    f"path escapes working directory: {path!r} — outside the "
+                    f"project root and no path grant covers it. Ask the user to "
+                    f"grant it (request_path_access, or /paths add <path> ro)."
+                ) from None
+    except ImportError:
+        pass
+    except ValueError:
+        raise
     except Exception:
         pass
     import os as _os

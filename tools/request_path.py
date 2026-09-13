@@ -78,7 +78,16 @@ def request_path_access(path: str, mode: str, reason: str = "") -> dict:
                 "message": "Request already pending. Waiting for user approval in paths tab.",
             }
 
-    _pg.request_grant(resolved, mode, reason)
+    try:
+        _pg.request_grant(resolved, mode, reason)
+    except _pg.CeilingError as exc:
+        return {
+            "status": "denied",
+            "path": str(resolved),
+            "mode": mode,
+            "message": (f"{exc}. Do not retry — only the user can widen the "
+                        f"ceiling, in ~/.config/agent/agent.{{toml,yaml}}."),
+        }
 
     msg = f"Access to '{resolved}' ({mode}) requested."
     if reason:

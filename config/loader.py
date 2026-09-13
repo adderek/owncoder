@@ -510,6 +510,15 @@ def _clamp_project_security(config: Config, data: dict) -> list[str]:
         return []
     issues: list[str] = []
     for field, value in list(section.items()):
+        if field == "grant_ceiling":
+            # Not a tightening knob: it is the allowance the *user* grants the
+            # agent, so a repo that ships its own ceiling would be approving
+            # its own access. Set it in ~/.config/agent/agent.{toml,yaml}.
+            issues.append(
+                "[security] grant_ceiling from a project config is ignored — "
+                "only a user config may pre-approve paths")
+            section.pop(field)
+            continue
         if field not in _SEC_GOVERNED:
             issues.append(
                 f"[security] {field} from a project config is ignored — only "

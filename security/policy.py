@@ -243,6 +243,24 @@ def _state_db_globs(config: "Config", root: Path, agent_dir: Path) -> list[str]:
     return out
 
 
+def _session_record_globs(root: Path, agent_dir: Path) -> list[str]:
+    """Root-relative write-deny glob for the session records.
+
+    `session.json` holds the session's `path_grants` snapshot, re-applied by
+    path_grants.apply_session() on every switch — a write to it is a grant
+    forged one indirection away, and a resumed session is exactly where the
+    agent cannot see the user approve anything. fs.py covers the default
+    `.agent/` name; this covers a relocated agent_dir (``tools.agent_dir``).
+    The session layout is ``<agent_dir>/YYYY/MM/DD/<id>/session.json``, so one
+    recursive glob covers every nesting.
+    """
+    try:
+        rel = agent_dir.resolve().relative_to(root.resolve())
+    except (OSError, ValueError):
+        return []         # outside the project: the gate is root-relative
+    return [f"{rel.as_posix()}/**/session.json"]
+
+
 def setup(config: "Config") -> Policy:
     global _policy
     root = Path(config.tools.working_dir).resolve()
@@ -251,7 +269,8 @@ def setup(config: "Config") -> Policy:
         agent_dir = root / agent_dir
     _policy = Policy(root=root, agent_dir=agent_dir, cfg=config.security,
                      extra_write_deny=(_prompt_input_globs(config, root)
-                                       + _state_db_globs(config, root, agent_dir)))
+                                       + _state_db_globs(config, root, agent_dir)
+                                       + _session_record_globs(root, agent_dir)))
     from . import path_grants as _pg
     _pg.setup(config)
     # Before anything can run a command: every protected path must exist, or
