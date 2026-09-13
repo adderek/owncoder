@@ -73,6 +73,80 @@ def _may_persist() -> bool:
     return vault.persist_allowed()
 
 
+_KIND_RANK = {"class": 0, "function": 0, "method": 0, "file": 1, "symbol": 2,
+              "document": 3, "section": 3, "external": 4}
+
+
+def _is_test_scope(scope: str) -> bool:
+    from pathlib import Path
+    parts = Path(scope).parts
+    return "tests" in parts or "test" in parts or Path(scope).name.startswith("test_")
+
+
+def resolve_refs(corpus, ref: str) -> list[dict]:
+    """Candidate nodes for a ref, best first: [{id, name, kind, scope}].
+
+    A ref is a node id, a dimensional link (kind=function:name=main), a file
+    path (agent/core/prompts.py), Class.method, or a bare symbol name. Names are
+    ambiguous by nature; ranking puts definitions before externals and source
+    before tests, so the first candidate is what a human would have meant.
+    """
+    import re
+    ref = (ref or "").strip()
+    if not ref:
+        return []
+    conn = corpus.conn
+
+    def describe(ids):
+        out = []
+        for nid in dict.fromkeys(ids):
+            dims = dict(conn.execute(
+                "SELECT dim_name, dim_value FROM node_dimensions WHERE node_id = ?", (nid,)).fetchall())
+            if dims:
+                out.append({"id": nid, "name": dims.get("name", ""), "kind": dims.get("kind", ""),
+                            "scope": dims.get("scope", "")})
+        return sorted(out, key=lambda n: (_KIND_RANK.get(n["kind"], 5), _is_test_scope(n["scope"]),
+                                          len(n["scope"])))
+
+    if re.fullmatch(r"[0-9a-f]{32,}", ref):
+        return describe([ref])
+    if "=" in ref:
+        try:
+            node = corpus.get(ref)
+            return describe([node.id]) if node else []
+        except ValueError:
+            from kb.resolver import parse_link, resolve
+            result = resolve(conn, parse_link(ref))
+            return describe([n.id for n in getattr(result, "nodes", [])])
+    if "/" in ref or re.search(r"\.[a-z]{1,5}$", ref):
+        ids = [r[0] for r in conn.execute(
+            "SELECT node_id FROM locators WHERE scheme = 'file' AND value = ?", (ref,))]
+        files = [n for n in describe(ids) if n["kind"] in ("file", "document")]
+        if files:
+            return files
+    owner, _, name = ref.rpartition(".")
+    ids = [r[0] for r in conn.execute(
+        "SELECT node_id FROM node_dimensions WHERE dim_name = 'name' AND dim_value = ?", (name,))]
+    cands = describe(ids)
+    if owner:
+        owned = {r[0] for r in conn.execute(
+            "SELECT e.dst_id FROM edges e JOIN node_dimensions d ON d.node_id = e.src_id "
+            "WHERE e.kind = 'method' AND d.dim_name = 'name' AND d.dim_value = ?", (owner.split(".")[-1],))}
+        cands = [c for c in cands if c["id"] in owned] or cands
+    return cands
+
+
+def _one(corpus, ref: str) -> tuple[str | None, dict]:
+    """Best node id for a ref, plus what the caller should be told about ambiguity."""
+    cands = resolve_refs(corpus, ref)
+    if not cands:
+        return None, {"error": f"no KB node matches {ref!r}"}
+    extra = {"resolved": cands[0]}
+    if len(cands) > 1:
+        extra["also_matched"] = cands[1:6]
+    return cands[0]["id"], extra
+
+
 def _get_corpus():
     global _corpus
     if _corpus is not None:
@@ -139,7 +213,7 @@ def kb_search(query: str, kind: str | None = None, scope: str | None = None, lim
         "properties": {
             "ref": {
                 "type": "string",
-                "description": "Node id (hex) or dimensional-link (dim=val:dim=val)",
+                "description": "Symbol name (Class.method ok), file path, node id, or dim-link (kind=function:name=main)",
             },
         },
         "required": ["ref"],
@@ -148,10 +222,12 @@ def kb_search(query: str, kind: str | None = None, scope: str | None = None, lim
 def kb_get(ref: str) -> str:
     try:
         corpus = _get_corpus()
-        node = corpus.get(ref)
+        node_id, extra = _one(corpus, ref)
+        node = corpus.get(node_id) if node_id else None
         if node is None:
             return json.dumps({"error": f"not found: {ref}"})
         return json.dumps({
+            **({"also_matched": extra["also_matched"]} if "also_matched" in extra else {}),
             "id": node.id,
             "name": node.inferred_name_base,
             "dims": node.dims,
@@ -159,7 +235,8 @@ def kb_get(ref: str) -> str:
             "completeness": node.completeness,
             "data_grade": node.data_grade,
             "priority": node.priority,
-            "locators": [{"scheme": l.scheme, "value": l.value} for l in node.locators],
+            "locators": [{"scheme": l.scheme, "value": l.value, **({"at": l.template} if l.template else {})}
+                         for l in node.locators],
         }, ensure_ascii=False)
     except ValueError as exc:
         return json.dumps({"error": str(exc)})
@@ -174,7 +251,7 @@ def kb_get(ref: str) -> str:
         "properties": {
             "node_id": {
                 "type": "string",
-                "description": "Node id (hex)",
+                "description": "Symbol name (Class.method ok), file path or node id",
             },
             "kind": {
                 "type": "string",
@@ -193,8 +270,12 @@ def kb_get(ref: str) -> str:
 def kb_deps(node_id: str, kind: str = "calls", depth: int = 1) -> str:
     try:
         corpus = _get_corpus()
-        result = corpus.deps(node_id, kind=kind, depth=depth)
+        resolved, extra = _one(corpus, node_id)
+        if resolved is None:
+            return json.dumps(extra)
+        result = corpus.deps(resolved, kind=kind, depth=depth)
         return json.dumps({
+            **extra,
             "direct": [
                 {"id": n.id, "name": n.inferred_name_base, "edge_kind": e.kind}
                 for e, n in result.direct
@@ -215,7 +296,7 @@ def kb_deps(node_id: str, kind: str = "calls", depth: int = 1) -> str:
         "properties": {
             "node_id": {
                 "type": "string",
-                "description": "Node id (hex)",
+                "description": "Symbol name (Class.method ok), file path or node id",
             },
             "kind": {
                 "type": "string",
@@ -234,8 +315,12 @@ def kb_deps(node_id: str, kind: str = "calls", depth: int = 1) -> str:
 def kb_callers(node_id: str, kind: str = "calls", depth: int = 1) -> str:
     try:
         corpus = _get_corpus()
-        result = corpus.callers(node_id, kind=kind, depth=depth)
+        resolved, extra = _one(corpus, node_id)
+        if resolved is None:
+            return json.dumps(extra)
+        result = corpus.callers(resolved, kind=kind, depth=depth)
         return json.dumps({
+            **extra,
             "direct": [
                 {"id": n.id, "name": n.inferred_name_base, "edge_kind": e.kind}
                 for e, n in result.direct
@@ -256,7 +341,7 @@ def kb_callers(node_id: str, kind: str = "calls", depth: int = 1) -> str:
         "properties": {
             "attach_to": {
                 "type": "string",
-                "description": "Node id to attach note to",
+                "description": "Where the note belongs: symbol name(s) or file path(s), comma-separated; node ids work too",
             },
             "body": {
                 "type": "string",
@@ -276,8 +361,15 @@ def kb_add_note(attach_to: str, body: str, kind: str = "observation") -> str:
         return json.dumps({"error": "off-the-record session: KB not written"})
     try:
         corpus = _get_corpus()
-        note_id = corpus.add_note(attach_to, body, kind=kind)
-        return json.dumps({"note_id": note_id})
+        targets, unresolved = [], []
+        for ref in [r for r in (attach_to or "").split(",") if r.strip()]:
+            node_id, extra = _one(corpus, ref)
+            (targets.append(extra["resolved"]) if node_id else unresolved.append(ref.strip()))
+        if unresolved or not targets:
+            return json.dumps({"error": f"no KB node for: {', '.join(unresolved) or attach_to!r}",
+                               "hint": "use a symbol name or file path that exists in the code"})
+        note_id = corpus.add_note([t["id"] for t in targets], body, kind=kind)
+        return json.dumps({"note_id": note_id, "attached": targets}, ensure_ascii=False)
     except Exception as exc:
         return json.dumps({"error": str(exc)})
 
@@ -289,7 +381,7 @@ def kb_add_note(attach_to: str, body: str, kind: str = "observation") -> str:
         "properties": {
             "node_id": {
                 "type": "string",
-                "description": "Node id (hex)",
+                "description": "Symbol name (Class.method ok), file path or node id",
             },
             "text": {
                 "type": "string",
