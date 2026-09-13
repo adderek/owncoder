@@ -547,3 +547,18 @@ def test_graph_context_prefers_exact_name_over_substring(cleanup_gm_cache):
 def test_node_location_parses_graphify_line():
     assert gm.node_location({"source_file": "a.py", "source_location": "L28"}) == ("a.py", 28)
     assert gm.node_location({"source_file": "a.py", "source_location": ""}) == ("a.py", None)
+
+
+def test_graph_context_prefers_source_over_tests_for_same_name(cleanup_gm_cache):
+    graph = {
+        "nodes": [
+            {"id": "t_cfg", "label": "_cfg()", "source_file": "agent/tests/unit/test_a.py"},
+            {"id": "l_cfg", "label": "_cfg()", "source_file": "agent/config/loader.py"},
+        ],
+        "links": [],
+    }
+    with patch.object(gm, "_load_graph", return_value=graph), \
+         patch.object(gm, "_graph_stale_warning", return_value=None):
+        result = gm.graph_context("_cfg")
+    assert result["node"]["id"] == "l_cfg"
+    assert result["exact_matches"] == 2

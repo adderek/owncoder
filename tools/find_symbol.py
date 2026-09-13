@@ -70,6 +70,9 @@ def _from_graph(name: str) -> tuple[dict, str | None]:
         }]
     if ctx.get("warning"):
         out["graph_warning"] = ctx["warning"]
+    if (ctx.get("exact_matches") or 1) > 1:
+        # Several symbols share the name; the graph picked one. grep lists them all.
+        out["graph_ambiguous"] = ctx["exact_matches"]
     if ctx.get("also_matched"):
         out["also_matched"] = ctx["also_matched"]
     return out, None
@@ -165,7 +168,7 @@ def find_symbol(name: str, want: str = "all", path: str | None = None) -> dict:
         if label == "grep":
             placed = merged.get("definition") or []
             if (placed and all(d.get("file") and d.get("line") for d in placed)
-                    and not merged.get("graph_warning")):
+                    and not merged.get("graph_warning") and not merged.get("graph_ambiguous")):
                 continue
         payload, reason = fn()
         if reason:

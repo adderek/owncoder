@@ -240,6 +240,11 @@ def _node_matches(node: dict, term: str) -> bool:
     )
 
 
+def _is_test_path(path: str) -> bool:
+    parts = Path(path).parts
+    return "tests" in parts or "test" in parts or Path(path).name.startswith("test_")
+
+
 def symbol_name(label: str) -> str:
     """Bare symbol name from a graphify label: '.embeddings()' -> 'embeddings'."""
     return (label or "").strip().lstrip(".").removesuffix("()")
@@ -450,8 +455,10 @@ def graph_context(symbol: str) -> dict:
 
     # Stable sort: an exact name must win over the first node that merely
     # contains the term ('embeddings' used to resolve to a rationale node).
+    # Among equally good names, source before tests: a helper name like _cfg is
+    # defined in a dozen test modules and one real one.
     matched = sorted((n for n in nodes if _node_matches(n, symbol)),
-                     key=lambda n: _match_rank(n, symbol))
+                     key=lambda n: (_match_rank(n, symbol), _is_test_path(n.get("source_file", ""))))
     if not matched:
         return {"error": f"No node found matching {symbol!r}"}
 
@@ -493,6 +500,7 @@ def graph_context(symbol: str) -> dict:
     }
     if len(matched) > 1:
         out["also_matched"] = [n["id"] for n in matched[1:11]]
+    out["exact_matches"] = sum(1 for n in matched if _match_rank(n, symbol) <= 2)
     warn = _graph_stale_warning()
     if warn:
         out["warning"] = warn

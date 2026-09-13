@@ -112,3 +112,20 @@ def test_stale_graph_definition_is_rechecked_by_grep(tmp_path, monkeypatch):
     assert out["sources"] == ["graph", "grep"]
     assert out["definition"][0]["line"] == 10
     assert out["graph_warning"] == "graph may be stale"
+
+
+def test_ambiguous_graph_name_is_rechecked_by_grep(tmp_path, monkeypatch):
+    from agent.tools.graph import main as gm
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_a.py").write_text("def _cfg():\n    pass\n")
+    (tmp_path / "loader.py").write_text("\n\ndef _cfg():\n    pass\n")
+    graph = _graph([
+        {"id": "t_cfg", "label": "_cfg()", "source_file": "tests/test_a.py", "source_location": "L1"},
+        {"id": "l_cfg", "label": "_cfg()", "source_file": "loader.py", "source_location": "L3"},
+    ])
+    monkeypatch.setattr(gm, "_load_graph", lambda: graph)
+    monkeypatch.setattr(gm, "_graph_stale_warning", lambda: None)
+    out = find_symbol("_cfg")
+    assert out["graph_ambiguous"] == 2
+    assert out["sources"] == ["graph", "grep"]
+    assert {d["file"] for d in out["definition"]} == {"loader.py", "tests/test_a.py"}
