@@ -171,6 +171,7 @@ class Agent:
             indexed_count=indexed_count,
             total_files=total_files,
             index_percent=index_percent,
+            embedding_mismatch=getattr(self.data_provider, "embedding_mismatch", lambda: "")(),
         )
 
         from agent.context import ensure_context_files, load_always_context, load_project_doc

@@ -171,12 +171,67 @@ def _log_llm_request(messages: list, tools, config: "Config") -> None:
     logger.info("llm.request preamble=%s msgs=%d tail_roles=[%s]", h, len(dynamic), last_roles)
 
 
+def _age(seconds: float) -> str:
+    days = int(seconds // 86400)
+    if days:
+        return f"{days}d ago"
+    hours = int(seconds // 3600)
+    return f"{hours}h ago" if hours else "<1h ago"
+
+
+def _graph_status_line(root: Path) -> str:
+    """Say whether graph_* answers are current, not merely whether a file exists.
+
+    A months-old graph advertised as "ready" is trusted for callers/callees it
+    no longer has — worse than no graph, which the model knows to work around.
+    """
+    import time
+    graph_json = root / "graphify-out" / "graph.json"
+    if not graph_json.exists():
+        return "Graph: not built — run graph_build before graph_* structural queries"
+    built = graph_json.stat().st_mtime
+    age = _age(time.time() - built)
+    try:
+        from agent.tools.graph.main import _newest_source_mtime
+        stale = _newest_source_mtime(root) > built
+    except Exception:
+        stale = False
+    if stale:
+        return (f"Graph: stale (built {age}, sources changed since) — callers/callees may be "
+                "missing or outdated; find_symbol re-checks definitions with grep")
+    return f"Graph: ready (built {age})"
+
+
+def _kb_status_line(config: "Config") -> str:
+    """Node count and corpus name, so an empty or off-topic KB is visible up front."""
+    kb_cfg = getattr(config, "kb", None)
+    corpus = getattr(kb_cfg, "corpus_path", "") or ""
+    if not (getattr(kb_cfg, "enabled", False) and corpus):
+        return "KB: not configured — kb_* tools return nothing"
+    db = Path(corpus) / "index.sqlite"
+    if not db.exists():
+        return "KB: not built — kb_* tools return nothing"
+    import sqlite3
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1)
+        try:
+            count = conn.execute("SELECT count(*) FROM nodes").fetchone()[0]
+        finally:
+            conn.close()
+    except Exception:
+        return f"KB: unreadable ({Path(corpus).name}) — kb_* tools may fail"
+    if not count:
+        return f"KB: empty (corpus {Path(corpus).name} has 0 nodes) — kb_* tools return nothing"
+    return f"KB: {count} nodes in corpus {Path(corpus).name}"
+
+
 def _build_system_prompt(
     config: "Config",
     project_name: str = "",
     indexed_count: int = 0,
     total_files: int = 0,
     index_percent: int = 100,
+    embedding_mismatch: str = "",
 ) -> str:
     from datetime import datetime, timezone
 
@@ -225,20 +280,14 @@ def _build_system_prompt(
     # this never stalls startup. Signalled in the prompt so the model knows
     # up-front whether graph_*/kb_* will return data or empty (= not built).
     root = Path(config.tools.working_dir).resolve()
-    graph_ready = (root / "graphify-out" / "graph.json").exists()
-    graph_status_line = (
-        "Graph: ready" if graph_ready
-        else "Graph: not built — run graph_build before graph_* structural queries"
-    )
-    kb_cfg = getattr(config, "kb", None)
-    kb_ready = False
-    kb_corpus = getattr(kb_cfg, "corpus_path", "") or ""
-    if getattr(kb_cfg, "enabled", False) and kb_corpus:
-        try:
-            kb_ready = Path(kb_corpus).exists()
-        except Exception:
-            kb_ready = False
-    kb_status_line = "KB: ready" if kb_ready else "KB: not built"
+    graph_status_line = _graph_status_line(root)
+    kb_status_line = _kb_status_line(config)
+    if embedding_mismatch == "dims":
+        index_status_line += (" — semantic search OFF (index vectors do not match the "
+                              "embedding model): search_code is keyword-only")
+    elif embedding_mismatch == "model":
+        index_status_line += (" — index was embedded by a different model: "
+                              "search_code ranking is degraded")
 
     # Progressive tool disclosure: when enabled, advertise the on-demand tools as
     # a compact grouped catalog so the model knows what exists + when to reach
