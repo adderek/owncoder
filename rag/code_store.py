@@ -227,6 +227,23 @@ class CodeStore:
         conn.execute(f"DELETE FROM units WHERE id IN ({ph})", ids)
         conn.commit()
 
+    def prune_units(self, keep_paths: set[str]) -> int:
+        """Delete units whose file is not in *keep_paths* (the paths the index holds).
+
+        The summary queue otherwise keeps work for files that were deleted, are
+        ignored now, or were queued under another root ('core/x.py' from indexing
+        agent/ alone) — thousands of LLM calls nobody will read. Run
+        bulk_dedup_pending() first so descriptions of identical content move to
+        the surviving units before their donors go.
+        """
+        paths = [r["path"] for r in self._conn.execute("SELECT DISTINCT path FROM units").fetchall()]
+        doomed = [p for p in paths if p not in keep_paths]
+        removed = 0
+        for p in doomed:
+            removed += self._conn.execute("SELECT count(*) FROM units WHERE path = ?", (p,)).fetchone()[0]
+            self.delete_units_for_file(p)
+        return removed
+
     def mark_parent_stale(self, unit_id: str) -> None:
         row = self._conn.execute(
             "SELECT parent_id FROM units WHERE id = ?", (unit_id,)

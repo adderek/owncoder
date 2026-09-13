@@ -185,3 +185,22 @@ def test_kb_sync_respects_interval_and_switch(tmp_path, monkeypatch):
     m._last_kb_sync = 0
     m.sync_kb(out)
     assert "kb_nodes" not in out
+
+
+def test_prune_units_keeps_indexed_paths_and_reuses_descriptions(tmp_path):
+    from agent.rag.code_store import CodeStore
+    cs = CodeStore(str(tmp_path / "summaries.db"))
+    base = {"language": "python", "node_type": "function_definition", "level": 0,
+            "start_line": 1, "end_line": 2, "mtime": 0.0, "git_hash": None}
+    cs.upsert_unit({**base, "id": "old", "path": "core/a.py", "name": "f", "object_checksum": "c1",
+                    "status": "described", "description": "does f"})
+    cs.upsert_unit({**base, "id": "new", "path": "agent/core/a.py", "name": "f", "object_checksum": "c1",
+                    "status": "pending"})
+    cs.upsert_unit({**base, "id": "gone", "path": "clients/x.kt", "name": "g", "object_checksum": "c2",
+                    "status": "pending"})
+    assert cs.bulk_dedup_pending(analysis_date=1.0) == 1
+    assert cs.prune_units({"agent/core/a.py"}) == 2
+    kept = cs.get_unit("new")
+    assert kept["status"] == "described" and kept["description"] == "does f"
+    assert cs.get_unit("old") is None and cs.get_unit("gone") is None
+    cs.close()

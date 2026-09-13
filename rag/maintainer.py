@@ -302,6 +302,16 @@ class IndexMaintainer:
                 archive.purge_expired(cfg.rag.archive_ttl_days)
             finally:
                 archive.close()
+
+            if cfg.summarization.enabled:
+                from agent.rag.code_store import CodeStore
+                code_store = CodeStore(cfg.summarization.db_path)
+                try:
+                    out["summaries_reused"] = code_store.bulk_dedup_pending(analysis_date=time.time())
+                    indexed = {r[0] for r in store._conn().execute("SELECT DISTINCT path FROM chunks")}
+                    out["units_pruned"] = code_store.prune_units(indexed)
+                finally:
+                    code_store.close()
         finally:
             store.close()
         try:
