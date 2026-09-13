@@ -291,10 +291,15 @@ def _secret_mask_paths(root: Path) -> list[Path]:
     """
     from . import fs as _fs
 
-    globs = policy.get().cfg.read_deny_globs
+    pol = policy.get()
+    globs = pol.cfg.read_deny_globs
     if globs is None:
         globs = _fs._DEFAULT_READ_DENY_GLOBS
-    return _matching_paths(root, globs)
+    # The agent's own directory is not walked: it is app state, not project
+    # secrets, and it holds the scratch that the sandbox mounts as /tmp. A few
+    # test runs' tmp dirs there (plus one directory per session) pushed this
+    # walk past _SECRET_SCAN_FILE_CAP, and then every command was refused.
+    return _matching_paths(root, globs, skip_dirs=[pol.agent_dir])
 
 
 def _write_deny_paths(root: Path) -> list[Path]:

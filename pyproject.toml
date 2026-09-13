@@ -75,6 +75,13 @@ markers = [
 # another LIVE session's tmp roots mid-run, randomly breaking disk-backed
 # tests (seen in test_prompt_compiler A/B index round-trips).
 tmp_path_retention_count = 50
+# Delete a passing test's tmp_path right away, and the whole session base dir
+# when every test passed; only failures leave files behind to debug. A full
+# unit run leaves ~7.7k files otherwise, and inside the agent sandbox /tmp is
+# the project scratch (.agent/tmp), so 50 retained runs pushed the sandbox's
+# per-command file scan past its cap. Keep everything for one run with:
+#   pytest -o tmp_path_retention_policy=all
+tmp_path_retention_policy = "failed"
 
 [tool.setuptools.packages.find]
 where = [".."]

@@ -465,6 +465,21 @@ class TestSandboxSecretMasking:
         assert ".ssh/id_rsa" in masked
         assert "main.py" not in masked
 
+    def test_secret_scan_skips_agent_dir(self, project, monkeypatch):
+        # Test runs leave thousands of tmp files in the scratch (.agent/tmp,
+        # mounted as /tmp in the sandbox). Walking it burned the file cap and
+        # then refused every command, `git status` included.
+        monkeypatch.setattr(sec_runner, "_SECRET_SCAN_FILE_CAP", 20)
+        scratch = project / ".agent" / "tmp" / "pytest-of-user" / "pytest-0"
+        scratch.mkdir(parents=True)
+        for i in range(50):
+            (scratch / f"f{i}.txt").write_text("x")
+        (project / ".agent" / ".env").write_text("NOT=project")
+        (project / ".env").write_text("SECRET=abc")
+
+        masked = {p.relative_to(project).as_posix() for p in sec_runner._secret_mask_paths(project)}
+        assert masked == {".env"}
+
     def test_bwrap_argv_masks_secrets_with_devnull(self, project):
         (project / ".env").write_text("SECRET=abc")
         argv = sec_runner._bwrap_argv(["cat", ".env"], cwd=project, network=False)
