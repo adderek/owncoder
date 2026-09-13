@@ -133,6 +133,7 @@ def build_parser() -> argparse.ArgumentParser:
     # index
     idx_p = sub.add_parser("index", help="Manage index")
     idx_p.add_argument("--update", action="store_true", help="Re-index changed files (also prunes stale & purges expired archive)")
+    idx_p.add_argument("--reembed", action="store_true", help="Re-apply embeddings to every stored chunk with the current model; no re-chunking, no summarization")
     idx_p.add_argument("--stats", action="store_true", help="Show index statistics")
     idx_p.add_argument("--list-pending", action="store_true", help="With --stats, list files not yet indexed")
     idx_p.add_argument("--prune", action="store_true", help="Archive chunks for files that are missing or now match .agent.ignore")
@@ -354,13 +355,15 @@ def main() -> None:
             cmd_init(args, config)
         elif args.command == "index":
             from agent.cli.index import (
-                cmd_index_update, cmd_index_stats, cmd_index_prune,
-                cmd_index_restore, cmd_index_purge_archive,
+                cmd_index_update, cmd_index_reembed, cmd_index_stats,
+                cmd_index_prune, cmd_index_restore, cmd_index_purge_archive,
                 cmd_index_daemon_start, cmd_index_daemon_stop,
                 _daemon_watch_entry,
             )
             if args.update:
                 cmd_index_update(args, config)
+            elif args.reembed:
+                cmd_index_reembed(args, config)
             elif args.stats:
                 cmd_index_stats(args, config)
             elif args.prune:

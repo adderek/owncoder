@@ -67,9 +67,10 @@ def reload_models(config: Config, include_project: bool = False) -> tuple[bool, 
     live config is left exactly as it was.
     """
     from .loader import (
-        _load_file, _merge_models, _apply_entry_to_llm,
-        _ensure_model_registry_keys, _resolve_default_entry,
-    )
+            _load_file, _merge_models, _apply_entry_to_llm,
+            _ensure_model_registry_keys, _resolve_default_entry,
+            apply_embeddings_entry,
+        )
 
     layers = list(getattr(config, "loaded_config_layers", []) or [])
     if not layers:
@@ -172,21 +173,13 @@ def reload_models(config: Config, include_project: bool = False) -> tuple[bool, 
         notes.append(f"active entry '{active_before}' is gone from the config; "
                      f"keeping the current connection — switch with /model")
 
-    # Embeddings from the resolved embeddings model entry
+    # Embeddings from the resolved embeddings model entry. Same field-wise env
+    # precedence as the loader — a reload must not re-point an endpoint the
+    # session was started with via AGENT_EMBEDDINGS_*.
     emb_name = config.model_roles.get("embeddings", "embeddings")
     emb_entry = config.model_entries.get(emb_name)
     if emb_entry is not None:
-        config.embeddings.base_url = emb_entry.base_url
-        if emb_entry.model:
-            config.embeddings.model = emb_entry.model
-        if emb_entry.dimensions:
-            config.embeddings.dimensions = emb_entry.dimensions
-        config.embeddings.query_instruct = emb_entry.query_instruct
-        for env_key, attr in (("AGENT_EMBEDDINGS_BASE_URL", "base_url"),
-                              ("AGENT_EMBEDDINGS_MODEL", "model")):
-            val = os.environ.get(env_key)
-            if val:
-                setattr(config.embeddings, attr, val)
+        apply_embeddings_entry(config.embeddings, emb_entry)
 
     # 6. Ensure fallback entries in model_entries now that config.llm & embeddings are updated.
     _ensure_model_registry_keys(config)

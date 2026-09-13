@@ -98,7 +98,23 @@ def search_code(query: str, top_k: int | None = None) -> dict:
     if not rules.ignore.empty:
         cleaned = [r for r in cleaned if not rules.ignore.matches(r.get("path", ""))]
 
-    return {"results": cleaned, "count": len(cleaned), "query": query}
+    result = {"results": cleaned, "count": len(cleaned), "query": query}
+    # Tell the model when it is getting keyword results from a semantic tool —
+    # otherwise it reads a thin result set as "nothing matches" and stops.
+    mismatch = getattr(_data_provider, "embedding_mismatch", lambda: "")()
+    if mismatch == "dims":
+        result["note"] = (
+            "Semantic search is disabled: the index holds vectors of a different "
+            "dimensionality than the configured embedding model, so these results "
+            "come from keyword search only. Run 'agent index --reembed' to repair."
+        )
+    elif mismatch == "model":
+        result["note"] = (
+            "The index vectors come from a different embedding model of the same "
+            "width — results are keyword-searchable but ranking is degraded. "
+            "Run 'agent index --reembed' to repair."
+        )
+    return result
 
 
 @register(

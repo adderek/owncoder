@@ -4,7 +4,10 @@ from __future__ import annotations
 import os
 import pytest
 from agent.config import Config, _apply_env_overrides, _merge_obj, load_config, make_registry
-from agent.config.loader import _try_auto_select_model, _resolve_default_entry, _resolve_role_pools
+from agent.config.loader import (
+    _try_auto_select_model, _resolve_default_entry, _resolve_role_pools,
+    apply_embeddings_entry,
+)
 from agent.config.models import ModelEntry
 
 
@@ -313,6 +316,36 @@ class TestSummarizerPool:
         monkeypatch.setattr("urllib.request.urlopen", lambda *a, **kw: _FakeResponse())
         _resolve_role_pools(c)
         assert c.model_roles["embeddings"] == "cpu-embed"
+
+    def test_embeddings_env_model_survives_pinned_entry(self, monkeypatch):
+        # Regression: the post-pool re-apply tested only AGENT_EMBEDDINGS_BASE_URL,
+        # so an exported AGENT_EMBEDDINGS_MODEL was silently clobbered by the
+        # pinned entry while AGENT_EMBEDDINGS_BASE_URL kept it alive.
+        monkeypatch.setenv("AGENT_EMBEDDINGS_MODEL", "env-model")
+        c = Config()
+        entry = _entry("Qwen3-Embedding-0.6B-Q8_0", "http://192.168.31.42:8082/v1")
+        entry.dimensions = 1024
+        c.model_entries["remote-embed"] = entry
+        c.model_roles["embeddings"] = "remote-embed"
+
+        c.embeddings.model = "env-model"   # what _apply_env_overrides left behind
+        apply_embeddings_entry(c.embeddings, entry)
+        assert c.embeddings.model == "env-model"
+        assert c.embeddings.base_url == "http://192.168.31.42:8082/v1"
+        assert c.embeddings.dimensions == 1024
+
+    def test_embeddings_entry_applied_without_env(self, monkeypatch):
+        monkeypatch.delenv("AGENT_EMBEDDINGS_MODEL", raising=False)
+        monkeypatch.delenv("AGENT_EMBEDDINGS_BASE_URL", raising=False)
+        monkeypatch.delenv("AGENT_EMBEDDINGS_DIMENSIONS", raising=False)
+        c = Config()
+        entry = _entry("Qwen3-Embedding-0.6B-Q8_0", "http://192.168.31.42:8082/v1")
+        entry.dimensions = 1024
+        entry.query_instruct = "Instruct: retrieve\nQuery: "
+        apply_embeddings_entry(c.embeddings, entry)
+        assert c.embeddings.model == "Qwen3-Embedding-0.6B-Q8_0"
+        assert c.embeddings.dimensions == 1024
+        assert c.embeddings.query_instruct == "Instruct: retrieve\nQuery: "
 
     def test_registry_raises_when_pool_configured_but_none_resolved(self):
         c = Config()

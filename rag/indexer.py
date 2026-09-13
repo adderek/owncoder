@@ -1,6 +1,7 @@
 """Index operations: prune, restore, and index_directory."""
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -14,6 +15,8 @@ if TYPE_CHECKING:
     from agent.config import RAGConfig, EmbeddingsConfig
     from agent.rag.store import VectorStore
     from agent.rag.embedder import Embedder
+
+log = logging.getLogger(__name__)
 
 # Re-exported for callers using `from agent.rag.indexer import LANGUAGE_MAP`
 __all__ = [
@@ -165,13 +168,19 @@ def _chunk_and_embed(
     embedder: "Embedder",
     cfg: "RAGConfig",
     git_hash: str | None,
-) -> tuple[str, list[dict], float]:
-    """Chunk a file and embed all batches. Safe to call from a worker thread."""
+) -> tuple[str, list[dict], float, int]:
+    """Chunk a file and embed all batches. Safe to call from a worker thread.
+
+    Returns (rel, chunks, mtime, embedded) — `embedded` counts the chunks that
+    got a vector. A failed batch still returns its chunks so they stay
+    keyword-searchable; the caller aggregates the shortfall into one warning.
+    """
     chunks = chunk_file(str(fpath), cfg)
     if not chunks:
-        return rel, [], mtime
+        return rel, [], mtime, 0
     for chunk in chunks:
         chunk["path"] = rel
+    embedded = 0
     for i in range(0, len(chunks), _BATCH_SIZE):
         batch = chunks[i:i + _BATCH_SIZE]
         texts = [c["content"] for c in batch]
@@ -179,12 +188,13 @@ def _chunk_and_embed(
             embeddings = embedder.embed(texts)
             for chunk, emb in zip(batch, embeddings):
                 chunk["embedding"] = emb
+                embedded += 1
         except Exception:
-            pass
+            log.debug("embedding batch of %d failed", len(batch), exc_info=True)
         for chunk in batch:
             chunk["mtime"] = mtime
             chunk["git_hash"] = git_hash
-    return rel, chunks, mtime
+    return rel, chunks, mtime, embedded
 
 
 def index_directory(
@@ -202,22 +212,34 @@ def index_directory(
     root_path = Path(root).resolve()
     exclude = exclude or []
 
-    # Stamp which embedding model fills this index; different models (or quants
-    # of one model, e.g. bge-m3 q4_k_m vs q8_0) share dims but produce
-    # incompatible vectors, so a silent switch would degrade search quality.
+    # Compare against the stamp on the existing index. Two distinct cases,
+    # because the remedy differs: a dimension change means stored vectors cannot
+    # be compared with query vectors at all, while a same-dimension model/quant
+    # swap (bge-m3 q4_k_m vs q8_0) only degrades ranking.
+    # Read-only — the stamp is committed at the end, and only if embeddings were
+    # actually produced (see below).
     emb_cfg = getattr(embedder, "_cfg", None)
-    if emb_cfg is not None and getattr(emb_cfg, "model", ""):
-        prev_model = store.record_embedding_model(
-            emb_cfg.model, getattr(emb_cfg, "base_url", "")
-        )
+    emb_model = getattr(emb_cfg, "model", "") if emb_cfg is not None else ""
+    if emb_model:
+        prev_model, prev_dims = store.compare_embedding_model(emb_model)
         if prev_model:
-            import logging
-            logging.getLogger(__name__).warning(
-                "Embedding model changed: index built with %r, now embedding with %r "
-                "(same dims, different vectors). Mixed vectors degrade search — "
-                "run `agent init --force` to rebuild the whole index.",
-                prev_model, emb_cfg.model,
-            )
+            if prev_dims is not None and prev_dims != emb_cfg.dimensions:
+                log.error(
+                    "Embedding model changed: index built with %r (%d dims), now "
+                    "embedding with %r (%d dims) — incompatible vectors, vector "
+                    "search cannot use the old chunks. Re-apply embeddings with "
+                    "`agent index --reembed`, or rebuild from source with "
+                    "`agent init --force`.",
+                    prev_model, prev_dims, emb_model, emb_cfg.dimensions,
+                )
+            else:
+                log.warning(
+                    "Embedding model changed: index built with %r, now embedding "
+                    "with %r (same dims, different vectors). Mixed vectors degrade "
+                    "search — run `agent index --reembed` to replace every vector "
+                    "without re-reading the tree.",
+                    prev_model, emb_model,
+                )
     default_exclude = {
         ".git", "__pycache__", "node_modules", "build", "dist",
         ".agent", ".venv", "venv", ".env",
@@ -256,6 +278,8 @@ def index_directory(
     total_chunks = 0
     dedup_same = 0
     dedup_cross = 0
+    embed_ok = 0      # chunks that got a vector this run
+    embed_failed = 0  # chunks stored without one (keyword-searchable only)
     embed_workers: int = getattr(getattr(embedder, "_cfg", None), "embed_workers", 1)
 
     # Pre-load in-memory dedup state from code_store to avoid per-chunk DB queries.
@@ -310,7 +334,10 @@ def index_directory(
                         chunk["embedding"] = emb
                         chunk["mtime"] = mtime
                         chunk["git_hash"] = git_hash
+                    embed_ok += len(batch)
                 except Exception:
+                    embed_failed += len(batch)
+                    log.debug("embedding batch of %d failed", len(batch), exc_info=True)
                     for chunk in batch:
                         chunk["mtime"] = mtime
                         chunk["git_hash"] = git_hash
@@ -367,7 +394,9 @@ def index_directory(
             for rel, abs_path, mtime, future in work:
                 if future is None:
                     continue
-                _, chunks, _ = future.result()
+                _, chunks, _, emb_n = future.result()
+                embed_ok += emb_n
+                embed_failed += len(chunks) - emb_n
                 if not chunks:
                     store.set_file_mtime(rel, mtime)
                     continue
@@ -393,6 +422,23 @@ def index_directory(
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
 
+    if embed_failed:
+        log.warning(
+            "%d of %d chunks were stored without vectors — they stay "
+            "keyword-searchable only. Check the embeddings endpoint.",
+            embed_failed, embed_ok + embed_failed,
+        )
+    if emb_model and embed_ok:
+        # Only now is the stamp truthful: embeddings were actually produced, so
+        # the index really is filled with this model's vectors.
+        store.record_embedding_model(emb_model, getattr(emb_cfg, "base_url", ""))
+    elif emb_model:
+        log.warning(
+            "no embeddings produced (%d chunks failed) — embedding-model stamp "
+            "left unchanged",
+            embed_failed,
+        )
+
     return {
         "indexed": indexed,
         "skipped": skipped,
@@ -401,6 +447,81 @@ def index_directory(
         "dedup_same": dedup_same,
         "dedup_cross": dedup_cross,
     }
+
+
+def reembed_all(store, embedder, cfg, progress_cb=None) -> dict:
+    """Replace every stored vector with one produced by *embedder*.
+
+    The vector half of the index only: chunk text is read back from the index,
+    nothing is re-chunked, and the summarization queue is not touched.
+    `agent init --force` re-reads and re-chunks the whole tree and then
+    re-summarizes it — orders of magnitude more work for the same vectors, and
+    the wrong tool for an embedding-model swap.
+
+    The old vectors are dropped only after a probe batch has proved the embedder
+    answers, so a dead endpoint leaves the index intact rather than empty. A
+    failure *after* that point leaves the chunks already re-embedded correct and
+    the rest keyword-searchable only; re-running finishes the job.
+    """
+    emb_cfg = getattr(embedder, "_cfg", None)
+    emb_model = getattr(emb_cfg, "model", "") if emb_cfg is not None else ""
+    rows = store.all_chunk_texts()
+    result = {"chunks": len(rows), "embedded": 0, "failed": 0, "aborted": False}
+    if not rows:
+        return result
+
+    probe = rows[:_BATCH_SIZE]
+    try:
+        vectors = embedder.embed([text for _, text in probe])
+    except Exception as e:
+        log.error(
+            "re-embed aborted: embedder did not answer (%s: %s) — index left "
+            "untouched, %d chunks keep their previous vectors",
+            type(e).__name__, e, len(rows),
+        )
+        result["aborted"] = True
+        return result
+    if not vectors:
+        log.error("re-embed aborted: embedder returned no vectors — index untouched")
+        result["aborted"] = True
+        return result
+
+    dims = len(vectors[0])
+    if getattr(emb_cfg, "dimensions", 0) and emb_cfg.dimensions != dims:
+        log.warning(
+            "embedder returned %d dims but config says %d — sizing the vector "
+            "table from the returned width",
+            dims, emb_cfg.dimensions,
+        )
+
+    # Past this point the old vectors are being replaced, not compared.
+    store.reset_vectors(dims)
+    store.write_embeddings([(cid, v) for (cid, _), v in zip(probe, vectors)])
+    result["embedded"] = len(vectors)
+    if progress_cb:
+        progress_cb(result["embedded"], len(rows))
+
+    for i in range(_BATCH_SIZE, len(rows), _BATCH_SIZE):
+        batch = rows[i:i + _BATCH_SIZE]
+        try:
+            vectors = embedder.embed([text for _, text in batch])
+        except Exception:
+            log.warning(
+                "re-embed: batch of %d chunks failed — they keep no vector and "
+                "stay keyword-searchable only. Re-run to finish.",
+                len(batch),
+            )
+            result["failed"] += len(batch)
+            continue
+        store.write_embeddings([(cid, v) for (cid, _), v in zip(batch, vectors)])
+        result["embedded"] += len(vectors)
+        if progress_cb:
+            progress_cb(result["embedded"], len(rows))
+
+    if emb_model and result["embedded"]:
+        # Truthful here: the vectors in the table were produced by this model.
+        store.record_embedding_model(emb_model, getattr(emb_cfg, "base_url", ""))
+    return result
 
 
 def _enqueue_for_summarization(

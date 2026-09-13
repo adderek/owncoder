@@ -427,6 +427,55 @@ def cmd_index_update(args, config):
     archive.close()
 
 
+def cmd_index_reembed(args, config):
+    """Re-apply embeddings to every stored chunk, and nothing else.
+
+    No re-chunking, no summarization, no disk walk: the chunks already in the
+    index are the input. That makes this the run to use after an embedding
+    model or endpoint change, where `agent init --force` would re-parse the
+    whole tree and then re-summarize it for identical text.
+    """
+    from agent.rag.indexer import reembed_all
+    from agent.rag.store import VectorStore
+    from agent.rag.embedder import Embedder
+    from rich.console import Console
+
+    console = Console()
+    store = VectorStore(config.rag)
+    embedder = Embedder(config.embeddings)
+
+    total = store.stats()["chunks"]
+    if not total:
+        console.print("Index holds no chunks — nothing to re-embed.")
+        store.close()
+        return
+
+    console.print(
+        f"Re-embedding [bold]{total}[/bold] chunks with "
+        f"[bold]{config.embeddings.model}[/bold] "
+        f"([dim]{config.embeddings.dimensions} dims @ {config.embeddings.base_url}[/dim])"
+    )
+    console.print("  [dim]Chunk text and summaries are untouched.[/dim]")
+
+    def _progress(done: int, tot: int) -> None:
+        console.print(f"  [dim]{done}/{tot} chunks…[/dim]")
+
+    result = reembed_all(store, embedder, config.rag, progress_cb=_progress)
+    if result["aborted"]:
+        console.print("[red]Aborted — the index was left untouched.[/red]")
+    else:
+        console.print(
+            f"Re-embedded {result['embedded']}/{result['chunks']} chunks."
+            + (f"  [yellow]{result['failed']} failed (no vector).[/yellow]" if result["failed"] else "")
+        )
+        if embedder.call_count:
+            console.print(
+                f"  [dim]emb: {embedder.call_count} vecs @ {embedder.rate:.1f}/s "
+                f"({embedder.endpoint})[/dim]"
+            )
+    store.close()
+
+
 def cmd_index_prune(args, config):
     from agent.rag.indexer import prune_index
     from agent.rag.store import VectorStore
@@ -656,7 +705,7 @@ def cmd_index_stats(args, config):
         if cur_model and cur_model != idx_model:
             console.print(
                 f"  [yellow]Embedder: {idx_model} (index) ≠ {cur_model} (config) — "
-                f"mixed vectors degrade search; rebuild with `agent init --force`[/yellow]"
+                f"re-apply embeddings with `agent index --reembed`[/yellow]"
             )
         else:
             console.print(f"  Embedder: {idx_model}")

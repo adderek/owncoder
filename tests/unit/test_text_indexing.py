@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import pytest
 
-from agent.config.models import RAGConfig
+from agent.config.models import EmbeddingsConfig, RAGConfig
 from agent.rag.chunker import chunk_file, is_text_candidate, BINARY_EXTENSIONS
-from agent.rag.indexer import _wanted_file
+from agent.rag.indexer import _wanted_file, index_directory
 from pathlib import Path
 
 
@@ -142,3 +142,181 @@ class TestMissingGrammarFallback:
         assert len(msgs) == 1
         assert "tree_sitter_kotlin" in msgs[0]
         assert "[lang]" in msgs[0]
+
+
+class TestEmbeddingModelStamp:
+    """The stamp must describe vectors that actually exist.
+
+    Regression: index_directory stamped the configured model unconditionally, so
+    a session whose embedder endpoint was down relabelled an index it never
+    re-embedded — leaving _meta claiming one model over another model's vectors,
+    and the "same dims" warning text asserting something never checked.
+    """
+
+    class _Embedder:
+        def __init__(self, model, dims, fail=False):
+            self._cfg = EmbeddingsConfig(
+                model=model, base_url="http://localhost:8080/v1", dimensions=dims
+            )
+            self._fail = fail
+
+        def embed(self, texts):
+            if self._fail:
+                raise RuntimeError("connection refused")
+            return [[0.1] * self._cfg.dimensions for _ in texts]
+
+    def _store(self, tmp_path):
+        from agent.rag.store import VectorStore
+        return VectorStore(RAGConfig(db_path=str(tmp_path / "index.db")))
+
+    def _tree(self, tmp_path, name="src"):
+        root = tmp_path / name
+        root.mkdir()
+        (root / "a.md").write_text("# hello\n\nsome searchable prose here\n")
+        return root
+
+    def _cfg(self):
+        return RAGConfig(chunk_min_tokens=1, chunk_max_tokens=100)
+
+    def test_stamp_committed_when_embeddings_produced(self, tmp_path):
+        store = self._store(tmp_path)
+        index_directory(
+            str(self._tree(tmp_path)), store,
+            self._Embedder("Qwen3-Embedding-0.6B-Q8_0", 4), self._cfg(), force=True,
+        )
+        assert store.get_meta("embedding_model") == "Qwen3-Embedding-0.6B-Q8_0"
+
+    def test_stamp_left_alone_when_embedder_down(self, tmp_path, caplog):
+        store = self._store(tmp_path)
+        store.set_meta("embedding_model", "Qwen3-Embedding-0.6B-Q8_0")
+        with caplog.at_level("WARNING", logger="agent.rag.indexer"):
+            index_directory(
+                str(self._tree(tmp_path)), store,
+                self._Embedder("nomic-embed-text", 768, fail=True), self._cfg(), force=True,
+            )
+        assert store.get_meta("embedding_model") == "Qwen3-Embedding-0.6B-Q8_0"
+        assert any("without vectors" in r.getMessage() for r in caplog.records)
+
+    def test_dim_change_is_reported_as_incompatible(self, tmp_path, caplog):
+        store = self._store(tmp_path)
+        index_directory(
+            str(self._tree(tmp_path, "one")), store,
+            self._Embedder("Qwen3-Embedding-0.6B-Q8_0", 4), self._cfg(), force=True,
+        )
+        with caplog.at_level("ERROR", logger="agent.rag.indexer"):
+            index_directory(
+                str(self._tree(tmp_path, "two")), store,
+                self._Embedder("bge-m3", 8), self._cfg(), force=True,
+            )
+        errs = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+        assert errs, "a dimension change must not be reported at warning level"
+        assert "incompatible" in errs[0]
+
+
+class TestReembedAll:
+    """`agent index --reembed` — vectors only.
+
+    Swapping the embedding model used to mean `agent init --force`: re-read the
+    tree, re-chunk it, re-run the summarization ladder — all to produce vectors
+    for text that had not changed. reembed_all takes the chunks already in the
+    index as its input.
+    """
+
+    class _Embedder:
+        def __init__(self, model, dims, fail=False):
+            self._cfg = EmbeddingsConfig(
+                model=model, base_url="http://localhost:8080/v1", dimensions=dims
+            )
+            self._fail = fail
+
+        def embed(self, texts):
+            if self._fail:
+                raise RuntimeError("connection refused")
+            return [[0.1] * self._cfg.dimensions for _ in texts]
+
+    def _store(self, tmp_path):
+        from agent.rag.store import VectorStore
+        return VectorStore(RAGConfig(db_path=str(tmp_path / "index.db")))
+
+    def _cfg(self):
+        return RAGConfig(chunk_min_tokens=1, chunk_max_tokens=100)
+
+    def _seed(self, tmp_path, store, model="Qwen3-Embedding-0.6B-Q8_0", dims=4):
+        root = tmp_path / "src"
+        root.mkdir(exist_ok=True)
+        (root / "a.md").write_text("# hello\n\nsome searchable prose here\n")
+        index_directory(
+            str(root), store, self._Embedder(model, dims), self._cfg(), force=True,
+        )
+
+    def test_replaces_vectors_and_restamps(self, tmp_path):
+        from agent.rag.indexer import reembed_all
+        store = self._store(tmp_path)
+        self._seed(tmp_path, store)
+        before = store.all_chunk_texts()
+        assert before
+
+        result = reembed_all(store, self._Embedder("bge-m3", 4), self._cfg())
+
+        assert result["aborted"] is False
+        assert result["embedded"] == len(before)
+        assert store.get_meta("embedding_model") == "bge-m3"
+        assert store.stats()["chunks"] == len(before)
+
+    def test_leaves_chunk_text_alone(self, tmp_path):
+        from agent.rag.indexer import reembed_all
+        store = self._store(tmp_path)
+        self._seed(tmp_path, store)
+        before = store.all_chunk_texts()
+
+        reembed_all(store, self._Embedder("bge-m3", 4), self._cfg())
+
+        assert store.all_chunk_texts() == before
+
+    def test_aborts_and_keeps_index_when_embedder_down(self, tmp_path):
+        from agent.rag.indexer import reembed_all
+        store = self._store(tmp_path)
+        self._seed(tmp_path, store)
+        before = store.all_chunk_texts()
+
+        result = reembed_all(
+            store, self._Embedder("nomic-embed-text", 4, fail=True), self._cfg(),
+        )
+
+        assert result["aborted"] is True
+        assert result["embedded"] == 0
+        assert store.get_meta("embedding_model") == "Qwen3-Embedding-0.6B-Q8_0"
+        assert store.vector_search([0.1] * 4, top_k=5), \
+            "a dead embedder must not empty a working index"
+        assert store.all_chunk_texts() == before
+
+    def test_is_the_remedy_for_a_dimension_change(self, tmp_path):
+        from agent.rag.indexer import reembed_all
+        store = self._store(tmp_path)
+        self._seed(tmp_path, store)
+        assert store.embedding_mismatch("bge-m3", 8) == "dims"
+
+        reembed_all(store, self._Embedder("bge-m3", 8), self._cfg())
+
+        assert store.embedding_mismatch("bge-m3", 8) == ""
+        assert store.vector_search([0.1] * 8, top_k=5)
+
+    def test_mismatch_reports_a_model_swap_at_the_same_width(self, tmp_path):
+        store = self._store(tmp_path)
+        self._seed(tmp_path, store)
+        assert store.embedding_mismatch("bge-m3", 4) == "model"
+        assert store.embedding_mismatch("Qwen3-Embedding-0.6B-Q8_0", 4) == ""
+
+    def test_mismatch_is_silent_on_an_empty_index(self, tmp_path):
+        store = self._store(tmp_path)
+        assert store.embedding_mismatch("bge-m3", 8) == ""
+        assert store.embedding_mismatch("", 0) == ""
+
+
+def test_reembed_flag_is_registered():
+    """`agent index --reembed` must reach the dispatch in cli/main.py."""
+    from agent.cli.main import build_parser
+    args = build_parser().parse_args(["index", "--reembed"])
+    assert args.reembed is True
+    assert args.update is False
+

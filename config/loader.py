@@ -642,12 +642,36 @@ def _apply_model_entry_to_llm(config: Config) -> None:
     emb_name = config.model_roles.get("embeddings", "embeddings")
     emb_entry = config.model_entries.get(emb_name)
     if emb_entry is not None:
-        config.embeddings.base_url = emb_entry.base_url
-        if emb_entry.model:
-            config.embeddings.model = emb_entry.model
-        if emb_entry.dimensions:
-            config.embeddings.dimensions = emb_entry.dimensions
-        config.embeddings.query_instruct = emb_entry.query_instruct
+        apply_embeddings_entry(config.embeddings, emb_entry)
+
+
+# Embeddings model entry -> EmbeddingsConfig. The env var (when set) wins per
+# field, so exporting only AGENT_EMBEDDINGS_MODEL is not silently clobbered by
+# a pinned role or entry. `always` = copy even when falsy (query_instruct is
+# legitimately empty, and empty means "symmetric model").
+_EMB_ENTRY_FIELDS = (
+    ("base_url", "AGENT_EMBEDDINGS_BASE_URL", False),
+    ("model", "AGENT_EMBEDDINGS_MODEL", False),
+    ("dimensions", "AGENT_EMBEDDINGS_DIMENSIONS", False),
+    ("query_instruct", None, True),
+)
+
+
+def apply_embeddings_entry(emb, entry) -> None:
+    """Copy a resolved embeddings model entry onto EmbeddingsConfig.
+
+    Field-wise, not all-or-nothing: an AGENT_EMBEDDINGS_* env var set for a
+    field wins over the entry. All three call sites — the load-time bridge, the
+    post-pool re-apply, and hot reload — share this so they cannot disagree
+    about env precedence.
+    """
+    for fld, env_key, always in _EMB_ENTRY_FIELDS:
+        if env_key and os.environ.get(env_key):
+            continue
+        val = getattr(entry, fld, None)
+        if not always and not val:
+            continue
+        setattr(emb, fld, val)
 
 
 def _ensure_model_registry_keys(config: Config) -> None:
@@ -959,16 +983,13 @@ def check_reachability(config: Config) -> None:
 
     # A pool-pinned embeddings role lands AFTER the load-time bridge ran, so
     # config.embeddings still holds defaults — re-apply the pinned entry here.
-    # Skip when an env override set the endpoint explicitly (env wins).
+    # Env precedence is handled per field inside apply_embeddings_entry; this
+    # used to test only AGENT_EMBEDDINGS_BASE_URL, so a pool pin silently ate
+    # an exported AGENT_EMBEDDINGS_MODEL.
     emb_name = config.model_roles.get("embeddings")
     emb_entry = config.model_entries.get(emb_name) if emb_name else None
-    if emb_entry is not None and not os.environ.get("AGENT_EMBEDDINGS_BASE_URL"):
-        config.embeddings.base_url = emb_entry.base_url
-        if emb_entry.model:
-            config.embeddings.model = emb_entry.model
-        if emb_entry.dimensions:
-            config.embeddings.dimensions = emb_entry.dimensions
-        config.embeddings.query_instruct = emb_entry.query_instruct
+    if emb_entry is not None:
+        apply_embeddings_entry(config.embeddings, emb_entry)
 
     decision_cfg = getattr(config.parallel, "decision", None)
     if decision_cfg is not None and getattr(decision_cfg, "verify_on_startup", False):

@@ -89,8 +89,9 @@ class VectorStore:
             actual = (ddl["sql"] or "").split("float[")[-1].split("]")[0] if "float[" in (ddl["sql"] or "") else "?"
             logger.warning(
                 "Embedding dimension mismatch: index.db has float[%s] but config expects %d dims. "
-                "Dropping stale vec_chunks table. Run `agent init --force` to rebuild all embeddings; "
-                "`agent index --update` will only re-embed files changed since last index.",
+                "Dropping stale vec_chunks table. Run `agent index --reembed` to "
+                "rebuild every embedding; `agent index --update` only re-embeds files "
+                "changed since the last index.",
                 actual, meta_dims,
             )
             conn.executescript("DROP TABLE IF EXISTS vec_chunks;")
@@ -108,7 +109,7 @@ class VectorStore:
         if self._vec_dims is not None:
             logger.warning(
                 "Embedding dimensions changed (%d → %d); dropping vec_chunks. "
-                "Run `agent init --force` to rebuild all embeddings.",
+                "Run `agent index --reembed` to rebuild every embedding.",
                 self._vec_dims, dims,
             )
             conn.executescript("DROP TABLE IF EXISTS vec_chunks;")
@@ -200,6 +201,51 @@ class VectorStore:
                     (chunk["id"], sqlite_vec.serialize_float32(emb)),
                 )
 
+        conn.commit()
+
+    def all_chunk_texts(self) -> list[tuple[str, str]]:
+        """Return (chunk_id, content) for every chunk, in rowid order.
+
+        Read from the index rather than from disk: re-embedding repairs the
+        stored vectors, and re-reading files would import edits that were never
+        indexed — leaving text and vectors describing different content.
+        """
+        return [
+            (r["id"], r["content"])
+            for r in self._conn().execute(
+                "SELECT id, content FROM chunks ORDER BY rowid"
+            ).fetchall()
+        ]
+
+    def reset_vectors(self, dims: int) -> None:
+        """Drop every stored vector and recreate vec_chunks at *dims*.
+
+        Used by re-embedding, where the old vectors are replaced wholesale.
+        ``_ensure_vec_table`` alone is not enough: it only drops when the
+        dimensions differ, which would leave same-width vectors from a different
+        model mixed into the table. chunks_fts is untouched — chunk text does
+        not change here.
+        """
+        conn = self._conn()
+        conn.executescript("DROP TABLE IF EXISTS vec_chunks;")
+        conn.execute("DELETE FROM _meta WHERE key='embedding_dims'")
+        conn.commit()
+        self._vec_dims = None
+        self._ensure_vec_table(dims)
+
+    def write_embeddings(self, rows: list[tuple[str, list[float]]]) -> None:
+        """Attach precomputed vectors to existing chunks. Text is not touched."""
+        if not rows:
+            return
+        import sqlite_vec
+        conn = self._conn()
+        self._ensure_vec_table(len(rows[0][1]))
+        for chunk_id, emb in rows:
+            conn.execute("DELETE FROM vec_chunks WHERE chunk_id = ?", (chunk_id,))
+            conn.execute(
+                "INSERT INTO vec_chunks(chunk_id, embedding) VALUES (?, ?)",
+                (chunk_id, sqlite_vec.serialize_float32(emb)),
+            )
         conn.commit()
 
     def delete_by_path(self, path: str) -> None:
@@ -383,6 +429,56 @@ class VectorStore:
             "INSERT OR REPLACE INTO _meta(key, value) VALUES (?, ?)", (key, value)
         )
         conn.commit()
+
+    def compare_embedding_model(self, model: str) -> tuple[str | None, int | None]:
+        """Read-only: what produced this index's vectors, if it differs.
+
+        Returns (previous_model, previous_dims), or (None, None) when the index
+        carries no stamp, matches *model*, or holds no vectors yet.
+
+        Deliberately does not write. The stamp is committed by
+        ``record_embedding_model`` only once vectors have actually been
+        produced, so a session whose embedder never answered cannot relabel an
+        index it did not re-embed — which is how an index came to be stamped
+        'nomic-embed-text' while still holding 1024-dim Qwen3 vectors.
+        """
+        prev = self.get_meta("embedding_model")
+        if not prev or prev == model:
+            return None, None
+        has_vecs = self._vec_dims is not None and self._conn().execute(
+            "SELECT 1 FROM vec_chunks LIMIT 1"
+        ).fetchone() is not None
+        if not has_vecs:
+            return None, None
+        return prev, self._vec_dims
+
+    def embedding_mismatch(self, model: str, dims: int) -> str:
+        """Return "" when the stored vectors can serve *model*/*dims*, else a code.
+
+        "dims"  — stored vectors have a different width. Cosine distance is not
+                  defined across float[N] vs float[M], so vector search cannot
+                  return anything but noise; callers must fall back to FTS.
+        "model" — same width, different model or quantisation (bge-m3 q4_k_m vs
+                  q8_0, Qwen3 vs nomic). Distances stay computable, so search
+                  still works, but the ranking is only as good as the weaker
+                  side of the pair.
+
+        Read-only. Empty index or missing stamp reports "" — an index that has
+        never been embedded is not mismatched, it is simply empty.
+        """
+        if not model or not dims or self._vec_dims is None:
+            return ""
+        has_vecs = self._conn().execute(
+            "SELECT 1 FROM vec_chunks LIMIT 1"
+        ).fetchone() is not None
+        if not has_vecs:
+            return ""
+        if self._vec_dims != dims:
+            return "dims"
+        prev = self.get_meta("embedding_model")
+        if prev and prev != model:
+            return "model"
+        return ""
 
     def record_embedding_model(self, model: str, endpoint: str = "") -> str | None:
         """Record which embedding model produced this index's vectors.
