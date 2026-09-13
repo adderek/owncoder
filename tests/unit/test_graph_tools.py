@@ -526,3 +526,24 @@ def test_graph_stale_warning_ttl_cache(tmp_path, cleanup_gm_cache):
             third_count = call_count
 
             assert third_count > second_count, "After invalidate_caches, stub should be called again"
+
+
+def test_graph_context_prefers_exact_name_over_substring(cleanup_gm_cache):
+    """A node whose label IS the symbol wins over earlier nodes that contain it."""
+    graph = {
+        "nodes": [
+            {"id": "loader_rationale_1", "label": "why embeddings are lazy", "source_file": "l.py"},
+            {"id": "registry_embeddings", "label": ".embeddings()", "source_file": "r.py"},
+        ],
+        "links": [],
+    }
+    with patch.object(gm, "_load_graph", return_value=graph), \
+         patch.object(gm, "_graph_stale_warning", return_value=None):
+        result = gm.graph_context("embeddings")
+    assert result["node"]["id"] == "registry_embeddings"
+    assert result["also_matched"] == ["loader_rationale_1"]
+
+
+def test_node_location_parses_graphify_line():
+    assert gm.node_location({"source_file": "a.py", "source_location": "L28"}) == ("a.py", 28)
+    assert gm.node_location({"source_file": "a.py", "source_location": ""}) == ("a.py", None)

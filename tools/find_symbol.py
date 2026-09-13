@@ -38,7 +38,7 @@ def _trim(items: list) -> list:
 def _from_graph(name: str) -> tuple[dict, str | None]:
     """(payload, unavailable_reason)."""
     try:
-        from agent.tools.graph.main import graph_context
+        from agent.tools.graph.main import graph_context, node_location, symbol_name
     except Exception:
         return {}, "graph tools not loaded"
     try:
@@ -49,6 +49,10 @@ def _from_graph(name: str) -> tuple[dict, str | None]:
     if not isinstance(ctx, dict) or ctx.get("error"):
         return {}, str(ctx.get("error") if isinstance(ctx, dict) else "graph unavailable")
     node = ctx.get("node") or {}
+    # graph_context matches substrings; callers of a node that merely contains
+    # the name are callers of a different symbol.
+    if node.get("id") != name and symbol_name(node.get("label", "")).lower() != name.lower():
+        return {}, f"no graph node named {name!r}"
     out: dict = {
         "callers": _trim(ctx.get("callers") or []),
         "callees": _trim(ctx.get("callees") or []),
@@ -57,10 +61,11 @@ def _from_graph(name: str) -> tuple[dict, str | None]:
         "inherited_by": _trim(ctx.get("inherited_by") or []),
     }
     if node:
+        file, line = node_location(node)
         out["definition"] = [{
             "id": node.get("id"),
-            "file": node.get("file") or node.get("path"),
-            "line": node.get("line"),
+            "file": file,
+            "line": line,
             "kind": node.get("kind") or node.get("type"),
         }]
     if ctx.get("warning"):
@@ -155,16 +160,23 @@ def find_symbol(name: str, want: str = "all", path: str | None = None) -> dict:
     for label, fn in (("graph", lambda: _from_graph(name)),
                       ("kb", lambda: _from_kb(name)),
                       ("grep", lambda: _from_grep(name, path))):
-        # grep only has to run when the graph did not already place the symbol.
-        if label == "grep" and merged.get("definition"):
-            continue
+        # grep only has to run when a fresh graph already placed the symbol at a
+        # file and line. A stale graph's line numbers drift, so grep re-checks.
+        if label == "grep":
+            placed = merged.get("definition") or []
+            if (placed and all(d.get("file") and d.get("line") for d in placed)
+                    and not merged.get("graph_warning")):
+                continue
         payload, reason = fn()
         if reason:
             unavailable.append(f"{label}: {reason}")
         if payload:
             sources.append(label)
             for key, value in payload.items():
-                merged.setdefault(key, value)
+                if label == "grep" and key == "definition":
+                    merged[key] = value  # live files beat a stale or unplaced graph node
+                else:
+                    merged.setdefault(key, value)
 
     out: dict = {"name": name, "sources": sources}
     if unavailable:

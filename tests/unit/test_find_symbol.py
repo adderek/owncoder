@@ -66,3 +66,49 @@ def test_registered_as_a_core_tool():
     from agent.tools import get_tool
     assert get_tool("find_symbol") is not None
     assert "find_symbol" in CORE_TOOLS
+
+
+def _graph(nodes, links=()):
+    return {"nodes": list(nodes), "links": list(links)}
+
+
+def test_graph_node_location_is_mapped_from_graphify_fields(tmp_path, monkeypatch):
+    from agent.tools.graph import main as gm
+    (tmp_path / "m.py").write_text("x = 1\n")  # grep would find nothing
+    graph = _graph([
+        {"id": "m_alpha", "label": "alpha()", "source_file": "m.py", "source_location": "L7"},
+        {"id": "m_caller", "label": "caller()", "source_file": "m.py", "source_location": "L20"},
+    ], [{"source": "m_caller", "target": "m_alpha", "relation": "calls"}])
+    monkeypatch.setattr(gm, "_load_graph", lambda: graph)
+    monkeypatch.setattr(gm, "_graph_stale_warning", lambda: None)
+    out = find_symbol("alpha")
+    assert out["sources"] == ["graph"]
+    assert out["definition"][0]["file"] == "m.py"
+    assert out["definition"][0]["line"] == 7
+    assert out["callers"] == ["m_caller"]
+    assert "read_file('m.py'" in out["next"]
+
+
+def test_graph_substring_match_is_not_this_symbol(tmp_path, monkeypatch):
+    from agent.tools.graph import main as gm
+    (tmp_path / "m.py").write_text("def embeddings():\n    pass\n")
+    graph = _graph([{"id": "loader_rationale_303", "label": "rationale about embeddings",
+                     "source_file": "loader.py", "source_location": "L303"}])
+    monkeypatch.setattr(gm, "_load_graph", lambda: graph)
+    monkeypatch.setattr(gm, "_graph_stale_warning", lambda: None)
+    out = find_symbol("embeddings")
+    assert out["sources"] == ["grep"]
+    assert out["definition"][0] == {"file": "m.py", "line": 1, "text": "def embeddings():"}
+    assert "callers" not in out
+
+
+def test_stale_graph_definition_is_rechecked_by_grep(tmp_path, monkeypatch):
+    from agent.tools.graph import main as gm
+    (tmp_path / "m.py").write_text("\n" * 9 + "def alpha():\n    pass\n")
+    graph = _graph([{"id": "m_alpha", "label": "alpha()", "source_file": "m.py", "source_location": "L2"}])
+    monkeypatch.setattr(gm, "_load_graph", lambda: graph)
+    monkeypatch.setattr(gm, "_graph_stale_warning", lambda: "graph may be stale")
+    out = find_symbol("alpha")
+    assert out["sources"] == ["graph", "grep"]
+    assert out["definition"][0]["line"] == 10
+    assert out["graph_warning"] == "graph may be stale"

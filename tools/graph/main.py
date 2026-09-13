@@ -240,6 +240,34 @@ def _node_matches(node: dict, term: str) -> bool:
     )
 
 
+def symbol_name(label: str) -> str:
+    """Bare symbol name from a graphify label: '.embeddings()' -> 'embeddings'."""
+    return (label or "").strip().lstrip(".").removesuffix("()")
+
+
+def _match_rank(node: dict, term: str) -> int:
+    """Lower is better: exact id, exact name, name ignoring case, substring."""
+    if node.get("id") == term:
+        return 0
+    name = symbol_name(node.get("label", ""))
+    if name == term:
+        return 1
+    if name.lower() == term.lower():
+        return 2
+    return 3
+
+
+def node_location(node: dict) -> tuple[str | None, int | None]:
+    """(file, line) of a graph node. graphify stores 'source_location' as 'L28'."""
+    file = node.get("source_file") or node.get("file") or node.get("path") or None
+    loc = str(node.get("source_location") or node.get("line") or "")
+    try:
+        line = int(loc.lstrip("L").split(":")[0].split("-")[0])
+    except ValueError:
+        line = None
+    return file, line
+
+
 @register(
     "graph_build",
     {
@@ -420,7 +448,10 @@ def graph_context(symbol: str) -> dict:
     nodes = graph.get("nodes", [])
     edges = graph.get("links", [])
 
-    matched = [n for n in nodes if _node_matches(n, symbol)]
+    # Stable sort: an exact name must win over the first node that merely
+    # contains the term ('embeddings' used to resolve to a rationale node).
+    matched = sorted((n for n in nodes if _node_matches(n, symbol)),
+                     key=lambda n: _match_rank(n, symbol))
     if not matched:
         return {"error": f"No node found matching {symbol!r}"}
 
