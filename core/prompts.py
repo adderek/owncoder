@@ -204,19 +204,18 @@ def _graph_status_line(root: Path) -> str:
 
 def _kb_status_line(config: "Config") -> str:
     """Node count and corpus name, so an empty or off-topic KB is visible up front."""
-    kb_cfg = getattr(config, "kb", None)
-    corpus = getattr(kb_cfg, "corpus_path", "") or ""
-    if not (getattr(kb_cfg, "enabled", False) and corpus):
+    from agent.tools.kb import kb_corpus_root, kb_node_count
+    corpus = kb_corpus_root(config)
+    if corpus is None:
         return "KB: not configured — kb_* tools return nothing"
-    if not (Path(corpus) / "index.sqlite").exists():
+    if not (corpus / "index.sqlite").exists():
         return "KB: not built — kb_* tools return nothing"
-    from agent.tools.kb import kb_node_count
     count = kb_node_count(config)
     if count is None:
-        return f"KB: unreadable ({Path(corpus).name}) — kb_* tools may fail"
+        return f"KB: unreadable ({corpus.name}) — kb_* tools may fail"
     if not count:
-        return f"KB: empty (corpus {Path(corpus).name} has 0 nodes) — kb_* tools return nothing"
-    return f"KB: {count} nodes in corpus {Path(corpus).name}"
+        return f"KB: empty (corpus {corpus.name} has 0 nodes) — kb_* tools return nothing"
+    return f"KB: {count} nodes in corpus {corpus.name}"
 
 
 def _build_system_prompt(

@@ -566,8 +566,9 @@ class KbUnavailable(Exception):
 
 
 def _kb_corpus(config: "Config"):
-    path = getattr(config.kb, "corpus_path", "")
-    if not getattr(config.kb, "enabled", False) or not path:
+    from agent.tools.kb import kb_corpus_root
+    path = kb_corpus_root(config)
+    if path is None:
         return None
     try:
         from kb.api import Corpus

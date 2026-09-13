@@ -158,8 +158,9 @@ def overview(config: "Config", session_id: str = "", mode: str = "",
 
     # Knowledge base — a corpus shared across projects, not session state.
     try:
-        kb_path = getattr(config.kb, "corpus_path", "")
-        if getattr(config.kb, "enabled", False) and kb_path:
+        from agent.tools.kb import kb_corpus_root
+        kb_path = kb_corpus_root(config)
+        if kb_path is not None:
             from kb.api import Corpus
             with Corpus.open(kb_path) as corpus:
                 nodes = corpus.conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]

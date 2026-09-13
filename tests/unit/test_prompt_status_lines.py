@@ -71,3 +71,16 @@ def test_embedding_dims_mismatch_says_keyword_only(tmp_path):
     prompt = _build_system_prompt(cfg, indexed_count=5, embedding_mismatch="dims")
     assert "search_code is keyword-only" in prompt
     assert "keyword-only" not in _build_system_prompt(cfg, indexed_count=5)
+
+
+def test_relative_corpus_path_is_per_project(tmp_path):
+    from agent.tools.kb import kb_corpus_root
+    cfg = Config()
+    cfg.kb.enabled = True
+    cfg.kb.corpus_path = ".agent/kb"
+    cfg.tools.working_dir = str(tmp_path / "proj")
+    assert kb_corpus_root(cfg) == tmp_path / "proj" / ".agent" / "kb"
+    cfg.kb.corpus_path = str(tmp_path / "shared")
+    assert kb_corpus_root(cfg) == tmp_path / "shared"
+    cfg.kb.enabled = False
+    assert kb_corpus_root(cfg) is None

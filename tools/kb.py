@@ -25,6 +25,23 @@ def setup(config: "Config") -> None:
     _corpus = None  # lazy-open on first call
 
 
+def kb_corpus_root(config: "Config"):
+    """Corpus directory for this project, or None when the KB is off.
+
+    A relative kb.corpus_path resolves against the project working directory, so
+    one user-level setting (".agent/kb") gives every project its own corpus.
+    """
+    from pathlib import Path
+    kb_cfg = getattr(config, "kb", None)
+    corpus = getattr(kb_cfg, "corpus_path", "") or ""
+    if not (getattr(kb_cfg, "enabled", False) and corpus):
+        return None
+    root = Path(corpus).expanduser()
+    if not root.is_absolute():
+        root = Path(config.tools.working_dir) / root
+    return root
+
+
 def kb_node_count(config: "Config") -> int | None:
     """Nodes in the configured corpus; None when not configured, not built or unreadable.
 
@@ -32,12 +49,10 @@ def kb_node_count(config: "Config") -> int | None:
     an empty corpus just by asking.
     """
     import sqlite3
-    from pathlib import Path
-    kb_cfg = getattr(config, "kb", None)
-    corpus = getattr(kb_cfg, "corpus_path", "") or ""
-    if not (getattr(kb_cfg, "enabled", False) and corpus):
+    root = kb_corpus_root(config)
+    if root is None:
         return None
-    db = Path(corpus) / "index.sqlite"
+    db = root / "index.sqlite"
     if not db.exists():
         return None
     try:
@@ -64,11 +79,11 @@ def _get_corpus():
         return _corpus
     if _config is None:
         raise RuntimeError("kb tools not configured — call setup() first")
-    corpus_path = getattr(_config.kb, "corpus_path", "")
-    if not corpus_path:
+    corpus_root = kb_corpus_root(_config)
+    if corpus_root is None:
         raise RuntimeError("kb.corpus_path not set in config")
     from kb.api import Corpus
-    _corpus = Corpus.open(corpus_path)
+    _corpus = Corpus.open(corpus_root)
     return _corpus
 
 
