@@ -118,6 +118,32 @@ class AuthState:
 
         return False
 
+    def session_cookie_header(self) -> str:
+        """Set-Cookie value carrying the per-process token."""
+        return (f"{_TOKEN_COOKIE}={self.token}; Path=/; HttpOnly; "
+                "SameSite=Strict; Max-Age=604800")
+
+    def validate_cookie(self, handler: BaseHTTPRequestHandler) -> bool:
+        """Authorised by the token cookie alone.
+
+        SameSite=Strict covers CSRF, so no double-submit header is required:
+        a cross-site request does not carry the cookie at all.
+        """
+        tok = _extract_cookie(handler, _TOKEN_COOKIE)
+        return bool(tok) and self.validate_token(tok)
+
+    def validate_bootstrap(self, handler: BaseHTTPRequestHandler) -> bool:
+        """One-shot `?token=…` from the URL printed at startup (GET only).
+
+        This is how the browser gets its first cookie: the token is only ever
+        printed to the terminal, so a process that did not read the terminal
+        cannot present it. GET-only because it may appear in URLs/logs.
+        """
+        if handler.command != "GET":
+            return False
+        tok = _extract_query_param(handler.path, "token")
+        return bool(tok) and self.validate_token(tok)
+
     def auth_required(self, project_count: int, bind_host: str) -> bool:
         """Whether auth is required given the current state."""
         if project_count > 1:

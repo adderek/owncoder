@@ -61,7 +61,9 @@ def run_research_command(config, arg: str) -> str:
     if not targets:
         return ("Usage: /security research <query> | <url> [url...]\n"
                 "Fetches CVE/OSV/advisory feeds (and any URLs) into quarantine for "
-                "later offline distillation via /security evolve.")
+                "later offline distillation via /security evolve.\n"
+                "URLs must be https and resolve to a public host. Intranet/loopback "
+                "targets are refused unless AGENT_HARVEST_ALLOW_PRIVATE=1 is set.")
 
     qdir = _quarantine_dir(config)
     qdir.mkdir(parents=True, exist_ok=True)

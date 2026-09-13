@@ -774,6 +774,11 @@ class _HttpUI:
         from agent.core.prompt_loop import PromptLoop
         self.prompt_loop = PromptLoop()
         self.loop_requeue_task: asyncio.Task | None = None
+        # Per-process token. Loopback is not a credential — any local process
+        # can reach 127.0.0.1:port — so every request must also carry the token
+        # printed at startup (see the banner in http_loop()).
+        from agent.ui_server.auth import AuthState
+        self.auth = AuthState()
 
     def submit(self, text: str) -> bool:
         """Called from handler threads. Returns True if injected mid-turn."""
@@ -2243,12 +2248,17 @@ def _make_handler(ui: _HttpUI):
             logger.debug("http ui: " + fmt, *args)
 
         def _check_auth(self) -> bool:
-            """Validate Origin/Host on every request (DNS-rebinding guard).
+            """Origin/Host + per-process token on every request.
 
-            Also enforces project secret for router-proxied requests (s5).
+            Origin/Host is the DNS-rebinding guard; the token is the
+            authorisation: loopback alone lets any local process in, so a
+            request must additionally carry the token printed at startup,
+            either as `?token=…` (the page load, which is then handed the
+            cookie) or as the cookie on every later request. A router-proxied
+            request is authorised by the project secret instead (s5).
             Returns True if the request is allowed, False if it should be rejected.
             """
-            from agent.ui_server.auth import validate_origin_host
+            from agent.ui_server.auth import constant_time_compare, validate_origin_host
             if not validate_origin_host(self):
                 self._json({"error": "forbidden — bad Origin/Host"}, 403)
                 return False
@@ -2256,11 +2266,29 @@ def _make_handler(ui: _HttpUI):
             secret = os.environ.get("AGENT_PROJECT_SECRET", "")
             if secret:
                 given = self.headers.get("X-Project-Secret", "")
-                from agent.ui_server.auth import constant_time_compare
                 if not given or not constant_time_compare(given, secret):
                     self._json({"error": "forbidden — direct access blocked (use router)"}, 403)
                     return False
-            return True
+                return True
+            if ui.auth.validate_cookie(self):
+                return True
+            if ui.auth.validate_bootstrap(self):
+                # Serve the response, and leave the cookie behind so the page's
+                # fetch()/EventSource calls authorise without the URL.
+                self._auth_cookie = ui.auth.session_cookie_header()
+                return True
+            self._json({"error": "forbidden — token required. Open the URL "
+                                 "printed in the terminal at startup (it ends "
+                                 "in /?token=…), or append ?token=… to this "
+                                 "address."}, 403)
+            return False
+
+        def _emit_auth_cookie(self) -> None:
+            """Hand over the token cookie after a ?token=… bootstrap."""
+            hdr = getattr(self, "_auth_cookie", "")
+            if hdr:
+                self._auth_cookie = ""
+                self.send_header("Set-Cookie", hdr)
 
         def _bytes(self, body: bytes, ctype: str, cache: str = "") -> None:
             # A browser that navigates away mid-response drops the socket; the
@@ -2272,6 +2300,7 @@ def _make_handler(ui: _HttpUI):
                 self.send_header("Content-Length", str(len(body)))
                 if cache:
                     self.send_header("Cache-Control", cache)
+                self._emit_auth_cookie()
                 self.end_headers()
                 self.wfile.write(body)
             except (BrokenPipeError, ConnectionResetError, OSError) as exc:
@@ -2283,6 +2312,7 @@ def _make_handler(ui: _HttpUI):
                 self.send_response(code)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
+                self._emit_auth_cookie()
                 self.end_headers()
                 self.wfile.write(body)
             except (BrokenPipeError, ConnectionResetError, OSError) as exc:
@@ -2291,7 +2321,9 @@ def _make_handler(ui: _HttpUI):
         def do_GET(self):
             if not self._check_auth():
                 return
-            if self.path == "/" or self.path.startswith("/index"):
+            # The startup URL carries ?token=…, so match on the path alone.
+            page_path = self.path.split("?", 1)[0]
+            if page_path in ("", "/") or page_path.startswith("/index"):
                 self._bytes(_PAGE.encode(), "text/html; charset=utf-8")
             elif self.path in _STATIC_ASSETS:
                 content_type, body = _STATIC_ASSETS[self.path]
@@ -2404,6 +2436,7 @@ def _make_handler(ui: _HttpUI):
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
+            self._emit_auth_cookie()
             self.end_headers()
             q = ui.bus.subscribe()
             try:
@@ -3349,7 +3382,12 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
     scheme = "https" if (tls_cert and tls_key) else "http"
     console.print(
         f"\n[bold green]HTTP UI running.[/bold green] "
-        f"Open your browser at: [bold]{scheme}://{shown_host}:{actual_port}/[/bold]"
+        f"Open your browser at: "
+        f"[bold]{scheme}://{shown_host}:{actual_port}/?token={ui.auth.token}[/bold]"
+    )
+    console.print(
+        "[dim]The token is the only credential for this UI (loopback included) "
+        "and it changes on every start.[/dim]"
     )
     if host in ("0.0.0.0", ""):
         console.print(f"[yellow]Listening on all interfaces — reachable on your LAN.[/yellow]")

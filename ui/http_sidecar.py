@@ -388,6 +388,20 @@ def _make_sidecar_handler(wrapped: "_SidecarServer"):
         def log_message(self, fmt, *args):
             logger.debug("http sidecar: " + fmt, *args)
 
+        def _check_auth(self) -> bool:
+            """Origin/Host guard on every request (DNS-rebinding).
+
+            No token here, unlike the full --ui http surface: the sidecar is
+            driven by the terminal UI and by the VS Code client on the same
+            loopback port, so loopback remains the (thinner) boundary. Non-
+            loopback binds are the operator's exposure to decide.
+            """
+            from agent.ui_server.auth import validate_origin_host
+            if not validate_origin_host(self):
+                self._json({"error": "forbidden — bad Origin/Host"}, 403)
+                return False
+            return True
+
         def _bytes(self, body: bytes, ctype: str, code: int = 200) -> None:
             # Client can vanish mid-response; log it rather than let the stdlib
             # server print a traceback full of request locals to stderr.
@@ -405,6 +419,8 @@ def _make_sidecar_handler(wrapped: "_SidecarServer"):
             self._bytes(body, "application/json; charset=utf-8", code)
 
         def do_GET(self):
+            if not self._check_auth():
+                return
             if self.path == "/" or self.path.startswith("/index"):
                 self._bytes(_SIDECAR_PAGE.encode(), "text/html; charset=utf-8")
             elif self.path in _STATIC_ASSETS:
@@ -472,6 +488,8 @@ def _make_sidecar_handler(wrapped: "_SidecarServer"):
                 wrapped.bus.unsubscribe(q)
 
         def do_POST(self):
+            if not self._check_auth():
+                return
             if self.path not in ("/api/chat", "/api/permission"):
                 self._json({"error": "not found"}, 404)
                 return
