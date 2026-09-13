@@ -81,6 +81,11 @@ class EmbeddingsConfig:
     max_tokens: int = 512  # truncate input to this many tokens before embedding (0 = no limit)
     embed_workers: int = 1  # concurrent embed requests; 1 = serial (safe for local models)
     timeout_s: float = 15.0  # per-request timeout; a hung endpoint must not stall turns
+    # Asymmetric-model support. Qwen3-Embedding expects a task instruction on
+    # the QUERY side only ("Instruct: <task>\nQuery: <text>"); documents are
+    # embedded bare. Empty = symmetric, which is correct for bge-m3 and every
+    # other BERT-style encoder — setting it for those HURTS retrieval.
+    query_instruct: str = ""
 
 
 @dataclass
@@ -793,6 +798,7 @@ class ModelEntry:
     temperature: float = 0.7
     seed: int | None = None
     dimensions: int = 0          # embeddings only
+    query_instruct: str = ""     # embeddings only; see EmbeddingsConfig.query_instruct
     tags: list = field(default_factory=list)
     extra: dict = field(default_factory=dict)
     # Decision-maker scoring fields

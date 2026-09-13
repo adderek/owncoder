@@ -181,6 +181,7 @@ def reload_models(config: Config, include_project: bool = False) -> tuple[bool, 
             config.embeddings.model = emb_entry.model
         if emb_entry.dimensions:
             config.embeddings.dimensions = emb_entry.dimensions
+        config.embeddings.query_instruct = emb_entry.query_instruct
         for env_key, attr in (("AGENT_EMBEDDINGS_BASE_URL", "base_url"),
                               ("AGENT_EMBEDDINGS_MODEL", "model")):
             val = os.environ.get(env_key)

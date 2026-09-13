@@ -864,7 +864,7 @@ class SlashHandlerMixin:
                 store = MemoryStore(db_path)
                 emb = None
                 try:
-                    emb = embedder.embed_one(query[:2000]) if embedder else None
+                    emb = embedder.embed_query(query[:2000]) if embedder else None
                 except Exception:
                     emb = None
                 hits = store.hybrid_search(query, embedding=emb, scope="session_summary", top_k=20)

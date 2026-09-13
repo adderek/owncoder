@@ -85,7 +85,7 @@ def recall_sessions(
     embedding = None
     if _embedder is not None:
         try:
-            embedding = _embedder.embed_one(query[:2000])
+            embedding = _embedder.embed_query(query[:2000])
         except Exception:
             pass
 

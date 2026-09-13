@@ -647,6 +647,7 @@ def _apply_model_entry_to_llm(config: Config) -> None:
             config.embeddings.model = emb_entry.model
         if emb_entry.dimensions:
             config.embeddings.dimensions = emb_entry.dimensions
+        config.embeddings.query_instruct = emb_entry.query_instruct
 
 
 def _ensure_model_registry_keys(config: Config) -> None:
@@ -675,6 +676,7 @@ def _ensure_model_registry_keys(config: Config) -> None:
             api_key="local",  # EmbeddingsConfig has no api_key; embeddings endpoint is local
             model=emb.model,
             dimensions=emb.dimensions,
+            query_instruct=emb.query_instruct,
         )
 
 
@@ -966,6 +968,7 @@ def check_reachability(config: Config) -> None:
             config.embeddings.model = emb_entry.model
         if emb_entry.dimensions:
             config.embeddings.dimensions = emb_entry.dimensions
+        config.embeddings.query_instruct = emb_entry.query_instruct
 
     decision_cfg = getattr(config.parallel, "decision", None)
     if decision_cfg is not None and getattr(decision_cfg, "verify_on_startup", False):

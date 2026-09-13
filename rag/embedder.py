@@ -116,3 +116,32 @@ class Embedder:
 
     def embed_one(self, text: str) -> list[float]:
         return self.embed([text])[0]
+
+    # ── query side ────────────────────────────────────────────────────────
+    # Asymmetric models (Qwen3-Embedding) want a task instruction prefixed to
+    # the QUERY and nothing on the document. embed()/embed_one() stay the bare
+    # document path, so every indexing call site is unaffected; only retrieval
+    # goes through embed_query()/embed_queries().
+    #
+    # The prefix MUST match between the model and its training convention, and
+    # the document side must stay bare — mixing conventions silently degrades
+    # the index in a way no error surfaces.
+
+    def _as_query(self, text: str) -> str:
+        instruct = (getattr(self._cfg, "query_instruct", "") or "").strip()
+        if not instruct:
+            return text
+        prefix = f"Instruct: {instruct}\nQuery: "
+        # Truncate the text, not the prefix: embed() would otherwise cut the
+        # tail of a long query only after the prefix ate part of the budget.
+        if self._max_chars:
+            room = self._max_chars - len(prefix)
+            if room > 0:
+                text = text[:room]
+        return prefix + text
+
+    def embed_queries(self, texts: list[str]) -> list[list[float]]:
+        return self.embed([self._as_query(t) for t in texts])
+
+    def embed_query(self, text: str) -> list[float]:
+        return self.embed_queries([text])[0]

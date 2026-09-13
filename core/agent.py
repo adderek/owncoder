@@ -294,7 +294,7 @@ class Agent:
 
         if embedding is None and self.embedder is not None:
             try:
-                embedding = self.embedder.embed_one(query[:2000])
+                embedding = self.embedder.embed_query(query[:2000])
             except Exception:
                 pass
 
@@ -363,7 +363,7 @@ class Agent:
         else:
             if embedding is None:
                 try:
-                    embedding = self.embedder.embed_one(query[:2000])
+                    embedding = self.embedder.embed_query(query[:2000])
                 except Exception:
                     return
             hits = store.hybrid_search(query, embedding=embedding, scope="note", top_k=top_k)
@@ -1023,7 +1023,7 @@ class Agent:
             if self.embedder is not None:
                 try:
                     precomputed_embedding = await asyncio.to_thread(
-                        self.embedder.embed_one, user_input[:2000])
+                        self.embedder.embed_query, user_input[:2000])
                 except Exception:
                     pass
             self._inject_similar_sessions(user_input, embedding=precomputed_embedding)

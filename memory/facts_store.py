@@ -310,7 +310,7 @@ class FactsStore:
         if self._mem_store is None or self._embedder is None:
             return self.search(query, max_results=max_results, snippet_chars=snippet_chars)
         try:
-            embedding = self._embedder.embed_one(query)
+            embedding = self._embedder.embed_query(query)
         except Exception:
             return self.search(query, max_results=max_results, snippet_chars=snippet_chars)
         mem_hits = self._mem_store.hybrid_search(

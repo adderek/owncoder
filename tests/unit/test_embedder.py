@@ -176,3 +176,46 @@ def test_split_retries_count_toward_the_breaker():
     out = e.embed(["a", "b", "c", "d"])
     assert out == [[], [], [], []]
     assert e._open_until > 0.0, "breaker opened from a single batch's split-retries"
+
+
+# ── asymmetric models: query instruction prefix ───────────────────────────────
+# Qwen3-Embedding wants "Instruct: <task>\nQuery: <text>" on the query side and
+# a bare document on the other. Getting this backwards, or applying it to a
+# symmetric model like bge-m3, degrades retrieval with no error anywhere.
+
+def test_query_instruct_empty_leaves_text_untouched():
+    e = _embedder()
+    assert e._as_query("find the retry breaker") == "find the retry breaker"
+
+
+def test_query_instruct_wraps_only_the_query_side():
+    e = _embedder(query_instruct="Retrieve the code")
+    assert e._as_query("find it") == "Instruct: Retrieve the code\nQuery: find it"
+    e.embed_one("a document")
+    assert e._client.calls[-1]["input"] == ["a document"]
+
+
+def test_embed_query_sends_the_prefixed_text():
+    e = _embedder(query_instruct="Retrieve the code")
+    e.embed_query("find it")
+    assert e._client.calls[-1]["input"] == ["Instruct: Retrieve the code\nQuery: find it"]
+
+
+def test_embed_queries_prefixes_every_text():
+    e = _embedder(query_instruct="T")
+    e.embed_queries(["a", "b"])
+    assert e._client.calls[-1]["input"] == ["Instruct: T\nQuery: a", "Instruct: T\nQuery: b"]
+
+
+def test_prefix_survives_truncation_of_a_long_query():
+    """The text gets cut, never the instruction — a truncated prefix would
+    silently turn the query into a different convention."""
+    e = _embedder(query_instruct="T", max_tokens=16)   # max_chars = 64
+    out = e._as_query("x" * 500)
+    assert out.startswith("Instruct: T\nQuery: ")
+    assert len(out) == e._max_chars
+
+
+def test_whitespace_only_instruct_counts_as_disabled():
+    e = _embedder(query_instruct="   ")
+    assert e._as_query("q") == "q"

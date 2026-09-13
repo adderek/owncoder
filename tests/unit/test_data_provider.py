@@ -20,7 +20,11 @@ def _make_store(results=None, stats=None):
 
 def _make_embedder(vec=None):
     embedder = MagicMock()
+    # Retrieval goes through embed_query (instruction-prefixed for asymmetric
+    # models); embed_one stays the bare document path. Stub both so a call on
+    # the wrong side is visible rather than silently returning a MagicMock.
     embedder.embed_one = MagicMock(return_value=vec or [0.1, 0.2])
+    embedder.embed_query = MagicMock(return_value=vec or [0.1, 0.2])
     return embedder
 
 
@@ -178,7 +182,8 @@ def test_asm_search_calls_semantic_search():
 
     results = dp.asm_search("mov rax", top_k=3)
 
-    embedder.embed_one.assert_called_once_with("mov rax")
+    embedder.embed_query.assert_called_once_with("mov rax")
+    embedder.embed_one.assert_not_called()
     asm.semantic_search.assert_called_once_with([0.5], top_k=3)
     assert results[0]["path"] == "a.asm"
 

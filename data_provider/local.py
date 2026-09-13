@@ -44,7 +44,7 @@ class LocalDataProvider:
             embedding = None
             if self._embedder:
                 try:
-                    embedding = self._embedder.embed_one(query)
+                    embedding = self._embedder.embed_query(query)
                 except Exception:
                     logger.debug("embed_one failed for query %r", query, exc_info=True)
             if embedding and hybrid:
@@ -62,7 +62,7 @@ class LocalDataProvider:
         if self._asm_store is None or self._embedder is None:
             return []
         try:
-            embedding = self._embedder.embed_one(query)
+            embedding = self._embedder.embed_query(query)
             return self._asm_store.semantic_search(embedding, top_k=top_k)
         except Exception:
             logger.debug("DataProvider.asm_search failed", exc_info=True)
