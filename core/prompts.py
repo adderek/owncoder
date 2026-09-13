@@ -208,17 +208,11 @@ def _kb_status_line(config: "Config") -> str:
     corpus = getattr(kb_cfg, "corpus_path", "") or ""
     if not (getattr(kb_cfg, "enabled", False) and corpus):
         return "KB: not configured — kb_* tools return nothing"
-    db = Path(corpus) / "index.sqlite"
-    if not db.exists():
+    if not (Path(corpus) / "index.sqlite").exists():
         return "KB: not built — kb_* tools return nothing"
-    import sqlite3
-    try:
-        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1)
-        try:
-            count = conn.execute("SELECT count(*) FROM nodes").fetchone()[0]
-        finally:
-            conn.close()
-    except Exception:
+    from agent.tools.kb import kb_node_count
+    count = kb_node_count(config)
+    if count is None:
         return f"KB: unreadable ({Path(corpus).name}) — kb_* tools may fail"
     if not count:
         return f"KB: empty (corpus {Path(corpus).name} has 0 nodes) — kb_* tools return nothing"

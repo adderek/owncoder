@@ -137,3 +137,33 @@ def test_explore_is_core_and_categorized():
     # low-context alternative to many raw reads.
     assert "explore" in td.CORE_TOOLS
     assert td.categorize("explore")[0] == "read & search code"
+
+
+def _kb_cfg(tmp_path, nodes):
+    import sqlite3
+    root = tmp_path / "corpus"
+    root.mkdir()
+    conn = sqlite3.connect(root / "index.sqlite")
+    conn.execute("CREATE TABLE nodes (id TEXT)")
+    conn.executemany("INSERT INTO nodes VALUES (?)", [(str(i),) for i in range(nodes)])
+    conn.commit()
+    conn.close()
+    cfg = _cfg()
+    cfg.kb = SimpleNamespace(enabled=True, corpus_path=str(root))
+    return cfg
+
+
+KB_SCHEMAS = SCHEMAS + [_schema("kb_search", "Full-text search over KB corpus.")]
+
+
+def test_empty_kb_tools_are_hidden_from_catalog_and_find_tools(tmp_path):
+    cfg = _kb_cfg(tmp_path, 0)
+    assert "kb_search" not in td.render_catalog(KB_SCHEMAS, cfg)
+    assert not [m for m in td.find_matches(KB_SCHEMAS, "kb corpus search", cfg, 8)
+                if m["name"] == "kb_search"]
+
+
+def test_populated_kb_tools_stay_listed(tmp_path):
+    cfg = _kb_cfg(tmp_path, 2)
+    assert "kb_search" in td.render_catalog(KB_SCHEMAS, cfg)
+    assert td.hidden_names(KB_SCHEMAS, cfg) == frozenset()

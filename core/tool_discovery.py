@@ -128,6 +128,25 @@ def core_names(config) -> frozenset[str]:
     return CORE_TOOLS | frozenset(extra)
 
 
+def hidden_names(schemas: list[dict], config) -> frozenset[str]:
+    """Tools that cannot return anything right now, kept out of catalog and find_tools.
+
+    Advertising kb_* over an empty corpus spends a find_tools round and a
+    call to learn nothing.
+    """
+    names = {s.get("function", {}).get("name") or "" for s in schemas}
+    kb = {n for n in names if n.startswith("kb_")}
+    if not kb:
+        return frozenset()
+    try:
+        from agent.tools.kb import kb_node_count
+        if kb_node_count(config):
+            return frozenset()
+    except Exception:
+        return frozenset()
+    return frozenset(kb)
+
+
 def select_schemas(schemas: list[dict], active: Iterable[str], config) -> list[dict]:
     """Return the schemas to send to the model: core ∪ active.
 
@@ -143,7 +162,7 @@ def render_catalog(schemas: list[dict], config) -> str:
     Lists only NON-core tools (core ones already have full schemas). Each line
     is `name — first sentence`, grouped under a category + "use when" hint.
     """
-    core = core_names(config)
+    core = core_names(config) | hidden_names(schemas, config)
     buckets: dict[str, list[str]] = {}
     descs: dict[str, str] = {}
     for s in schemas:
@@ -196,7 +215,7 @@ def find_matches(schemas: list[dict], query: str, config, max_results: int) -> l
     Scoring: name hit > category hit > description hit, summed over query tokens.
     Core tools are excluded (already available). Deterministic, no LLM.
     """
-    core = core_names(config)
+    core = core_names(config) | hidden_names(schemas, config)
     tokens = [t for t in re.split(r"[^a-z0-9]+", query.lower())
               if t and t not in _STOPWORDS]
     # If the query was ALL stopwords, fall back to the raw tokens so we still

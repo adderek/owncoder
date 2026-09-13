@@ -25,6 +25,31 @@ def setup(config: "Config") -> None:
     _corpus = None  # lazy-open on first call
 
 
+def kb_node_count(config: "Config") -> int | None:
+    """Nodes in the configured corpus; None when not configured, not built or unreadable.
+
+    Read-only and cheap: Corpus.open() applies the schema, which would create
+    an empty corpus just by asking.
+    """
+    import sqlite3
+    from pathlib import Path
+    kb_cfg = getattr(config, "kb", None)
+    corpus = getattr(kb_cfg, "corpus_path", "") or ""
+    if not (getattr(kb_cfg, "enabled", False) and corpus):
+        return None
+    db = Path(corpus) / "index.sqlite"
+    if not db.exists():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1)
+        try:
+            return int(conn.execute("SELECT count(*) FROM nodes").fetchone()[0])
+        finally:
+            conn.close()
+    except Exception:
+        return None
+
+
 def _may_persist() -> bool:
     """The KB is a shared corpus outside the session directory, so an
     off-the-record session must not append to it (agent/security/vault.py).
