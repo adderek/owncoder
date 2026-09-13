@@ -1,6 +1,8 @@
 """Slash-command registry and handlers for the terminal UI."""
 from __future__ import annotations
 
+import os
+
 from typing import TYPE_CHECKING
 
 from agent.ui.slash_plan import _active_plan, _render_plan, _apply_plan
@@ -412,6 +414,16 @@ def _apply_model(agent, arg: str) -> tuple[bool, str]:
                 known = ", ".join(sorted(set(_ROLE_ALIASES) | set(ROLE_FALLBACKS)))
                 return False, f"Unknown role '{role_raw}'. Known: {known}"
             role = role_raw
+
+    # A role forced by the environment cannot be pinned or released: the env
+    # value is re-applied after the model-entry bridge and on every reload and
+    # outranks a live pin, so accepting the command would silently do nothing.
+    # The UI greys the control out; this is the CLI parity guard.
+    from agent.config.loader import env_locked_roles, _ENV_MODEL_FORCED
+    if role in env_locked_roles():
+        envs = ", ".join(k for k in _ENV_MODEL_FORCED.get(role, ()) if os.environ.get(k))
+        return False, (f"role '{role}' is enforced by the environment ({envs}); "
+                       f"it outranks any session pin — unset it to pin from here.")
 
     if entry_name == "?":
         return True, _status()

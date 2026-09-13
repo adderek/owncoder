@@ -149,6 +149,29 @@ def _apply_env_overrides(config: Config) -> None:
             config.model_roles[role] = val
 
 
+# Env vars that force which endpoint/model a role runs. When any is set the
+# env value is re-applied after the model-entry bridge and again on every
+# reload, so it outranks both the config file and a live session pin: a
+# `/model <role>=<entry>` or a UI dropdown pick for that role is silently
+# shadowed. Keyed by role; only model-identity vars lock a role (api_key alone
+# forcibly authenticates but does not decide *which* model runs).
+_ENV_MODEL_FORCED: dict[str, tuple[str, ...]] = {
+    "default": ("AGENT_LLM_MODEL", "AGENT_LLM_BASE_URL", "AGENT_MODEL_ROLE_DEFAULT"),
+    "summarizer": ("AGENT_MODEL_ROLE_SUMMARIZER",),
+    "embeddings": ("AGENT_MODEL_ROLE_EMBEDDINGS", "AGENT_EMBEDDINGS_MODEL"),
+    "background": ("AGENT_MODEL_ROLE_BACKGROUND",),
+}
+
+
+def env_locked_roles() -> set[str]:
+    """Roles whose assignment is forced by the environment, so a session pin
+    cannot take effect. The models UI greys out these roles' pin controls and
+    ``/model`` refuses them with a reason, instead of accepting a choice that
+    silently does nothing."""
+    return {role for role, keys in _ENV_MODEL_FORCED.items()
+            if any(os.environ.get(k) for k in keys)}
+
+
 def _load_file(path: Path) -> dict:
     """Parse a config file by extension: .toml via tomllib, .yaml/.yml via pyyaml."""
     if path.suffix in (".yaml", ".yml"):

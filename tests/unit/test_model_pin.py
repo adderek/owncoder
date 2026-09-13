@@ -148,3 +148,22 @@ def test_mode_switch_releases_a_pin_it_overrides(cfg, monkeypatch):
 
     assert cfg.model_roles["default"] == "local-1"
     assert cfg.runtime_model_pinned is False
+
+
+def test_env_forced_role_rejects_a_pin(cfg, monkeypatch):
+    """AGENT_LLM_MODEL forces the default endpoint, so pinning default is a
+    no-op the env would silently overrule — /model must refuse it, and leave
+    the role untouched (no session pin recorded)."""
+    from agent.config.loader import env_locked_roles
+    monkeypatch.setenv("AGENT_LLM_MODEL", "env-model")
+    assert "default" in env_locked_roles()
+
+    ok, msg = _apply_model(_agent(cfg), "strong")
+    assert not ok and "environment" in msg
+    assert "default" not in cfg.model_roles
+
+
+def test_env_forced_role_can_still_pin_other_roles(cfg, monkeypatch):
+    monkeypatch.setenv("AGENT_LLM_MODEL", "env-model")
+    ok, _ = _apply_model(_agent(cfg), "summarizer=strong")
+    assert ok and cfg.model_roles["summarizer"] == "strong"

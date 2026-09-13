@@ -504,9 +504,12 @@ class LocalUIServer:
         roles = []
         try:
             from agent.config import make_registry
+            from agent.config.loader import env_locked_roles
+            locked = env_locked_roles()
             for role, (entry_name, tier) in make_registry(cfg).matrix().items():
                 roles.append({"role": role, "entry": entry_name, "tier": tier,
                               "pinned": role in model_roles,
+                              "env_locked": role in locked,
                               "running": running_roles.get(role, 0)})
         except Exception:
             logger.debug("models_overview: matrix failed", exc_info=True)

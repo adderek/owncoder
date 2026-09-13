@@ -1420,12 +1420,16 @@ class _HttpUI:
                 # role list is the registry matrix minus the embedding role,
                 # so a model is never pinned as the embedder.
                 entry = str(payload.get("entry") or "")
-                roles = [r.get("role") for r in (self.models_info().get("roles") or [])]
-                roles = [r for r in roles if r and r != "embeddings"]
+                info = self.models_info().get("roles") or []
+                # Env-forced roles cannot be pinned or released; skip them so a
+                # bulk action is not reported as partly failed for choices the
+                # environment has already overruled.
+                roles = [r.get("role") for r in info
+                         if r.get("role") and r.get("role") != "embeddings"
+                         and not r.get("env_locked")]
                 if action == "release_all":
                     roles = [r for r in roles
-                             if r in {x.get("role") for x in
-                                      (self.models_info().get("roles") or [])
+                             if r in {x.get("role") for x in info
                                       if x.get("pinned") and x.get("entry") == entry}]
                 if not roles:
                     return {"ok": False, "msg": "no applicable roles"}

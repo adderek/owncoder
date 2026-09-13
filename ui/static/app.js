@@ -1351,8 +1351,9 @@ async function loadModels(silent) {
         d.roles.map(r => {
           const rn = r.running || 0;
           return '<div class="mrow' + (rn ? ' busy' : '') + '" style="padding-left:8px">' +
-            '<span>' + (r.pinned ? '📌 ' : '&nbsp;&nbsp; ') + esc(r.role) + ' → ' +
-            esc(r.entry) + ' [' + esc(r.tier) + ']</span>' +
+            '<span>' + (r.env_locked ? '🔒 ' : (r.pinned ? '📌 ' : '&nbsp;&nbsp; ')) +
+            esc(r.role) + ' → ' + esc(r.entry) + ' [' + esc(r.tier) + ']' +
+            (r.env_locked ? ' <span style="opacity:.6">env</span>' : '') + '</span>' +
             '<span class="mrun" title="requests in flight"><span class="mrun-dot"></span>' +
             (rn > 1 ? rn : '') + '</span></div>';
         }).join('') + '</div>';
@@ -1366,7 +1367,14 @@ async function loadModels(silent) {
         '</div>';
     }
     const pinnedMap = {};
-    (d.roles || []).forEach(r => { if (r.pinned) pinnedMap[r.role] = r.entry; });
+    const envLocked = {};
+    (d.roles || []).forEach(r => {
+      if (r.pinned) pinnedMap[r.role] = r.entry;
+      // Env-forced roles cannot be pinned: the server rejects it and the role
+      // row shows a lock. Disable the dropdown option rather than offering a
+      // choice that silently does nothing.
+      if (r.env_locked) envLocked[r.role] = true;
+    });
     const roleOpts = (d.roles || []).map(r => r.role).filter(r => r !== 'embeddings');
     h += '<div class="mrolesec"><span style="opacity:.6">pin a model to a role from its ' +
       'dropdown; unpinned roles follow the fallback ladder</span>' +
@@ -1427,8 +1435,11 @@ async function loadModels(silent) {
             ? '<option value="*|release_all">unpin all roles</option>' : '') +
           roleOpts.map(r => {
             const isPinned = pinnedMap[r] === e.name;
-            return '<option value="' + esc(r) + '|' + (isPinned ? 'release' : 'use') + '">' +
-              esc((isPinned ? 'unpin as ' : 'pin as ') + r) + '</option>';
+            const locked = !!envLocked[r];
+            return '<option value="' + esc(r) + '|' + (isPinned ? 'release' : 'use') + '"' +
+              (locked ? ' disabled' : '') + '>' +
+              esc((isPinned ? 'unpin as ' : 'pin as ') + r) +
+              (locked ? ' (env)' : '') + '</option>';
           }).join('') + '</select>') +
         '<button class="mbtn" data-toggle="' + esc(e.name) + '" data-en="' +
           (off ? '1' : '') + '">' + (off ? 'enable' : 'disable') + '</button>' +
