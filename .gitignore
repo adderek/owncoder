@@ -2,3 +2,6 @@
 .coord/
 **/__pycache__/
 .claude/settings.local.json
+
+# graphify output (graph_build); regenerated, never versioned
+graphify-out/
