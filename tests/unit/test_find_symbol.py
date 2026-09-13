@@ -129,3 +129,34 @@ def test_ambiguous_graph_name_is_rechecked_by_grep(tmp_path, monkeypatch):
     assert out["graph_ambiguous"] == 2
     assert out["sources"] == ["graph", "grep"]
     assert {d["file"] for d in out["definition"]} == {"loader.py", "tests/test_a.py"}
+
+
+def test_kb_facts_are_the_symbols_own_description_and_notes(tmp_path, monkeypatch):
+    pytest.importorskip("kb.migrations.from_code")
+    from kb.api import Corpus
+    from kb.migrations.from_code import import_code, node_id_for
+    from agent.tools import kb as K
+    from agent.tools.graph import main as gm
+    (tmp_path / "m.py").write_text("def alpha():\n    pass\n\ndef alphabet():\n    pass\n")
+    graph = _graph([
+        {"id": "m_alpha", "label": "alpha()", "source_file": "m.py", "source_location": "L1", "file_type": "code"},
+        {"id": "m_alphabet", "label": "alphabet()", "source_file": "m.py", "source_location": "L4", "file_type": "code"},
+        {"id": "r", "label": "Alpha does the first thing.", "source_file": "m.py", "source_location": "L2", "file_type": "rationale"},
+    ], [{"source": "r", "target": "m_alpha", "relation": "rationale_for"}])
+    root = tmp_path / "kb"
+    root.mkdir()
+    with Corpus.open(root) as corpus:
+        import_code(corpus.conn, graph)
+        corpus.add_note([node_id_for("m_alpha")], "Called only from the CLI.", kind="fact")
+    cfg = Config()
+    cfg.kb.enabled = True
+    cfg.kb.corpus_path = str(root)
+    K.setup(cfg)
+    monkeypatch.setattr(gm, "_load_graph", lambda: None)
+    try:
+        out = find_symbol("alpha")
+    finally:
+        K.setup(Config())
+    assert out["facts"]["description"] == "Alpha does the first thing."
+    assert out["facts"]["notes"] == [{"kind": "fact", "text": "Called only from the CLI."}]
+    assert "alphabet" not in str(out["facts"])

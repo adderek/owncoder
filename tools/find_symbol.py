@@ -15,7 +15,6 @@ they go unused.
 """
 from __future__ import annotations
 
-import json
 import logging
 
 from agent.tools import register
@@ -79,21 +78,44 @@ def _from_graph(name: str) -> tuple[dict, str | None]:
 
 
 def _from_kb(name: str) -> tuple[dict, str | None]:
+    """The KB node that IS this symbol: its description and the notes attached to it.
+
+    Exact resolution, not a search: fuzzy hits for other symbols cost context
+    and answer a different question.
+    """
     try:
-        from agent.tools.kb import kb_search
+        from agent.tools.kb import _get_corpus, resolve_refs
     except Exception:
         return {}, "kb not enabled"
     try:
-        payload = json.loads(kb_search(name, limit=5))
+        corpus = _get_corpus()
+        cands = [c for c in resolve_refs(corpus, name)
+                 if c["kind"] in ("function", "method", "class", "file", "symbol")]
+        if not cands:
+            return {}, None
+        best = cands[0]
+        node = corpus.get(best["id"])
+        rows = corpus.conn.execute(
+            "SELECT n.kind, n.body FROM notes n JOIN note_attachments a ON a.note_id = n.id "
+            "WHERE a.target_kind = 'node' AND a.target_ref = ? ORDER BY n.created_at DESC LIMIT 5",
+            (best["id"],)).fetchall()
     except Exception as exc:
-        logger.debug("find_symbol: kb_search failed", exc_info=True)
+        logger.debug("find_symbol: kb lookup failed", exc_info=True)
         return {}, f"kb error: {exc}"
-    if payload.get("error"):
-        return {}, str(payload["error"])
-    nodes = payload.get("nodes") or []
-    if not nodes:
+    facts: dict = {}
+    description = node and (node.description_override or node.description_base)
+    if description:
+        facts["description"] = description
+    if rows:
+        facts["notes"] = [{"kind": r[0], "text": _clip(r[1], 300)} for r in rows]
+    if not facts:
         return {}, None
-    return {"facts": nodes[:5]}, None
+    return {"facts": facts}, None
+
+
+def _clip(text: str, limit: int) -> str:
+    text = " ".join((text or "").split())
+    return text if len(text) <= limit else text[:limit - 1] + "…"
 
 
 def _from_grep(name: str, path: str | None) -> tuple[dict, str | None]:
