@@ -142,6 +142,10 @@ class BgWorker:
             logger.debug("Could not read content for %s: %s", raw_path, e)
             return ""
 
+    def describe_unit(self, unit: dict) -> None:
+        """Describe one pending unit now, on the caller's thread."""
+        self._describe(unit)
+
     # ── leaf description ──────────────────────────────────────────────────────
 
     def _describe(self, unit: dict) -> None:

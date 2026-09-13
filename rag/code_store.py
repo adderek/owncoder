@@ -275,12 +275,23 @@ class CodeStore:
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def get_pending_units(self, limit: int = 20) -> list[dict]:
-        rows = self._conn.execute(
-            "SELECT * FROM units WHERE status = 'pending' ORDER BY level, path, start_line LIMIT ?",
-            (limit,),
-        ).fetchall()
-        return [dict(r) for r in rows]
+    def get_pending_units(self, limit: int = 20, prefer_paths: list[str] | None = None) -> list[dict]:
+        """Pending units; those in *prefer_paths* first, in that order."""
+        out: list[dict] = []
+        for path in prefer_paths or []:
+            if len(out) >= limit:
+                break
+            out += [dict(r) for r in self._conn.execute(
+                "SELECT * FROM units WHERE status = 'pending' AND path = ? "
+                "ORDER BY level, start_line LIMIT ?", (path, limit - len(out))).fetchall()]
+        if len(out) < limit:
+            seen = {u["id"] for u in out}
+            rows = self._conn.execute(
+                "SELECT * FROM units WHERE status = 'pending' ORDER BY level, path, start_line LIMIT ?",
+                (limit + len(seen),),
+            ).fetchall()
+            out += [dict(r) for r in rows if r["id"] not in seen][:limit - len(out)]
+        return out
 
     def get_stale_units(self, limit: int = 10) -> list[dict]:
         rows = self._conn.execute(

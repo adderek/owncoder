@@ -50,6 +50,77 @@ def is_local_url(url: str) -> bool:
     return (urlparse(url).hostname or "") in _LOCAL_HOSTS
 
 
+def is_private_url(url: str) -> bool:
+    """localhost or a private-network address — never a cloud endpoint."""
+    import ipaddress
+    host = urlparse(url).hostname or ""
+    if host in _LOCAL_HOSTS:
+        return True
+    try:
+        return ipaddress.ip_address(host).is_private
+    except ValueError:
+        return False
+
+
+def describer_endpoint(config: "Config", probe=None):
+    """(ModelEntry, why-not) for background summarization: first reachable
+    summarizer-pool entry on a private address."""
+    from agent.config.loader import _probe_models
+    probe = probe or (lambda e: _probe_models(e.base_url, e.api_key, timeout=3) is not None)
+    names = [config.model_roles["summarizer"]] if config.model_roles.get("summarizer") else []
+    names += [n for n in (config.model_pools.get("summarizer") or []) if n not in names]
+    reasons = []
+    for name in names:
+        entry = config.model_entries.get(name)
+        if entry is None or not entry.model:
+            continue
+        if not is_private_url(entry.base_url):
+            reasons.append(f"{name}: not a private endpoint")
+            continue
+        if not probe(entry):
+            reasons.append(f"{name}: unreachable")
+            continue
+        return entry, ""
+    return None, "; ".join(reasons[-3:]) or "no summarizer pool configured"
+
+
+def usage_ranked_paths(config: "Config", max_lines: int = 20000) -> list[str]:
+    """Project files the agent opened or edited most, most-used first (audit.jsonl)."""
+    import collections
+    import json
+    audit = Path(config.tools.working_dir) / config.tools.agent_dir / "audit.jsonl"
+    if not audit.exists():
+        return []
+    root = Path(config.tools.working_dir).resolve()
+    counts: collections.Counter[str] = collections.Counter()
+    try:
+        with audit.open("rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - max_lines * 400))
+            lines = fh.read().decode("utf-8", "replace").splitlines()[-max_lines:]
+    except OSError:
+        return []
+    for line in lines:
+        if '"tool"' not in line:
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if rec.get("tool") not in ("read_file", "edit_file", "write_file", "replace_text", "patch_file"):
+            continue
+        path = (rec.get("args") or {}).get("path")
+        if not isinstance(path, str) or not path:
+            continue
+        p = Path(path)
+        try:
+            rel = str(p.resolve().relative_to(root)) if p.is_absolute() else str(Path(path))
+        except ValueError:
+            continue
+        counts[rel] += 1
+    return [p for p, _ in counts.most_common()]
+
+
 def is_ignored_event(path: str) -> bool:
     p = Path(path)
     return bool(_IGNORED_PARTS.intersection(p.parts)) or p.name.endswith(_IGNORED_SUFFIXES)
@@ -90,6 +161,20 @@ def safe_embeddings_config(config: "Config", probe=None) -> tuple["EmbeddingsCon
             continue
         return cfg, ""
     return None, "; ".join(reasons) or "no embeddings endpoint configured"
+
+
+def _make_worker(config: "Config", code_store, entry):
+    from openai import OpenAI
+    from agent.rag.bg_worker import BgWorker
+    from agent.rag.describer import Describer
+    from agent.rag.judge import Judge
+    scfg = config.summarization
+    client = OpenAI(base_url=entry.base_url, api_key=entry.api_key or "local", timeout=120, max_retries=1)
+    describer = Describer(client, model=entry.model, ctx_tokens=scfg.ctx_tokens,
+                          max_output_tokens=scfg.max_output_tokens)
+    judge = Judge(client, model=entry.model, store=code_store)
+    return BgWorker(store=code_store, describer=describer, judge=judge,
+                    working_dir=config.tools.working_dir)
 
 
 def _ensure_corpus(root: Path) -> None:
@@ -315,10 +400,50 @@ class IndexMaintainer:
         finally:
             store.close()
         try:
+            self.describe_some(out)
+        except Exception:
+            log.warning("rag maintainer: describe pass failed", exc_info=True)
+        try:
             self.sync_kb(out)
         except Exception:
             log.warning("rag maintainer: kb sync failed", exc_info=True)
         return out
+
+    def describe_some(self, out: dict, *, make_worker=None) -> None:
+        """Describe a bounded batch of pending units while the gates stay open.
+
+        Most-used files first, so the part of the codebase the agent actually
+        works in gets summaries (and KB descriptions) long before the rest.
+        Stops at the unit/time budget or as soon as a turn starts.
+        """
+        cfg = self._config
+        if not (cfg.rag.auto_describe and cfg.summarization.enabled):
+            return
+        from agent.rag.code_store import CodeStore
+        code_store = CodeStore(cfg.summarization.db_path)
+        try:
+            prefer = usage_ranked_paths(cfg)
+            units = code_store.get_pending_units(limit=cfg.rag.auto_describe_max_units, prefer_paths=prefer)
+            if not units:
+                return
+            if make_worker is None:
+                entry, why = describer_endpoint(cfg)
+                if entry is None:
+                    out["describe_skipped"] = why
+                    return
+                worker = _make_worker(cfg, code_store, entry)
+            else:
+                worker = make_worker(code_store)
+            deadline = self._clock() + cfg.rag.auto_describe_max_seconds
+            done = 0
+            for unit in units:
+                if self._stop.is_set() or self._clock() > deadline or self.gate():
+                    break
+                worker.describe_unit(unit)
+                done += 1
+            out["described"] = done
+        finally:
+            code_store.close()
 
     def sync_kb(self, out: dict) -> None:
         """Refresh the graph if sources moved, then re-import it into the KB.

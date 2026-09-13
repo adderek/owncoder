@@ -129,6 +129,12 @@ class RAGConfig:
     # re-import it with trusted summaries. At most once per interval.
     auto_kb: bool = True
     auto_kb_min_interval_seconds: float = 300.0
+    # Drain the summary queue a little per idle pass, most-used files first.
+    # Only summarizer-pool endpoints on localhost or a private LAN are used —
+    # code is never sent to a cloud model from the background.
+    auto_describe: bool = True
+    auto_describe_max_units: int = 20
+    auto_describe_max_seconds: float = 120.0
 
 
 @dataclass

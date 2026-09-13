@@ -204,3 +204,70 @@ def test_prune_units_keeps_indexed_paths_and_reuses_descriptions(tmp_path):
     assert kept["status"] == "described" and kept["description"] == "does f"
     assert cs.get_unit("old") is None and cs.get_unit("gone") is None
     cs.close()
+
+
+def test_describer_endpoint_never_uses_cloud(tmp_path):
+    from agent.rag.maintainer import describer_endpoint, is_private_url
+    c = _cfg(tmp_path)
+    c.model_pools["summarizer"] = ["cloud", "lan", "desk"]
+    c.model_entries["cloud"] = ModelEntry(base_url="https://openrouter.ai/api/v1", model="m")
+    c.model_entries["lan"] = ModelEntry(base_url="http://192.168.31.42:8081/v1", model="m")
+    c.model_entries["desk"] = ModelEntry(base_url="http://localhost:8081/v1", model="m")
+    entry, _ = describer_endpoint(c, probe=lambda e: True)
+    assert entry.base_url.startswith("http://192.168.31.42")
+    entry, why = describer_endpoint(c, probe=lambda e: False)
+    assert entry is None
+    assert "cloud: not a private endpoint" in why and "lan: unreachable" in why
+    assert not is_private_url("https://api.deepseek.com/v1") and is_private_url("http://10.0.0.5:1/v1")
+
+
+def test_usage_ranking_from_audit(tmp_path):
+    import json
+    from agent.rag.maintainer import usage_ranked_paths
+    c = _cfg(tmp_path)
+    (tmp_path / ".agent").mkdir()
+    recs = [{"tool": "read_file", "args": {"path": "b.py"}}] * 3 + \
+           [{"tool": "edit_file", "args": {"path": str(tmp_path / "a.py")}}] + \
+           [{"tool": "grep_code", "args": {"pattern": "x"}}, {"event": "run.start"}]
+    (tmp_path / ".agent" / "audit.jsonl").write_text("\n".join(json.dumps(r) for r in recs))
+    assert usage_ranked_paths(c) == ["b.py", "a.py"]
+
+
+class _FakeWorker:
+    def __init__(self, store, log):
+        self.store, self.log = store, log
+
+    def describe_unit(self, unit):
+        self.log.append(unit["path"])
+        unit.update(status="described", description="d")
+        self.store.upsert_unit(unit)
+
+
+def _pending(cs, uid, path):
+    cs.upsert_unit({"id": uid, "path": path, "name": uid, "level": 0, "start_line": 1, "end_line": 2,
+                    "object_checksum": uid, "status": "pending"})
+
+
+def test_describe_some_prefers_used_files_and_stops_on_turn(tmp_path, monkeypatch):
+    from agent.rag import maintainer as M
+    from agent.rag.code_store import CodeStore
+    c = _cfg(tmp_path)
+    c.summarization.db_path = str(tmp_path / "summaries.db")
+    c.rag.auto_describe_max_units = 3
+    cs = CodeStore(c.summarization.db_path)
+    for uid, path in (("u1", "a.py"), ("u2", "b.py"), ("u3", "hot.py"), ("u4", "c.py")):
+        _pending(cs, uid, path)
+    cs.close()
+    monkeypatch.setattr(M, "usage_ranked_paths", lambda cfg: ["hot.py"])
+    busy = {"n": 0}
+    log = []
+
+    def is_busy():
+        busy["n"] += 1
+        return busy["n"] > 2  # a turn starts after two units
+
+    m = IndexMaintainer(c, is_busy=is_busy, loadavg=lambda: (0, 0, 0))
+    out = {}
+    m.describe_some(out, make_worker=lambda store: _FakeWorker(store, log))
+    assert log == ["hot.py", "a.py"]
+    assert out["described"] == 2
