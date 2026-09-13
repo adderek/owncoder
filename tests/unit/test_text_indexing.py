@@ -320,3 +320,52 @@ def test_reembed_flag_is_registered():
     assert args.reembed is True
     assert args.update is False
 
+
+
+class TestFileVanishesDuringIndex:
+    """A file listed by the walk but deleted before its stat must be skipped.
+
+    Regression: `agent init --force` crashed with FileNotFoundError on a
+    .coord/agents/*.json presence beacon removed by an exiting agent mid-run.
+    """
+
+    def _run(self, tmp_path, monkeypatch, workers):
+        import agent.rag.indexer as idx
+        from agent.rag.store import VectorStore
+
+        root = tmp_path / "src"
+        root.mkdir()
+        (root / "keep.md").write_text("# keep\n\nsome searchable prose here\n")
+        (root / "gone.md").write_text("# gone\n\nshort-lived file\n")
+
+        real = idx._wanted_file
+
+        def wanted_then_delete(fpath, *a, **kw):
+            ok = real(fpath, *a, **kw)
+            if fpath.name == "gone.md":
+                fpath.unlink()  # listed by the walk, gone before stat
+            return ok
+
+        monkeypatch.setattr(idx, "_wanted_file", wanted_then_delete)
+
+        class _Embedder:
+            _cfg = EmbeddingsConfig(
+                model="m", base_url="http://localhost:8080/v1",
+                dimensions=4, embed_workers=workers,
+            )
+
+            def embed(self, texts):
+                return [[0.1] * 4 for _ in texts]
+
+        store = VectorStore(RAGConfig(db_path=str(tmp_path / "index.db")))
+        stats = idx.index_directory(
+            str(root), store, _Embedder(),
+            RAGConfig(chunk_min_tokens=1, chunk_max_tokens=100), force=True,
+        )
+        assert stats["indexed"] == 1
+
+    def test_serial(self, tmp_path, monkeypatch):
+        self._run(tmp_path, monkeypatch, workers=1)
+
+    def test_parallel(self, tmp_path, monkeypatch):
+        self._run(tmp_path, monkeypatch, workers=2)

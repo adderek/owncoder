@@ -114,7 +114,7 @@ def pending_files(
     exclude = exclude or []
     default_exclude = {
         ".git", "__pycache__", "node_modules", "build", "dist",
-        ".agent", ".venv", "venv", ".env",
+        ".agent", ".venv", "venv", ".env", ".coord",
     }
     all_exclude = default_exclude | {e.rstrip("/") for e in exclude}
 
@@ -147,8 +147,10 @@ def pending_files(
             rel = str(fpath.relative_to(root_path))
             if rules.ignore.matches(rel):
                 continue
+            mtime = _mtime_or_none(fpath)
+            if mtime is None:
+                continue
             total += 1
-            mtime = fpath.stat().st_mtime
             # Stored paths may be absolute (old indexes) or relative (new indexes)
             stored_mtime = indexed_mtimes.get(rel) or indexed_mtimes.get(str(fpath.resolve()))
             if stored_mtime is None or abs(stored_mtime - mtime) >= 0.001:
@@ -156,6 +158,18 @@ def pending_files(
                 stale_paths.append(rel)
 
     return {"total": total, "indexed": total - pending, "pending": pending, "paths": stale_paths}
+
+
+def _mtime_or_none(fpath: Path) -> float | None:
+    """mtime, or None if the file vanished since the walk listed it.
+
+    The walk and the stat are not atomic: runtime files (presence beacons,
+    editor temp files) can be deleted in between.
+    """
+    try:
+        return fpath.stat().st_mtime
+    except FileNotFoundError:
+        return None
 
 
 _BATCH_SIZE = 32
@@ -242,7 +256,7 @@ def index_directory(
                 )
     default_exclude = {
         ".git", "__pycache__", "node_modules", "build", "dist",
-        ".agent", ".venv", "venv", ".env",
+        ".agent", ".venv", "venv", ".env", ".coord",
     }
     all_exclude = default_exclude | {e.rstrip("/") for e in exclude}
 
@@ -293,7 +307,10 @@ def index_directory(
         # Serial path: embed per batch → commit per batch (best crash recovery).
         for fpath in files:
             rel = str(fpath.relative_to(root_path))
-            mtime = fpath.stat().st_mtime
+            mtime = _mtime_or_none(fpath)
+            if mtime is None:
+                store.delete_by_path(rel)
+                continue
             abs_path = str(fpath)
 
             if not force:
@@ -370,7 +387,10 @@ def index_directory(
             for fpath in files:
                 rel = str(fpath.relative_to(root_path))
                 abs_path = str(fpath)
-                mtime = fpath.stat().st_mtime
+                mtime = _mtime_or_none(fpath)
+                if mtime is None:
+                    store.delete_by_path(rel)
+                    continue
                 if not force:
                     stored_mtime = store.get_mtime(rel)
                     if stored_mtime is not None and abs(stored_mtime - mtime) < 0.001:
