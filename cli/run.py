@@ -92,6 +92,13 @@ def cmd_run(args, config):
         except Exception:
             pass
 
+    if store is not None:
+        # Non-interactive: no prompt to answer, so the guard runs frozen and
+        # only reports — the alternative, silently blending vector spaces, is
+        # worse than degraded search.
+        from agent.rag.mismatch import handle_embedding_mismatch
+        store, _ = handle_embedding_mismatch(store, config, console, interactive=False)
+
     data_provider = LocalDataProvider(store=store, embedder=embedder, config=config)
     agent = Agent(config, data_provider=data_provider)
 

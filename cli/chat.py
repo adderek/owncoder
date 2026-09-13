@@ -342,16 +342,26 @@ def cmd_chat(args, config):
         try:
             store = _reuse_store or VectorStore(config.rag)
             embedder = Embedder(config.embeddings)
+            # An index whose vectors were produced by a different embedder must
+            # not be silently updated: the background thread would write the new
+            # model's vectors into the old table and blend two vector spaces.
+            from agent.rag.mismatch import handle_embedding_mismatch
+            store, _emb_action = handle_embedding_mismatch(
+                store, config, console, interactive=_sys.stdin.isatty()
+            )
+            if _emb_action == "aborted":
+                _sys.exit(1)
             if config.asm.enabled:
                 from agent.rag.asm_store import AsmStore
                 asm_store = AsmStore(config.rag)
-            _bg_thread = threading.Thread(
-                target=_bg_update_index,
-                args=(store, embedder, config, _bg_result),
-                daemon=True,
-                name="bg-index-update",
-            )
-            _bg_thread.start()
+            if _emb_action != "frozen":
+                _bg_thread = threading.Thread(
+                    target=_bg_update_index,
+                    args=(store, embedder, config, _bg_result),
+                    daemon=True,
+                    name="bg-index-update",
+                )
+                _bg_thread.start()
         except Exception as e:
             console.print(f"[yellow]Warning: could not load index: {e}[/yellow]")
             from agent import ui_notice
