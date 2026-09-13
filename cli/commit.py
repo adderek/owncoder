@@ -240,6 +240,52 @@ def _err_brief(exc: Exception) -> str:
     return f"{type(exc).__name__}: {s[:200]}" if s else type(exc).__name__
 
 
+def strict_summarizer(args) -> str | None:
+    """The entry named by `-ms NAME`, or None (no flag, or bare `-ms` = list).
+
+    `-ms NAME` is strict: that one model summarizes the chunks and writes the
+    commit message, the chunks are sized from its context window, and nothing
+    falls back to another model — an unavailable model fails the command.
+    """
+    name = getattr(args, "summarizer_model", None)
+    return None if name in (None, "__list__") else name
+
+
+def _check_strict_entry(name: str, entry) -> str | None:
+    """Why *entry* cannot serve `-ms NAME` right now, or None when it can.
+
+    The endpoint must answer /models and advertise the model by id or alias.
+    A llama.cpp router lists presets that are not loaded yet; those load on
+    request, so being listed is enough. ``assume_available`` skips the listing
+    check (for endpoints that serve models they do not publish), not the
+    reachability one.
+    """
+    from agent.config.model_probe import list_endpoint_models
+    names = list_endpoint_models(entry.base_url, getattr(entry, "api_key", "") or "")
+    if names is None:
+        return f"endpoint {entry.base_url} is unreachable"
+    if getattr(entry, "assume_available", False):
+        return None
+    model = entry.model or name
+    if model.lower() in {n.lower() for n in names}:
+        return None
+    return f"endpoint {entry.base_url} does not advertise model '{model}'"
+
+
+def _strict_ctx_window(entry) -> int:
+    """Context window for `-ms NAME`: the entry's own, else what its server
+    reports for that model; 0 when neither is known."""
+    configured = getattr(entry, "ctx_window", 0) or 0
+    if configured > 0:
+        return configured
+    from agent.config.model_probe import _probe_ctx_single
+    try:
+        return _probe_ctx_single(entry.base_url, getattr(entry, "api_key", "") or "",
+                                 entry.model, 3) or 0
+    except Exception:
+        return 0
+
+
 def _pick_fast_entry(registry, gpu_pool: list[str]):
     """Return (entry_name, entry) for fastest GPU model by measured tps, else first in pool."""
     from agent.metrics.model_stats import get_tps
@@ -360,6 +406,8 @@ def cmd_commit(args, config):
                           probe=getattr(args, "probe", True))
         return
 
+    strict_name = strict_summarizer(args)
+
     path = Path(args.path)
     if not path.is_absolute():
         path = Path.cwd() / path
@@ -397,13 +445,35 @@ def cmd_commit(args, config):
     status = _git("status", "--short")
     recent_log = _git("log", "--oneline", "-10")
 
+    # `-ms NAME` is strict (see strict_summarizer). Checked before any work so an
+    # unavailable model fails fast instead of after a fallback walk.
+    strict_entry = None
+    ctx_window = config.llm.ctx_window
+    if strict_name:
+        strict_entry = registry.get(strict_name)
+        if strict_entry is None:
+            console.print(f"[red]Unknown model entry '{strict_name}'. "
+                          f"Run 'agent commit -ms' to list available entries.[/red]")
+            raise SystemExit(1)
+        why = _check_strict_entry(strict_name, strict_entry)
+        if why:
+            console.print(f"[red]-ms {strict_name}: {why}. -ms does not fall back to "
+                          f"other models; omit it to use the fallback chain.[/red]")
+            raise SystemExit(1)
+        ctx_window = _strict_ctx_window(strict_entry)
+        if ctx_window <= 0:
+            ctx_window = config.llm.ctx_window
+            console.print(f"[yellow]-ms {strict_name}: context window unknown — set "
+                          f"ctx_window on the entry. Sizing chunks from the configured "
+                          f"default ({ctx_window}).[/yellow]")
+
     # Resolve chunk size
     chunk_size_arg = getattr(args, "chunk_size", None)
     if chunk_size_arg:
         if chunk_size_arg.endswith("%"):
             try:
                 percentage = float(chunk_size_arg[:-1]) / 100.0
-                chunk_chars = int(config.llm.ctx_window * percentage) if config.llm.ctx_window > 0 else 0
+                chunk_chars = int(ctx_window * percentage) if ctx_window > 0 else 0
             except (ValueError, TypeError):
                 console.print(f"[red]Invalid chunk size percentage: {chunk_size_arg}[/red]")
                 return
@@ -424,7 +494,7 @@ def cmd_commit(args, config):
         # chars_per_token ≈ 4 for code/diffs.
         summary_tok = config.token_limits.commit_summary_tokens
         overhead_tok = summary_tok + summary_tok + 500
-        chunk_chars = max(4000, (config.llm.ctx_window - overhead_tok) * 4)
+        chunk_chars = max(4000, (ctx_window - overhead_tok) * 4)
 
     summary_tokens = config.token_limits.commit_summary_tokens
     diff_chars = len(staged_diff)
@@ -441,19 +511,15 @@ def cmd_commit(args, config):
              "raw_outputs": [], "fallback": False, "cand_idx": 0, "model_failures": []}
 
     # Resolve summarizer entry:
-    # 1. explicit -m NAME flag
+    # 1. explicit -ms NAME flag (strict: the only model used)
     # 2. [models] summarizer role in config
     # 3. auto-pick fastest GPU model from gpu_pool
     # 4. fall back to primary model
     summ_entry = None
     summ_entry_name: str = ""
-    if summ_override:
-        summ_entry = registry.get(summ_override)
-        if summ_entry is None:
-            console.print(f"[red]Unknown model entry '{summ_override}'. "
-                          f"Run 'agent commit -m' to list available entries.[/red]")
-            return
-        summ_entry_name = summ_override
+    if strict_entry is not None:
+        summ_entry = strict_entry
+        summ_entry_name = strict_name
     elif config.model_roles.get("summarizer"):
         summ_entry = registry.summarizer
         summ_entry_name = config.model_roles["summarizer"]
@@ -465,8 +531,11 @@ def cmd_commit(args, config):
 
     # Primary (final commit-message) model: an explicit `commit` role pin wins,
     # else the active default endpoint (config.llm).
-    commit_entry = registry.for_role("commit")
-    if commit_entry is not None and commit_entry.base_url:
+    commit_entry = None if strict_entry is not None else registry.for_role("commit")
+    if strict_entry is not None:
+        primary_base_url, primary_api_key = strict_entry.base_url, strict_entry.api_key
+        primary_model = strict_entry.model
+    elif commit_entry is not None and commit_entry.base_url:
         primary_base_url, primary_api_key = commit_entry.base_url, commit_entry.api_key
         primary_model = commit_entry.model or config.llm.model
     else:
@@ -513,16 +582,17 @@ def cmd_commit(args, config):
 
     if summ_entry:
         _add_candidate(summ_entry_name, summ_entry.base_url, summ_entry.api_key, summ_model)
-    _add_candidate("primary", primary_base_url, primary_api_key, primary_model)
-    for _name in gpu_pool:
-        _e = registry.get(_name)
-        if _e is not None:
-            _add_candidate(_name, _e.base_url, _e.api_key, _e.model)
-    from agent.config import entry_tier as _entry_tier
-    for _name in registry.names():
-        _e = registry.get(_name)
-        if _e is not None and _entry_tier(_e) == "local":
-            _add_candidate(_name, _e.base_url, _e.api_key, _e.model)
+    if strict_entry is None:           # -ms NAME: that model or nothing
+        _add_candidate("primary", primary_base_url, primary_api_key, primary_model)
+        for _name in gpu_pool:
+            _e = registry.get(_name)
+            if _e is not None:
+                _add_candidate(_name, _e.base_url, _e.api_key, _e.model)
+        from agent.config import entry_tier as _entry_tier
+        for _name in registry.names():
+            _e = registry.get(_name)
+            if _e is not None and _entry_tier(_e) == "local":
+                _add_candidate(_name, _e.base_url, _e.api_key, _e.model)
 
     for _c in candidates:
         if _c["base_url"] == primary_base_url and _c["model"] == primary_model:
@@ -741,6 +811,8 @@ def cmd_commit(args, config):
         )
         if report_dir:
             console.print(f"[dim]Error dump: {report_dir}[/dim]")
+        if strict_entry is not None:
+            raise SystemExit(1)
         return
     elapsed = _time.monotonic() - state["start"]
     _fb = ""

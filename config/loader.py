@@ -1005,13 +1005,28 @@ def _try_auto_select_model(config: Config, data: dict) -> None:
 
     Useful when multiple entries share one endpoint (e.g. two llama.cpp model
     configs for the same GPU server) and only one is loaded at a time.  The
-    live model id reported by /v1/models is matched against each entry's
-    `model` field using the same fuzzy logic as model_probe.
+    live model names reported by /v1/models (ids and aliases) are matched
+    against each entry's `model` field using the same fuzzy logic as
+    model_probe, exact matches before fuzzy ones.
+
+    A llama.cpp router lists every preset, loaded or not. Switching the default
+    to a listed-but-unloaded preset makes the next request load it, evicting
+    the model that is serving — so only a loaded model may pull the default
+    over. Preference:
+
+      1. keep the current default if it matches a loaded model;
+      2. an entry matching a loaded model;
+      3. keep the current default if the endpoint lists its model at all;
+      4. an entry matching an unloaded preset (the default is not served here
+         either way, so a load is needed regardless).
     """
     import sys
-    from agent.config.model_probe import _strip_ext
-    live_ids = [m.get("id", "") for m in data.get("data", []) if isinstance(m, dict) and m.get("id")]
-    if not live_ids:
+    from agent.config.model_probe import (
+        _advertised_names, _load_failed, _strip_ext, is_loaded,
+    )
+    models = [m for m in data.get("data", [])
+              if isinstance(m, dict) and m.get("id") and not _load_failed(m)]
+    if not models:
         return
 
     # Prefer explicit pool; fall back to all entries at the same endpoint.
@@ -1038,25 +1053,56 @@ def _try_auto_select_model(config: Config, data: dict) -> None:
 
     current_default = config.model_roles.get("default", "default")
 
-    for live_id in live_ids:
-        live_lower = live_id.lower()
-        for name, entry in candidates.items():
-            cfg_lower = (entry.model or name).lower()
-            if (
-                live_lower == cfg_lower
-                or _strip_ext(live_lower) == cfg_lower
-                or live_lower.startswith(cfg_lower)
-                or cfg_lower in live_lower
-            ):
-                if name != current_default:
-                    print(
-                        f"[auto-model] live model \"{live_id}\" matches entry \"{name}\" "
-                        f"— switching default from \"{current_default}\" to \"{name}\"",
-                        file=sys.stderr,
-                    )
-                    config.model_roles["default"] = name
-                    _apply_entry_to_llm(config, name, entry)
-                return  # matched; stop searching
+    def _names(group: list[dict]) -> list[tuple[str, str]]:
+        # (lowercase name, the model's id for display)
+        return [(n.lower(), m["id"]) for m in group for n in _advertised_names(m)]
+
+    loaded = _names([m for m in models if is_loaded(m)])
+    unloaded = _names([m for m in models if not is_loaded(m)])
+
+    def _exact(cfg: str, live: str) -> bool:
+        return live == cfg or _strip_ext(live) == cfg
+
+    def _fuzzy(cfg: str, live: str) -> bool:
+        return live.startswith(cfg) or cfg in live
+
+    def _cfg(name: str) -> str:
+        return (candidates[name].model or name).lower()
+
+    def _current_matches(live_names) -> bool:
+        return current_default in candidates and any(
+            rule(_cfg(current_default), live)
+            for rule in (_exact, _fuzzy) for live, _ in live_names
+        )
+
+    def _best(live_names) -> tuple[str, str] | None:
+        for rule in (_exact, _fuzzy):
+            for live, shown in live_names:
+                for name in candidates:
+                    if rule(_cfg(name), live):
+                        return name, shown
+        return None
+
+    if _current_matches(loaded):
+        return
+    picked = _best(loaded)
+    state = "loaded"
+    if picked is None:
+        if _current_matches(unloaded):
+            return
+        picked = _best(unloaded)
+        state = "listed but not loaded — the first request loads it"
+    if picked is None:
+        return
+    name, shown = picked
+    if name != current_default:
+        print(
+            f"[auto-model] live model \"{shown}\" ({state}) matches entry \"{name}\" "
+            f"— switching default from \"{current_default}\" to \"{name}\"",
+            file=sys.stderr,
+        )
+        config.model_roles["default"] = name
+        _apply_entry_to_llm(config, name, candidates[name])
 
 
 def _try_detect_ctx_window(config: Config, data: dict) -> None:

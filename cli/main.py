@@ -231,7 +231,10 @@ def build_parser() -> argparse.ArgumentParser:
                                "-m NAME: override model name (primary + summarization)")
     commit_p.add_argument("-s", "-ms", "--summarizer-model", dest="summarizer_model",
                           nargs="?", const="__list__", default=None,
-                          help="-s alone: list available models; -s NAME: use that model for summarization")
+                          help="-s alone: list available models; -s NAME: use only that model "
+                               "(chunk summaries + commit message, chunks sized from its "
+                               "context window). Strict: fails if it is unavailable, "
+                               "no fallback to other models")
     commit_p.add_argument("--no-probe", dest="probe", action="store_false", default=True,
                           help="When listing models, skip the /models availability probe")
     commit_p.add_argument("-c", "--chunk-size", type=str, default="50%",
@@ -430,15 +433,18 @@ def main() -> None:
             from agent.cli.sessions import cmd_sessions
             cmd_sessions(args, config)
         elif args.command == "commit":
-            from agent.cli.commit import cmd_commit
+            from agent.cli.commit import cmd_commit, strict_summarizer
             _model = getattr(args, "model", None)
-            if _model == "__list__":
+            if _model == "__list__" or getattr(args, "summarizer_model", None) == "__list__":
                 # Listing only — no LLM call, so skip the reachability probe.
                 cmd_commit(args, config)
                 return
             if _model:
                 config.llm.model = _model
-            check_reachability(config)
+            # `-ms NAME` uses only that model (cmd_commit checks it), so the
+            # default model's endpoint is irrelevant: don't probe or switch it.
+            if strict_summarizer(args) is None:
+                check_reachability(config)
             cmd_commit(args, config)
         elif args.command == "prompts":
             from agent.cli.debug import cmd_prompts

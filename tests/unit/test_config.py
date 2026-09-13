@@ -495,3 +495,103 @@ class TestConfigValidation:
         (tmp_path / "agent.toml").write_bytes(b'[security]\nnetwork = "full"\n')
         with pytest.raises(SystemExit):
             load_config(tmp_path / "agent.toml")
+
+
+class TestAutoSelectOnARouter:
+    """A llama.cpp router lists every preset with a load status, and a preset
+    answers to its aliases. Auto-select used to match any listed id, so an
+    unloaded preset could take the default — whose first request then evicted
+    the model actually serving — while the loaded one, named by alias, never
+    matched at all."""
+
+    @staticmethod
+    def _m(mid, status="loaded", aliases=(), failed=False):
+        st = {"value": status}
+        if failed:
+            st["failed"] = True
+        return {"id": mid, "aliases": list(aliases), "status": st}
+
+    def test_replay_lan_router(self, capsys):
+        # /v1/models on 192.168.31.42:8081 as it was, with the real entries.
+        base = "http://192.168.31.42:8081/v1"
+        entries = {
+            "remote-coder-next-q4km": _entry("coder-next-ud-q4_k_m", base_url=base),
+            "remote-ornith15-35b-q4km": _entry("ornith15-35B-A3B", base_url=base),
+            "remote-ornith10-35b-q4km": _entry("35b-q4_k_m", base_url=base),
+            "remote-workhorse": _entry("ornith-10-35B", base_url=base),
+        }
+        c = _make_config_with_entries(entries, "remote-coder-next-q4km", base_url=base)
+        c.model_pools["default"] = list(entries)
+        data = {"data": [
+            self._m("NANI-Nithin/K2-Horizon-MoVA-36B-A4B-GGUF:IQ4_NL", "unloaded"),
+            self._m("ornith10-35B", "loaded", aliases=["ornith-1.0-35B", "ornith-10-35B"]),
+            self._m("ornith10-35B-measured", "unloaded", aliases=["ornith-10-35B-measured"]),
+            self._m("ornith15-35B-A3B", "unloaded"),
+            self._m("qwen3.6-27B", "unloaded"),
+        ]}
+        _try_auto_select_model(c, data)
+        assert c.model_roles["default"] == "remote-workhorse"
+        assert c.llm.model == "ornith-10-35B"
+        assert "(loaded)" in capsys.readouterr().err
+
+    def test_loaded_alias_beats_an_unloaded_id_listed_first(self):
+        entries = {"a": _entry("big-model"), "b": _entry("small-alias"), "cur": _entry("gone")}
+        c = _make_config_with_entries(entries, "cur")
+        data = {"data": [self._m("big-model", "unloaded"),
+                         self._m("small-v2", "loaded", aliases=["small-alias"])]}
+        _try_auto_select_model(c, data)
+        assert c.model_roles["default"] == "b"
+
+    def test_current_default_kept_when_it_is_the_loaded_one(self):
+        entries = {"first": _entry("m1"), "cur": _entry("m2")}
+        c = _make_config_with_entries(entries, "cur")
+        data = {"data": [self._m("m1", "unloaded"), self._m("m2", "loaded")]}
+        _try_auto_select_model(c, data)
+        assert c.model_roles["default"] == "cur"
+
+    def test_current_default_kept_when_listed_and_nothing_loaded_matches(self):
+        entries = {"first": _entry("m1"), "cur": _entry("m2")}
+        c = _make_config_with_entries(entries, "cur")
+        data = {"data": [self._m("m1", "unloaded"), self._m("m2", "unloaded"),
+                         self._m("unrelated", "loaded")]}
+        _try_auto_select_model(c, data)
+        assert c.model_roles["default"] == "cur"
+
+    def test_unloaded_match_only_when_the_default_is_not_served_at_all(self, capsys):
+        entries = {"first": _entry("m1"), "cur": _entry("not-here")}
+        c = _make_config_with_entries(entries, "cur")
+        data = {"data": [self._m("m1", "unloaded"), self._m("unrelated", "loaded")]}
+        _try_auto_select_model(c, data)
+        assert c.model_roles["default"] == "first"
+        assert "not loaded" in capsys.readouterr().err
+
+    def test_failed_preset_is_ignored(self):
+        entries = {"broken": _entry("m1"), "cur": _entry("not-here")}
+        c = _make_config_with_entries(entries, "cur")
+        data = {"data": [self._m("m1", "loaded", failed=True)]}
+        _try_auto_select_model(c, data)
+        assert c.model_roles["default"] == "cur"
+
+    def test_multi_model_server_does_not_flip_a_served_default(self):
+        # No status: vLLM / plain servers list only what they serve.
+        entries = {"first": _entry("m1"), "cur": _entry("m2")}
+        c = _make_config_with_entries(entries, "cur")
+        _try_auto_select_model(c, {"data": [{"id": "m1"}, {"id": "m2"}]})
+        assert c.model_roles["default"] == "cur"
+
+    def test_exact_match_beats_an_earlier_fuzzy_one(self):
+        entries = {"fuzzy": _entry("qwen"), "exact": _entry("qwen3-8b"), "cur": _entry("gone")}
+        c = _make_config_with_entries(entries, "cur")
+        _try_auto_select_model(c, {"data": [{"id": "qwen3-8b"}]})
+        assert c.model_roles["default"] == "exact"
+
+    @pytest.mark.parametrize("info, expected", [
+        ({"id": "x"}, True),
+        ({"id": "x", "status": {"value": "loaded"}}, True),
+        ({"id": "x", "status": {"value": "loading"}}, True),
+        ({"id": "x", "status": {"value": "unloaded"}}, False),
+        ({"id": "x", "status": "weird"}, True),
+    ])
+    def test_is_loaded(self, info, expected):
+        from agent.config.model_probe import is_loaded
+        assert is_loaded(info) is expected

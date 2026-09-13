@@ -279,3 +279,180 @@ def test_probe_queries_each_endpoint_once(monkeypatch):
     result = mod._probe_endpoints(_Registry(entries))
     assert sorted(calls) == ["http://192.168.31.42:8081/v1", "http://192.168.31.42:8083/v1"]
     assert set(result) == set(calls)
+
+
+# ── `-ms NAME` is strict ──────────────────────────────────────────────────────
+# One model summarizes and writes the message, chunks are sized from its own
+# context window, and an unavailable model fails the command instead of
+# walking the fallback chain (which also meant probing, and switching, the
+# default model the command was never going to use).
+
+def test_strict_summarizer_only_for_a_named_model():
+    from agent.cli.commit import strict_summarizer
+    from agent.cli.main import build_parser
+    parser = build_parser()
+    assert strict_summarizer(parser.parse_args(["commit"])) is None
+    assert strict_summarizer(parser.parse_args(["commit", "-ms"])) is None
+    assert strict_summarizer(parser.parse_args(["commit", "-ms", "remote-workhorse"])) == "remote-workhorse"
+
+
+class _StrictEntry:
+    def __init__(self, model="ornith-10-35B", ctx_window=0, assume_available=False):
+        self.model = model
+        self.base_url = "http://lan:8081/v1"
+        self.api_key = ""
+        self.ctx_window = ctx_window
+        self.assume_available = assume_available
+        self.tags = []
+        self.tokens_per_sec = 0.0
+
+
+@pytest.mark.parametrize("listed, entry_kw, expected", [
+    (None, {}, "unreachable"),
+    ({"qwen3.6-27B"}, {}, "does not advertise"),
+    ({"ornith10-35B", "ornith-1.0-35B", "ornith-10-35B"}, {}, None),   # alias
+    ({"ORNITH-10-35b"}, {}, None),                                    # case
+    ({"qwen3.6-27B"}, {"assume_available": True}, None),
+    (None, {"assume_available": True}, "unreachable"),
+])
+def test_strict_entry_check(monkeypatch, listed, entry_kw, expected):
+    from agent.cli.commit import _check_strict_entry
+    monkeypatch.setattr("agent.config.model_probe.list_endpoint_models",
+                        lambda base_url, api_key="", timeout=3: listed)
+    why = _check_strict_entry("remote-workhorse", _StrictEntry(**entry_kw))
+    assert (why is None) if expected is None else (expected in why)
+
+
+def test_strict_ctx_window_prefers_the_entry_then_the_server(monkeypatch):
+    from agent.cli.commit import _strict_ctx_window
+    monkeypatch.setattr("agent.config.model_probe._probe_ctx_single",
+                        lambda base_url, api_key, model, timeout: 65536)
+    assert _strict_ctx_window(_StrictEntry(ctx_window=131072)) == 131072
+    assert _strict_ctx_window(_StrictEntry(ctx_window=0)) == 65536
+
+
+def test_ctx_probe_reads_an_unloaded_router_preset_by_alias(monkeypatch):
+    """Unloaded router presets have no meta and /props says n_ctx 0: the
+    preset's --ctx-size is the answer, and the entry may name it by alias."""
+    import io
+    import json
+    from agent.config import model_probe
+    models = {"data": [
+        {"id": "ornith15-35B-A3B", "aliases": [],
+         "status": {"value": "unloaded", "args": ["--ctx-size", "131072"]}},
+        {"id": "qwen3.8-27B-mtp", "aliases": ["q38-mtp"],
+         "status": {"value": "unloaded", "args": ["--port", "0", "--ctx-size", "65536"]}},
+    ]}
+    props = {"role": "router", "default_generation_settings": {"n_ctx": 0}}
+
+    def urlopen(req, timeout=None):
+        url = getattr(req, "full_url", req)
+        body = models if url.endswith("/models") else props
+        return io.BytesIO(json.dumps(body).encode())
+
+    monkeypatch.setattr(model_probe.urllib.request, "urlopen", urlopen)
+    assert model_probe._probe_ctx_single("http://lan:8081/v1", "", "q38-mtp", 3) == 65536
+    assert model_probe._probe_ctx_single("http://lan:8081/v1", "", "ornith15-35B-A3B", 3) == 131072
+
+
+def _staged_repo(tmp_path, size=3000):
+    import subprocess
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True)
+    run("init", "-q")
+    run("config", "user.email", "t@example.invalid")
+    run("config", "user.name", "t")
+    for i in range(3):
+        (repo / f"f{i}.txt").write_text("\n".join(f"line {i}-{j} " + "x" * 40
+                                                   for j in range(size // 150)))
+    run("add", ".")
+    return repo
+
+
+def _strict_run(monkeypatch, tmp_path, entry, *, fail=False, extra=()):
+    """Run cmd_commit with `-ms strict` against a fake registry and client.
+    Returns (models called, printed output, exit code or None)."""
+    from types import SimpleNamespace
+    import agent.cli.commit as mod
+    from agent.cli.main import build_parser
+    from agent.config import Config
+    from rich.console import Console
+
+    repo = _staged_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    other = _StrictEntry(model="default-model")
+
+    class _Reg:
+        def get(self, name):
+            return {"strict": entry, "default": other}.get(name)
+        def names(self):
+            return ["strict", "default"]
+        def for_role(self, role):
+            return other
+
+    calls: list[str] = []
+
+    class _Delta:
+        def __init__(self, text):
+            self.content, self.reasoning_content = text, None
+
+    class _Stream:
+        def __aiter__(self):
+            async def gen():
+                yield SimpleNamespace(choices=[SimpleNamespace(delta=_Delta("feat: strict"))],
+                                      usage=None)
+            return gen()
+
+    async def create(**kw):
+        calls.append(kw["model"])
+        if fail:
+            raise OSError("connection refused")
+        return _Stream()
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    monkeypatch.setattr("agent.config.make_registry", lambda config: _Reg())
+    monkeypatch.setattr("agent.core.llm_client.make_llm_client", lambda config, **kw: client)
+    monkeypatch.setattr("agent.config.model_probe.list_endpoint_models",
+                        lambda base_url, api_key="", timeout=3: {entry.model})
+    monkeypatch.setattr("agent.metrics.model_calls.record_entry_name", lambda *a, **k: None)
+    monkeypatch.setattr("agent.metrics.model_stats.update_stats", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "_save_problem_report", lambda *a, **k: None)
+    console = Console(width=300, force_terminal=False, no_color=True, record=True)
+    monkeypatch.setattr("rich.console.Console", lambda *a, **k: console)
+
+    config = Config()
+    config.llm.ctx_window = 1_000_000          # would make everything one chunk
+    config.token_limits.commit_chunk_chars = 0
+    args = build_parser().parse_args(["commit", str(repo), "-ms", "strict", "--print", *extra])
+    code = None
+    try:
+        mod.cmd_commit(args, config)
+    except SystemExit as e:
+        code = e.code
+    return calls, console.export_text(), code
+
+
+def test_strict_run_sizes_chunks_from_its_own_model_and_uses_only_it(monkeypatch, tmp_path):
+    entry = _StrictEntry(model="strict-model", ctx_window=2000)
+    calls, out, code = _strict_run(monkeypatch, tmp_path, entry, extra=("-c", "50%"))
+    assert code is None, out
+    assert "chunks of ≤1,000" in out                  # 50% of the -ms model's 2000
+    assert calls and set(calls) == {"strict-model"}   # summaries and final message
+
+
+def test_strict_run_fails_instead_of_falling_back(monkeypatch, tmp_path):
+    entry = _StrictEntry(model="strict-model", ctx_window=1_000_000)
+    calls, out, code = _strict_run(monkeypatch, tmp_path, entry, fail=True)
+    assert code == 1
+    assert calls == ["strict-model"]                  # never tried the default model
+
+
+def test_strict_run_refuses_an_unadvertised_model_before_any_call(monkeypatch, tmp_path):
+    entry = _StrictEntry(model="strict-model", ctx_window=4096)
+    monkeypatch.setattr("agent.cli.commit._check_strict_entry",
+                        lambda name, e: "endpoint http://lan:8081/v1 does not advertise model 'strict-model'")
+    calls, out, code = _strict_run(monkeypatch, tmp_path, entry)
+    assert code == 1
+    assert calls == []
+    assert "does not advertise" in out

@@ -319,6 +319,13 @@ def _probe_ctx_single(base_url: str, api_key: str, model: str, timeout: int) -> 
     }
     server_info = server_models.get(model) or {}
     if not server_info:
+        # A router preset answers to its aliases too (see _advertised_names).
+        server_info = next(
+            (sm for sm in server_models.values()
+             if model.lower() in (n.lower() for n in _advertised_names(sm))),
+            {},
+        )
+    if not server_info:
         for sid, sm in server_models.items():
             if (
                 sid.lower() == model.lower()
@@ -335,6 +342,8 @@ def _probe_ctx_single(base_url: str, api_key: str, model: str, timeout: int) -> 
         or server_info.get("context_length")
         or server_info.get("max_model_len")
     )
+    if not isinstance(server_ctx, int) or server_ctx <= 0:
+        server_ctx = _router_ctx_size(server_info)
     if not isinstance(server_ctx, int) or server_ctx <= 0:
         if not _looks_like_ollama(base_url):
             server_ctx = _probe_llamacpp_props("", base_url, timeout)
@@ -401,6 +410,41 @@ def _probe_ctx_force(
 
 
 # ── availability probe ────────────────────────────────────────────────────────
+
+def _router_ctx_size(model_info: dict) -> int | None:
+    """`--ctx-size` / `-c` from a llama.cpp router preset's launch arguments.
+
+    A router lists presets that are not loaded without any meta, and its /props
+    reports n_ctx 0, so the preset's own arguments are the only place the
+    context it will run with is visible before it loads.
+    """
+    status = model_info.get("status")
+    args = status.get("args") if isinstance(status, dict) else None
+    if not isinstance(args, list):
+        return None
+    for i, arg in enumerate(args[:-1]):
+        if arg in ("--ctx-size", "-c"):
+            try:
+                n = int(args[i + 1])
+            except (TypeError, ValueError):
+                return None
+            return n if n > 0 else None
+    return None
+
+
+def is_loaded(model_info: dict) -> bool:
+    """True unless a llama.cpp router marks this preset as not loaded.
+
+    A router lists every preset with status.value "loaded" / "loading" /
+    "unloaded"; a request to an unloaded one loads it, evicting whatever is
+    serving when the router runs one instance at a time. Servers without a
+    status (plain llama-server, vLLM, Ollama) list only what they serve.
+    """
+    status = model_info.get("status")
+    if not isinstance(status, dict):
+        return True
+    return status.get("value") in (None, "loaded", "loading")
+
 
 def _load_failed(model_info: dict) -> bool:
     """True when the server flags this model as unservable.
