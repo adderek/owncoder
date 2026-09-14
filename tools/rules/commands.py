@@ -42,7 +42,8 @@ class ApprovalRules:
                     pass
             elif rule.condition.startswith("matching "):
                 pattern = rule.condition[len("matching ") :]
-                cmd = args.get("cmd", "")
+                argv = args.get("argv")
+                cmd = " ".join(map(str, argv)) if isinstance(argv, list) else args.get("cmd", "")
                 if fnmatch.fnmatch(cmd, pattern):
                     return True, f"Shell command matches approval pattern: {pattern}"
         return False, None

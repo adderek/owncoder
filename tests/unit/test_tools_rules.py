@@ -73,13 +73,13 @@ class TestCommandAllowlist:
 
 class TestApprovalRules:
     def test_always_approval(self):
-        rules = ApprovalRules([ApprovalRule(tool="run_command", condition="always")])
-        needs, reason = rules.needs_approval("run_command", {})
+        rules = ApprovalRules([ApprovalRule(tool="run_argv", condition="always")])
+        needs, reason = rules.needs_approval("run_argv", {})
         assert needs
 
     def test_no_rules(self):
         rules = ApprovalRules()
-        needs, reason = rules.needs_approval("run_command", {})
+        needs, reason = rules.needs_approval("run_argv", {})
         assert not needs
 
     def test_line_threshold(self):
@@ -90,10 +90,10 @@ class TestApprovalRules:
         assert needs
 
     def test_matching_pattern(self):
-        rules = ApprovalRules([ApprovalRule(tool="run_command", condition="matching docker*")])
-        needs, _ = rules.needs_approval("run_command", {"cmd": "docker build ."})
+        rules = ApprovalRules([ApprovalRule(tool="run_argv", condition="matching docker*")])
+        needs, _ = rules.needs_approval("run_argv", {"argv": ["docker", "build", "."]})
         assert needs
-        needs, _ = rules.needs_approval("run_command", {"cmd": "git status"})
+        needs, _ = rules.needs_approval("run_argv", {"argv": ["git", "status"]})
         assert not needs
 
 

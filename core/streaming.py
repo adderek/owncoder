@@ -82,7 +82,7 @@ _NARRATION_PHRASES = [
 # import-safe.
 _EXTRA_NARRATABLE: frozenset[str] = frozenset({
     "patch_file", "search_archive", "web_fetch", "web_search",
-    "git_diff", "git_log", "git_status", "git_blame", "git_related_files",
+    "git_blame", "git_related_files",
     "replace_symbol", "undo_file",
 })
 

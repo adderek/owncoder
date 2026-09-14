@@ -68,6 +68,11 @@ git_status()
 git_related_files(path)
   Find files most often committed alongside a given file.
 
+git_* tools are read-only and are the supported path for git history — do not
+  shell out to `git` via run_argv for log/diff/status/blame. Write operations
+  (commit, push, reset, checkout, submodule update, clean) have NO tool and need
+  explicit user approval per action before run_argv.
+
 save_note(title, body, tags=None)
   Persist a fact/decision/preference across sessions. Use for architectural decisions,
   user preferences, recurring constraints, "always do X / never do Y" rules.

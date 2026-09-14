@@ -20,7 +20,6 @@ class TestToolRegistry:
         names = {s["function"]["name"] for s in schemas}
         assert "read_file" in names
         assert "write_file" in names
-        assert "run_command" not in names  # deprecated — use run_argv
 
     def test_schema_structure(self):
         schemas = get_schemas()

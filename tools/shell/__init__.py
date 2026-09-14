@@ -1,7 +1,7 @@
 from agent.tools.shell.main import (
     _check_dangerous,
     _truncate_stream,
-    run_command,
+    run_shell_line,
     setup,
     ToolDisabledError,
 )
@@ -9,7 +9,7 @@ from agent.tools.shell.main import (
 __all__ = [
     "_check_dangerous",
     "_truncate_stream",
-    "run_command",
+    "run_shell_line",
     "setup",
     "ToolDisabledError",
 ]

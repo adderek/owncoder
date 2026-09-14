@@ -37,8 +37,8 @@ def _no_asker():
 
 class TestUnanswerableAsks:
     def test_an_ask_rule_is_reported(self):
-        assert perms.unanswerable_asks(_config(rules=[_rule("run_command", "git push")])) \
-            == ["rule run_command(git push)"]
+        assert perms.unanswerable_asks(_config(rules=[_rule("run_argv", "git push")])) \
+            == ["rule run_argv(git push)"]
 
     def test_an_ask_default_is_reported(self):
         assert perms.unanswerable_asks(_config(default="ask")) == ["default verdict is 'ask'"]
@@ -56,8 +56,8 @@ class TestUnanswerableAsks:
         assert perms.unanswerable_asks(_config(default="ask")) == []
 
     def test_session_rules_count_too(self):
-        perms.add_session_rule("run_command", "rm", "ask")
-        assert perms.unanswerable_asks(_config()) == ["rule run_command(rm)"]
+        perms.add_session_rule("run_argv", "rm", "ask")
+        assert perms.unanswerable_asks(_config()) == ["rule run_argv(rm)"]
 
     def test_a_config_without_permissions_is_not_an_error(self):
         assert perms.unanswerable_asks(N()) == []
@@ -75,8 +75,8 @@ class TestBuiltinBaselineReporting:
 
     def test_user_rules_are_still_listed_individually(self):
         sources = perms.unanswerable_asks(
-            _config(rules=[_rule("run_command", "git push")], builtin_rules=True))
-        assert "rule run_command(git push)" in sources
+            _config(rules=[_rule("run_argv", "git push")], builtin_rules=True))
+        assert "rule run_argv(git push)" in sources
         assert any("built-in baseline" in s for s in sources)
 
     def test_no_regex_leaks_into_the_warning(self):
@@ -90,11 +90,11 @@ class TestBuiltinBaselineReporting:
 
 class TestWarning:
     def test_it_warns_on_stderr_naming_the_rules(self, capsys):
-        sources = _warn_unanswerable_asks(_config(rules=[_rule("run_command", "git push")]), False)
+        sources = _warn_unanswerable_asks(_config(rules=[_rule("run_argv", "git push")]), False)
         err = capsys.readouterr().err
         assert sources
         assert "will deny" in err
-        assert "run_command(git push)" in err
+        assert "run_argv(git push)" in err
         assert "agent permissions" in err
 
     def test_stdout_stays_clean_for_json_consumers(self, capsys):

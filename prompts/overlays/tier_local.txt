@@ -32,7 +32,7 @@ Task: "fix the failing test in calc.py"
   grep_code "def add" calc.py        -> find the function
   read_file calc.py 1 40             -> read it
   edit_file calc.py ...              -> change the one wrong line
-  run_command pytest -q              -> confirm it passes
+  run_argv pytest -q                 -> confirm it passes
   done.
 
 Bad (do not do this):

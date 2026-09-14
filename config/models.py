@@ -575,7 +575,6 @@ class SecurityConfig:
         r"^DATABASE_URL$", r"^REDIS_URL$", r"^MONGO.*URI$",
     ])
     argv_allow: list = field(default_factory=list)
-    allow_legacy_shell: bool = False
     # Write-deny globs (root-relative). None = use built-in defaults.
     # Set to [] to disable entirely (opt-out for trusted dev environments).
     # The per-command walk that masks secret files and binds policy files

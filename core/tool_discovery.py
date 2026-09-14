@@ -36,7 +36,12 @@ CORE_TOOLS: frozenset[str] = frozenset({
     "find_symbol",
     "list_files",
     "run_argv",
-    "run_command",
+    # Read-only git basics. Behind find_tools the model shelled out instead:
+    # Jun-Sep 2026 audit had 275 `git` runs via run_argv vs 50 git_* calls,
+    # mostly diff/log/status. blame/related_files stay on demand.
+    "git_status",
+    "git_diff",
+    "git_log",
     "save_note",
     "find_tools",
     # explore exists precisely so small-context models avoid many raw reads —
@@ -56,7 +61,7 @@ _CATEGORIES: list[tuple[str, str, tuple[str, ...], frozenset[str]]] = [
     ("edit code", "apply changes to files",
      (), frozenset({"edit_file", "write_file", "replace_symbol", "undo_file"})),
     ("run commands", "execute shell/build/test commands",
-     (), frozenset({"run_argv", "run_command", "run_tests", "build_project"})),
+     (), frozenset({"run_argv", "run_tests", "build_project"})),
     ("git", "history, blame, diffs, related files",
      ("git_",), frozenset()),
     ("call graph (structure)", "who calls / what depends on / where defined",

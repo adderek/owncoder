@@ -64,7 +64,7 @@ default = "allow"          # verdict when no rule matches: allow | ask | deny
                            #  "ask" turns the agent into approve-every-tool)
 
 [[permissions.rules]]
-tool = "run_command"        # tool-name glob (fnmatch): "run_command", "web_*", "*"
+tool = "run_argv"           # tool-name glob (fnmatch): "run_argv", "web_*", "*"
 match = "git push*"         # optional arg matcher (see below)
 verdict = "ask"             # allow | ask | deny
 reason = "pushes publish"   # optional; shown in the ask prompt / deny error
@@ -77,7 +77,7 @@ reason = "pushes publish"   # optional; shown in the ask prompt / deny error
   trivially testable. `default` applies when nothing matches.
 - **`tool`**: fnmatch glob against the tool name. Required.
 - **`match`**: optional, matched against the tool's *primary argument*:
-  - `run_command` → the command string, matched as a **glob** by default;
+  - `run_argv` → the argv list joined with spaces, matched as a **glob** by default;
     prefix with `re:` for a regex (`match = "re:^git\\s+push"`). Glob
     default because regex-by-default invites catastrophic mistakes
     (`.` matching everything).

@@ -468,9 +468,9 @@ class SlashHandlerMixin:
             if not arg.strip():
                 self._write_sys(f"[{t.warning}]Usage: /exec <command>[/{t.warning}]")
             else:
-                from agent.tools.shell import run_command
+                from agent.tools.shell import run_shell_line
                 self._write_sys(f"[{t.text_dim}]$ {arg.strip()}[/{t.text_dim}]")
-                result = run_command(arg.strip())
+                result = run_shell_line(arg.strip())
                 if result.get("stdout"):
                     self._write_sys(result["stdout"].rstrip())
                 if result.get("stderr"):

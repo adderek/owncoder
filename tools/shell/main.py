@@ -108,10 +108,10 @@ def _check_dangerous(cmd: str) -> str | None:
     return None
 
 
-# Detect shell operators so run_command can reject them and steer the model to
-# run_argv(['sh','-c', …]). `<` must mirror `>` (the `\S` lookahead used to miss
-# a space-separated input redirect like `grep foo < in.txt`, silently passing
-# `<` through as a literal argv token instead of rejecting it).
+# Detect shell operators so a typed command line (/exec) goes through `sh -c`
+# only when it needs a shell. `<` must mirror `>` (the `\S` lookahead used to
+# miss a space-separated input redirect like `grep foo < in.txt`, passing `<`
+# through as a literal argv token).
 _SHELL_OP_RE = __import__("re").compile(r"[|;&]|>>?|<<?|`|\$\(")
 
 
@@ -126,138 +126,12 @@ def _try_translate_to_argv(cmd: str) -> list[str] | None:
         return None
 
 
-def run_command(cmd: str, cwd: str | None = None, timeout: int | None = None) -> dict:
-    if _config and not _config.tools.allow_shell:
-        raise ToolDisabledError(
-            "Shell commands are disabled in config (tools.allow_shell = false)"
-        )
-
-    danger = _check_dangerous(cmd)
-    if danger:
-        return {
-            "error": f"Destructive command '{danger}' requires explicit confirmation before running.",
-            "cmd": cmd,
-            "requires_confirm": True,
-        }
-
-    # Gate legacy shell-string path before expensive rule checks.
-    if _sec_policy.is_configured() and not _sec_policy.get().cfg.allow_legacy_shell:
-        argv = _try_translate_to_argv(cmd)
-        if argv:
-            result = run_argv(argv, cwd=cwd, timeout=timeout)
-            result["_translated_from"] = cmd
-            return result
-        return {
-            "error": (
-                "run_command with shell operators (pipes, redirects, heredocs) is disabled. "
-                "Use run_argv(['sh', '-c', 'your command']) for shell features, "
-                "or run_argv(['cmd', 'arg1', 'arg2']) for simple commands."
-            ),
-            "hint": "Examples: run_argv(['sh', '-c', 'echo hello > out.txt']) or run_argv(['python3', 'script.py'])",
-            "cmd": cmd,
-        }
-
-    # ── Rule checks (.agent.config, .agent.sandbox, .agent.ro, .agent.boundary) ──
-    rules = get_rules()
-
-    # Hard block: sandbox allowlist or blocked patterns
-    cmd_ok, cmd_msg = rules.check_command(cmd)
-    if not cmd_ok:
-        return {"error": cmd_msg, "cmd": cmd}
-
-    # Hard block: shell writes to read-only files
-    ro_ok, ro_msg = rules.check_shell_writes_readonly(cmd)
-    if not ro_ok:
-        return {"error": ro_msg, "cmd": cmd}
-
-    # Hard block: network boundary
-    net_ok, net_msg = rules.check_network_command(cmd)
-    if not net_ok:
-        return {"error": net_msg, "cmd": cmd}
-
-    # Soft block: confirmation patterns
-    need_confirm, confirm_reason = rules.check_command_confirm(cmd)
-    if need_confirm:
-        return {"error": confirm_reason, "cmd": cmd, "requires_confirm": True}
-
-    # Dry-run mode
-    if rules.config.dry_run:
-        return {"dry_run": True, "cmd": cmd, "would_execute": True}
-
-    effective_cwd = cwd or (_config.tools.working_dir if _config else ".")
-    effective_timeout = timeout or (_config.tools.shell_timeout if _config else 30)
-    # .agent.config max_timeout override
-    if rules.config.max_timeout > 0:
-        effective_timeout = min(effective_timeout, rules.config.max_timeout)
-
-    err_msg = None
-    raw_stdout = ""
-    raw_stderr = ""
-    returncode = -1
-    duration_ms = 0
-    t_start = time.monotonic()
-    try:
-        if _sec_policy.is_configured():
-            # Route through sandbox. Legacy entry still takes a shell string,
-            # so wrap it in `sh -c` inside the sandbox.
-            result = _runner.run(
-                ["sh", "-c", cmd],
-                cwd=effective_cwd,
-                network=(_sec_policy.get().cfg.network == "on"),
-                timeout=effective_timeout,
-            )
-            raw_stdout = result.stdout
-            raw_stderr = result.stderr
-            returncode = result.returncode
-            duration_ms = result.duration_ms
-            if result.timed_out:
-                err_msg = f"Command timed out after {effective_timeout}s"
-        else:
-            # Refuse to execute when the security harness hasn't been
-            # initialised — host exec with the full parent env is exactly
-            # the bypass path this harness exists to close.
-            return {
-                "error": "security harness not initialized; refusing to run shell command",
-                "cmd": cmd,
-            }
-    except subprocess.TimeoutExpired as e:
-        duration_ms = int((time.monotonic() - t_start) * 1000)
-        raw_stdout = (
-            (e.stdout or b"").decode("utf-8", errors="replace")
-            if isinstance(e.stdout, bytes)
-            else (e.stdout or "")
-        )
-        raw_stderr = (
-            (e.stderr or b"").decode("utf-8", errors="replace")
-            if isinstance(e.stderr, bytes)
-            else (e.stderr or "")
-        )
-        returncode = -1
-        err_msg = f"Command timed out after {effective_timeout}s"
-    except Exception as e:
-        duration_ms = int((time.monotonic() - t_start) * 1000)
-        err_msg = f"Runner error: {type(e).__name__}: {e}"
-
-    stdout, stdout_trunc = _truncate_stream(raw_stdout)
-    stderr, stderr_trunc = _truncate_stream(raw_stderr)
-    result: dict = {
-        "stdout": stdout,
-        "stderr": stderr,
-        "returncode": returncode,
-        "duration_ms": duration_ms,
-        "cmd": cmd,
-    }
-    if stdout_trunc or stderr_trunc:
-        result["truncated"] = {
-            "stdout_chars": len(raw_stdout) if stdout_trunc else 0,
-            "stderr_chars": len(raw_stderr) if stderr_trunc else 0,
-            "hint": "Output was large; narrow the command (grep, head, awk) to get focused results.",
-        }
-    if err_msg:
-        result["error"] = err_msg
-
-    _transcript.append(result)
-    return result
+def run_shell_line(line: str, cwd: str | None = None, timeout: int | None = None) -> dict:
+    """Run a human-typed command line (/exec). Simple commands run as argv;
+    pipes, redirects and substitutions run via `sh -c`. Both go through
+    run_argv, so every run_argv gate (danger check, rules, sandbox) applies."""
+    argv = _try_translate_to_argv(line) or ["sh", "-c", line]
+    return run_argv(argv, cwd=cwd, timeout=timeout)
 
 
 def get_transcript() -> list[dict]:

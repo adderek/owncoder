@@ -6,7 +6,7 @@ from agent.config import Config
 from agent.tools.shell import (
     _check_dangerous,
     _truncate_stream,
-    run_command,
+    run_shell_line,
     setup as shell_setup,
     ToolDisabledError,
 )
@@ -48,55 +48,52 @@ class TestCheckDangerous:
         assert _check_dangerous(cmd) is None
 
 
-class TestRunCommandDisabled:
+class TestShellDisabled:
     def test_shell_disabled_raises(self, tmp_path):
         with pytest.raises(ToolDisabledError):
-            run_command("echo hello")
+            run_shell_line("echo hello")
 
 
-class TestRunCommandEnabled:
-    def test_echo(self, tmp_path):
-        cfg = Config()
-        cfg.tools.working_dir = str(tmp_path)
-        cfg.tools.allow_shell = True
-        cfg.security.allow_legacy_shell = True
-        cfg.security.require_sandbox = False  # allow "none" backend in CI
-        shell_setup(cfg)
-        r = run_command("echo hello")
+def _enabled_cfg(tmp_path):
+    cfg = Config()
+    cfg.tools.working_dir = str(tmp_path)
+    cfg.tools.allow_shell = True
+    cfg.security.require_sandbox = False  # allow "none" backend in CI
+    shell_setup(cfg)
+    return cfg
+
+
+class TestRunShellLine:
+    def test_simple_command_runs_as_argv(self, tmp_path):
+        _enabled_cfg(tmp_path)
+        r = run_shell_line("echo hello")
         assert r["returncode"] == 0
         assert "hello" in r["stdout"]
 
+    def test_shell_operators_run_via_sh(self, tmp_path):
+        _enabled_cfg(tmp_path)
+        r = run_shell_line("echo hello | tr a-z A-Z")
+        assert r["returncode"] == 0
+        assert "HELLO" in r["stdout"]
+
     def test_dangerous_blocked(self, tmp_path):
-        cfg = Config()
-        cfg.tools.working_dir = str(tmp_path)
-        cfg.tools.allow_shell = True
-        shell_setup(cfg)
-        r = run_command("rm -rf /")
+        _enabled_cfg(tmp_path)
+        r = run_shell_line("rm -rf /")
         assert "error" in r
         assert "requires_confirm" in r
 
     def test_nonzero_exit_code(self, tmp_path):
-        cfg = Config()
-        cfg.tools.working_dir = str(tmp_path)
-        cfg.tools.allow_shell = True
-        cfg.security.allow_legacy_shell = True
-        cfg.security.require_sandbox = False  # allow "none" backend in CI
-        shell_setup(cfg)
-        r = run_command("exit 42", cwd=str(tmp_path))
+        _enabled_cfg(tmp_path)
+        r = run_shell_line("exit 42; true", cwd=str(tmp_path))
         assert r["returncode"] == 42
 
     def test_transcript_records_run(self, tmp_path):
         from agent.tools.shell.main import _transcript
         _transcript.clear()
-        cfg = Config()
-        cfg.tools.working_dir = str(tmp_path)
-        cfg.tools.allow_shell = True
-        cfg.security.allow_legacy_shell = True
-        shell_setup(cfg)
-        run_command("echo transcript_test")
+        _enabled_cfg(tmp_path)
+        run_shell_line("echo transcript_test")
         t = get_transcript()
-        assert len(t) >= 1
-        assert any("transcript_test" in entry.get("cmd", "") for entry in t)
+        assert any("transcript_test" in " ".join(entry.get("argv", [])) for entry in t)
 
 
 class TestNetworkPrecheck:
@@ -111,7 +108,6 @@ class TestNetworkPrecheck:
         cfg = Config()
         cfg.tools.working_dir = str(tmp_path)
         cfg.tools.allow_shell = True
-        cfg.security.allow_legacy_shell = True
         cfg.security.require_sandbox = False
         shell_setup(cfg)
         return cfg
@@ -129,8 +125,8 @@ class TestNetworkPrecheck:
             set_rules(prev)
         assert "error" in r
         assert "Network access denied" in r["error"]
-    """Shell operators must be detected so run_command rejects them and steers
-    to run_argv — input redirects must mirror output redirects."""
+    """Shell operators must be detected so run_shell_line hands them to `sh -c`
+    — input redirects must mirror output redirects."""
 
     @pytest.mark.parametrize("cmd", [
         "grep foo < input.txt",   # space-separated input redirect (regression)
@@ -220,15 +216,10 @@ class TestRunArgvNetworkGuard:
         result = run_argv(["sudo", "apt", "install", "something"])
         assert result.get("requires_confirm") is True
 
-    def test_run_command_stdout_truncation(self, tmp_path):
-        cfg = Config()
-        cfg.tools.working_dir = str(tmp_path)
-        cfg.tools.allow_shell = True
-        cfg.security.allow_legacy_shell = True
-        cfg.security.require_sandbox = False  # allow "none" backend in CI
-        shell_setup(cfg)
+    def test_run_argv_stdout_truncation(self, tmp_path):
+        _enabled_cfg(tmp_path)
         # python -c "print('x' * N)" — cheap, no extra deps
-        r = run_command("python3 -c \"print('x' * 100000)\"")
+        r = run_argv(["python3", "-c", "print('x' * 100000)"])
         assert r["returncode"] == 0
         assert len(r["stdout"]) < 100_000
         assert "truncated" in r

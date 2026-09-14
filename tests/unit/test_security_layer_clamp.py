@@ -45,10 +45,6 @@ class TestHostileRepoCannotWeaken:
         cfg = project_cfg("[security]\nfollow_symlinks = true\n")
         assert cfg.security.follow_symlinks is False
 
-    def test_cannot_enable_legacy_shell(self, project_cfg):
-        cfg = project_cfg("[security]\nallow_legacy_shell = true\n")
-        assert cfg.security.allow_legacy_shell is False
-
     def test_cannot_raise_resource_limits(self, project_cfg):
         cfg = project_cfg("[security]\nwall_seconds = 99999\nrss_mb = 999999\n")
         assert cfg.security.wall_seconds != 99999

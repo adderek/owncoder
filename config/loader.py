@@ -87,7 +87,6 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_SECURITY_WALL_SECONDS": ("security", "wall_seconds"),
         "AGENT_SECURITY_RSS_MB": ("security", "rss_mb"),
         "AGENT_SECURITY_FOLLOW_SYMLINKS": ("security", "follow_symlinks"),
-        "AGENT_SECURITY_ALLOW_LEGACY_SHELL": ("security", "allow_legacy_shell"),
         "AGENT_PLANNING_ENABLED": ("planning", "enabled"),
         "AGENT_PLANNING_AUTO_COMMIT": ("planning", "auto_commit_on_step_complete"),
         "AGENT_PLANNING_INCREMENTS_ENABLED": ("planning", "increments_enabled"),
@@ -433,7 +432,7 @@ def _merge_permissions(config: Config, layers: list[tuple[dict, bool]]) -> None:
 # than approved, because these are values rather than executable shell.
 _SEC_SAFER_TRUE = ("require_sandbox", "redact_tool_output", "airgap",
                    "guard_tool_injection")
-_SEC_SAFER_FALSE = ("follow_symlinks", "allow_legacy_shell")
+_SEC_SAFER_FALSE = ("follow_symlinks",)
 _SEC_SAFER_LOWER = ("cpu_seconds", "wall_seconds", "rss_mb", "nproc",
                     "fsize_mb", "nofile")
 #: Allow-lists: a project may only take entries away.

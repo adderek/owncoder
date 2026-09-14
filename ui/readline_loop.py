@@ -637,10 +637,10 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                 if not arg.strip():
                     console.print("[yellow]Usage: /exec <command>[/yellow]")
                 else:
-                    from agent.tools.shell import run_command
+                    from agent.tools.shell import run_shell_line
 
                     console.print(f"[dim]$ {arg.strip()}[/dim]")
-                    result = run_command(arg.strip())
+                    result = run_shell_line(arg.strip())
                     if result.get("stdout"):
                         console.print(result["stdout"].rstrip())
                     if result.get("stderr"):
