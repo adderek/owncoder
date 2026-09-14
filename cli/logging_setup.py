@@ -188,6 +188,13 @@ def _setup_logging(agent_dir: str | None = None, logs_cfg=None,
     sh._owncoder = True
     root.addHandler(sh)
 
+    # watchdog logs every inotify event at DEBUG. The RAG maintainer watches the
+    # project root, which contains agent.log itself: each log line is a write
+    # event, which is logged, which is another write — a self-sustaining loop
+    # that pins a core, holds the GIL and rotates the whole log set in a minute.
+    # `logs.sources` below can still lower it deliberately.
+    logging.getLogger("watchdog").setLevel(logging.INFO)
+
     for source_name, source_level in sources.items():
         lvl = getattr(logging, str(source_level).upper(), None)
         if lvl is not None:
