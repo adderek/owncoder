@@ -383,6 +383,40 @@ class TestCompactionRobustness:
                 assert prev.get("tool_calls"), f"orphan tool message at result[{idx}]"
 
 
+    async def test_single_user_tool_burst_actually_compacts(self, cfg, tmp_path):
+        """An autonomous run has one user message at the top and a long tool
+        burst after it. The old user-preserving rule pulled the verbatim split
+        back to that message, so nothing was compacted and the message-count
+        trigger fired again every turn. The user message must be carried on its
+        own, before the summary, while the burst is compacted."""
+        store = FactsStore("sess-burst", base_dir=tmp_path)
+        stage2 = "<facts>{}</facts><summary>did many reads</summary><q>finish review</q>"
+        client = _client_returning("draft", stage2)
+
+        messages = [{"role": "system", "content": "sys"},
+                    {"role": "user", "content": "Read REVIEW_BRIEF.md and do it"}]
+        for i in range(40):
+            messages.append({"role": "assistant", "content": None,
+                             "tool_calls": [{"id": f"t{i}", "type": "function",
+                                             "function": {"name": "read_file",
+                                                          "arguments": "{}"}}]})
+            messages.append({"role": "tool", "tool_call_id": f"t{i}",
+                             "content": f"body {i} " + "x" * 300})
+
+        result = await compact(messages, cfg, client, keep_last=2,
+                               facts_store=store, turn_index=40)
+
+        assert len(result) <= 8, f"burst not compacted: {len(result)} messages"
+        assert result[0]["role"] == "system"
+        assert result[1] == messages[1], "user message must precede the summary"
+        assert result[2].get("_compaction_marker")
+        assert sum(1 for m in result if m.get("role") == "user") == 1
+        for idx, m in enumerate(result):
+            if m.get("role") == "tool":
+                prev = result[idx - 1] if idx > 0 else {}
+                assert prev.get("tool_calls"), f"orphan tool message at result[{idx}]"
+
+
 class TestCheckGoalDrift:
     """_check_goal_drift is best-effort (returns None on any failure) and now
     routes through core.llm_retry.call_role_with_failover instead of a bare,

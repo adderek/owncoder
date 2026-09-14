@@ -608,16 +608,22 @@ async def compact(
     # Always preserve the most recent user message verbatim, even if a long
     # tool-call burst has scrolled it out of the keep_last window. Otherwise the
     # user's question survives only via q_view and is lost if Stage 2 fails.
+    # It is carried as a single message placed before the summary. Pulling
+    # verbatim_start back to it instead kept the whole burst verbatim: in an
+    # autonomous run with one user message at the top, nothing was ever
+    # compacted, the message-count trigger fired again every turn, and each
+    # pass rewrote history and threw the prompt cache away.
     last_user_idx = next(
         (
             i
             for i in range(len(conversation) - 1, -1, -1)
-            if conversation[i].get("role") == "user"
+            if _is_real_user_turn(conversation[i])
         ),
         None,
     )
+    pinned_user: list[dict] = []
     if last_user_idx is not None and last_user_idx < verbatim_start:
-        verbatim_start = last_user_idx
+        pinned_user = [conversation[last_user_idx]]
     # Don't let the verbatim tail begin on an orphan tool result: its originating
     # assistant (with tool_calls) sits earlier and is about to be compacted away,
     # while the inserted summary assistant carries no tool_calls — a leading tool
@@ -669,6 +675,7 @@ async def compact(
         result = list(hard_rules_msgs)
         if system_msg:
             result.append(system_msg)
+        result.extend(pinned_user)
         result.append({"role": "assistant",
                        "content": f"[SESSION SUMMARY UNAVAILABLE: {type(e).__name__}]",
                        "_compaction_marker": True})
@@ -694,6 +701,7 @@ async def compact(
         result = list(hard_rules_msgs)
         if system_msg:
             result.append(system_msg)
+        result.extend(pinned_user)
         result.append(error_msg)
         result.extend(_truncate_tool_results_in(verbatim, max_chars=2000))
         # Same contract as the normal path. This branch is not the rare one:
@@ -773,6 +781,7 @@ async def compact(
     result: list[dict] = list(hard_rules_msgs)
     if system_msg:
         result.append(system_msg)
+    result.extend(pinned_user)
     result.append(compacted_msg)
     result.extend(verbatim)
 
