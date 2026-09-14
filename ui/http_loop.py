@@ -1454,6 +1454,12 @@ class _HttpUI:
                 ok = bool(results) and good == len(results)
                 act_verb = "released from" if action == "release_all" else "pinned to"
                 msg = f"{entry} {act_verb} {good}/{len(results)} roles"
+                # Logged because a partial pin is silent otherwise: background
+                # roles (compaction, namer) left unpinned fall back to the
+                # summarizer pool, which looks like "pin ignored" in the log.
+                failed = [a for a, r in zip(args, results) if not r[0]]
+                logger.info("models: %s%s", msg,
+                            f" — failed: {', '.join(failed)}" if failed else "")
             elif action == "toggle_bulk":
                 save = bool(payload.get("save"))
                 setter = getattr(

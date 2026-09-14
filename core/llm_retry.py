@@ -129,6 +129,11 @@ async def _walk_candidates(config, role, kwargs, metrics_role, max_candidates, l
     candidates = role_candidates(config, role, max_candidates, local_only=local_only)
     if not candidates:
         raise RuntimeError(f"no usable model entry for role {role!r}")
+    # The first name is the role's resolved pick; without it a failover log
+    # cannot tell "pinned model failed" from "role was never pinned".
+    logger.debug("llm_retry: %s candidates %s (pinned=%s)", role,
+                 [n for n, _ in candidates],
+                 (getattr(config, "model_roles", None) or {}).get(role, "-"))
 
     last_exc: Exception | None = None
     for name, entry in candidates:
