@@ -96,6 +96,12 @@ class TestApprovalRules:
         needs, _ = rules.needs_approval("run_argv", {"argv": ["git", "status"]})
         assert not needs
 
+    def test_matching_uses_shlex_join_like_run_argv(self):
+        # Approval patterns see the same string as run_argv's rule checks.
+        rules = ApprovalRules([ApprovalRule(tool="run_argv", condition="matching sh -c 'git push*")])
+        needs, _ = rules.needs_approval("run_argv", {"argv": ["sh", "-c", "git push origin"]})
+        assert needs
+
 
 class TestRulesCheckMethods:
     def test_check_read_ignored(self):

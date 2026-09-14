@@ -1,5 +1,6 @@
 from __future__ import annotations
 import fnmatch
+import shlex
 from .models import ApprovalRule
 
 
@@ -43,7 +44,9 @@ class ApprovalRules:
             elif rule.condition.startswith("matching "):
                 pattern = rule.condition[len("matching ") :]
                 argv = args.get("argv")
-                cmd = " ".join(map(str, argv)) if isinstance(argv, list) else args.get("cmd", "")
+                # Same normalization as run_argv's rule checks (shlex.join), so one
+                # argv yields one string for both rule systems.
+                cmd = shlex.join(map(str, argv)) if isinstance(argv, list) else args.get("cmd", "")
                 if fnmatch.fnmatch(cmd, pattern):
                     return True, f"Shell command matches approval pattern: {pattern}"
         return False, None

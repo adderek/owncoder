@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agent.tools import register
-from agent.tools._common import working_dir, is_read_protected
+from agent.tools._common import working_dir, is_read_protected, is_path_allowed
 
 if TYPE_CHECKING:
     from agent.config import Config
@@ -27,16 +27,40 @@ def _working_dir() -> str:
     return working_dir(_config)
 
 
+def _repo_dir(repo: str | None) -> tuple[str | None, str | None]:
+    """Resolve *repo* (a subdirectory such as a submodule) under the project
+    root. Returns (cwd, error). None means the project root itself."""
+    if not repo:
+        return None, None
+    root = Path(_working_dir()).resolve()
+    target = (root / repo).resolve()
+    if not is_path_allowed(target, root):
+        return None, f"repo {repo!r} is outside the project root"
+    if not target.is_dir():
+        return None, f"repo {repo!r} is not a directory"
+    return str(target), None
+
+
+# Read-only git must not execute anything configured by the repository:
+# fsmonitor hooks run on status/diff, external diff drivers and textconv
+# filters run on diff/blame. The agent cannot write .git/** (security/fs.py),
+# but a checkout received with its .git dir can carry such config.
+_GIT_PREFIX = ("--no-pager", "-c", "core.fsmonitor=false")
+_DIFF_SAFE = ("--no-ext-diff", "--no-textconv")
+
+
 def _run_git(*args: str, cwd: str | None = None, timeout: float = 30.0) -> tuple[str, str, int]:
     cwd = cwd or _working_dir()
     # GIT_TERMINAL_PROMPT=0 stops git from blocking on an interactive credential
     # prompt; the timeout bounds index.lock contention and pathological repos so
     # an LLM-invoked git call can never hang the agent turn indefinitely.
+    # GIT_OPTIONAL_LOCKS=0 keeps status from taking index.lock at all, so it
+    # never collides with the user's own git in the same tree.
     import os
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0"}
     try:
         result = subprocess.run(
-            ["git"] + list(args),
+            ["git", *_GIT_PREFIX, *args],
             cwd=cwd,
             capture_output=True,
             text=True,
@@ -46,6 +70,12 @@ def _run_git(*args: str, cwd: str | None = None, timeout: float = 30.0) -> tuple
     except subprocess.TimeoutExpired:
         return "", f"git timed out after {timeout:.0f}s: git {' '.join(args)}", 124
     return result.stdout, result.stderr, result.returncode
+
+
+_REPO_PARAM = {
+    "type": "string",
+    "description": "Subdirectory repo to run in, e.g. a submodule path (default: project root)",
+}
 
 
 @register(
@@ -63,23 +93,41 @@ def _run_git(*args: str, cwd: str | None = None, timeout: float = 30.0) -> tuple
                     "type": "string",
                     "description": "Limit diff to this file path",
                 },
+                "repo": _REPO_PARAM,
             },
             "required": [],
         },
     },
 )
-def git_diff(staged: bool = False, path: str | None = None) -> dict:
+def git_diff(staged: bool = False, path: str | None = None, repo: str | None = None) -> dict:
     if path and is_read_protected(path):
         return {"error": _READ_PROTECTED_ERR, "path": path}
-    args = ["diff"]
+    cwd, err = _repo_dir(repo)
+    if err:
+        return {"error": err}
+    base = ["diff", *_DIFF_SAFE, "--no-renames"]
     if staged:
-        args.append("--cached")
-    if path:
-        args += ["--", path]
-    stdout, stderr, rc = _run_git(*args)
+        base.append("--cached")
+    scope = ["--", path] if path else []
+    # A diff without a path (or with a directory path) can still include a
+    # secret file. List the changed files first and exclude protected ones by
+    # literal pathspec; --no-renames keeps a renamed secret under its own name.
+    names, stderr, rc = _run_git(*base, "--name-only", "-z", *scope, cwd=cwd)
+    if rc != 0:
+        return {"error": stderr or "git diff failed"}
+    withheld = [n for n in names.split("\0") if n and is_read_protected(n)]
+    if withheld:
+        scope = scope or ["--"]
+        if len(scope) == 1:
+            scope.append(".")
+        scope += [f":(exclude,literal){n}" for n in withheld]
+    stdout, stderr, rc = _run_git(*base, *scope, cwd=cwd)
     if rc != 0 and stderr:
         return {"error": stderr}
-    return {"diff": stdout, "staged": staged}
+    result = {"diff": stdout, "staged": staged}
+    if withheld:
+        result["withheld"] = withheld
+    return result
 
 
 @register(
@@ -101,12 +149,17 @@ def git_diff(staged: bool = False, path: str | None = None) -> dict:
                     "type": "string",
                     "description": "Log format: oneline, short, medium (default: oneline)",
                 },
+                "repo": _REPO_PARAM,
             },
             "required": [],
         },
     },
 )
-def git_log(path: str | None = None, n: int = 10, format: str = "oneline") -> dict:
+def git_log(path: str | None = None, n: int = 10, format: str = "oneline",
+            repo: str | None = None) -> dict:
+    cwd, err = _repo_dir(repo)
+    if err:
+        return {"error": err}
     _allowed_formats = {"oneline", "short", "medium", "full", "fuller"}
     safe_format = format if format in _allowed_formats else "oneline"
     args = [
@@ -116,7 +169,7 @@ def git_log(path: str | None = None, n: int = 10, format: str = "oneline") -> di
     ]
     if path:
         args += ["--", path]
-    stdout, stderr, rc = _run_git(*args)
+    stdout, stderr, rc = _run_git(*args, cwd=cwd)
     if rc != 0:
         return {"error": stderr or "git log failed"}
     return {"log": stdout, "n": n}
@@ -132,23 +185,28 @@ def git_log(path: str | None = None, n: int = 10, format: str = "oneline") -> di
                 "path": {"type": "string", "description": "File to blame"},
                 "start_line": {"type": "integer", "description": "First line"},
                 "end_line": {"type": "integer", "description": "Last line"},
+                "repo": _REPO_PARAM,
             },
             "required": ["path"],
         },
     },
 )
 def git_blame(
-    path: str, start_line: int | None = None, end_line: int | None = None
+    path: str, start_line: int | None = None, end_line: int | None = None,
+    repo: str | None = None,
 ) -> dict:
     if is_read_protected(path):
         return {"error": _READ_PROTECTED_ERR, "path": path}
-    args = ["blame", "--porcelain"]
+    cwd, err = _repo_dir(repo)
+    if err:
+        return {"error": err}
+    args = ["blame", "--porcelain", "--no-textconv"]
     if start_line and end_line:
         args += [f"-L{start_line},{end_line}"]
     elif start_line:
         args += [f"-L{start_line},+50"]
     args += ["--", path]
-    stdout, stderr, rc = _run_git(*args)
+    stdout, stderr, rc = _run_git(*args, cwd=cwd)
     if rc != 0:
         return {"error": stderr or "git blame failed"}
 
@@ -183,13 +241,16 @@ def git_blame(
         "description": "Show current git status: branch, staged, unstaged, untracked files.",
         "parameters": {
             "type": "object",
-            "properties": {},
+            "properties": {"repo": _REPO_PARAM},
             "required": [],
         },
     },
 )
-def git_status() -> dict:
-    stdout, stderr, rc = _run_git("status", "--porcelain=v1", "-b")
+def git_status(repo: str | None = None) -> dict:
+    cwd, err = _repo_dir(repo)
+    if err:
+        return {"error": err}
+    stdout, stderr, rc = _run_git("status", "--porcelain=v1", "-b", cwd=cwd)
     if rc != 0:
         return {"error": stderr or "git status failed"}
 

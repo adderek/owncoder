@@ -136,6 +136,14 @@ class TestNetworkPrecheck:
         "ls | wc",
         "echo `whoami`",
         "echo $(date)",
+        "ls *.py",              # glob must expand (regression)
+        "ls file?.txt",
+        "ls [ab].txt",
+        "echo $HOME",           # variable must expand
+        "cat ~/.bashrc",        # tilde must expand
+        "echo {a,b}",           # brace expansion
+        "echo a # comment",
+        "FOO=1 env",            # leading assignment
     ])
     def test_shell_operators_not_translated(self, cmd):
         from agent.tools.shell.main import _try_translate_to_argv

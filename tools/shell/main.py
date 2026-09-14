@@ -108,11 +108,14 @@ def _check_dangerous(cmd: str) -> str | None:
     return None
 
 
-# Detect shell operators so a typed command line (/exec) goes through `sh -c`
+# Detect shell syntax so a typed command line (/exec) goes through `sh -c`
 # only when it needs a shell. `<` must mirror `>` (the `\S` lookahead used to
 # miss a space-separated input redirect like `grep foo < in.txt`, passing `<`
-# through as a literal argv token).
-_SHELL_OP_RE = __import__("re").compile(r"[|;&]|>>?|<<?|`|\$\(")
+# through as a literal argv token). Expansions count too: globs, `$VAR`, `~`,
+# braces, comments and a leading `VAR=value` would otherwise reach the program
+# as literal text (`ls *.py` -> ['ls', '*.py']). Over-matching is harmless —
+# `sh -c` runs a simple command the same way.
+_SHELL_OP_RE = __import__("re").compile(r"[|;&`$*?\[\]{}~#]|>>?|<<?|^\s*[A-Za-z_]\w*=")
 
 
 def _try_translate_to_argv(cmd: str) -> list[str] | None:
