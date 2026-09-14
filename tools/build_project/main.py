@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-import subprocess
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -115,16 +114,13 @@ def extract_errors(output: str) -> list[dict]:
 
 
 def _run(argv: list[str], cwd: str, timeout_s: int) -> tuple[int, str]:
-    try:
-        proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True,
-                              timeout=timeout_s)
-        return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
-    except subprocess.TimeoutExpired as e:
-        out = e.stdout if isinstance(e.stdout, str) else (e.stdout or b"").decode("utf-8", "replace")
-        err = e.stderr if isinstance(e.stderr, str) else (e.stderr or b"").decode("utf-8", "replace")
-        return 124, f"[build_project] timed out after {timeout_s}s\n{out}{err}"
-    except FileNotFoundError as e:
-        return 127, f"[build_project] command not found: {e}"
+    """Run through run_argv's gates and sandbox — a build executes project
+    files (Makefile, build scripts) the model can write."""
+    from agent.tools.shell.main import run_project_command
+    rc, out = run_project_command(list(argv), cwd, timeout_s)
+    if rc in (124, 126, 127):
+        out = f"[build_project] {out}"
+    return rc, out
 
 
 @register(

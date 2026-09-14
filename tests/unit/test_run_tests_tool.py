@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import resource
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -24,10 +25,27 @@ from agent.tools.run_tests.main import (
 
 
 @pytest.fixture(autouse=True)
-def fresh_state(monkeypatch):
+def fresh_state(monkeypatch, tmp_path):
     import agent.tools.run_tests.main as mod
     monkeypatch.setattr(mod, "_config", None)
+    _init_harness(monkeypatch, tmp_path)
     yield
+
+
+def _init_harness(monkeypatch, root):
+    """Commands run through run_argv's sandbox, which needs a configured policy.
+    Host backend keeps the tests independent of bwrap availability."""
+    from agent.config import Config
+    from agent.security import runner
+    from agent.tools.shell import main as shell
+    cfg = Config()
+    cfg.tools.working_dir = str(root)
+    cfg.security.require_sandbox = False
+    cfg.security.sandbox_backend = "none"
+    # Host backend applies RLIMIT_NPROC per user; 64 fails make's fork on a busy host.
+    cfg.security.nproc = resource.getrlimit(resource.RLIMIT_NPROC)[1]
+    monkeypatch.setattr(runner, "_BACKEND", None)
+    shell.setup(cfg)
 
 
 def _make_config(root: Path, verify_command: str = "", suites: list | None = None):
@@ -344,3 +362,24 @@ class TestRunTestsTool:
         setup(_make_config(tmp_path))
         r = asyncio.run(run_tests(path=str(tmp_path / "nope")))
         assert "error" in r
+
+
+class TestSandboxGate:
+    def test_refused_without_security_harness(self, tmp_path, monkeypatch):
+        from agent.security import policy
+        (tmp_path / "Makefile").write_text("test:\n\t@echo ran > marker\n")
+        setup(_make_config(tmp_path))
+        monkeypatch.setattr(policy, "_policy", None)
+        r = asyncio.run(run_tests(path=str(tmp_path)))
+        assert r["ok"] is False
+        assert "security harness not initialized" in r["output_tail"]
+        assert not (tmp_path / "marker").exists()
+
+    def test_path_outside_project_root_refused(self, tmp_path, tmp_path_factory):
+        outside = tmp_path_factory.mktemp("outside")
+        (outside / "Makefile").write_text("test:\n\t@echo ran > marker\n")
+        setup(_make_config(tmp_path))
+        r = asyncio.run(run_tests(path=str(outside)))
+        assert r["ok"] is False
+        assert "escapes project root" in r["output_tail"]
+        assert not (outside / "marker").exists()

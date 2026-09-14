@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import resource
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -16,9 +17,21 @@ from agent.tools.build_project.main import (
 
 
 @pytest.fixture(autouse=True)
-def fresh_state(monkeypatch):
+def fresh_state(monkeypatch, tmp_path):
     import agent.tools.build_project.main as mod
+    from agent.config import Config
+    from agent.security import runner
+    from agent.tools.shell import main as shell
     monkeypatch.setattr(mod, "_config", None)
+    # Builds run through run_argv's sandbox, which needs a configured policy.
+    cfg = Config()
+    cfg.tools.working_dir = str(tmp_path)
+    cfg.security.require_sandbox = False
+    cfg.security.sandbox_backend = "none"
+    # Host backend applies RLIMIT_NPROC per user; 64 fails make's fork on a busy host.
+    cfg.security.nproc = resource.getrlimit(resource.RLIMIT_NPROC)[1]
+    monkeypatch.setattr(runner, "_BACKEND", None)
+    shell.setup(cfg)
     yield
 
 
@@ -119,3 +132,24 @@ class TestBuildProjectTool:
         setup(_make_config(tmp_path))
         r = asyncio.run(build_project(target="thing", path=str(tmp_path)))
         assert "error" in r
+
+
+class TestSandboxGate:
+    def test_refused_without_security_harness(self, tmp_path, monkeypatch):
+        from agent.security import policy
+        (tmp_path / "Makefile").write_text("all:\n\t@echo ran > marker\n")
+        setup(_make_config(tmp_path))
+        monkeypatch.setattr(policy, "_policy", None)
+        r = asyncio.run(build_project(path=str(tmp_path)))
+        assert r["ok"] is False
+        assert "security harness not initialized" in r["output_tail"]
+        assert not (tmp_path / "marker").exists()
+
+    def test_path_outside_project_root_refused(self, tmp_path, tmp_path_factory):
+        outside = tmp_path_factory.mktemp("outside")
+        (outside / "Makefile").write_text("all:\n\t@echo ran > marker\n")
+        setup(_make_config(tmp_path))
+        r = asyncio.run(build_project(path=str(outside)))
+        assert r["ok"] is False
+        assert "escapes project root" in r["output_tail"]
+        assert not (outside / "marker").exists()

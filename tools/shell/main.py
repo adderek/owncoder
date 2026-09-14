@@ -142,11 +142,13 @@ def get_transcript() -> list[dict]:
 
 
 def _precheck_argv(argv: list[str], network: bool, timeout: int | None,
-                   *, cap_timeout: bool = True) -> tuple[dict | None, int]:
-    """Shared validation for run_argv / run_argv_bg. Returns (error|None,
-    effective_timeout). cap_timeout=False skips the max_timeout ceiling so a
-    background job can run long."""
-    if _config and not _config.tools.allow_shell:
+                   *, cap_timeout: bool = True,
+                   check_allow_shell: bool = True) -> tuple[dict | None, int]:
+    """Shared validation for run_argv / run_argv_bg / run_project_command.
+    Returns (error|None, effective_timeout). cap_timeout=False skips the
+    max_timeout ceiling so a background job can run long. check_allow_shell=False
+    is for dedicated tools (run_tests, build_project) that are not the shell."""
+    if check_allow_shell and _config and not _config.tools.allow_shell:
         raise ToolDisabledError("Shell commands are disabled (tools.allow_shell = false)")
     if not argv:
         return {"error": "argv must be non-empty"}, 0
@@ -247,6 +249,37 @@ def run_argv(argv: list[str], cwd: str | None = None, timeout: int | None = None
         result["error"] = f"Command timed out after {eff_timeout}s"
     _transcript.append(result)
     return result
+
+
+def run_project_command(argv: list[str], cwd: str, timeout: int,
+                        env: dict[str, str] | None = None) -> tuple[int, str]:
+    """Run project code (tests, builds) through the same gates and sandbox as
+    run_argv. run_tests/build_project execute files the model can write
+    (conftest.py, Makefile, package.json scripts), so a host subprocess there
+    would bypass every isolation run_argv enforces.
+
+    *env* adds variables on top of the sandbox's scrubbed environment (via
+    `env K=V`). Returns (returncode, combined output); a refused or unrunnable
+    command yields 126/127 with the reason as output, timeout yields 124.
+    """
+    if env:
+        argv = ["env", *(f"{k}={v}" for k, v in env.items()), *argv]
+    err, eff_timeout = _precheck_argv(argv, False, timeout, cap_timeout=False,
+                                      check_allow_shell=False)
+    if err is not None:
+        if err.get("dry_run"):
+            return 0, f"[dry_run] would execute: {shlex.join(argv)}"
+        return 126, f"[blocked] {err.get('error', 'refused')}"
+    try:
+        r = _runner.run(list(argv), cwd=cwd, timeout=eff_timeout)
+    except (_runner.SandboxUnavailable, ValueError) as e:
+        return 126, f"[blocked] {e}"
+    except FileNotFoundError as e:
+        return 127, f"command not found: {e}"
+    out = r.stdout + r.stderr
+    if r.timed_out:
+        return 124, f"timed out after {eff_timeout}s\n{out}"
+    return r.returncode, out
 
 
 # ── Background shell jobs ─────────────────────────────────────────────────────

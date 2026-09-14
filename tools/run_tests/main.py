@@ -52,7 +52,9 @@ def _can_import(interpreter: str, module: str) -> bool:
     """Whether ``interpreter`` can import ``module``. Cached; failures are False."""
     try:
         return subprocess.run(
-            [interpreter, "-c", f"import {module}"],
+            # -I: ignore cwd and PYTHON* env so a project-local pytest.py
+            # cannot run code on the host during this probe.
+            [interpreter, "-I", "-c", f"import {module}"],
             capture_output=True, timeout=15,
         ).returncode == 0
     except Exception:
@@ -212,7 +214,7 @@ async def _run_suites(suites: list, root: str, timeout_s: int) -> dict[str, Any]
             results.append({"suite": s.name, "ok": False, "error": "suite has no command"})
             all_ok = False
             continue
-        env = {**os.environ, **{str(k): str(v) for k, v in (s.env or {}).items()}}
+        env = {str(k): str(v) for k, v in (s.env or {}).items()}
         t = int(getattr(s, "timeout_s", 0) or 0) or timeout_s
         started = time.monotonic()
         rc, out = await asyncio.to_thread(_run, s.command, cwd, t, True, env)
@@ -348,18 +350,14 @@ def _summarize(framework: str, output: str, returncode: int) -> dict[str, Any]:
 
 def _run(argv_or_cmd, cwd: str, timeout_s: int, shell: bool,
          env: dict | None = None) -> tuple[int, str]:
-    try:
-        proc = subprocess.run(
-            argv_or_cmd, shell=shell, cwd=cwd, env=env,
-            capture_output=True, text=True, timeout=timeout_s,
-        )
-        return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
-    except subprocess.TimeoutExpired as e:
-        out = e.stdout if isinstance(e.stdout, str) else (e.stdout or b"").decode("utf-8", "replace")
-        err = e.stderr if isinstance(e.stderr, str) else (e.stderr or b"").decode("utf-8", "replace")
-        return 124, f"[run_tests] timed out after {timeout_s}s\n{out}{err}"
-    except FileNotFoundError as e:
-        return 127, f"[run_tests] command not found: {e}"
+    """Run through run_argv's gates and sandbox — tests execute project code
+    the model can write. *env* holds only the extra variables to add."""
+    from agent.tools.shell.main import run_project_command
+    argv = ["sh", "-c", argv_or_cmd] if shell else list(argv_or_cmd)
+    rc, out = run_project_command(argv, cwd, timeout_s, env=env)
+    if rc in (124, 126, 127):
+        out = f"[run_tests] {out}"
+    return rc, out
 
 
 @register(
