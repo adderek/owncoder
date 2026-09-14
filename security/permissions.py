@@ -580,6 +580,34 @@ def run_permissions_command(config: "Config", arg: str) -> str:
             "default <allow|ask|deny> | clear")
 
 
+# ── one-shot confirmation ────────────────────────────────────────────────────
+
+_CONFIRM_OPTIONS = [_ALLOW_ONCE, _DENY_ONCE]
+
+
+async def confirm_action(question: str, config: "Config") -> bool:
+    """Ask the user to approve one action a tool refused to run unconfirmed.
+
+    Separate from `check()`: this is not a policy verdict but a tool's own
+    tripwire (destructive argv, confirm_create), so the answer is a plain
+    yes/no and grants nothing beyond the single call being retried — no
+    session rule is written. No asker, a timeout, or any answer we do not
+    recognise means no: fail closed, exactly like `check()`.
+    """
+    if _asker is None:
+        return False
+    timeout = float(getattr(config.permissions, "ask_timeout_s", 300.0) or 300.0)
+    try:
+        answer = await asyncio.wait_for(_asker(question, list(_CONFIRM_OPTIONS)), timeout)
+    except asyncio.TimeoutError:
+        logger.warning("confirm: no answer before timeout")
+        return False
+    except Exception:
+        logger.exception("confirm: prompt failed")
+        return False
+    return (answer or "").strip() == _ALLOW_ONCE
+
+
 def denial_result(tool: str, decision: Decision) -> dict:
     """Structured error handed back to the model — never a silent failure."""
     out: dict = {

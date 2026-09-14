@@ -313,6 +313,74 @@ class _FakeToolCall:
         self.function = type("F", (), {"name": name, "arguments": json.dumps(arguments)})()
 
 
+def _accepts_underscore_confirmed(fn) -> bool:
+    try:
+        return "_confirmed" in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _refused(result: dict, why: str) -> dict:
+    """Turn a pending-confirmation result into a final refusal for the model."""
+    out = dict(result)
+    out.pop("requires_confirm", None)
+    out["requires_confirmation"] = True
+    out["approval"] = "denied"
+    out["error"] = f"{result.get('error') or 'Confirmation required'} — {why}, so it did not run."
+    return out
+
+
+async def _invoke_tool(name: str, fn, args: dict, config):
+    """Run a tool, asking the user to approve it when it refuses pending confirmation.
+
+    A tool signals the refusal with ``requires_confirm`` in its result dict (a
+    destructive argv, ``confirm_create``). Approval is scoped to this one call:
+    the retry carries ``_confirmed=True``, which the tool honours once, and the
+    model cannot set it — ``execute_tool`` strips it from model-supplied args.
+    Without a registered asker, or on any answer that is not an explicit "Allow
+    once", the refusal stands. Fail closed.
+    """
+    loop = asyncio.get_running_loop()
+
+    # Async tools (e.g. spawn_agents, ask_internet) are registered as coroutine
+    # functions; await them on the loop. Sync tools run in a thread so blocking
+    # I/O never stalls the event loop. (Running an async fn via run_in_executor
+    # would just return an un-awaited coroutine that then fails to serialise.)
+    async def _call(call_args: dict):
+        if inspect.iscoroutinefunction(fn):
+            return await fn(**call_args)
+        r = await loop.run_in_executor(None, lambda: fn(**call_args))
+        if inspect.isawaitable(r):
+            r = await r
+        return r
+
+    result = await _call(args)
+    if not (isinstance(result, dict) and result.get("requires_confirm")):
+        return result
+    if config is None or not _accepts_underscore_confirmed(fn):
+        return _refused(result, "no approval channel for this call")
+
+    from agent.security import permissions as _perms
+    if not _perms.has_asker():
+        # Headless (`agent run`, a sub-agent): nobody can answer, so say that
+        # rather than reporting a refusal the user never made.
+        return _refused(result, "there is no interactive UI to approve it")
+    detail = str(result.get("error") or f"{name} requires confirmation")
+    question = detail
+    argv = args.get("argv")
+    if isinstance(argv, list):
+        import shlex
+        question += "\nCommand: " + shlex.join(str(a) for a in argv)
+    if not await _perms.confirm_action(question, config):
+        return _refused(result, "the user did not approve it")
+
+    logger.warning("confirmed: %s approved once by the user", name)
+    retried = await _call({**args, "_confirmed": True})
+    if isinstance(retried, dict) and retried.get("requires_confirm"):
+        return _refused(result, "the tool still required confirmation")  # never loop
+    return retried
+
+
 async def execute_tool(tool_call, config: "Config | None" = None) -> str:
     from agent import failure_report as _fr
     from agent.tools import get_tool, get_schemas
@@ -341,6 +409,8 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
 
     if isinstance(args, dict):
         args.pop("purpose", None)
+        # Harness-only: set by the post-approval retry, never by the model.
+        args.pop("_confirmed", None)
 
     logger.debug("execute_tool: %s  args=%s", name, args)
 
@@ -431,18 +501,7 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
         return json.dumps({"error": _hmsg, "tool": name, "blocked_by_hook": True})
 
     try:
-        loop = asyncio.get_running_loop()
-        # Async tools (e.g. spawn_agents, ask_internet) are registered as
-        # coroutine functions; await them on the loop. Sync tools run in a
-        # thread so blocking I/O never stalls the event loop. (Running an async
-        # fn via run_in_executor would just return an un-awaited coroutine that
-        # then fails to serialise.)
-        if inspect.iscoroutinefunction(fn):
-            result = await fn(**args)
-        else:
-            result = await loop.run_in_executor(None, lambda: fn(**args))
-            if inspect.isawaitable(result):
-                result = await result
+        result = await _invoke_tool(name, fn, args, config)
 
         if isinstance(result, dict):
             rules.log_action(name, args, result)

@@ -143,17 +143,23 @@ def get_transcript() -> list[dict]:
 
 def _precheck_argv(argv: list[str], network: bool, timeout: int | None,
                    *, cap_timeout: bool = True,
-                   check_allow_shell: bool = True) -> tuple[dict | None, int]:
+                   check_allow_shell: bool = True,
+                   confirmed: bool = False) -> tuple[dict | None, int]:
     """Shared validation for run_argv / run_argv_bg / run_project_command.
     Returns (error|None, effective_timeout). cap_timeout=False skips the
     max_timeout ceiling so a background job can run long. check_allow_shell=False
-    is for dedicated tools (run_tests, build_project) that are not the shell."""
+    is for dedicated tools (run_tests, build_project) that are not the shell.
+
+    *confirmed* is set only by `core.tool_calls.execute_tool` on the retry that
+    follows a user approval, and only for the same argv the user saw. It clears
+    the two confirmation gates and nothing else — the allowlist, read-only,
+    network, dry-run and sandbox checks below all still apply."""
     if check_allow_shell and _config and not _config.tools.allow_shell:
         raise ToolDisabledError("Shell commands are disabled (tools.allow_shell = false)")
     if not argv:
         return {"error": "argv must be non-empty"}, 0
 
-    danger = _check_dangerous(shlex.join(argv))
+    danger = None if confirmed else _check_dangerous(shlex.join(argv))
     if danger:
         return {
             "error": f"Destructive command '{danger}' requires explicit confirmation before running.",
@@ -181,7 +187,8 @@ def _precheck_argv(argv: list[str], network: bool, timeout: int | None,
     net_ok, net_msg = rules.check_network_command(joined)
     if not net_ok:
         return {"error": net_msg, "argv": argv}, 0
-    need_confirm, confirm_reason = rules.check_command_confirm(joined)
+    need_confirm, confirm_reason = ((False, None) if confirmed
+                                    else rules.check_command_confirm(joined))
     if need_confirm:
         return {"error": confirm_reason, "argv": argv, "requires_confirm": True}, 0
     if rules.config.dry_run:
@@ -222,8 +229,9 @@ def _precheck_argv(argv: list[str], network: bool, timeout: int | None,
         },
     },
 )
-def run_argv(argv: list[str], cwd: str | None = None, timeout: int | None = None, network: bool = False) -> dict:
-    err, eff_timeout = _precheck_argv(argv, network, timeout)
+def run_argv(argv: list[str], cwd: str | None = None, timeout: int | None = None,
+             network: bool = False, _confirmed: bool = False) -> dict:
+    err, eff_timeout = _precheck_argv(argv, network, timeout, confirmed=_confirmed)
     if err is not None:
         return err
     try:
@@ -393,10 +401,12 @@ def _bg_kill(job_id: int) -> None:
     },
 )
 def run_argv_bg(argv: list[str], cwd: str | None = None,
-                timeout: int | None = None, network: bool = False) -> dict:
+                timeout: int | None = None, network: bool = False,
+                _confirmed: bool = False) -> dict:
     # Background jobs may run long: skip the interactive max_timeout ceiling,
     # default to 1h, but still honour an explicit timeout argument.
-    err, _ = _precheck_argv(argv, network, timeout or 3600, cap_timeout=False)
+    err, _ = _precheck_argv(argv, network, timeout or 3600, cap_timeout=False,
+                            confirmed=_confirmed)
     if err is not None:
         return err
     eff_timeout = int(timeout or 3600)

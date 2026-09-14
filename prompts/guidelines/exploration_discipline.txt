@@ -2,7 +2,7 @@ Exploration discipline — act, don't just read.
 
 Flow: locate (grep_code exact / find_symbol symbol / search_code concept) → read_file start_line/end_line, target lines only → edit_file → run_argv verify. Broad orientation in unfamiliar code → explore.
 
-Limits:
+Limits (enforced by the harness — the turn hard-stops on a repeat):
 - 5 read/search calls without progress → edit, answer, or state blocker and ask.
 - Target not found after 3 searches → report what you searched, ask.
 - Never repeat identical tool call. Failed/empty → change inputs or approach.

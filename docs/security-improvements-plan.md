@@ -114,6 +114,14 @@ against `_CONFIRM_COMMANDS`) at the top of `run_argv`, returning the same
 
 **Verify:** Test `run_argv(["rm","-rf","foo"])` returns `requires_confirm=True`.
 
+**Follow-up (done):** the dict was a dead end — nothing consumed
+`requires_confirm`, so the gate had no approval path and `rm` became
+unrunnable. `core/tool_calls.execute_tool` now asks through the permission
+asker (`permissions.confirm_action`, fail-closed without one) and retries the
+same call once with the harness-only `_confirmed=True`. `run_argv`,
+`run_argv_bg` and `write_file` (`confirm_create`) honour it; the model cannot
+set it (`execute_tool` strips it).
+
 ---
 
 ## P2 — Default posture is silent host-exec

@@ -21,7 +21,8 @@ from .paths import _resolve, _working_dir, _undo_stack, _log_edit
         },
     },
 )
-def write_file(path: str, content: str, expect_rev: str | None = None) -> dict:
+def write_file(path: str, content: str, expect_rev: str | None = None,
+               _confirmed: bool = False) -> dict:
     import difflib
 
     fpath = _resolve(path)
@@ -41,7 +42,7 @@ def write_file(path: str, content: str, expect_rev: str | None = None) -> dict:
         return rev_error
     if rules.config.dry_run:
         return {"dry_run": True, "path": path, "would_write": f"{len(content)} bytes"}
-    if is_new and rules.config.confirm_create:
+    if is_new and rules.config.confirm_create and not _confirmed:
         return {"error": f"Creating new files requires confirmation: {path}", "requires_confirm": True}
 
     fpath.parent.mkdir(parents=True, exist_ok=True)
