@@ -230,6 +230,16 @@ class Agent:
         if user_context:
             self.messages.append({"role": "system", "content": user_context})
 
+        # Project snapshot (tiny project: every file; otherwise a map). Marked so
+        # compaction drops it first — see agent/core/preload.py.
+        try:
+            from agent.core.preload import build_preload, PRELOAD_MARKER
+            preload = build_preload(config)
+            if preload:
+                self.messages.append({"role": "system", "content": preload, PRELOAD_MARKER: True})
+        except Exception:
+            logger.debug("project preload skipped", exc_info=True)
+
         # Skills: build loader and inject index summary once at session start.
         from agent.skills import SkillLoader
         self._skill_loader = SkillLoader(config)

@@ -64,9 +64,9 @@ class TestSearchRouting:
 
 
 class TestGrepRouting:
-    def test_definition_pattern_suggests_graph(self):
+    def test_definition_pattern_suggests_find_symbol(self):
         h = tool_hints("grep_code", {"pattern": "def run_turn"}, {"results": [{"x": 1}]})
-        assert h and "graph_context" in h[0]
+        assert h and "find_symbol" in h[0]
 
     def test_plain_pattern_is_left_alone(self):
         h = tool_hints("grep_code", {"pattern": "TIMEOUT_SECONDS"}, {"results": [{"x": 1}]})

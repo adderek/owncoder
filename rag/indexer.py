@@ -114,7 +114,7 @@ def pending_files(
     exclude = exclude or []
     default_exclude = {
         ".git", "__pycache__", "node_modules", "build", "dist",
-        ".agent", ".venv", "venv", ".env", ".coord",
+        ".agent", ".venv", "venv", ".env", ".coord", "graphify-out",
     }
     all_exclude = default_exclude | {e.rstrip("/") for e in exclude}
 
@@ -256,7 +256,7 @@ def index_directory(
                 )
     default_exclude = {
         ".git", "__pycache__", "node_modules", "build", "dist",
-        ".agent", ".venv", "venv", ".env", ".coord",
+        ".agent", ".venv", "venv", ".env", ".coord", "graphify-out",
     }
     all_exclude = default_exclude | {e.rstrip("/") for e in exclude}
 

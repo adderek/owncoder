@@ -470,7 +470,7 @@ def _security_narrows(field: str, current, value) -> bool:
         except (TypeError, ValueError):
             return False
     if field == "network":
-        return value == "off"
+        return value == "off" or value == current
     if field in _SEC_SAFER_SUBSET:
         return set(value or []) <= set(current or [])
     if field in _SEC_SAFER_SUPERSET:

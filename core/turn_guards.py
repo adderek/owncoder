@@ -76,7 +76,7 @@ def patch_read_file_result(tc, result: str, read_path_counts: dict,
         # Auto-advance: the model re-read the SAME range without acting on it.
         # Serving the identical window again just feeds the loop, so return the
         # NEXT lines of the file instead. read_file already advertises
-        # "read offset=N for more"; this enforces it behaviourally.
+        # "start_line=N for more"; this enforces it behaviourally.
         auto_advanced = False
         if read_advance is not None and count >= 2:
             try:

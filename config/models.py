@@ -193,6 +193,35 @@ class ToolsConfig:
     # this often is hunting for a symbol, which find_symbol/grep_code answer in
     # one call. 0 disables the wall (hints alone still fire).
     outline_only_after_reads: int = 0
+    # Unbounded read_file: a file within BOTH limits is served whole. Lines alone
+    # say nothing about size (a minified bundle is 3 lines and megabytes), so
+    # characters are capped too; tokens are unknown at this point.
+    read_full_max_lines: int = 200
+    read_full_max_chars: int = 12_000
+    # Bigger files are still served whole while the context is mostly empty:
+    # estimated tokens <= headroom * fraction, up to hard_max_chars. Lets a small
+    # project or a surgical change read each file once instead of in ranges that
+    # add up to more than the file. 0 disables.
+    read_full_headroom_fraction: float = 0.25
+    read_full_hard_max_chars: int = 100_000
+    # Ranged read_file (start_line/end_line) is capped too: a one-line range of
+    # a minified bundle is still megabytes. The cut note says how to continue.
+    read_range_max_chars: int = 16_000
+    # Stage-scoped reads: when compaction is due, read_file results the task has
+    # moved past (file changed since, superseded by a later read, or untouched
+    # for release_idle_calls tool calls) become one-line stubs first. If that
+    # frees enough, the LLM summary is skipped.
+    release_reads: bool = True
+    release_idle_calls: int = 12
+    # Project snapshot at session start (core/preload.py):
+    #   off  — nothing;  map — file list + landmarks;  full — every text file;
+    #   auto — full when the project fits all limits below, else map.
+    # "full" still falls back to map when a limit is exceeded. Dropped at compaction.
+    preload_mode: str = "auto"
+    preload_max_chars: int = 40_000
+    preload_window_fraction: float = 0.15   # estimated tokens <= window * fraction
+    preload_min_window: int = 32_000        # smaller windows get the map only
+    preload_map_max_files: int = 300        # more files → no preload at all
     revisions: RevisionsConfig = field(default_factory=RevisionsConfig)
 
 

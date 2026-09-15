@@ -16,7 +16,11 @@ def _setup_tools(tmp_path):
     cfg.tools.agent_dir = str(tmp_path / ".agent")
     files_setup(cfg)
     _undo_stack.clear()
+    # Whole-file reads depend on context headroom; never inherit another test's.
+    from agent.core import context_state
+    context_state.reset()
     yield
+    context_state.reset()
 
 
 @pytest.fixture
@@ -245,6 +249,103 @@ class TestTruncatedReadOutline:
         r = read_file("small.py")
         assert "outline of the whole file" not in r["content"]
         assert "def a" in r["content"]
+
+
+class TestWholeReadLimits:
+    """Unbounded read: whole within max lines AND max chars; bigger files only
+    while context headroom is ample; the served head is capped by chars too."""
+
+    def test_few_lines_many_chars_is_truncated(self, work):
+        (work / "min.js").write_text(("x" * 1000 + "\n") * 50)  # 50 lines, 50 KB
+        r = read_file("min.js")
+        assert "outline" in r["metadata"]
+        assert len(r["content"]) < 14_000
+        head = r["content"].splitlines()[0]
+        assert r["truncated"] is True
+        assert "TRUNCATED" in head and "chars > 12000" in head
+        # 11 full lines use 11011 chars; line 12 gets the remaining 989.
+        assert "Line 12 cut at char 989 of 1000" in head
+        assert "start_line=12, char_offset=989" in head
+
+    def test_single_huge_line_is_cut(self, work):
+        (work / "bundle.js").write_text("y" * 50_000)
+        r = read_file("bundle.js")
+        assert "line cut at char 12000 of 50000" in r["content"]
+        assert len(r["content"]) < 14_000
+        # The header must not look like a complete one-line file.
+        head = r["content"].splitlines()[0]
+        assert "TRUNCATED" in head and "Line 1 cut at char 12000" in head
+        assert r["metadata"]["next_start_line"] == 2
+
+    def test_ranged_read_of_huge_line_is_capped(self, work):
+        (work / "bundle.js").write_text("y" * 50_000 + "\nsecond\n")
+        r = read_file("bundle.js", start_line=1, end_line=1)
+        assert len(r["content"]) < 17_000
+        assert r["truncated"] is True
+        assert "char_offset=16000" in r["content"].splitlines()[0]
+
+    def test_char_offset_continues_cut_line(self, work):
+        (work / "bundle.js").write_text("a" * 16_000 + "b" * 100 + "\nsecond\n")
+        r = read_file("bundle.js", start_line=1, end_line=2, char_offset=16_000)
+        assert "truncated" not in r
+        assert "1:" + "b" * 100 in r["content"]
+        assert "2:second" in r["content"]
+
+    def test_wide_range_is_capped_with_next_line(self, work):
+        (work / "long.js").write_text(("z" * 99 + "\n") * 1000)  # 100 KB
+        r = read_file("long.js", start_line=1, end_line=1000)
+        head = r["content"].splitlines()[0]
+        assert r["truncated"] is True
+        assert "range exceeds 16000 chars" in head
+        assert r["metadata"]["next_start_line"] == 161
+        assert "Next unread line: 161 of 1000" in head
+
+    def test_small_ranged_read_unchanged(self, work):
+        (work / "s.py").write_text("a = 1\nb = 2\nc = 3\n")
+        r = read_file("s.py", start_line=2, end_line=3)
+        assert "truncated" not in r
+        assert "TRUNCATED" not in r["content"]
+        assert "2:b = 2" in r["content"] and "3:c = 3" in r["content"]
+
+    def test_line_limit_names_reason_and_next_line(self, work):
+        (work / "long.js").write_text("const a = 1;\n" * 400)
+        r = read_file("long.js")
+        head = r["content"].splitlines()[0]
+        assert "400 lines > 200" in head
+        assert "Next unread line: 201 of 400" in head
+        assert "offset" not in head
+
+    def test_medium_file_whole_when_context_empty(self, work):
+        from agent.core import context_state as cs
+        (work / "mid.js").write_text("const a = 1;\n" * 400)  # 400 lines, ~1.3k tokens
+        cs.publish(used=2000, budget=100_000, window=128_000)
+        r = read_file("mid.js")
+        assert "outline" not in r["metadata"]
+        assert "400:const a = 1;" in r["content"]
+
+    def test_medium_file_windowed_when_context_busy(self, work):
+        from agent.core import context_state as cs
+        (work / "mid.js").write_text("const a = 1;\n" * 400)
+        cs.publish(used=95_000, budget=100_000, window=128_000)  # 25% of 5k headroom < 1.3k
+        r = read_file("mid.js")
+        assert "outline" in r["metadata"]
+        assert "showing lines 1-200" in r["content"]
+
+    def test_medium_file_windowed_without_snapshot(self, work):
+        (work / "mid.js").write_text("const a = 1;\n" * 400)
+        r = read_file("mid.js")
+        assert "outline" in r["metadata"]
+
+    def test_limits_are_configurable(self, work):
+        cfg = Config()
+        cfg.tools.working_dir = str(work)
+        cfg.tools.agent_dir = str(work / ".agent")
+        cfg.tools.read_full_max_lines = 1000
+        cfg.tools.read_full_max_chars = 10_000
+        files_setup(cfg)
+        (work / "mid.js").write_text("const a = 1;\n" * 400)
+        r = read_file("mid.js")
+        assert "outline" not in r["metadata"]
 
 
 class TestOutline:

@@ -141,6 +141,8 @@ class TestNarrowsPredicate:
         ("wall_seconds", 30, "abc", False),
         ("network", "off", "on", False),
         ("network", "on", "off", True),
+        ("network", "on", "on", True),
+        ("network", "off", "off", True),
         ("env_allow", ["PATH", "HOME"], ["PATH"], True),
         ("env_allow", ["PATH"], ["PATH", "AWS_KEY"], False),
         ("env_deny_patterns", ["a"], ["a", "b"], True),

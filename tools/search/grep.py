@@ -22,12 +22,19 @@ from agent.tools.rules import get_rules
 _config = None
 _GREP_REGEX_FLAG: str | None = None
 
-_EXCLUDE_DIRS = (".git", "__pycache__", "node_modules", ".agent", ".venv", "venv", "build", "dist")
+# graphify-out: generated graph dumps (manifest hashes, node ids) match almost
+# any pattern and bury real hits.
+_EXCLUDE_DIRS = (".git", "__pycache__", "node_modules", ".agent", ".venv", "venv", "build", "dist",
+                 "graphify-out")
 
 _DEFAULT_MAX = 60
 _CONTEXT_DEFAULT_MAX = 20   # lower match cap when each hit carries context lines
 _MAX_LINE_LEN = 300
 _MAX_CONTEXT_CHARS = 2000   # per-match context cap
+# Whole-call context budget. Past it, hits keep their line but lose context:
+# a 16k grep result is read less carefully than the file itself would be, and
+# gets summarised away by tool compaction.
+_MAX_TOTAL_CONTEXT_CHARS = 8000
 
 
 def _grep_regex_flag() -> str:
@@ -53,8 +60,10 @@ def setup(config) -> None:
     {
         "description": (
             "Grep ALL text files (any extension: source, configs, .example/.template, "
-            "Makefile, docs) — no index needed, always works. "
-            "Use for exact matches: names, constants, error codes, hex values. "
+            "Makefile, docs) — no index needed. "
+            "Exact text only: names, constants, error codes, hex values. "
+            "Finds text, not meaning: misses synonyms and concepts (use search_code). "
+            "Known symbol's definition/callers → find_symbol. "
             "Also use to verify search_code hits before editing."
         ),
         "parameters": {
@@ -89,8 +98,9 @@ def setup(config) -> None:
                     "type": "integer",
                     "description": (
                         "Lines of surrounding code attached to each match as `context` "
-                        "(max 10). Use when you need to see how a match is used — e.g. "
-                        "refactoring — instead of a read_file round trip per hit."
+                        "(max 10, keep it 2-3). Use when you need to see how a match is used — e.g. "
+                        "refactoring — instead of a read_file round trip per hit. "
+                        "Whole function or file → read_file instead."
                     ),
                 },
             },
@@ -204,9 +214,14 @@ def grep_code(
     # Attach surrounding lines per match. Reading files here (instead of grep -C)
     # keeps the output parsing unambiguous and reuses the ignore/secret filters
     # already applied above; one read per file, shared across its matches.
+    context_capped = False
     if context_lines and results:
         file_cache: dict[str, list[str] | None] = {}
+        context_used = 0
         for r in results:
+            if context_used >= _MAX_TOTAL_CONTEXT_CHARS:
+                context_capped = True
+                break
             fp = r["path"]
             if fp not in file_cache:
                 abs_path = Path(fp)
@@ -227,11 +242,17 @@ def grep_code(
                 for i in range(lo, hi)
             )
             r["context"] = block[:_MAX_CONTEXT_CHARS]
+            context_used += len(r["context"])
 
-    return {
+    out = {
         "results": results,
         "count": len(results),
         "truncated": truncated,
         "pattern": pattern,
         "source": tool_name,
     }
+    if context_capped:
+        out["context_capped"] = True
+        out["hint"] = ("Context budget reached; later hits have no context. "
+                       "Narrow path/pattern, or read_file the file if you need most of it.")
+    return out

@@ -316,6 +316,15 @@ working_dir    = "."
 agent_dir      = ".agent"
 preamble_path  = ".agent/agent.preamble"
 search_parents = true
+# Unbounded read_file serves a file whole when it is within BOTH limits:
+read_full_max_lines = 200
+read_full_max_chars = 12000
+# ...or, for bigger files, while estimated tokens <= headroom * fraction
+# (context mostly empty), capped at hard_max_chars. 0 disables.
+read_full_headroom_fraction = 0.25
+read_full_hard_max_chars    = 100000
+# Ranged reads (start_line/end_line) are capped by characters too.
+read_range_max_chars        = 16000
 
 # ── UI ────────────────────────────────────────────────────────────────────────
 

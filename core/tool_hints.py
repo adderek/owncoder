@@ -112,7 +112,7 @@ def tool_hints(tool_name: str, args: dict, result: dict) -> list[str]:
         if query and _IDENTIFIER_RE.match(query) and _once("search:identifier"):
             hints.append(
                 "[tool-hint] That query is an exact identifier. search_code is fuzzy and can "
-                "miss it; grep_code searches raw files and cannot."
+                "miss it; grep_code matches exact text, find_symbol gives definition + callers."
             )
         elif _is_empty(result) and _once("search:empty"):
             hints.append(
@@ -124,8 +124,8 @@ def tool_hints(tool_name: str, args: dict, result: dict) -> list[str]:
         pattern = str(args.get("pattern") or "")
         if _STRUCTURAL_PATTERN_RE.match(pattern) and _once("grep:structural"):
             hints.append(
-                "[tool-hint] Looking for a definition. graph_context / kb_search answer "
-                "'where is X defined, who calls it, what does it depend on' in one call; "
+                "[tool-hint] Looking for a definition. find_symbol('X') answers "
+                "'where is X defined, who calls it' in one call; "
                 "grep only finds text that happens to match."
             )
         elif _is_empty(result) and _once("grep:empty"):

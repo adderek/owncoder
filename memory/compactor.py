@@ -585,6 +585,31 @@ async def compact(
 
     `turn_index` — current turn counter; used for round bookkeeping.
     """
+    # Stage 0: release reads the task has moved past (memory/read_release.py).
+    # No LLM call; if it frees enough, the summary — and what it loses — is skipped.
+    tools_cfg = getattr(config, "tools", None)
+    if getattr(tools_cfg, "release_reads", True):
+        from agent.memory.read_release import release_reads
+        released, freed = release_reads(
+            messages, idle_calls=int(getattr(tools_cfg, "release_idle_calls", 12)))
+        if freed:
+            messages = released
+            try:
+                from agent.core.context_budget import compaction_trigger_budget
+                budget = min(compaction_trigger_budget(config, None),
+                             int(_ctx(config) * config.llm.compaction_threshold))
+            except Exception:
+                budget = int(_ctx(config) * config.llm.compaction_threshold)
+            msg_cap = config.llm.compaction_message_threshold
+            if msg_cap <= 0:
+                msg_cap = max(40, config.llm.ctx_window // 1000)
+            token_est = _count_tokens_approx(messages)
+            logger.info("compact: released stale reads, %d chars freed, ~%d tokens left (budget %d)",
+                        freed, token_est, budget)
+            # 80%: returning just under the trigger would compact again next step.
+            if token_est <= budget * 0.8 and len(messages) <= msg_cap:
+                return messages
+
     if len(messages) <= keep_last * 2:
         token_est = _count_tokens_approx(messages)
         budget = int(_ctx(config) * config.llm.compaction_threshold)
@@ -593,15 +618,22 @@ async def compact(
         return messages
 
     hard_rules_msgs: list[dict] = []
-    system_msg = None
+    # Every system message of the leading run survives (system prompt, project
+    # doc, skills index). Keeping only the last one let a later system message —
+    # the skills index, a bg-job note — silently replace the system prompt.
+    # The project preload is the exception: a start-of-session snapshot, the
+    # first thing compaction is meant to drop (core/preload.py).
+    system_msgs: list[dict] = []
     conversation = []
+    leading = True
     for m in messages:
         if m.get("role") == "system":
             if m.get("_hard_rules_marker"):
                 hard_rules_msgs.append(m)
-            else:
-                system_msg = m
+            elif leading and not m.get("_preload_marker"):
+                system_msgs.append(m)
         else:
+            leading = False
             conversation.append(m)
 
     verbatim_start = max(len(conversation) - keep_last * 2, 0)
@@ -673,8 +705,7 @@ async def compact(
         logger.warning("compact: stage 1 failed (%s: %s) — falling back to "
                        "truncation", type(e).__name__, e)
         result = list(hard_rules_msgs)
-        if system_msg:
-            result.append(system_msg)
+        result.extend(system_msgs)
         result.extend(pinned_user)
         result.append({"role": "assistant",
                        "content": f"[SESSION SUMMARY UNAVAILABLE: {type(e).__name__}]",
@@ -699,8 +730,7 @@ async def compact(
         error_msg = {"role": "assistant", "content": f"[SESSION SUMMARY ERROR: {e}]",
                      "_compaction_marker": True}
         result = list(hard_rules_msgs)
-        if system_msg:
-            result.append(system_msg)
+        result.extend(system_msgs)
         result.extend(pinned_user)
         result.append(error_msg)
         result.extend(_truncate_tool_results_in(verbatim, max_chars=2000))
@@ -779,8 +809,7 @@ async def compact(
     verbatim = _truncate_tool_results_in(verbatim, max_chars=2000)
 
     result: list[dict] = list(hard_rules_msgs)
-    if system_msg:
-        result.append(system_msg)
+    result.extend(system_msgs)
     result.extend(pinned_user)
     result.append(compacted_msg)
     result.extend(verbatim)

@@ -29,7 +29,8 @@ def setup(config, data_provider) -> None:
             "Semantic + keyword search over codebase index. "
             "Results are index excerpts — locate files/lines, then read_file to verify before editing. "
             "Falls back to grep when index not ready. "
-            "Prefer grep_code for exact matches (names, constants, hex values) — index can miss."
+            "Best first step when the location or exact name is unknown. "
+            "Exact text → grep_code; known symbol → find_symbol."
         ),
         "parameters": {
             "type": "object",

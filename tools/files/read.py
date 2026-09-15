@@ -16,6 +16,84 @@ READ_WINDOW_LINES = 200
 _OUTLINE_ENTRIES = 40
 
 
+def _read_limits() -> tuple[int, int, float, int]:
+    """(max_lines, max_chars, headroom_fraction, hard_max_chars) for unbounded reads."""
+    from agent.config.models import ToolsConfig as _D
+    try:
+        from .paths import _config as _files_config
+        t = _files_config.tools if _files_config else None
+    except Exception:
+        t = None
+    return (
+        int(getattr(t, "read_full_max_lines", _D.read_full_max_lines)),
+        max(1, int(getattr(t, "read_full_max_chars", _D.read_full_max_chars))),
+        float(getattr(t, "read_full_headroom_fraction", _D.read_full_headroom_fraction)),
+        int(getattr(t, "read_full_hard_max_chars", _D.read_full_hard_max_chars)),
+    )
+
+
+def _fits_whole(chars: int, total: int, snap) -> bool:
+    """Serve an unbounded read whole? Small files always; bigger ones only while
+    the context is mostly empty, so reading the whole file once is cheaper than
+    the ranged reads and greps that would otherwise add up to more than it."""
+    max_lines, max_chars, fraction, hard_max = _read_limits()
+    if total <= max_lines and chars <= max_chars:
+        return True
+    if snap is None or snap.window <= 0 or fraction <= 0 or chars > hard_max:
+        return False
+    from agent.core import context_state
+    return context_state.estimate_tokens(chars) <= snap.headroom * fraction
+
+
+def _window(lines: list[str], start: int, end: int, max_chars: int,
+            char_offset: int = 0) -> tuple[int, str, tuple[int, int] | None]:
+    """Numbered lines[start:end] (0-based, end exclusive), bounded by characters.
+    *char_offset* skips the beginning of the first line (continuing a cut line).
+    Returns (1-based number of the last line shown, text, cut), where cut is
+    (column the line was cut at, full line length) or None."""
+    out: list[str] = []
+    used = 0
+    last = start
+    for i in range(start, end):
+        line = lines[i]
+        col = char_offset if i == start else 0
+        piece = line[col:]
+        room = max_chars - used
+        if room <= 0:
+            break
+        last = i + 1
+        if len(piece) > room:
+            out.append(f"{i + 1}:{piece[:room]} [... line cut at char {col + room} of {len(line)}]")
+            return last, "\n".join(out), (col + room, len(line))
+        out.append(f"{i + 1}:{piece}")
+        used += len(piece) + 1
+    return last, "\n".join(out), None
+
+
+def _head_window(lines: list[str], max_lines: int, max_chars: int) -> tuple[int, str, tuple[int, int] | None]:
+    """First lines of a file, bounded by line count AND characters."""
+    return _window(lines, 0, min(len(lines), max_lines), max_chars)
+
+
+def _range_max_chars() -> int:
+    from agent.config.models import ToolsConfig as _D
+    try:
+        from .paths import _config as _files_config
+        t = _files_config.tools if _files_config else None
+    except Exception:
+        t = None
+    return max(1, int(getattr(t, "read_range_max_chars", _D.read_range_max_chars)))
+
+
+def _continue_note(last: int, total: int, cut: tuple[int, int] | None) -> str:
+    """Where to pick up after a truncated read, in the tool's own parameters."""
+    nxt = f"Next unread line: {last + 1} of {total}." if last < total else ""
+    if cut:
+        return (f"Line {last} cut at char {cut[0]} of {cut[1]}: "
+                f"start_line={last}, char_offset={cut[0]} continues it. " + nxt).rstrip()
+    return nxt
+
+
 def _format_size(bytes_val: int) -> str:
     for unit in ["B", "KB", "MB", "GB"]:
         if bytes_val < 1024:
@@ -57,7 +135,8 @@ def _build_gitignore_spec(base):
     {
         "description": (
             "Read file contents, optionally a line range. "
-            "Use start_line/end_line for large files. "
+            "No range: small file served whole (read it once, don't slice it); "
+            "large file → head + outline, then read the range you need. "
             "Range auto-clamps; end_of_file=true signals end of file."
         ),
         "parameters": {
@@ -66,13 +145,19 @@ def _build_gitignore_spec(base):
                 "path": {"type": "string", "description": "File path to read"},
                 "start_line": {"type": "integer", "description": "First line to read (1-indexed)"},
                 "end_line": {"type": "integer", "description": "Last line to read (inclusive)"},
+                "char_offset": {"type": "integer", "description": (
+                    "Skip this many characters of start_line — continues a line a "
+                    "truncated read cut (the note names the value)")},
             },
             "required": ["path"],
         },
     },
 )
-def read_file(path: str, start_line: int | None = None, end_line: int | None = None) -> dict:
+def read_file(path: str, start_line: int | None = None, end_line: int | None = None,
+              char_offset: int | None = None) -> dict:
     fpath = _resolve(path)
+    if char_offset and start_line is None:
+        start_line = 1
 
     rel = str(fpath.relative_to(_working_dir()))
     allowed, _ = get_rules().check_read(rel)
@@ -105,7 +190,7 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
             return (
                 f"[{fpath.name} · {total} lines{size_str} · "
                 f"showing lines {sl_show}-{el_show}"
-                f" · read offset={el_show + 1} for more · "
+                f" · start_line={el_show + 1} for more · "
                 f"note: requested up to line {end_line} but file has {total}]"
             )
         if sl_show == 1 and el_show >= total:
@@ -113,7 +198,7 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
         return (
             f"[{fpath.name} · {total} lines{size_str} · "
             f"showing lines {sl_show}-{el_show} · "
-            f"read offset={el_show + 1} for more]"
+            f"start_line={el_show + 1} for more]"
         )
 
     # Repeatedly reading one whole file is symbol-hunting, not reading. Past the
@@ -156,30 +241,42 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
         from .outline import outline as _outline, format_outline as _fmt
         cost = context_state.estimate_tokens(filesize)
         entries = _outline(text, max_entries=_OUTLINE_ENTRIES, filename=fpath.name)
-        window_end = min(total, READ_WINDOW_LINES)
-        head = "\n".join(f"{i + 1}:{l}" for i, l in enumerate(lines[:window_end]))
+        window_end, head, cut = _head_window(lines, READ_WINDOW_LINES, _read_limits()[1])
         return _with_rev({
             "content": (
-                f"[{fpath.name} · {total} lines · ~{cost} tokens, but only ~{snap.headroom} "
-                f"tokens of context remain before compaction. Serving the first {window_end} "
-                f"lines and the outline instead — reading it whole would be summarised away "
-                f"and lost. Read the range you need, or call find_symbol.]\n" + head
+                f"[{fpath.name} · {total} lines · TRUNCATED: ~{cost} tokens, but only "
+                f"~{snap.headroom} tokens of context remain before compaction. Serving lines "
+                f"1-{window_end} and the outline instead — reading it whole would be summarised "
+                f"away and lost. {_continue_note(window_end, total, cut)} "
+                f"Read the range you need, or call find_symbol.]\n" + head
                 + (("\n\n[outline of the whole file]\n" + _fmt(entries)) if entries else "")
             ),
+            "truncated": True,
             "metadata": {"total_lines": total, "file_size": filesize, "outline": entries,
                          "budget_limited": True, "estimated_tokens": cost,
-                         "headroom_tokens": snap.headroom},
+                         "headroom_tokens": snap.headroom,
+                         "served_lines": window_end, "next_start_line": window_end + 1},
         }, path, fpath, text)
 
-    if start_line is None and end_line is None and total > 500:
-        head_lines = lines[:READ_WINDOW_LINES]
-        numbered = "\n".join(f"{i + 1}:{l}" for i, l in enumerate(head_lines))
+    if start_line is None and end_line is None and not _fits_whole(len(text), total, snap):
+        max_lines, max_chars = _read_limits()[:2]
+        served, numbered, cut = _head_window(lines, READ_WINDOW_LINES, max_chars)
         # Only the first window is served, so hand over a map of the rest:
         # without it the model pages blindly (read 1-200, 300-400, 400-450...)
         # hunting for a landmark whose line number we already know.
         from .outline import outline as _outline, format_outline as _fmt
         entries = _outline(text, max_entries=_OUTLINE_ENTRIES, filename=fpath.name)
-        body = _make_header(1, READ_WINDOW_LINES) + "\n" + numbered
+        # Say why and where to continue: a bare "lines 1-12" on a 50-line file
+        # reads as a short file, and a cut single line looked complete.
+        over = [f"{total} lines > {max_lines}"] if total > max_lines else []
+        if len(text) > max_chars:
+            over.append(f"{len(text)} chars > {max_chars}")
+        body = (
+            f"[{fpath.name} · {total} lines · {_format_size(filesize)} · TRUNCATED: "
+            f"too big to serve whole ({', '.join(over)}); showing lines 1-{served}. "
+            f"{_continue_note(served, total, cut)} "
+            f"Read the range you need with start_line/end_line.]\n" + numbered
+        )
         if entries:
             body += (
                 "\n\n[outline of the whole file — read the range you need, "
@@ -187,7 +284,9 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
             )
         return _with_rev({
             "content": body,
+            "truncated": True,
             "metadata": {"total_lines": total, "file_size": filesize,
+                         "served_lines": served, "next_start_line": served + 1,
                          "outline": entries},
         }, path, fpath, text)
 
@@ -204,13 +303,24 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
         clamped = end_line is not None and end_line > total
         el = min(end_line if end_line else total, total)
 
-    selected = lines[sl:el]
-    numbered = "\n".join(f"{sl + i + 1}:{line}" for i, line in enumerate(selected))
+    # Ranged reads are capped by characters too: asking for "line 1" of a
+    # minified bundle must not return 50k tokens.
+    range_max = _range_max_chars()
+    offset = 0 if past_eof else max(0, int(char_offset or 0))
+    last, numbered, cut = _window(lines, sl, el, range_max, offset)
+    short = cut is not None or last < el
+    header = _make_header(sl + 1, last if short else el, clamped and not short, past_eof)
+    if short:
+        header = (header[:-1] + f" · TRUNCATED: range exceeds {range_max} chars. "
+                  + _continue_note(last, total, cut) + "]")
 
     result: dict = {
-        "content": _make_header(sl + 1, el, clamped, past_eof) + "\n" + numbered,
+        "content": header + "\n" + numbered,
         "metadata": {"total_lines": total, "file_size": filesize},
     }
+    if short:
+        result["truncated"] = True
+        result["metadata"].update(served_lines=last, next_start_line=last + 1)
     if past_eof:
         result["end_of_file"] = True
 
@@ -261,7 +371,7 @@ def list_files(
     if not base.is_dir():
         return {"error": f"Not a directory: {path}"}
 
-    default_ignore = {".git", "__pycache__", "node_modules", "*.pyc", "build", "dist", ".agent"}
+    default_ignore = {".git", "__pycache__", "node_modules", "*.pyc", "build", "dist", ".agent", "graphify-out"}
     all_ignore = default_ignore | set(ignore_patterns or [])
 
     gitignore_spec = _build_gitignore_spec(base)
