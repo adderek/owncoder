@@ -370,6 +370,8 @@ async def run_turn(
     transport_retry_count = 0   # same-request retries after a dropped socket/timeout
     self_retry_count = 0        # retries on the only live endpoint when no failover target exists
     _error_streak = 0        # consecutive iterations where every tool call errored
+    _prev_round_results: dict[str, str] = {}  # signature -> result, previous tool round
+    _repeat_temperature: float | None = None  # sampling bump for the next request
 
     def _loop_guard_escalation_note() -> dict:
         return _injected("loop guard", (
@@ -520,11 +522,12 @@ async def run_turn(
                     of = f" of {budget}s" if budget > 0 else ""
                     _phase("waiting",
                            f"{secs}s{of} — backend quiet ({waiting_for}); interrupt to abort")
-                finish_reason, full_content, raw_tool_calls, turn_reasoning = await _stream_response(
-                    client, config, api_messages, tools, on_token,
-                    on_usage=on_usage, on_reasoning=on_reasoning, stop_event=stop_event,
-                    on_stall_progress=_on_stall_progress,
-                )
+                with turn_guards.temperature_override(config, _repeat_temperature):
+                    finish_reason, full_content, raw_tool_calls, turn_reasoning = await _stream_response(
+                        client, config, api_messages, tools, on_token,
+                        on_usage=on_usage, on_reasoning=on_reasoning, stop_event=stop_event,
+                        on_stall_progress=_on_stall_progress,
+                    )
                 if config.llm.cache_ttl > 0:
                     mark_request(config.llm.base_url, config.llm.model)
 
@@ -540,11 +543,13 @@ async def run_turn(
                 _log_llm_request(api_messages_sent, tools, config)
                 api_messages_sent = prompt_cache.prepare(api_messages_sent, config)
                 t_start = time.monotonic()
+                with turn_guards.temperature_override(config, _repeat_temperature):
+                    call_kwargs = _build_call_kwargs(config)
                 async with _gpu_slot(config):
                     response = await client.chat.completions.create(
                         messages=api_messages_sent,
                         tools=tools if tools else None,
-                        **_build_call_kwargs(config),
+                        **call_kwargs,
                     )
                 t_end = time.monotonic()
                 choice = response.choices[0]
@@ -568,6 +573,7 @@ async def run_turn(
                 if config.llm.cache_ttl > 0:
                     mark_request(config.llm.base_url, config.llm.model)
             turn_errors.record_model_outcome(config, "success")
+            _repeat_temperature = None   # the bump buys one answered request
         except StreamStalledError as e:
             # Backend wedged mid-stream (e.g. a GPU/HSA lost-wakeup on the
             # llama.cpp side). The stream was already closed, freeing the server
@@ -917,6 +923,16 @@ async def run_turn(
                         _read_advance,
                     )
                 patched_results.append(result)
+            if getattr(loop_cfg, "identical_repeat_error", True):
+                patched_results, _repeated, _prev_round_results = turn_guards.flag_identical_repeats(
+                    tool_calls, patched_results, _prev_round_results,
+                )
+                if _repeated:
+                    _bump = float(getattr(loop_cfg, "repeat_temperature", 0.0) or 0.0)
+                    _repeat_temperature = _bump if _bump > 0 else None
+                    logger.warning("repeat_guard: identical call+result aborted: %s (next temperature %s)",
+                                   ", ".join(_repeated), _repeat_temperature)
+                    _phase("repeat_guard", ", ".join(_repeated))
             # File-scoped diagnostics on the files this batch just edited, folded
             # into the results before they enter history — the model reads the
             # breakage on its next step instead of at end-of-turn verify time.

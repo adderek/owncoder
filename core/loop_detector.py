@@ -41,6 +41,10 @@ class LoopDetector:
             args = json.loads(args_json or "{}")
         except json.JSONDecodeError:
             args = {"_raw": args_json}
+        # `purpose` only describes the call for the compactor; a model re-running
+        # the same call with a reworded purpose is still repeating itself.
+        if isinstance(args, dict):
+            args = {k: v for k, v in args.items() if k != "purpose"}
         canonical = json.dumps(args, sort_keys=True, default=str)
         return f"{name}:{hashlib.sha256(canonical.encode('utf-8', errors='replace')).hexdigest()[:12]}"
 

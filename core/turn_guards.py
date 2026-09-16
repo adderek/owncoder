@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
 
@@ -216,3 +217,68 @@ def observe_tool_calls(loop_detector, tool_calls) -> list[tuple[str, str, int, s
         if loop_detector.name_capped(tc.function.name, name_cnt):
             triggered.append((tc.function.name, f"name:{tc.function.name}", name_cnt, tc.function.arguments or "{}"))
     return triggered
+
+
+def flag_identical_repeats(tool_calls, results: list[str],
+                           previous: dict[str, str]) -> tuple[list[str], list[str], dict[str, str]]:
+    """Turn a call that repeats the previous round verbatim into an error.
+
+    A call whose name, arguments AND result all equal a call from the previous
+    round is the signature of an MoE router re-picking the same expert: the model
+    re-emits what it just did, and handing it the same result again reinforces
+    the choice until the turn deadloops. So the second identical call does not get
+    its result back — it gets an error saying the repeat was aborted, which is new
+    input the model must react to.
+
+    *previous* maps call signature -> result of the prior round. Returns
+    ``(results, repeated_tool_names, this_round)``; pass *this_round* as
+    *previous* next time. Only a result that differs breaks the chain, so a poll
+    whose output changed (a build finishing) is never flagged.
+
+    Edits need no exemption: a model edits and then tests in separate rounds, so
+    a test re-run is compared against the edit round, never the earlier test.
+    """
+    from .loop_detector import LoopDetector
+
+    out: list[str] = []
+    repeated: list[str] = []
+    this_round: dict[str, str] = {}
+    for tc, result in zip(tool_calls, results):
+        name = tc.function.name
+        sig = LoopDetector.signature(name, tc.function.arguments)
+        this_round[sig] = result
+        if previous.get(sig) == result:
+            repeated.append(name)
+            out.append(json.dumps({
+                "error": (
+                    f"identical call aborted: {name} was just called with the same "
+                    "arguments and returned the same result. Repeating it cannot give "
+                    "new information. Do something different — change the arguments, "
+                    "use another tool, act on the result you already have, or tell the "
+                    "user what is blocking you."
+                ),
+                "tool": name,
+                "error_type": "IdenticalRepeat",
+            }))
+        else:
+            out.append(result)
+    return out, repeated, this_round
+
+
+@contextmanager
+def temperature_override(config, temperature: float | None):
+    """Sample one request at *temperature* if it is higher than the configured one.
+
+    Restores the previous value afterwards unless something else (model routing,
+    failover) replaced it meanwhile — that newer value wins.
+    """
+    old = config.llm.temperature
+    if temperature is None or temperature <= float(old or 0.0):
+        yield
+        return
+    config.llm.temperature = temperature
+    try:
+        yield
+    finally:
+        if config.llm.temperature == temperature:
+            config.llm.temperature = old

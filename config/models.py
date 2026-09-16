@@ -353,6 +353,12 @@ class LoopGuardConfig:
     # Consecutive iterations in which EVERY tool call errored before the turn is
     # hard-stopped (0 = off). Catches dead/rate-limited backends.
     error_streak_threshold: int = 4
+    # A call repeating the previous round's call with the same arguments AND the
+    # same result gets an error instead of its result (MoE router re-picking the
+    # same expert -> deadloop). The next request is then sampled at
+    # repeat_temperature (if higher than the configured one) to shake it loose.
+    identical_repeat_error: bool = True
+    repeat_temperature: float = 0.6   # 0 = no temperature bump
 
 
 @dataclass
