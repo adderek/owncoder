@@ -73,6 +73,53 @@ def test_embedding_dims_mismatch_says_keyword_only(tmp_path):
     assert "keyword-only" not in _build_system_prompt(cfg, indexed_count=5)
 
 
+def test_stale_top_dirs_ranks_by_pending_count():
+    from agent.core.agent import _stale_top_dirs
+
+    paths = ["clients/a.kt", "clients/b.kt", "clients/c.kt", "docs/x.md", "docs/y.md",
+             "kb/z.py", "README.md"]
+    assert _stale_top_dirs(paths) == ["clients", "docs", "kb"]
+    assert _stale_top_dirs(paths, limit=1) == ["clients"]
+    # Root-level files are not a directory and are never named.
+    assert _stale_top_dirs(["README.md", "TODO.md"]) == []
+    assert _stale_top_dirs([]) == []
+
+
+def _prompt_cfg(tmp_path):
+    cfg = Config()
+    cfg.tools.working_dir = str(tmp_path)
+    cfg.tools.agent_dir = str(tmp_path / ".agent")
+    cfg.tools.preamble_path = str(tmp_path / ".agent" / "agent.preamble")
+    return cfg
+
+
+def test_partial_index_names_stale_dirs_instead_of_banning_search(tmp_path):
+    prompt = _build_system_prompt(
+        _prompt_cfg(tmp_path), indexed_count=5, total_files=100, index_percent=40,
+        stale_dirs=["clients", "docs"],
+    )
+    assert "clients/" in prompt and "docs/" in prompt
+    assert "40% current" in prompt
+    # The blanket "use grep instead of the index" instruction is gone.
+    assert "Prefer grep_code over search_code" not in prompt
+
+
+def test_current_index_has_no_warning(tmp_path):
+    prompt = _build_system_prompt(
+        _prompt_cfg(tmp_path), indexed_count=99, total_files=100, index_percent=99,
+    )
+    assert "stale under" not in prompt
+    assert "% current" not in prompt
+
+
+def test_partial_index_without_paths_still_reports(tmp_path):
+    prompt = _build_system_prompt(
+        _prompt_cfg(tmp_path), indexed_count=5, total_files=100, index_percent=40,
+    )
+    assert "40% current" in prompt
+    assert "stale under" not in prompt
+
+
 def test_relative_corpus_path_is_per_project(tmp_path):
     from agent.tools.kb import kb_corpus_root
     cfg = Config()

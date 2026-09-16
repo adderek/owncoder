@@ -144,8 +144,30 @@ async def _run_worker(
     client = make_llm_client(wcfg, base_url=wcfg.llm.base_url, api_key=wcfg.llm.api_key)
 
     store = data_provider.get_store() if data_provider else None
-    indexed_count = store.stats()["chunks"] if store else 0
-    system_content = _build_system_prompt(wcfg, indexed_count=indexed_count)
+    # "files", not "chunks": the prompt reports files indexed, and a chunk count
+    # here made the worker's index status read ~10x the parent's.
+    indexed_count = store.stats()["files"] if store else 0
+    total_files = indexed_count
+    index_percent = 100
+    stale_dirs: list[str] = []
+    if store and indexed_count > 0:
+        try:
+            from agent.core.agent import _stale_top_dirs
+            from agent.rag.indexer import pending_files as _pending_files
+            pf = _pending_files(wcfg.tools.working_dir, store, cfg=wcfg.rag)
+            total_files = pf["total"]
+            if total_files > 0:
+                index_percent = round(100 * pf["indexed"] / total_files)
+            stale_dirs = _stale_top_dirs(pf.get("paths") or [])
+        except Exception:
+            pass
+    system_content = _build_system_prompt(
+        wcfg,
+        indexed_count=indexed_count,
+        total_files=total_files,
+        index_percent=index_percent,
+        stale_dirs=stale_dirs,
+    )
     messages: list[dict] = [{"role": "system", "content": system_content}]
     if context:
         messages.append({"role": "user", "content": context})

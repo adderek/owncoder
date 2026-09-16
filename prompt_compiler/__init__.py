@@ -38,7 +38,13 @@ logger = logging.getLogger(__name__)
 
 #: Prompt names no compilation may ever rewrite, regardless of config. See
 #: agent/core/core_rules.py for why the core is exempt from self-optimisation.
-NEVER_COMPILE = frozenset({"core.txt"})
+#:
+#: base_rules.txt is here for the same reason: it carries the re-anchor and
+#: constraint-recall rules that guard against compaction drift, and the only
+#: gate on a compiled variant is token savings — nothing checks that a rule
+#: survived the rewrite. A compressor dropping one line of it silently removes
+#: a safety behaviour, which is exactly what these rules exist to prevent.
+NEVER_COMPILE = frozenset({"core.txt", "base_rules.txt"})
 
 
 def is_enabled(config: "Config") -> bool:

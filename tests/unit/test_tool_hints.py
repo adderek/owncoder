@@ -77,6 +77,58 @@ class TestGrepRouting:
         assert h and "fixed_string" in h[0]
 
 
+class TestGrepToIndexRouting:
+    """grep_code used to be the only tool with no hint pointing back at the
+    index, which is how sessions ended up grep-first by default."""
+
+    def test_prose_pattern_suggests_search_code(self):
+        h = tool_hints("grep_code", {"pattern": "where limits are notified"},
+                       {"results": [{"path": "a.py"}], "count": 1})
+        assert h and "search_code" in h[0]
+
+    def test_exact_text_pattern_is_left_alone(self):
+        h = tool_hints("grep_code", {"pattern": "TIMEOUT_SECONDS"},
+                       {"results": [{"path": "a.py"}], "count": 1})
+        assert h == []
+
+    def test_regex_pattern_is_not_treated_as_prose(self):
+        h = tool_hints("grep_code", {"pattern": "def (run|start)_turn"},
+                       {"results": [{"path": "a.py"}], "count": 1})
+        assert h == []
+
+    def test_wide_result_suggests_ranking(self):
+        from agent.core.tool_hints import _GREP_WIDE_FILES
+
+        rows = [{"path": f"f{i}.py"} for i in range(_GREP_WIDE_FILES + 1)]
+        h = tool_hints("grep_code", {"pattern": "config"}, {"results": rows, "count": len(rows)})
+        assert h and "search_code" in h[0]
+        assert str(_GREP_WIDE_FILES + 1) in h[0]
+
+    def test_repeated_greps_suggest_index(self):
+        from agent.core.tool_hints import _GREP_CALLS_BEFORE_INDEX_HINT
+
+        one = {"results": [{"path": "a.py"}], "count": 1}
+        for _ in range(_GREP_CALLS_BEFORE_INDEX_HINT - 1):
+            assert tool_hints("grep_code", {"pattern": "CONST_A"}, one) == []
+        h = tool_hints("grep_code", {"pattern": "CONST_B"}, one)
+        assert h and "find_symbol" in h[0]
+
+    def test_each_grep_rule_fires_once(self):
+        rows = [{"path": f"f{i}.py"} for i in range(20)]
+        wide = {"results": rows, "count": len(rows)}
+        assert tool_hints("grep_code", {"pattern": "config"}, wide)
+        assert tool_hints("grep_code", {"pattern": "config"}, wide) == []
+
+    def test_reset_clears_grep_counter(self):
+        from agent.core.tool_hints import _GREP_CALLS_BEFORE_INDEX_HINT
+
+        one = {"results": [{"path": "a.py"}], "count": 1}
+        for _ in range(_GREP_CALLS_BEFORE_INDEX_HINT):
+            tool_hints("grep_code", {"pattern": "CONST"}, one)
+        reset_tool_hints()
+        assert tool_hints("grep_code", {"pattern": "CONST"}, one) == []
+
+
 class TestWholeFileRewrite:
     def test_large_rewrite_suggests_edit_file(self):
         h = tool_hints("write_file", {"path": "big.py"}, {"ok": "big.py", "replaced_lines": 900})

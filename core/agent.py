@@ -10,6 +10,25 @@ from agent.memory.compactor import _count_tokens_approx
 from agent.tools import get_schemas
 
 from .prompts import _build_system_prompt, load_base_rules, HARD_RULES_MARKER
+
+
+def _stale_top_dirs(paths: list[str], limit: int = 3) -> list[str]:
+    """Top-level directories holding the most unindexed files, biggest first.
+
+    The index percentage alone cannot tell the model where semantic search is
+    behind: one unignored vendor tree sinks the number for a repo whose code is
+    fully indexed. These names scope the warning to the paths it is true for.
+    """
+    counts: dict[str, int] = {}
+    for p in paths:
+        head = str(p).split("/", 1)
+        top = head[0] if len(head) > 1 else "."
+        counts[top] = counts.get(top, 0) + 1
+    # Drop root-level files BEFORE taking the top N: "." is not a directory to
+    # send anyone to, and leaving it in the ranking silently cost a real name.
+    ranked = sorted(((d, n) for d, n in counts.items() if d != "."),
+                    key=lambda t: (-t[1], t[0]))
+    return [d for d, _n in ranked[:limit]]
 from agent import prompt_compiler as _prompt_compiler
 from .turn import _post_turn_capture_and_summarize, run_turn
 from .history_ops import _collapse_tool_rounds, _merge_consecutive_assistants
@@ -154,9 +173,11 @@ class Agent:
             logger.debug("tool ledger not updated", exc_info=True)
 
         indexed_stats = store.stats() if store else {"chunks": 0, "files": 0}
+        # (see _stale_top_dirs below for how the stale areas are named)
         indexed_count = indexed_stats["files"]
         total_files = indexed_count
         index_percent = 100
+        stale_dirs: list[str] = []
         if store and indexed_count > 0:
             try:
                 from agent.rag.indexer import pending_files as _pending_files
@@ -164,6 +185,7 @@ class Agent:
                 total_files = pf["total"]
                 if total_files > 0:
                     index_percent = round(100 * pf["indexed"] / total_files)
+                stale_dirs = _stale_top_dirs(pf.get("paths") or [])
             except Exception:
                 pass
         system_content = _build_system_prompt(
@@ -171,6 +193,7 @@ class Agent:
             indexed_count=indexed_count,
             total_files=total_files,
             index_percent=index_percent,
+            stale_dirs=stale_dirs,
             embedding_mismatch=getattr(self.data_provider, "embedding_mismatch", lambda: "")(),
         )
 
@@ -225,6 +248,18 @@ class Agent:
             pass
 
         self.messages.append({"role": "system", "content": system_content})
+
+        # Which parts of the tree semantic search can answer for. base_rules.txt
+        # points the model at this block, so it goes in for every entrypoint.
+        try:
+            from agent.core.index_coverage import coverage_message
+            self.messages.append({
+                "role": "system",
+                "content": coverage_message(store, config.tools.working_dir),
+            })
+        except Exception:
+            logger.debug("index coverage not injected", exc_info=True)
+
         if project_doc:
             self.messages.append({"role": "system", "content": project_doc})
         if user_context:

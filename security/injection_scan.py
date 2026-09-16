@@ -52,10 +52,19 @@ _BANNER = (
 )
 
 
-def is_untrusted_tool(name: str) -> bool:
-    """True for tools whose output is externally controlled."""
+def is_untrusted_tool(name: str, args: dict | None = None) -> bool:
+    """True for tools whose output is externally controlled.
+
+    Name prefixes catch the dedicated web/MCP tools. They do not catch a shell
+    command that fetches the network itself — `run_argv(["curl", ...],
+    network=True)` returns remote bytes under a local tool's name — so an
+    explicit network grant in the arguments marks the output untrusted too,
+    whatever the tool is called.
+    """
     n = (name or "").lower()
-    return n.startswith("mcp__") or n.startswith("web") or n in ("fetch", "http_get", "browse")
+    if n.startswith("mcp__") or n.startswith("web") or n in ("fetch", "http_get", "browse"):
+        return True
+    return bool(args) and args.get("network") is True
 
 
 _ZWSP = "​"
@@ -86,15 +95,17 @@ def scan(text: str) -> list[str]:
     return found
 
 
-def guard_tool_output(name: str, text: str, config: "Config | None") -> tuple[str, list[str]]:
+def guard_tool_output(name: str, text: str, config: "Config | None",
+                      args: dict | None = None) -> tuple[str, list[str]]:
     """Scan untrusted tool output; banner-wrap it if injection shapes are present.
 
     Returns (possibly-wrapped text, detections). Trusted/local tools pass through
-    untouched. Idempotent: already-wrapped output is not double-wrapped.
+    untouched. Idempotent: already-wrapped output is not double-wrapped. *args*
+    are the call's arguments, used to spot a network grant on a local tool.
     """
     if config is not None and not getattr(getattr(config, "security", None), "guard_tool_injection", True):
         return text, []
-    if not is_untrusted_tool(name) or not text:
+    if not is_untrusted_tool(name, args) or not text:
         return text, []
     if text.startswith("<untrusted_tool_output"):
         return text, []

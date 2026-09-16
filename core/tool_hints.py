@@ -22,8 +22,22 @@ _fired: set[str] = set()
 _READ_HINT_THRESHOLD = 3
 # Lines above which rewriting a whole existing file is worth questioning.
 _REWRITE_HINT_MIN_LINES = 200
+# grep_code calls in a session before the "you are still locating" hint. The
+# routing hints used to point only away from the index (search_code had two
+# rules sending the model to grep, grep had one sending it back), which is the
+# asymmetry behind ~3x more grep_code calls than search_code in practice.
+_GREP_CALLS_BEFORE_INDEX_HINT = 3
+# Distinct files in one grep result above which ranking beats raw matching.
+_GREP_WIDE_FILES = 8
+
+# grep_code calls so far this session.
+_grep_calls = 0
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
+# Two or more plain words, no regex metacharacters: prose typed into grep. The
+# model cannot quote this text verbatim from the file — it is describing an
+# idea, which is what the index is for.
+_CONCEPT_PATTERN_RE = re.compile(r"^[A-Za-z][A-Za-z_]*(?:\s+[A-Za-z][A-Za-z_]*)+$")
 # "def foo", "class Foo", "function foo(" — a structural question typed as text.
 _STRUCTURAL_PATTERN_RE = re.compile(
     r"^\s*(?:def|class|function|func|fn|interface|struct)\s+\w+", re.IGNORECASE
@@ -32,9 +46,11 @@ _STRUCTURAL_PATTERN_RE = re.compile(
 
 def reset_tool_hints() -> None:
     """Clear per-session state (session start, tests)."""
+    global _grep_calls
     _read_counts.clear()
     _read_compactions.clear()
     _fired.clear()
+    _grep_calls = 0
 
 
 def _compacted_since_read(path: str) -> bool:
@@ -69,6 +85,14 @@ def _once(key: str) -> bool:
         return False
     _fired.add(key)
     return True
+
+
+def _distinct_files(result: dict) -> int:
+    """How many separate files a search result touches."""
+    rows = result.get("results")
+    if not isinstance(rows, list):
+        return 0
+    return len({r.get("path") for r in rows if isinstance(r, dict) and r.get("path")})
 
 
 def _is_empty(result: dict) -> bool:
@@ -121,6 +145,8 @@ def tool_hints(tool_name: str, args: dict, result: dict) -> list[str]:
             )
 
     elif tool_name == "grep_code":
+        global _grep_calls
+        _grep_calls += 1
         pattern = str(args.get("pattern") or "")
         if _STRUCTURAL_PATTERN_RE.match(pattern) and _once("grep:structural"):
             hints.append(
@@ -132,6 +158,24 @@ def tool_hints(tool_name: str, args: dict, result: dict) -> list[str]:
             hints.append(
                 "[tool-hint] No matches. Try a shorter pattern or fixed_string=true before "
                 "widening the search by hand — and search_code for a concept rather than a name."
+            )
+        elif _CONCEPT_PATTERN_RE.match(pattern.strip()) and _once("grep:concept"):
+            hints.append(
+                "[tool-hint] That pattern is a description, not text you are quoting from the "
+                "file. grep matches literal characters only; search_code matches meaning and "
+                "is the better first call for a question phrased this way."
+            )
+        elif _distinct_files(result) > _GREP_WIDE_FILES and _once("grep:wide"):
+            hints.append(
+                f"[tool-hint] Matches spread over {_distinct_files(result)} files — grep returns "
+                "them unranked. search_code ranks by relevance; find_symbol('X') if you are "
+                "chasing one symbol's definition or callers."
+            )
+        elif _grep_calls >= _GREP_CALLS_BEFORE_INDEX_HINT and _once("grep:repeat"):
+            hints.append(
+                f"[tool-hint] {_grep_calls} grep_code calls this session. If you are still "
+                "locating code rather than confirming known text, search_code and find_symbol "
+                "answer 'where is X' in one call."
             )
 
     elif tool_name == "write_file":

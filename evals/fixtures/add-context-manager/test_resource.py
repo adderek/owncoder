@@ -1,4 +1,4 @@
-from resource import Resource
+from resource_pool import Resource
 
 
 def test_with_block_acquires_and_releases():

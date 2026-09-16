@@ -82,6 +82,35 @@ def test_empty_project(project):
     assert build_preload(cfg) == ""
 
 
+def test_edit_flags_stale_snapshot_once_and_anchor_miss_explains(project):
+    from agent.tools.edit_file.core import edit_file
+    cfg, root = project
+    (root / "u.py").write_text("# header\n# remove me\n")
+    assert build_preload(cfg).startswith("[PROJECT SNAPSHOT")
+
+    r = edit_file(path="u.py", anchor="# remove me\n", replacement="")
+    assert r.get("ok") and "PROJECT SNAPSHOT copy is now stale" in r.get("note", "")
+    r2 = edit_file(path="u.py", anchor="# header\n", replacement="# head\n")
+    assert r2.get("ok") and "note" not in r2, "noted once per file"
+
+    # Anchor quoted from the stale snapshot.
+    bad = edit_file(path="u.py", anchor="# remove me\n", replacement="x")
+    assert bad["error"] == "atomic_rollback"
+    assert "PROJECT SNAPSHOT copy of this file is stale" in bad["errors"][0]["detail"]
+
+
+def test_no_stale_hint_for_unchanged_or_unsnapshotted_file(project):
+    from agent.tools.edit_file.core import edit_file
+    cfg, root = project
+    (root / "u.py").write_text("a = 1\n")
+    build_preload(cfg)
+    bad = edit_file(path="u.py", anchor="nope\n", replacement="x")
+    assert "stale" not in bad["errors"][0]["detail"]
+    (root / "late.py").write_text("b = 2\n")  # created after the snapshot
+    r = edit_file(path="late.py", anchor="b = 2\n", replacement="b = 3\n")
+    assert r.get("ok") and "note" not in r
+
+
 def test_compaction_drops_preload_keeps_leading_system_messages(project):
     from agent.memory.compactor import compact
     cfg, _ = project

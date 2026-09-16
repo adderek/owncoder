@@ -9,50 +9,14 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-# Directories listed individually before the tail is summarised as a count.
-_COVERAGE_MAX_DIRS = 25
-
-
-def _get_index_coverage(store, working_dir: str) -> dict[str, int]:
-    """Return {top-level-dir: indexed_file_count}; root-level files count under "."."""
-    if store is None:
-        return {}
-    try:
-        paths = store.list_paths()
-        coverage: dict[str, int] = {}
-        wd = Path(working_dir)
-        for p in paths:
-            try:
-                rel = Path(p).relative_to(wd)
-                # A file at the root has one part and is NOT a directory —
-                # counting it as its own "directory" turned the coverage list
-                # into one bogus "collect.py/: 1 file(s)" line per file.
-                top = rel.parts[0] if len(rel.parts) > 1 else "."
-            except ValueError:
-                top = "."
-            coverage[top] = coverage.get(top, 0) + 1
-        return coverage
-    except Exception:
-        return {}
-
-
-def _format_index_coverage(coverage: dict[str, int]) -> str:
-    """Render coverage as a map the model can route on: biggest areas first."""
-    total = sum(coverage.values())
-    root_n = coverage.get(".", 0)
-    dirs = sorted(((d, n) for d, n in coverage.items() if d != "."),
-                  key=lambda t: (-t[1], t[0]))
-    lines = [f"# Index coverage\nSemantic search available over {total} indexed file(s)."]
-    shown = dirs[:_COVERAGE_MAX_DIRS]
-    if shown:
-        lines.append("Top-level directories:")
-        lines += [f"  {d}/: {n} file(s)" for d, n in shown]
-    if len(dirs) > len(shown):
-        rest = sum(n for _, n in dirs[len(shown):])
-        lines.append(f"  ... {len(dirs) - len(shown)} more directories ({rest} file(s))")
-    if root_n:
-        lines.append(f"  (repository root): {root_n} file(s)")
-    return "\n".join(lines)
+# Index coverage moved to agent/core/index_coverage.py so every entrypoint —
+# not just this one — injects the block base_rules.txt tells the model to read.
+# Re-exported here under the old names for existing callers and tests.
+from agent.core.index_coverage import (  # noqa: E402
+    COVERAGE_MAX_DIRS as _COVERAGE_MAX_DIRS,
+    coverage_map as _get_index_coverage,
+    format_coverage as _format_index_coverage,
+)
 
 
 def _bg_update_index(store, embedder, config, result: dict) -> None:
@@ -387,18 +351,7 @@ def cmd_chat(args, config):
         except Exception:
             logger.warning("background index maintenance did not start", exc_info=True)
 
-    # Inject index coverage as system context so agent knows what's indexed.
-    _coverage = _get_index_coverage(store, config.tools.working_dir)
-    if _coverage:
-        _cov_msg = _format_index_coverage(_coverage)
-    else:
-        _cov_msg = (
-            "# Index coverage\n"
-            "Not indexed. Semantic search unavailable.\n"
-            "Use shell_exec (grep/find/sed), read_file, list_files for code navigation.\n"
-            "Recommend indexing to user when semantic search would materially help."
-        )
-    agent.messages.append({"role": "system", "content": _cov_msg})
+    # Index coverage is injected by Agent.__init__ for every entrypoint.
 
     _mode = "private" if getattr(args, "private", False) else (
         "incognito" if getattr(args, "incognito", False) else (

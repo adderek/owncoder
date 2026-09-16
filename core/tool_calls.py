@@ -520,7 +520,7 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
         # Banner-wrap untrusted tool output (MCP/web) that contains prompt-injection
         # shapes, before it enters context/store. Local tools pass through.
         from agent.security.injection_scan import guard_tool_output
-        serialised, _inj = guard_tool_output(name, serialised, config)
+        serialised, _inj = guard_tool_output(name, serialised, config, args)
         if _inj:
             logger.warning("injection guard: %s flagged %s", name, _inj)
 

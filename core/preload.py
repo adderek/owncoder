@@ -15,7 +15,9 @@ file again after editing it.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -25,6 +27,49 @@ PRELOAD_MARKER = "_preload_marker"
 _PER_FILE_MAX_CHARS = 20_000
 _MAP_ENTRIES = 8
 _MAP_MAX_CHARS = 6_000
+
+# What the full snapshot contained: relative path → sha of the text shown. The
+# snapshot is never updated, and a model anchoring edits on it after the file
+# changed loops on anchor_not_found (eval add-function: 20 requests vs 5 without
+# preload). The edit tools use these to say so at the moment it matters.
+_snapshot: dict[str, str] = {}
+_snapshot_root: Path | None = None
+_noted: set[str] = set()
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+
+
+def _rel(path: str) -> str | None:
+    if _snapshot_root is None or not path:
+        return None
+    p = Path(path)
+    if p.is_absolute():
+        try:
+            return str(p.resolve().relative_to(_snapshot_root))
+        except ValueError:
+            return None
+    return os.path.normpath(path)
+
+
+def mark_edited(path: str) -> str:
+    """Note for an edit result when *path* was in the snapshot; once per file."""
+    rel = _rel(path)
+    if rel is None or rel not in _snapshot or rel in _noted:
+        return ""
+    _noted.add(rel)
+    return (f"{rel} changed: its PROJECT SNAPSHOT copy is now stale. `current` in "
+            f"this result is the file now — quote later anchors from it, not the snapshot.")
+
+
+def stale_hint(path: str, current_text: str) -> str:
+    """Extra anchor_not_found detail when the file no longer matches its snapshot."""
+    rel = _rel(path)
+    if rel is None or rel not in _snapshot or _snapshot[rel] == _sha(current_text):
+        return ""
+    return (" The PROJECT SNAPSHOT copy of this file is stale (the file changed "
+            "since): read_file it and quote the anchor from that.")
 
 
 def _text_files(config) -> list[tuple[str, str]] | None:
@@ -64,9 +109,9 @@ def _text_files(config) -> list[tuple[str, str]] | None:
 def _render_full(files: list[tuple[str, str]], total: int) -> str:
     parts = [
         f"[PROJECT SNAPSHOT · {len(files)} files · {total} chars · taken at session start]\n"
-        "Every text file of this project is below, numbered like read_file. Do not "
-        "read_file them again — except a file you edited since: this copy is not "
-        "updated. Dropped at compaction."
+        "Every text file of this project, numbered like read_file, as it was when the "
+        "session started — not updated. After you edit a file, the edit result's "
+        "`current` shows its text now: use that, not this copy. Dropped at compaction."
     ]
     for rel, text in files:
         lines = text.splitlines()
@@ -117,4 +162,12 @@ def build_preload(config) -> str:
             and all(len(text) <= _PER_FILE_MAX_CHARS for _, text in files))
     if mode in ("full", "auto"):
         mode = "full" if fits else "map"
-    return _render_full(files, total) if mode == "full" else _render_map(files)
+
+    global _snapshot_root
+    _snapshot.clear()
+    _noted.clear()
+    _snapshot_root = Path(tools.working_dir).resolve()
+    if mode != "full":
+        return _render_map(files)
+    _snapshot.update({rel: _sha(text) for rel, text in files})
+    return _render_full(files, total)

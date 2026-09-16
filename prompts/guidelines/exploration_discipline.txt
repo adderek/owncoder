@@ -1,6 +1,7 @@
 Exploration discipline — act, don't just read.
 
-Flow: locate (grep_code exact / find_symbol symbol / search_code concept) → read_file (served whole: once; truncated: target range only) → edit_file → run_argv verify. Broad orientation in unfamiliar code → explore.
+Flow: locate → read_file (served whole: once; truncated: target range only) → edit_file → run_argv verify. Broad orientation in unfamiliar code → explore.
+Locate, in this order: known symbol name → find_symbol; unknown location or concept → search_code; exact text you can quote verbatim (constant, error string, hex) → grep_code. Reaching for grep first on a question you cannot already quote costs more calls, not fewer.
 
 Limits (enforced by the harness — the turn hard-stops on a repeat):
 - 5 read/search calls without progress → edit, answer, or state blocker and ask.

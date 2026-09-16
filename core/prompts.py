@@ -224,6 +224,7 @@ def _build_system_prompt(
     indexed_count: int = 0,
     total_files: int = 0,
     index_percent: int = 100,
+    stale_dirs: list[str] | None = None,
     embedding_mismatch: str = "",
 ) -> str:
     from datetime import datetime, timezone
@@ -261,10 +262,17 @@ def _build_system_prompt(
     else:
         index_status_line = "Index: not built — run 'agent index' to build"
 
+    # Scoped, not blanket. A single unignored vendor/cache tree drags the
+    # percentage down for the whole repo, and the old wording turned that into
+    # "prefer grep_code over search_code" everywhere — retiring semantic search
+    # over code that is perfectly well indexed. Name the stale areas instead.
     if index_percent < 80:
+        where = ", ".join(f"{d}/" for d in (stale_dirs or [])[:3])
         index_warning = (
-            f"WARNING: Index is only {index_percent}% complete. "
-            "Prefer grep_code over search_code until indexing finishes.\n"
+            f"NOTE: Index is {index_percent}% current"
+            + (f"; stale under: {where}" if where else "")
+            + ". search_code is reliable for indexed paths; in the stale paths "
+              "confirm hits with grep_code before concluding anything.\n"
         )
     else:
         index_warning = ""

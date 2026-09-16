@@ -38,6 +38,49 @@ def _run_post_check(cmd_template: str, fpath: Path, timeout: int) -> dict:
     return {"exit_code": proc.returncode, "output": output.strip()}
 
 
+_CURRENT_CONTEXT_LINES = 3
+
+
+def _current_view(content: str, vs: list, context: int = _CURRENT_CONTEXT_LINES) -> str:
+    """Numbered text of the file AFTER the edit: whole when small, else the
+    lines around each applied chunk.
+
+    Without it the only full copy of the file in context is one from before the
+    edit — an earlier read or the session-start snapshot — and the next anchor
+    gets quoted from that (eval add-function: 13 edits alternating between old
+    and new text).
+    """
+    from agent.tools.files.read import _read_limits, _window
+    lines = content.splitlines()
+    max_lines, max_chars = _read_limits()[:2]
+    if len(lines) <= max_lines and len(content) <= max_chars:
+        return _window(lines, 0, len(lines), max_chars)[1]
+
+    spans: list[tuple[int, int]] = []
+    delta = 0
+    for v in sorted(vs, key=lambda c: c.start):
+        first = content.count("\n", 0, v.start + delta)          # 0-based line
+        rep = v.replacement
+        n = max(1, rep.count("\n") + (0 if not rep or rep.endswith("\n") else 1))
+        spans.append((max(0, first - context), min(len(lines), first + n + context)))
+        delta += len(rep) - (v.end - v.start)
+    merged: list[tuple[int, int]] = []
+    for s, e in spans:
+        if merged and s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+    parts: list[str] = []
+    budget = max_chars
+    for s, e in merged:
+        if budget <= 0:
+            break
+        text = _window(lines, s, e, budget)[1]
+        parts.append(text)
+        budget -= len(text)
+    return "\n...\n".join(parts)
+
+
 def edit_file(
     chunks: list[dict] | None = None,
     path: str | None = None,
@@ -134,6 +177,7 @@ def edit_file(
 
     applied: list[dict] = []
     post_checks: dict[str, dict] = {}
+    current: dict[str, str] = {}
     by_file2: dict[str, list[_ValidatedChunk]] = {}
     for v in validated:
         by_file2.setdefault(v.path, []).append(v)
@@ -158,6 +202,10 @@ def edit_file(
         if rules.config.dry_run:
             continue
         fpath.write_text(content, encoding="utf-8")
+        try:
+            current[path] = _current_view(content, vs)
+        except Exception:
+            pass
         _log_edit("edit_file", path, "ok",
                   expect_rev=next((c.get("expect_rev") for c in chunks
                                    if isinstance(c, dict) and c.get("path") == path
@@ -177,4 +225,14 @@ def edit_file(
         result["dry_run"] = True
     if post_checks:
         result["post_check"] = post_checks
+    if current:
+        # The file as it is now — quote the next anchor from here.
+        result["current"] = current
+    try:
+        from agent.core.preload import mark_edited
+        notes = [n for n in (mark_edited(p) for p in sorted({a["path"] for a in applied})) if n]
+        if notes:
+            result["note"] = " ".join(notes)
+    except Exception:
+        pass
     return result

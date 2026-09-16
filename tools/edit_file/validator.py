@@ -264,6 +264,11 @@ def _validate_chunk(
             "anchor not present in file (exact search%s). Re-read the file and re-quote."
             % (" + loose fallback" if mode == "loose" else "")
         )
+        try:
+            from agent.core.preload import stale_hint
+            detail += stale_hint(path, original)
+        except Exception:
+            pass
         if near_miss:
             detail += (
                 " Similar text exists — see fuzzy_candidates and re-quote one of them exactly."
