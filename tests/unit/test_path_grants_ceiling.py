@@ -36,13 +36,21 @@ def grant_env(tmp_path):
 
 
 class TestCeilingConfinement:
-    def test_no_ceiling_leaves_grants_unrestricted(self, grant_env, tmp_path):
-        """Empty (the default) means no ceiling — today's behaviour."""
+    def test_no_ceiling_means_project_root_only(self, grant_env, tmp_path):
+        """Empty is not "no limit": it is "nothing outside the project".
+
+        A machine whose owner never pre-approved anything should hand out
+        nothing beyond the tree the agent was started in — otherwise the
+        default install is the widest configuration there is.
+        """
         outside = tmp_path / "elsewhere"
         outside.mkdir()
-        grant_env([])
-        pg.add_grant(outside, "rw")
-        assert pg.grant_for(outside) is not None
+        cfg = grant_env([])
+        with pytest.raises(pg.CeilingError, match="no path is pre-approved"):
+            pg.add_grant(outside, "rw")
+        # ...while the project root itself stays granted rw without a ceiling.
+        root = tmp_path / "project"
+        assert pg.grant_for(root / "src" / "main.py") is not None
 
     def test_ro_ceiling_allows_a_read_only_grant(self, grant_env, tmp_path):
         ext = tmp_path / "ext"

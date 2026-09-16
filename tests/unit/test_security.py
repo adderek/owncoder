@@ -37,10 +37,24 @@ def project(tmp_path, monkeypatch):
     sec_fs.init_root_pin()
     yield tmp_path
     # Teardown: clear policy + pin so unrelated tests later don't see our
-    # tmp_path as the project root.
+    # tmp_path as the project root, and drop any ceiling a test pre-approved.
+    from agent.security import path_grants as _pg
+    _pg._ceiling = []
+    _pg._reported_drops.clear()
     sec_policy._policy = None
     sec_fs._root_dev = None
     sec_fs._root_ino = None
+
+
+def _pre_approve(path, mode="rw"):
+    """Give path_grants a user-config ceiling covering *path*.
+
+    Without one the ceiling is the project root alone, so every test that
+    grants an outside directory has to say which directory the "user"
+    pre-approved — the same thing a real ~/.config/agent entry does.
+    """
+    from agent.security import path_grants as pg
+    pg._load_ceiling([{"path": str(path), "mode": mode}])
 
 
 class TestFsGate:
@@ -362,9 +376,18 @@ class TestWriteDenylist:
         with pytest.raises(sec_fs.WriteProtected):
             sec_fs.safe_open("agent.toml", "w")
 
-    def test_blocks_claude_md_write(self, project):
+    def test_allows_agent_and_claude_md_write(self, project):
+        """Project documentation, not policy.
+
+        What binds the agent lives in `.agent/core.md` and the `.agent.*` rule
+        files, which stay read-only; AGENT.md and CLAUDE.md are files the user
+        expects the agent to keep up to date.
+        """
+        for name in ("CLAUDE.md", "AGENT.md"):
+            with sec_fs.safe_open(name, "w") as fh:
+                fh.write("# notes\n")
         with pytest.raises(sec_fs.WriteProtected):
-            sec_fs.safe_open("CLAUDE.md", "w")
+            sec_fs.safe_open(".agent.ignore", "w")
 
     def test_allows_normal_source_write(self, project):
         from agent.tools.rules.core import Rules
@@ -386,11 +409,11 @@ class TestWriteDenylist:
         allowed, msg = rules.check_write("agent.toml")
         assert allowed is False
 
-    def test_check_write_blocks_claude_md(self, project):
+    def test_check_write_allows_claude_md(self, project):
         from agent.tools.rules.core import Rules
         rules = Rules()
-        allowed, msg = rules.check_write("CLAUDE.md")
-        assert allowed is False
+        assert rules.check_write("CLAUDE.md")[0] is True
+        assert rules.check_write(".agent.ignore")[0] is False
 
 
 class TestReadDenylist:
@@ -712,9 +735,19 @@ class TestPathRequestReason:
         from agent.security import path_grants as pg
         assert not pg.has_pending()
 
+    def test_request_outside_the_ceiling_is_denied(self, project):
+        """No pre-approved path means nothing outside the project is askable."""
+        from agent.tools.request_path import request_path_access
+        from agent.security import path_grants as pg
+        r = request_path_access(path="/var/tmp/x", mode="ro",
+                                reason="read the crash dump the user mentioned")
+        assert r["status"] == "denied"
+        assert not pg.has_pending()
+
     def test_reason_reaches_the_grant(self, project):
         from agent.tools.request_path import request_path_access
         from agent.security import path_grants as pg
+        _pre_approve("/var/tmp", "ro")
         r = request_path_access(path="/var/tmp/x", mode="ro",
                                 reason="read the crash dump the user mentioned")
         assert r["status"] == "pending"
@@ -725,7 +758,7 @@ class TestPathRequestReason:
         """A throwaway file in the scratch is not policy, whatever it is named:
         the shell can write it, so the file tools must not refuse it."""
         d = sec_policy.get().ensure_scratch()
-        for name in ("agent.toml", "AGENT.md", ".agent.ignore", "notes.txt"):
+        for name in ("agent.toml", ".agent.ignore", "notes.txt"):
             assert not sec_fs._is_write_protected(project, d / name), name
         # …while the real config paths stay protected.
         assert sec_fs._is_write_protected(project, project / "agent.toml")
@@ -874,7 +907,7 @@ class TestMaskScanScales:
         sec_policy.get().cfg.agent_dir_read_only = agent_dir_ro
         (project / ".env").write_text("S=1")
         (project / "sub").mkdir()
-        (project / "sub" / "AGENT.md").write_text("x")
+        (project / "sub" / "agent.toml").write_text("x")
         (project / ".agent" / "path_grants.json").write_text("[]")
         (project / ".agent" / "leftover.pem").write_text("x")
         expected = (sec_runner._write_deny_paths(project),
@@ -887,7 +920,7 @@ class TestMaskScanScales:
         assert sec_runner._sandbox_overlays(project) == expected
         assert len(calls) == 1
         deny, secrets = expected
-        assert project / "sub" / "AGENT.md" in deny
+        assert project / "sub" / "agent.toml" in deny
         # The secret set never walks the agent dir, even when the write-deny set must.
         assert self._rel(project, secrets) == {".env"}
 
@@ -923,7 +956,7 @@ class TestMaskScanScales:
         for i in range(2):
             (project / f"k{i}.pem").write_text("x")
             (project / f"d{i}").mkdir()
-            (project / f"d{i}" / "AGENT.md").write_text("x")
+            (project / f"d{i}" / "agent.toml").write_text("x")
         sec_policy.get().cfg.mask_scan_max_matches = 3
         sec_runner._secret_mask_paths(project)
         sec_runner._write_deny_paths(project)
@@ -1066,6 +1099,7 @@ class TestSessionRecordCannotForgeGrants:
         written before the glob existed) is still validated on the way in."""
         from agent.security import path_grants
         self._cfg(project)
+        _pre_approve(project.parent)
         ok = (project.parent / "elsewhere").resolve()
         path_grants.apply_session([
             {"path": str(ok), "mode": "rw", "origin": "user"},
@@ -1083,6 +1117,7 @@ class TestGuardsInsideGrantedPaths:
     def _granted(self, project, tmp_path, mode="rw"):
         from agent.security import path_grants as pg
         other = tmp_path.parent / "other-repo"
+        _pre_approve(tmp_path.parent)
         shutil.rmtree(other, ignore_errors=True)
         (other / ".git").mkdir(parents=True, exist_ok=True)
         (other / ".env").write_text("API_KEY=leak-me")

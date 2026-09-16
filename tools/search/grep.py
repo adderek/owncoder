@@ -11,6 +11,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from agent.security import path_policy
 from agent.tools import register
 from agent.tools._common import (
     read_deny_globs as _read_deny_globs,
@@ -24,8 +25,7 @@ _GREP_REGEX_FLAG: str | None = None
 
 # graphify-out: generated graph dumps (manifest hashes, node ids) match almost
 # any pattern and bury real hits.
-_EXCLUDE_DIRS = (".git", "__pycache__", "node_modules", ".agent", ".venv", "venv", "build", "dist",
-                 "graphify-out")
+_EXCLUDE_DIRS = tuple(sorted(path_policy.hidden_dir_names()))
 
 _DEFAULT_MAX = 60
 _CONTEXT_DEFAULT_MAX = 20   # lower match cap when each hit carries context lines
@@ -140,7 +140,10 @@ def grep_code(
 
     if shutil.which("rg"):
         # ripgrep: skips binaries and .gitignore'd files natively; much faster.
-        cmd = ["rg", "-n", "--no-heading", "--with-filename", "--color=never", "--no-messages"]
+        # --hidden: dot-dirs like `.press_review/` hold project code. Pruned
+        # dirs (.git, .agent, .venv…) are excluded below and secret files are
+        # filtered from results, matching the `grep -r` fallback.
+        cmd = ["rg", "-n", "--hidden", "--no-heading", "--with-filename", "--color=never", "--no-messages"]
         if fixed_string:
             cmd.append("-F")
         if case_insensitive:

@@ -28,6 +28,8 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
+
+from agent.security import path_policy
 from typing import TYPE_CHECKING, Callable
 from urllib.parse import urlparse
 
@@ -39,8 +41,7 @@ log = logging.getLogger(__name__)
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
 # Change events from these never mean "source changed" — several are written by
 # the index pass itself and would otherwise re-trigger it forever.
-_IGNORED_PARTS = {".agent", ".git", "__pycache__", ".pytest_cache", ".ruff_cache",
-                  ".venv", "node_modules", "graphify-out"}
+_IGNORED_PARTS = set(path_policy.hidden_dir_names())
 _IGNORED_SUFFIXES = (".db", ".db-wal", ".db-shm", ".db-journal", ".lock", ".pid", ".log",
                      ".swp", ".tmp")
 _DEBOUNCE_S = 2.0

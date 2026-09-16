@@ -9,6 +9,8 @@ import traceback
 import uuid
 from typing import TYPE_CHECKING
 
+from agent.tools.files.paths import PathAccessDenied
+
 if TYPE_CHECKING:
     from agent.config import Config
 
@@ -563,8 +565,15 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
         rules.record_tool_usage(name, True)
         return serialised
 
+    except PathAccessDenied as e:
+        # Policy refusal, not a crash: no traceback, no failure report. The
+        # message tells the model how to proceed ($AGENT_TMP or a grant).
+        logger.warning("execute_tool: %s denied path: %s", name, e)
+        rules.record_tool_usage(name, False)
+        return json.dumps({"error": str(e), "tool": name, "error_type": "PathAccessDenied"})
+
     except Exception as e:
-        logger.error("execute_tool: %s raised %s: %s\\n%s", name, type(e).__name__, e, traceback.format_exc())
+        logger.error("execute_tool: %s raised %s: %s\n%s", name, type(e).__name__, e, traceback.format_exc())
         rules.record_tool_usage(name, False)
         _fr.report_exception(e, kind="tool_exception", context={
             "tool": name,

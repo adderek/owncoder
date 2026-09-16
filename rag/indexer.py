@@ -4,6 +4,8 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+
+from agent.security import path_policy
 from typing import TYPE_CHECKING
 
 from .chunker import (
@@ -112,10 +114,9 @@ def pending_files(
     """Walk disk and compare against indexed mtimes. Returns counts without embedding."""
     root_path = Path(root).resolve()
     exclude = exclude or []
-    default_exclude = {
-        ".git", "__pycache__", "node_modules", "build", "dist",
-        ".agent", ".venv", "venv", ".env", ".coord", "graphify-out",
-    }
+    # One shared list of prunable directories (security.path_policy), plus the
+    # indexer's own: ".env" is a directory here, not the secrets file.
+    default_exclude = set(path_policy.hidden_dir_names()) | {".env"}
     all_exclude = default_exclude | {e.rstrip("/") for e in exclude}
 
     allowed_exts: set[str] | None = None
@@ -254,10 +255,9 @@ def index_directory(
                     "without re-reading the tree.",
                     prev_model, emb_model,
                 )
-    default_exclude = {
-        ".git", "__pycache__", "node_modules", "build", "dist",
-        ".agent", ".venv", "venv", ".env", ".coord", "graphify-out",
-    }
+    # One shared list of prunable directories (security.path_policy), plus the
+    # indexer's own: ".env" is a directory here, not the secrets file.
+    default_exclude = set(path_policy.hidden_dir_names()) | {".env"}
     all_exclude = default_exclude | {e.rstrip("/") for e in exclude}
 
     allowed_exts: set[str] | None = None

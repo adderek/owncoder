@@ -22,7 +22,12 @@ def setup(config) -> None:
         "Temporary files do NOT need this: write them to $AGENT_TMP (same as "
         "$TMPDIR). Paths outside the project — /tmp, /var/tmp, $HOME, /etc — "
         "need a concrete reason naming the file and what it is for; a request "
-        "without one is rejected."
+        "without one is rejected. Two limits apply and a request that breaks "
+        "either is refused outright, not queued: the path must be somewhere "
+        "the user pre-approved in their own config, and some paths are capped "
+        "by built-in rules (config and state files are read-only; keys and "
+        "credentials are never reachable; devices must be asked for one exact "
+        "file at a time, never a directory)."
     ),
     "parameters": {
         "type": "object",

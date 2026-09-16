@@ -81,6 +81,8 @@ class TestGrepPathGrants:
         sec_fs.init_root_pin()
         grep_mod.setup(cfg)
         yield external
+        from agent.security import path_grants as _pg
+        _pg._ceiling = []
         sec_policy._policy = None
         sec_fs._root_dev = None
         sec_fs._root_ino = None
@@ -91,6 +93,9 @@ class TestGrepPathGrants:
 
     def test_granted_external_allowed(self, granted_project):
         from agent.security import path_grants as _pg
+        # Pre-approved in the "user config": outside the project root, nothing
+        # is grantable until the user says where the agent may be sent.
+        _pg._load_ceiling([{"path": str(granted_project), "mode": "ro"}])
         _pg.add_grant(granted_project, "ro", origin="user")
         result = grep_mod.grep_code("GRANTED_MARKER", path=str(granted_project))
         assert "error" not in result, result
@@ -229,3 +234,21 @@ class TestGrepRegexDialect:
         (project_dir / "lit.py").write_text("a(?:b)c\n")
         result = grep_mod.grep_code(pattern="a(?:b)c", fixed_string=True)
         assert len(result.get("results", [])) == 1
+
+
+class TestGrepHiddenDirs:
+    """Dot-directories holding project code (e.g. `.press_review/`) must be
+    searched; ripgrep skips them unless told otherwise."""
+
+    def test_dot_dir_is_searched(self, grep_config, project_dir):
+        (project_dir / ".press_review").mkdir()
+        (project_dir / ".press_review" / "rank.py").write_text("def clickbait_score(): pass\n")
+        result = grep_mod.grep_code(pattern="clickbait_score")
+        assert "error" not in result
+        assert any(".press_review" in r["path"] for r in result["results"])
+
+    def test_git_dir_still_pruned(self, grep_config, project_dir):
+        (project_dir / ".git").mkdir()
+        (project_dir / ".git" / "config").write_text("UNIQUE_GIT_MARKER\n")
+        result = grep_mod.grep_code(pattern="UNIQUE_GIT_MARKER")
+        assert result.get("count", 0) == 0

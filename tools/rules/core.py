@@ -112,6 +112,12 @@ class Rules:
                 resolved = pol.root / rel_path
                 if _sec_fs._is_write_protected(pol.root, resolved):
                     return False, f"write to protected path denied: {rel_path}"
+                # …and the built-in rules, which apply wherever the path sits.
+                from agent.security import path_policy as _pp
+                decision = _pp.max_access(resolved)
+                if decision.max < _pp.Access.WRITE:
+                    why = f" ({decision.why})" if decision.why else ""
+                    return False, f"write to protected path denied: {rel_path}{why}"
         except Exception:
             pass
 

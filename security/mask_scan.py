@@ -37,9 +37,17 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Never descended into: VCS and dependency trees dominate the file count and
-# are not where the threat model's secrets or policy files live.
-PRUNE_DIRS = frozenset({".git", ".venv", "node_modules", "__pycache__"})
+def prune_dirs() -> frozenset[str]:
+    """Directories the walk never descends into.
+
+    VCS and dependency trees dominate the file count and are not where the
+    threat model's secrets or policy files live. The list is `path_policy`'s
+    hidden set — the same one the indexer and grep prune — so "large and
+    churns" is stated once. Directories whose *access* is restricted are not
+    in it: a pruned `.ssh` would be an unmasked `.ssh`.
+    """
+    from . import path_policy
+    return path_policy.hidden_dir_names()
 
 DEFAULT_TIMEOUT_S = 10.0
 DEFAULT_MAX_MATCHES = 2000
@@ -131,6 +139,7 @@ def scan(
     *,
     timeout_s: float,
     max_matches: int,
+    prune: "frozenset[str] | set[str] | None" = None,
 ) -> ScanResult:
     """Walk *root* once and match every glob set in *sets*.
 
@@ -154,7 +163,8 @@ def scan(
 
     if compiled:
         since_clock = 0
-        for dirpath, dirnames, filenames in os.walk(root_s):
+        pruned = prune_dirs() if prune is None else prune
+    for dirpath, dirnames, filenames in os.walk(root_s):
             if time.monotonic() >= deadline:
                 stats.incomplete = f"scan ran out of its {timeout_s:g}s time budget"
                 break
@@ -166,7 +176,7 @@ def scan(
                 dirnames[:] = []
                 continue
             stats.dirs += 1
-            dirnames[:] = [d for d in dirnames if d not in PRUNE_DIRS]
+            dirnames[:] = [d for d in dirnames if d not in pruned]
             relbase = "" if dirpath == root_s else dirpath[len(root_s) + 1:] + "/"
             for fn in filenames:
                 stats.files += 1

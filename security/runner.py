@@ -190,16 +190,15 @@ def _rlimit_preexec(sandbox_backend: str = "none") -> None:
 
 # Paths (root-relative) to mount read-only inside the sandbox so a hostile
 # agent cannot overwrite them via shell argv even when root is writable.
-_PROTECTED_PATHS = [
-    ".git",
-    "agent.toml",
-    ".agent.toml",
-    "CLAUDE.md",
-    "AGENT.md",
-    ".claude",
-    ".agent.ignore",
-    ".agent.priorities.toml",
-]
+def _protected_paths() -> tuple[str, ...]:
+    """Root-relative paths bound read-only inside the sandbox.
+
+    Read from `path_policy`, not restated here: a shell that can overwrite a
+    file the fs gate refuses to write is the same hole either way, and two
+    hand-maintained lists is how that hole opens.
+    """
+    from . import path_policy
+    return path_policy.project_readonly_names()
 
 
 def _truncated(partial, root: Path, globs: list[str], why: str):
@@ -240,9 +239,17 @@ def _scan(root: Path, sets: dict[str, tuple[list[str], list[Path]]]) -> dict[str
     The limits are read from the live config on every call, never captured,
     so changing them at runtime applies to the next command.
     """
-    cfg = policy.get().cfg
+    pol = policy.get()
+    cfg = pol.cfg
+    # The agent directory is pruned as "large and churns" — except when the
+    # whole-directory read-only bind is off, because then the only thing
+    # keeping a shell out of `path_grants.json` is a per-file bind, and a
+    # pruned directory produces no per-file binds.
+    pruned = set(mask_scan.prune_dirs())
+    if _agent_dir_ro(pol, root) is None:
+        pruned.discard(pol.agent_dir.name)
     result = mask_scan.scan(
-        root, sets,
+        root, sets, prune=pruned,
         timeout_s=mask_scan.effective_timeout(
             getattr(cfg, "mask_scan_timeout_s", mask_scan.DEFAULT_TIMEOUT_S)),
         max_matches=mask_scan.effective_max_matches(
@@ -329,7 +336,7 @@ def _write_deny_plan(root: Path) -> "_WriteDenyPlan | None":
 
     A `prefix/**` glob collapses to one read-only bind of the directory: binding
     every checkpoint blob individually would blow up the bwrap argv. Paths already
-    bound via _PROTECTED_PATHS are skipped to avoid a duplicate mount target.
+    bound via _protected_paths() are skipped to avoid a duplicate mount target.
     """
     from . import fs as _fs
 
@@ -342,7 +349,7 @@ def _write_deny_plan(root: Path) -> "_WriteDenyPlan | None":
     # Same merge as the fs gate, or the shell keeps the write the gate refuses.
     globs = list(globs) + list(getattr(pol, "extra_write_deny", []))
 
-    protected = {root / rel for rel in _PROTECTED_PATHS}
+    protected = {root / rel for rel in _protected_paths()}
     scratch = policy.get().scratch_dir()
     out: list[Path] = []
     file_globs: list[str] = []
@@ -539,7 +546,7 @@ def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool, seccomp_fd: int | 
     for p in _interpreter_paths(root):
         a += ["--ro-bind-try", p, p]
     # Layer read-only overlays over sensitive paths. --ro-bind-try skips missing paths.
-    for rel in _PROTECTED_PATHS:
+    for rel in _protected_paths():
         p = root / rel
         a += ["--ro-bind-try", str(p), str(p)]
     # The agent's own directory as one read-only mount, so nothing inside can
@@ -605,7 +612,7 @@ def _firejail_argv(argv: list[str], *, cwd: Path, network: bool) -> list[str]:
     for p in _interpreter_paths(pol.root):
         a += [f"--whitelist={p}", f"--read-only={p}"]
     # Mark the same sensitive paths read-only inside firejail.
-    for rel in _PROTECTED_PATHS:
+    for rel in _protected_paths():
         p = pol.root / rel
         if p.exists():
             a += [f"--read-only={p}"]

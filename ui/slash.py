@@ -58,7 +58,8 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/incognito", [], "toggle incognito mode (session not saved)", False),
     ("/private", [], "toggle private mode (no persistence + local LLMs only)", False),
     ("/vault", [], "toggle vault mode (everything persists, encrypted)  [lock]", True),
-    ("/paths", [], "path grants: show | add <path> [ro|rw] | remove <path> | list", True),
+    ("/paths", [], "path grants: show | add <path> [ro|rw] | remove <path> | "
+     "check <path> | list", True),
     ("/maxiter", ["/max_iter"], "set max tool-call iterations per turn  [<n> | 0/none = unlimited]", True),
     ("/wrap", [], "toggle line wrapping", False),
     ("/round-summary", ["/summary"], "toggle gray Q/A summary after each turn", False),
@@ -144,7 +145,8 @@ _PRESETS: dict[str, tuple[tuple[str, str], ...]] = {
                ("max", "most")),
     "/bg": (("list", "list background jobs"),),
     "/plan": (("show", "current plan"), ("steps", "step list")),
-    "/paths": (("show", "granted paths"),),
+    "/paths": (("show", "granted paths"),
+               ("check", "why a path is (not) reachable")),
     "/vault": (("lock", "lock the vault"),),
     "/sandbox": (("status", "limits + last scan"), ("scan", "scan the tree now")),
 }

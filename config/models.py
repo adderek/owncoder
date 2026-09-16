@@ -585,8 +585,12 @@ class SecurityConfig:
     # under one of these entries and may not raise the mode: an `ro` entry can
     # never become a `rw` grant. A project config may not set this at all (see
     # loader._clamp_project_security), so a hostile repo cannot widen its own
-    # access. Empty (the default) = no ceiling, grants are unrestricted.
-    # See security/path_grants.py::_ceiling_refusal.
+    # access. Empty (the default) means the project root is the whole ceiling:
+    # nothing outside the tree the agent was started in can be granted until
+    # the user pre-approves somewhere. An entry naming a path *exactly* also
+    # raises the built-in rules in security/path_policy.py for that one path
+    # (a specific key file, a specific device); an entry covering a parent
+    # never does. See security/path_grants.py::_ceiling_refusal.
     grant_ceiling: list = field(default_factory=list)
     env_allow: list = field(default_factory=lambda: [
         "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "HOME",

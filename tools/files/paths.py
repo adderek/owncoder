@@ -44,6 +44,11 @@ def setup(config: "Config") -> None:
         logging.warning("Failed to initialize security policy: %s", e)
 
 
+class PathAccessDenied(ValueError):
+    """The security gate refused a path: an expected policy outcome, not a
+    tool crash. Callers log it without a traceback."""
+
+
 def _working_dir() -> Path:
     if _config:
         return Path(_config.tools.working_dir).resolve()
@@ -69,10 +74,12 @@ def _resolve(path: str) -> Path:
                 # the local check below would report the same rejection without
                 # the one thing that fixes it — the path is outside the project
                 # root and needs a grant (request_path_access / `/paths add`).
-                raise ValueError(
+                raise PathAccessDenied(
                     f"path escapes working directory: {path!r} — outside the "
-                    f"project root and no path grant covers it. Ask the user to "
-                    f"grant it (request_path_access, or /paths add <path> ro)."
+                    f"project root and no path grant covers it. For temporary "
+                    f"files write under $AGENT_TMP instead (no grant needed). "
+                    f"Otherwise ask the user to grant it (request_path_access, "
+                    f"or /paths add <path> ro|rw — rw for writes)."
                 ) from None
     except ImportError:
         pass

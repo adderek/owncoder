@@ -107,6 +107,25 @@ class SlashHandlerMixin:
                     except Exception:
                         pass
 
+            elif sub == "check":
+                # "Why can't I write this?" answered without a failed tool call:
+                # the built-in rules, plus what the user pre-approved.
+                if not rest.strip():
+                    self._write_sys(
+                        f"[{t.warning}]Usage: /paths check <path>[/{t.warning}]"
+                    )
+                else:
+                    from agent.security import path_policy as _pp
+                    from agent.security import path_grants as _pg
+                    from pathlib import Path as _Path
+                    resolved = _Path(rest.strip()).expanduser().resolve()
+                    lines = [f"[bold]{resolved}[/bold]",
+                             f"  rules:  {_pp.describe(resolved)}"]
+                    g = _pg.grant_for(resolved)
+                    lines.append(f"  grant:  {g.path} ({g.mode}, {g.origin})"
+                                 if g else "  grant:  none — not accessible")
+                    self._write_sys("\n".join(lines))
+
             elif sub == "list":
                 from agent.security import path_grants as _pg
                 grants = _pg.get_all()
@@ -118,10 +137,21 @@ class SlashHandlerMixin:
                         state = f"[{t.warning}]pending[/{t.warning}]" if g.state == "pending" else f"[{t.success}]granted[/{t.success}]"
                         lines.append(f"  {g.path}  [{t.text_dim}]{g.origin}[/{t.text_dim}]  {g.mode.upper()}  {state}")
                     self._write_sys("\n".join(lines))
+                ceiling = _pg.ceiling()
+                if ceiling:
+                    self._write_sys("\n".join(
+                        ["[bold]Pre-approved in the user config:[/bold]"]
+                        + [f"  {p}  {m.upper()}" for p, m in ceiling]))
+                else:
+                    self._write_sys(
+                        f"[{t.text_dim}](nothing pre-approved: only the project "
+                        f"root is grantable — add [[security.grant_ceiling]] "
+                        f"entries in ~/.config/agent/agent.yaml)[/{t.text_dim}]")
 
             else:
                 self._write_sys(
-                    f"[{t.warning}]Usage: /paths [show|add <path> [ro|rw]|remove <path>|list][/{t.warning}]"
+                    f"[{t.warning}]Usage: /paths [show|add <path> [ro|rw]|"
+                    f"remove <path>|check <path>|list][/{t.warning}]"
                 )
 
         elif cmd == "/compact":

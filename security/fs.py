@@ -62,8 +62,10 @@ _DEFAULT_WRITE_DENY_GLOBS: list[str] = [
     "agent.toml",
     ".agent.toml",
     ".agent.*",
-    "CLAUDE.md",
-    "AGENT.md",
+    # AGENT.md and CLAUDE.md are deliberately *not* here: they are project
+    # documentation the user expects the agent to maintain, and the rules that
+    # actually bind the agent live in `.agent/core.md` and the `.agent.*` files
+    # above, which stay read-only.
     ".claude/**",
     ".agent/**/*.toml",
     ".agent/path_grants.json",  # agent must not self-grant paths
@@ -199,6 +201,39 @@ def _is_read_protected(root: Path, resolved: Path) -> bool:
     return False
 
 
+def _policy_decision(real: Path, grant):
+    """The built-in `path_policy` ceiling for *real*, given the grant that
+    allowed it.
+
+    A grant is evidence the user approved *this* path: when it names the file
+    exactly it can raise a raisable rule, the same way an exact ceiling entry
+    does. A grant covering the parent directory cannot — that is how granting a
+    working area stops short of the `.ssh` inside it.
+    """
+    from . import path_policy as _pp
+
+    exact = None
+    if grant is not None and grant.path == real:
+        exact = _pp.mode_to_access(grant.mode)
+    return _pp.max_access(real, exact_ceiling=exact)
+
+
+def _enforce_policy(real: Path, grant, want: "object") -> None:
+    """Raise when the built-in rules refuse *want* on *real*."""
+    from . import path_policy as _pp
+
+    d = _policy_decision(real, grant)
+    if d.exact_only and (grant is None or grant.path != real):
+        raise PathEscape(
+            f"{real} is reachable only through a grant naming it exactly"
+            + (f" ({d.why})" if d.why else ""))
+    if want > d.max:
+        detail = f" — {d.why}" if d.why else ""
+        if want >= _pp.Access.WRITE:
+            raise WriteProtected(f"write to protected path denied: {real}{detail}")
+        raise ReadProtected(f"read of protected path denied: {real}{detail}")
+
+
 _root_dev: int | None = None
 _root_ino: int | None = None
 
@@ -253,6 +288,15 @@ def safe_resolve(path: str | os.PathLike, *, must_exist: bool = False) -> Path:
 
     grant.assert_unchanged()
 
+    # Access.NONE means the path is not exposed at all — not read, not
+    # written, not confirmed to exist. Refused here so a listing or a stat
+    # cannot be used to probe for it either.
+    from . import path_policy as _pp
+    if _policy_decision(real, grant).max is _pp.Access.NONE:
+        d = _policy_decision(real, grant)
+        raise ReadProtected(f"path is not accessible: {real}"
+                            + (f" — {d.why}" if d.why else ""))
+
     if must_exist and not real.exists():
         raise FileNotFoundError(path)
     if not pol.cfg.follow_symlinks:
@@ -303,7 +347,13 @@ def safe_open(path: str | os.PathLike, mode: str = "r", *, encoding: str | None 
     from . import path_grants as _pg
     grant = _pg.grant_for(real)
 
-    if "w" in mode or "a" in mode or "+" in mode:
+    from . import path_policy as _pp
+
+    writing = "w" in mode or "a" in mode or "+" in mode
+    # Built-in rules first: they hold wherever the path sits, so a grant
+    # outside the project root no longer changes which list applies.
+    _enforce_policy(real, grant, _pp.Access.WRITE if writing else _pp.Access.READ)
+    if writing:
         if grant is not None and grant.mode != "rw":
             raise WriteProtected(f"write denied: path is in a read-only grant: {real}")
         if _is_write_protected(_guard_base(real, grant), real):

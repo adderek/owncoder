@@ -6,10 +6,20 @@ Agent-requested paths appear as 'pending' — no access until user accepts.
 Persistence: non-default accepted grants saved to .agent/path_grants.json.
 The file is in write-deny globs — agent file tools cannot modify it.
 
-Ceiling: when the user config sets `[[security.grant_ceiling]]` entries, every
-grant added at runtime (UI, /paths, agent request, grants file, session record)
-must lie under one of them and may not exceed its mode. Only a user config layer
-can set the ceiling — a project config is clamped by loader._clamp_project_security.
+Two independent limits sit above every runtime grant:
+
+* the user's `[[security.grant_ceiling]]` — which *places* may be reached at
+  all. Only a user config layer can set it; a project config is dropped by
+  loader._clamp_project_security. With no entries configured the ceiling is the
+  project root alone: a machine whose owner never pre-approved anything hands
+  out nothing outside the tree the agent was started in.
+* the built-in rules in `path_policy` — what may be done with a path once it is
+  reachable. These hold even inside the project root for the agent's own
+  control plane and for private keys, and they cap a grant's mode (a `rw`
+  request for a `ro` path is refused, not silently downgraded).
+
+The project root itself is always granted `rw` without consulting the ceiling:
+`cd <project> && agent chat` is the user saying which tree this is.
 """
 from __future__ import annotations
 
@@ -76,12 +86,30 @@ _grants: list[PathGrant] = []
 _notify_callbacks: list[Callable] = []
 _grants_file: Path | None = None  # set by setup(); used for persistence
 #: Pre-approved ceiling from the *user* config: [(resolved path, max mode)].
-#: Empty = no ceiling configured (grants are unrestricted, as before).
+#: Empty = nothing pre-approved, which means the project root is the only
+#: grantable place (see _ceiling_refusal).
 _ceiling: list[tuple[Path, str]] = []
+#: Grants already reported as dropped, so the repeated policy.setup() calls a
+#: single startup makes (tools, exec_command, the paths tab) do not print the
+#: same refusal four times.
+_reported_drops: set[tuple[str, str]] = set()
 
 
 class CeilingError(PermissionError):
     """A grant would exceed the user's pre-approved [security] grant_ceiling."""
+
+
+def _report_drop(kind: str, path: Path, refusal: str) -> None:
+    """Warn once per (path, kind) that a stored grant did not survive the
+    ceiling, and say what to do about it."""
+    key = (kind, str(path))
+    if key in _reported_drops:
+        return
+    _reported_drops.add(key)
+    logger.warning("path_grants: dropping %s grant %s: %s. Pre-approve it with a "
+                   "[[security.grant_ceiling]] entry in "
+                   "~/.config/agent/agent.{toml,yaml}, or remove it in the "
+                   "paths tab (F9).", kind, path, refusal)
 
 
 def _load_ceiling(raw) -> None:
@@ -100,28 +128,96 @@ def _load_ceiling(raw) -> None:
         _ceiling.append((Path(p).expanduser().resolve(), mode))
 
 
-def _ceiling_refusal(resolved: Path, mode: str) -> str | None:
-    """Why *resolved* at *mode* exceeds the pre-approved ceiling, or None.
-
-    The ceiling comes from the user config layer — a file outside the project
-    root, so the sandboxed shell cannot read it, and reachable by the file
-    tools only through an explicit grant. Everything minted at runtime (the
-    Access panel, `/paths add`, an agent request, a stored grants file, a
-    resumed session) is confined to it: the path must lie under a pre-approved
-    entry, and a `rw` grant needs a `rw` entry. An `ro` ceiling entry therefore
-    makes a path permanently read-only for this project.
-    """
-    if not _ceiling:
+def _project_root() -> Path | None:
+    """The live project root, or None before policy.setup() has run."""
+    from . import policy as _policy
+    if not _policy.is_configured():
         return None
+    return _policy.get().root
+
+
+def _under(parent: Path, child: Path) -> bool:
+    return child == parent or parent in child.parents
+
+
+def _exact_ceiling_for(resolved: Path):
+    """The mode of a ceiling entry naming *resolved* exactly, or None.
+
+    Only an exact entry can raise a built-in restriction. A broad entry
+    ("/home/me") pre-approves a working area; it must not also be read as
+    approval for the `~/.ssh` inside it.
+    """
+    from .path_policy import mode_to_access
+    best = None
     for cpath, cmode in _ceiling:
-        if cpath == resolved or cpath in resolved.parents:
-            if mode == "rw" and cmode != "rw":
-                return (f"{resolved} is pre-approved read-only in the user "
-                        f"config ([security] grant_ceiling = \"{cpath}\" ro); "
-                        f"read-write needs a rw ceiling entry")
-            return None
-    return (f"{resolved} is not under any path pre-approved in the user config "
-            f"([security] grant_ceiling)")
+        if cpath == resolved:
+            a = mode_to_access(cmode)
+            if best is None or a > best:
+                best = a
+    return best
+
+
+def _ceiling_refusal(resolved: Path, mode: str) -> str | None:
+    """Why *resolved* at *mode* may not be granted, or None if it may.
+
+    Two checks, in order:
+
+    1. **Reach** — the path must be the project root or inside it, or under a
+       `[[security.grant_ceiling]]` entry from the *user* config (a file
+       outside the project root, so the sandboxed shell cannot read it and the
+       file tools reach it only through an explicit grant). An `ro` ceiling
+       entry makes everything below it permanently read-only here. With no
+       entries at all the project root is the whole ceiling.
+    2. **Rules** — `path_policy` caps what the path allows regardless of where
+       it sits, so granting a working area never hands over the private keys,
+       the agent's own grant list or the git hooks inside it. A path marked
+       `exact_only` may be granted only by naming the file itself; the
+       directory holding it is refused.
+
+    Everything minted at runtime goes through here: the Access panel, `/paths
+    add`, an agent request, a stored grants file, a resumed session.
+    """
+    from .path_policy import Access, max_access, access_to_mode
+
+    want = {"ro": Access.READ, "rw": Access.WRITE}.get(mode)
+    if want is None:
+        return f"unknown grant mode {mode!r}"
+
+    root = _project_root()
+    in_project = root is not None and _under(root, resolved)
+
+    if not in_project:
+        if not _ceiling:
+            return (f"{resolved} is outside the project"
+                    + (f" ({root})" if root else "")
+                    + " and no path is pre-approved in the user config. Add a "
+                      "[[security.grant_ceiling]] entry in "
+                      "~/.config/agent/agent.{toml,yaml} to allow it")
+        allowed = False
+        for cpath, cmode in _ceiling:
+            if _under(cpath, resolved):
+                if want > {"ro": Access.READ, "rw": Access.WRITE}[cmode]:
+                    return (f"{resolved} is pre-approved read-only in the user "
+                            f"config ([security] grant_ceiling = \"{cpath}\" ro); "
+                            f"read-write needs a rw ceiling entry")
+                allowed = True
+                break
+        if not allowed:
+            return (f"{resolved} is not under any path pre-approved in the user "
+                    f"config ([security] grant_ceiling)")
+
+    decision = max_access(resolved, exact_ceiling=_exact_ceiling_for(resolved))
+    if decision.exact_only and resolved.is_dir():
+        return (f"{resolved} may only be granted one entry at a time "
+                f"({decision.why}); grant the exact path instead of the "
+                f"directory")
+    if want > decision.max:
+        detail = f" — {decision.why}" if decision.why else ""
+        if decision.max is Access.NONE:
+            return f"{resolved} can never be granted{detail}"
+        return (f"{resolved} can be granted at most "
+                f"{access_to_mode(decision.max)}{detail}")
+    return None
 
 
 def ceiling() -> list[tuple[str, str]]:
@@ -301,8 +397,7 @@ def apply_session(records: list[dict] | None) -> None:
             rp = Path(raw).resolve()
             refusal = _ceiling_refusal(rp, mode)
             if refusal:
-                logger.warning("path_grants: dropping session grant %s: %s",
-                               rp, refusal)
+                _report_drop("session", rp, refusal)
                 continue
             g = PathGrant(path=rp, mode=mode, origin=origin,
                           state="granted")
@@ -378,8 +473,7 @@ def _load() -> None:
                     continue
                 refusal = _ceiling_refusal(p, mode)
                 if refusal:
-                    logger.warning("path_grants: dropping stored grant %s: %s",
-                                   p, refusal)
+                    _report_drop("stored", p, refusal)
                     continue
                 g = PathGrant(path=p, mode=mode, origin=origin, state="granted")
                 g.pin()
