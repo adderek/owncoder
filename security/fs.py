@@ -277,6 +277,8 @@ def safe_resolve(path: str | os.PathLike, *, must_exist: bool = False) -> Path:
     p = Path(path)
     if not p.is_absolute():
         p = pol.root / p
+    # /tmp/... is the scratch, as it is inside the sandboxed shell.
+    p = pol.map_tmp(p)
     # realpath resolves symlinks that already exist; for new files the
     # parent must still be inside a granted root.
     real = Path(os.path.realpath(p))

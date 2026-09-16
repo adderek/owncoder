@@ -68,6 +68,35 @@ class Policy:
         """
         return self.agent_dir / "tmp"
 
+    def map_tmp(self, path: Path) -> Path:
+        """Redirect a literal ``/tmp/...`` path into the scratch.
+
+        The bwrap sandbox mounts the scratch as the shell's ``/tmp``; the file
+        tools apply the same mapping so ``write_file("/tmp/x.py")`` followed by
+        ``python3 /tmp/x.py`` refer to one file — and nothing the model writes
+        ever lands in the host ``/tmp`` (shared, sticky, a place to leave
+        setuid binaries or planted symlinks for other users).
+
+        Mapped under the same conditions as the bwrap bind; otherwise *path*
+        is returned unchanged and the grant check refuses it as before. The
+        mapping is textual (``normpath``): ``/tmp/../etc`` is ``/etc``, not
+        mapped. Symlinks inside the scratch are left to the caller's realpath
+        + grant check.
+        """
+        norm = Path(os.path.normpath(path))
+        tmp = HOST_TMP
+        if not norm.is_absolute() or (norm != tmp and tmp not in norm.parents):
+            return path
+        if not getattr(self.cfg, "scratch_bind_tmp", True):
+            return path
+        root = self.root
+        if root == tmp or tmp in root.parents:
+            return path        # project under /tmp: no bind, no mapping
+        scratch = self.ensure_scratch()
+        if scratch is None:
+            return path
+        return scratch / norm.relative_to(tmp)
+
     def scratch_path_is_clean(self) -> bool:
         """True when no path component from the root down to the scratch is a
         symlink.
@@ -289,6 +318,11 @@ def setup(config: "Config") -> Policy:
         reset_scratch()
         _scratch_wiped = True
     return _policy
+
+
+# The host temp dir the shell sees replaced by the scratch. A module constant so
+# tests (whose projects live under /tmp) can point it elsewhere.
+HOST_TMP = Path("/tmp")
 
 
 def get() -> Policy:

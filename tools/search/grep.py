@@ -121,6 +121,13 @@ def grep_code(
     search_root = Path(path).expanduser() if path else Path(working_dir)
     if not search_root.is_absolute():
         search_root = Path(working_dir) / search_root
+    try:
+        from agent.security import policy as _sec_policy
+        if _sec_policy.is_configured():
+            # /tmp/... is the scratch, as for the file tools and the shell.
+            search_root = _sec_policy.get().map_tmp(search_root)
+    except Exception:
+        pass
     search_root = search_root.resolve()
 
     # Confine to *this tool's* working_dir or a path the user granted
