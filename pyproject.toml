@@ -1,7 +1,25 @@
 [project]
-name = "local-code-agent"
+name = "owncoder"
 version = "0.1.0"
+description = "Local-first coding agent with a real sandbox — runs against your own llama.cpp/vLLM/Ollama or any OpenAI-compatible API."
+readme = "README.md"
 requires-python = ">=3.11"
+authors = [{ name = "adderek" }]
+keywords = ["llm", "coding-agent", "cli", "local-first", "openai-compatible"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Code Generators",
+    # The sandbox is bubblewrap/seccomp and the lock/limit code is fcntl +
+    # resource. Windows runs it under WSL2, not natively — see install.ps1.
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
+]
+
 dependencies = [
     "tree-sitter>=0.21",
     "tree-sitter-python",
@@ -52,7 +70,15 @@ speech = [
     "numpy>=1.24",
 ]
 
+[project.urls]
+Homepage = "https://github.com/adderek/owncoder"
+Source = "https://github.com/adderek/owncoder"
+Issues = "https://github.com/adderek/owncoder/issues"
+
 [project.scripts]
+# Two names for one entry point: `owncoder` is unambiguous on a shared PATH,
+# `agent` is what the docs and muscle memory use.
+owncoder = "agent.main:main"
 agent = "agent.main:main"
 
 [build-system]
@@ -83,13 +109,29 @@ tmp_path_retention_count = 50
 #   pytest -o tmp_path_retention_policy=all
 tmp_path_retention_policy = "failed"
 
-[tool.setuptools.packages.find]
-where = [".."]
-include = ["agent*"]
-# The suite is not runtime. agent/tests/{,unit,integration} carry __init__.py,
-# so `agent*` matches them and the wheel shipped the whole suite (234 entries in
-# SOURCES.txt). Keep them in the source tree / dev install, out of the artifact.
-exclude = ["agent.tests", "agent.tests.*"]
+[tool.setuptools]
+# pyproject-configured setuptools defaults this to true, which sweeps every
+# git-tracked file under a package dir into the wheel as "package data" — that
+# is how agent/tests/*.py kept shipping despite the `exclude` below (setuptools
+# only warns: "Package 'agent.tests' is absent from the packages configuration").
+# Everything the runtime needs is declared explicitly in package-data.
+include-package-data = false
+
+# packages / package-dir are computed in setup.py: the import name "agent" maps
+# to this directory, and a static `where = [".."]` only resolved when the
+# checkout was named "agent" (it is not, when uv/pip clone the repo).
 
 [tool.setuptools.package-data]
 "agent.ui" = ["static/*.css", "static/*.js"]
+# prompts/ and themes/ are plain data directories (no __init__.py), read at
+# runtime via Path(__file__).parent — see core/prompts.py and skills.py. Without
+# these globs the wheel installs an agent that cannot build a system prompt.
+"agent" = [
+    "prompts/*.txt",
+    "prompts/guidelines/*.txt",
+    "prompts/inline/*.txt",
+    "prompts/overlays/*.txt",
+    "prompts/skills/*.md",
+    "themes/*.toml",
+    "agent.toml.example",
+]

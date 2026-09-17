@@ -21,6 +21,15 @@ def _find_project_root(start_dir: Path, search_parents: bool) -> Path | None:
     return None
 
 
+def _version_string() -> str:
+    """Installed distribution version, or "dev" when run from a source tree."""
+    from importlib.metadata import PackageNotFoundError, version
+    try:
+        return f"owncoder {version('owncoder')}"
+    except PackageNotFoundError:
+        return "owncoder (source checkout)"
+
+
 def _resolve_project(args) -> tuple[Path | None, "Config"]:
     """Find the project root and load that project's config.
 
@@ -106,6 +115,7 @@ def build_parser() -> argparse.ArgumentParser:
     parsed to the name the handler reads, or kept its default.
     """
     parser = argparse.ArgumentParser(prog="agent", description="Local code agent")
+    parser.add_argument("--version", action="version", version=_version_string())
     parser.add_argument("--config", type=str, help="Path to agent.toml")
     parser.add_argument("--working-dir", type=str, metavar="PATH",
                         help="Work in this project directory instead of the "
@@ -120,6 +130,12 @@ def build_parser() -> argparse.ArgumentParser:
                              "from the main agent. Overrides agent.mode.")
 
     sub = parser.add_subparsers(dest="command")
+
+    # setup
+    setup_p = sub.add_parser(
+        "setup", help="First-start wizard: pick provider/model, write ~/.config/agent/agent.toml")
+    setup_p.add_argument("--force", action="store_true",
+                         help="Overwrite an existing user config, and write it even if the smoke test fails")
 
     # init
     init_p = sub.add_parser("init", help="Initialize project config; optionally index")
@@ -326,11 +342,40 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
+    # Before anything touches the config: `setup` is what a user runs when
+    # there is no config and no project yet, so it must not go through
+    # _resolve_project (which exits when neither exists).
+    if args.command == "setup":
+        from agent.cli.setup import cmd_setup
+        sys.exit(cmd_setup(args))
+
     from agent.config import check_reachability
     from agent.memory.session import configure as configure_sessions
     from agent.cli.logging_setup import _write_exception_dump, _setup_logging
 
     project_root, config = _resolve_project(args)
+
+    # A fresh install loads zero config layers: no ~/.config/agent/agent.toml,
+    # no project agent.toml. Every model call would then go to the built-in
+    # localhost:8080 default and fail with a connection error that says
+    # nothing about what to do. Send the user to the wizard instead.
+    if not config.loaded_config_layers and args.command in ("init", "chat", "run"):
+        print("No agent config found (~/.config/agent/agent.toml).")
+        print("Without one, agent talks to http://localhost:8080/v1 and "
+              "nothing else.")
+        if sys.stdin.isatty():
+            try:
+                answer = input("Run `agent setup` now? [Y/n]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                answer = "n"
+            if answer in ("", "y", "yes"):
+                from agent.cli.setup import cmd_setup
+                rc = cmd_setup(args)
+                if rc == 0:
+                    print(f"\nNow re-run: agent {args.command}")
+                sys.exit(rc)
+        else:
+            print("Run `agent setup` to create one.")
 
     if getattr(args, "ultrasecure", False):
         config.agent.mode = "ultrasecure"

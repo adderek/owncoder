@@ -601,6 +601,30 @@ def _merge_models(config: Config, data: dict) -> None:
                         setattr(existing, fld, val)
 
 
+def _resolve_api_key_refs(config: Config) -> None:
+    """Expand ``api_key = "env:VAR"`` in every model entry to os.environ["VAR"].
+
+    Lets a config file name the variable that holds a key instead of holding
+    the key itself, so ~/.config/agent/agent.toml stays safe to sync or paste
+    into a bug report. `agent setup` writes this form whenever the variable is
+    already exported. A variable that is not set resolves to "" — the request
+    then fails with the provider's own 401 rather than silently sending the
+    literal string "env:VAR" as a bearer token.
+    """
+    import os
+    for name, entry in config.model_entries.items():
+        ref = entry.api_key
+        if not isinstance(ref, str) or not ref.startswith("env:"):
+            continue
+        var = ref[4:].strip()
+        value = os.environ.get(var, "")
+        if not value:
+            logger.warning(
+                "model '%s': api_key refers to $%s, which is unset or empty", name, var
+            )
+        entry.api_key = value
+
+
 def _apply_entry_to_llm(config: Config, name: str, entry: "ModelEntry") -> None:
     """Copy connection/model fields from a ModelEntry onto config.llm."""
     config.llm.base_url = entry.base_url
@@ -831,6 +855,8 @@ def load_config(extra_path: Path | list[Path] | None = None) -> Config:
             for name, val in models_sec.items():
                 if isinstance(val, dict) and "candidates" not in val:
                     config.project_model_entries.add(name)
+
+    _resolve_api_key_refs(config)
 
     # Bridge: populate config.llm/embeddings from model entries + config.agent
     _apply_model_entry_to_llm(config)

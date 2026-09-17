@@ -14,29 +14,91 @@ Similar to
 Normally you don't index so the agent works right away, but languages like assembler lack structure and need initial code analysis.
 
 
-# Usage
+# Install
 
-```
-git clone https://github.com/adderek/owncoder.git
-cd owncoder/
-pip install -e .
-./.venv/bin/agent
+**Linux and macOS** — one line, no Python setup of your own:
+
+```sh
+curl -LsSf https://raw.githubusercontent.com/adderek/owncoder/master/install.sh | sh
 ```
 
-or
+It installs [uv](https://docs.astral.sh/uv/) if you do not have it, installs
+owncoder into its own isolated environment (its own Python, its own
+dependencies — nothing is added to your system or project environments), and
+then runs the first-start wizard.
+
+**Windows** — owncoder runs under WSL2, not natively: its shell and web tools
+execute inside a bubblewrap/seccomp sandbox and its locking uses `fcntl`, none
+of which exist on Windows. In PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/adderek/owncoder/master/install.ps1 | iex
 ```
+
+That sets up WSL2 if needed and runs the Linux installer inside it. Keep your
+projects on the Linux filesystem (`~/code/...`), not `/mnt/c/` — cross-filesystem
+access is slow enough to dominate indexing time.
+
+Already have uv? Then just:
+
+```sh
+uv tool install owncoder        # or: uv tool install git+https://github.com/adderek/owncoder
+```
+
+Upgrade with `uv tool upgrade owncoder`, remove with `uv tool uninstall owncoder`.
+Both `owncoder` and `agent` are installed as commands; they are the same program.
+
+Prerequisites the agent shells out to: `git` (required), `ripgrep` (faster
+search), and `bubblewrap` or `firejail` on Linux (the sandbox that shell and web
+tools run inside — without one, those tools refuse to run).
+
+## First start
+
+```sh
+owncoder setup    # pick provider + model, verify it, write ~/.config/agent/agent.toml
+```
+
+The wizard asks where the models are hosted — a local server
+(llama.cpp / Ollama / LM Studio), OpenRouter, DeepSeek, or any other
+OpenAI-compatible URL — lists the models that endpoint actually serves, sends
+one test completion, and only then writes the config (mode 0600). If the API key
+is already exported (`OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`,
+`AGENT_LLM_API_KEY`), the config stores a reference to the variable
+(`api_key = "env:OPENROUTER_API_KEY"`) rather than the key itself, so the file
+stays safe to sync or paste into a bug report.
+
+Then, in a project:
+
+```sh
+agent init    # optional: index the code
+agent chat
+```
+
+Running any of `init`, `chat` or `run` with no config at all offers to run the
+wizard for you.
+
+## From source
+
+```sh
+git clone https://github.com/adderek/owncoder.git agent
+cd agent
 uv venv .venv
-source .venv/bin/activate
-uv pip install -e .
+uv pip install -e ".[dev]"
 ```
 
-Also
+The directory must be named `agent`: the tests resolve the package from the
+parent directory (`pythonpath = [".."]`). Packaging does not care — `setup.py`
+maps the repo root onto the `agent` package, which is why
+`uv tool install git+...` works from any checkout name.
+
+# Usage
 
 ```
 agent commit .
 ```
 
-which checks current directory (assuming it is a git repo) and created commit message for it while chunking diff standard way
+checks the current directory (assuming it is a git repo) and creates a commit
+message for it, chunking the diff the standard way.
 
 # About
 
@@ -85,7 +147,8 @@ Embeddings model:
 
 # Configuration
 
-copy agent.toml to project root or ~/.config/agent/agent.toml
+`owncoder setup` writes `~/.config/agent/agent.toml` for you. To do it by hand,
+copy `agent.toml.example` to the project root or to `~/.config/agent/agent.toml`
 
 ```
 [llm]

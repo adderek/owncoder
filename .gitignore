@@ -5,3 +5,8 @@
 
 # graphify output (graph_build); regenerated, never versioned
 graphify-out/
+
+# Packaging artifacts (`uv build`)
+/build/
+/dist/
+*.egg-info/

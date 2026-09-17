@@ -1,0 +1,94 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  # Build (but never publish) on demand, to check packaging before tagging.
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # Unlike the test workflow, this one does NOT need a directory named
+      # "agent": setup.py maps the repo root onto the package. Checking out
+      # under a different name is deliberate — it is the regression test for
+      # the empty-wheel bug that `where = [".."]` used to cause.
+      - uses: actions/checkout@v4
+        with:
+          path: src
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Build wheel and sdist
+        working-directory: src
+        run: uv build --out-dir ../dist
+
+      - name: The wheel must carry the package, its prompts and its themes
+        run: |
+          python - <<'PY'
+          import glob, sys, zipfile
+          whl = glob.glob("dist/*.whl")[0]
+          names = zipfile.ZipFile(whl).namelist()
+
+          def count(prefix):
+              return sum(1 for n in names if n.startswith(prefix))
+
+          checks = {
+              "agent/__init__.py": count("agent/__init__.py") == 1,
+              "agent/cli/main.py": count("agent/cli/main.py") == 1,
+              "prompts/system.txt": "agent/prompts/system.txt" in names,
+              "prompts/guidelines": count("agent/prompts/guidelines/") >= 1,
+              "prompts/skills": count("agent/prompts/skills/") >= 1,
+              "themes": count("agent/themes/") >= 1,
+              "ui/static": count("agent/ui/static/") >= 1,
+              "no tests": count("agent/tests/") == 0,
+              "no evals": count("agent/evals/") == 0,
+          }
+          for label, ok in checks.items():
+              print(f"{'ok  ' if ok else 'FAIL'}  {label}")
+          sys.exit(0 if all(checks.values()) else 1)
+          PY
+
+      - name: Install the wheel and run it
+        run: |
+          uv venv /tmp/verify
+          uv pip install --python /tmp/verify/bin/python dist/*.whl
+          /tmp/verify/bin/owncoder --version
+          /tmp/verify/bin/agent --help > /dev/null
+          # Prompts and themes are read off the filesystem at runtime; an
+          # importable package with no data files starts and then fails on the
+          # first turn, which is far too late to notice.
+          /tmp/verify/bin/python - <<'PY'
+          from agent.core import prompts
+          assert prompts.SYSTEM_PROMPT_PATH.exists(), prompts.SYSTEM_PROMPT_PATH
+          assert list(prompts.GUIDELINES_DIR.glob("*.txt"))
+          print("runtime assets ok")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    # Tags only: workflow_dispatch builds are for checking packaging.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write      # PyPI trusted publishing — no API token stored here
+      contents: write      # attach the artifacts to the GitHub release
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
