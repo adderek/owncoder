@@ -173,6 +173,41 @@ def _has_pseudo_tool_tag(text: str) -> bool:
     return bool(_PSEUDO_TOOL_CALL_RE.search(_prose_only(text)))
 
 
+# History compaction renders an executed round as one line per call:
+#   [tool] edit_file(path='x.js', purpose='…') → ok
+# (history_ops._tool_summary_line). Models imitate whatever history shows, so
+# the same line arriving in a *fresh* response is a fabricated call, not a
+# record of one — no parser turns it into a call, and its stated result is
+# invented. Detected here so it is nudged and marked like an <agent_exec> tag.
+_TOOL_SUMMARY_RE = re.compile(r"^[ \t]*\[tool\]\s+(\w+)\s*\(", re.MULTILINE)
+
+
+def _has_fake_tool_summary(text: str) -> bool:
+    """True if a compaction-summary line appears in prose, outside any code."""
+    return bool(_TOOL_SUMMARY_RE.search(_prose_only(text)))
+
+
+def _unexecuted_tool_names(text: str) -> list[str]:
+    """Tool names the model wrote as text instead of calling, in order seen.
+
+    Feeds the escalated nudge, which quotes the schema of the tool the model
+    was reaching for instead of repeating a generic "call it properly".
+    """
+    prose = _prose_only(text)
+    names: list[str] = []
+    for m in re.finditer(
+        r'<agent_exec\s+tool="(\w+)"'
+        r'|' + _TOOL_SUMMARY_RE.pattern
+        + r'|<(' + _NARRATABLE_ALT + r')(?:\s*>|\s+(?!\.\.\.)[a-zA-Z_][\w.-]*\s*=)'
+        r'|^(' + _NARRATABLE_ALT + r')\s*\(',
+        prose, re.MULTILINE,
+    ):
+        name = next((g for g in m.groups() if g), None)
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
 # Role labels that leak as residue right after a control token (e.g. "<|im_start|>thought").
 # Only stripped when adjacent to a control token — a bare occurrence in prose is real text.
 _ROLE_ALT = r"thought|user|assistant|system|tool"
@@ -289,8 +324,9 @@ def _strip_agent_exec_xml(text: str) -> str:
     return text.strip()
 
 
-# No literal "<agent_exec" in the note — the marking regexes would re-match it.
-_UNEXECUTED_EXEC_NOTE = "[removed: agent_exec tag written as text — this tool was NOT executed]"
+# No literal "<agent_exec" and no "[tool] name(" in the note — the marking
+# regexes would re-match it.
+_UNEXECUTED_EXEC_NOTE = "[removed: tool call written as text — this tool was NOT executed]"
 
 
 def _mark_unexecuted_agent_exec(text: str) -> str:
@@ -326,6 +362,9 @@ def _mark_unexecuted_tool_tags(text: str) -> str:
                 seg = _sub(seg, "agent_exec")
             for m in set(_PSEUDO_TOOL_CALL_RE.findall(seg)):
                 seg = _sub(seg, m)
+            # Fabricated compaction-summary lines: the whole line goes, so the
+            # invented result never reads as a real one.
+            seg = re.sub(r"^[ \t]*\[tool\]\s+\w+\s*\(.*$", note, seg, flags=re.MULTILINE)
         out.append(seg)
     return "".join(out).strip()
 
@@ -367,6 +406,9 @@ def _is_narrating_tool_use(text: str) -> bool:
         return True
     # Same failure, different syntax: <write_file ...>, <web_search ...> etc.
     if _has_pseudo_tool_tag(text):
+        return True
+    # Same failure again: a fabricated "[tool] name(...) → result" summary line.
+    if _has_fake_tool_summary(text):
         return True
     lower = text.lower()
     if any(phrase in lower for phrase in _NARRATION_PHRASES):

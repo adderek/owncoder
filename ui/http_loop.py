@@ -252,7 +252,23 @@ def _attach_session_rollup(messages: list[dict], rollup: "dict | None") -> None:
 
 #: A collapsed tool round as history_ops writes it into the assistant message.
 _EXEC_RE = re.compile(
+    r'^[ \t]*\[tool\] (\w+)\((.*?)\) → (.*)$', re.M)
+#: The same round as sessions written before the tag form was dropped store it
+#: (history_ops._tool_summary_line explains why it was). Resumed sessions must
+#: keep unfolding into tool bubbles, so both shapes are replayed.
+_EXEC_RE_LEGACY = re.compile(
     r'<agent_exec tool="([^"]*)" args="([^"]*)">(.*?)</agent_exec>', re.S)
+
+
+def _exec_blocks(content: str) -> list[re.Match]:
+    """Collapsed-round matches in `content`, current and legacy form, in order.
+
+    Both regexes expose the same three groups (tool, args, result), so callers
+    treat a match from either identically.
+    """
+    blocks = list(_EXEC_RE.finditer(content)) + list(_EXEC_RE_LEGACY.finditer(content))
+    blocks.sort(key=lambda m: m.start())
+    return blocks
 
 #: Injected context that the live view never showed — similar-session recall,
 #: transient note blocks. Replaying them as user messages is how a resumed
@@ -326,7 +342,7 @@ def _unfold_round(m: dict, records: dict, result_limit: int) -> list[dict] | Non
     Returns None when the message holds no collapsed round.
     """
     content = m.get("content") or ""
-    blocks = list(_EXEC_RE.finditer(content))
+    blocks = _exec_blocks(content)
     if not blocks:
         return None
 

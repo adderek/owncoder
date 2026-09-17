@@ -146,6 +146,7 @@ def _split_sessions(target: str, console, dry_run: bool = False) -> None:
                 and (
                     (m.get("role") == "system" and m["content"].startswith("[tools:"))
                     or ("<agent_exec " in m.get("content", ""))
+                    or ("[tool] " in m.get("content", ""))
                     or ("[old-session tool: " in m.get("content", ""))
                 )
             ):

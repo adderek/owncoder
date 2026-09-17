@@ -136,6 +136,26 @@ class TestCollapsedRounds:
                  if m["role"] == "assistant" and m["content"]]
         assert texts == ["Looking at the file.", "Done."]
 
+    #: The current fold shape (history_ops._tool_summary_line). Sessions
+    #: written before it used the tag form above, so replay handles both.
+    FOLDED_LINE = {
+        "role": "assistant",
+        "content": ("Looking at the file.\n\n"
+                    "[tool] read_file(path='a.py') → ['content']\n\n"
+                    "Done."),
+    }
+
+    def test_the_current_fold_shape_unfolds_too(self):
+        out = _transcript([self.FOLDED_LINE])
+        calls = [m for m in out if m.get("tool_calls")]
+        assert calls and calls[0]["tool_calls"][0]["name"] == "read_file"
+        assert calls[0]["tool_calls"][0]["args"] == "path='a.py'"
+        results = [m for m in out if m["role"] == "tool"]
+        assert results and results[0]["content"] == "['content']"
+        texts = [m["content"] for m in out
+                 if m["role"] == "assistant" and m["content"]]
+        assert texts == ["Looking at the file.", "Done."]
+
     def test_an_error_result_is_marked(self):
         out = _transcript([{"role": "assistant", "content":
                             '<agent_exec tool="bash" args="cmd=\'x\'">'

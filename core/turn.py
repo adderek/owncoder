@@ -13,7 +13,7 @@ from openai import APIConnectionError, APIError, APITimeoutError, BadRequestErro
 
 from .prompts import _build_call_kwargs, apply_prompt_hints, _log_llm_request
 from .tool_calls import _tool_result_message, _FakeToolCall, execute_tool, _parse_raw_tool_calls
-from .streaming import _stream_response, _strip_tool_blocks, _is_narrating_tool_use, _has_unexecuted_agent_exec, _has_pseudo_tool_tag, _mark_unexecuted_agent_exec, _gpu_slot, build_streamed_choice, StreamStalledError
+from .streaming import _stream_response, _strip_tool_blocks, _is_narrating_tool_use, _has_unexecuted_agent_exec, _has_pseudo_tool_tag, _mark_unexecuted_agent_exec, _has_fake_tool_summary, _unexecuted_tool_names, _gpu_slot, build_streamed_choice, StreamStalledError
 from .cache_tracker import check_cache, mark_request
 from .history_ops import (
     _merge_consecutive_assistants, _collapse_tool_rounds, _truncate_large_messages,
@@ -315,6 +315,52 @@ async def run_turn(
     tools, _refresh_tools, compaction_on = select_tools(get_schemas(), config, excluded_tools)
     nudge_count = 0
     MAX_NUDGES = 3
+    _TEXT_CALL_KIND = "text_call_nudge"
+
+    def _text_call_nudge(content: str, history: list[dict]) -> str:
+        """Nudge text for a tool call the model wrote as prose.
+
+        A weak one-liner is ignored by small models: the observed failure was a
+        model apologising, then writing the same fabricated tag again for five
+        turns. So the repeat gets the schema of the tool it was reaching for
+        and a one-call instruction, which is what it lacked — the tag form it
+        copied from history carries `…`-truncated arguments, never a schema.
+        """
+        base = (
+            "You wrote a tool call as plain text (a tag, or a '[tool] name(...) → result' line), "
+            "including a made-up result. "
+            "It was NOT executed — no tool ran and any result you stated is fabricated. "
+            "Never write tool calls as text or invent results; call the tool properly now."
+        )
+        repeats = sum(1 for m in history if m.get("_injected_kind") == _TEXT_CALL_KIND)
+        if repeats < 1:
+            return base
+        names = _unexecuted_tool_names(content)
+        schema = _schema_hint(names)
+        extra = (
+            f"\n\nThis is violation #{repeats + 1} in this session. "
+            "Lines like '[tool] name(...) → result' in the history are RECORDS of calls that "
+            "already ran — never a format to write in. Emit ONE real tool call now, "
+            "nothing else, no prose."
+        )
+        if schema:
+            extra += f"\n\nSchema of the tool you tried to write:\n{schema}"
+        return base + extra
+
+    def _schema_hint(names: list[str], limit: int = 900) -> str:
+        """JSON parameter schema for the first named tool that actually exists."""
+        for name in names:
+            for t in tools or []:
+                fn = t.get("function", {}) if isinstance(t, dict) else {}
+                if fn.get("name") != name:
+                    continue
+                try:
+                    params = json.dumps(fn.get("parameters") or {}, ensure_ascii=False)
+                except Exception:
+                    return ""
+                return f"{name}: {params[:limit]}"
+        return ""
+
     _NO_TOOL_SENTINEL = "NO_TOOL_NEEDED:"
     _no_tool_empty = 0   # no_tool_needed calls that carried no prose answer
     _justify_pending_content: str | None = None
@@ -1250,16 +1296,14 @@ async def run_turn(
             if on_tool_call:
                 on_tool_call("⟳ nudge", "")
             messages = messages_with_current
-            if _has_unexecuted_agent_exec(content) or _has_pseudo_tool_tag(content):
-                nudge_text = (
-                    "You wrote a tool call as plain text (an <agent_exec> or <tool_name ...> tag), "
-                    "including a made-up result. "
-                    "It was NOT executed — no tool ran and any result you stated is fabricated. "
-                    "Never write tool tags or invent results; call the tool properly now."
-                )
+            if (_has_unexecuted_agent_exec(content) or _has_pseudo_tool_tag(content)
+                    or _has_fake_tool_summary(content)):
+                nudge_text = _text_call_nudge(content, messages)
+                nudge_kind = _TEXT_CALL_KIND
             else:
                 nudge_text = "Call the tool now. Do not describe it, execute it."
-            nudge = _injected("nudge", nudge_text, _nudged=True)
+                nudge_kind = "nudge"
+            nudge = _injected(nudge_kind, nudge_text, _nudged=True)
             messages = messages + [nudge]
             nudge_count += 1
             continue
@@ -1289,7 +1333,8 @@ async def run_turn(
 
         if not content.strip():
             logger.warning("run_turn: model returned empty/blank response (finish_reason=%r)", finish_reason)
-        if _has_unexecuted_agent_exec(content) or _has_pseudo_tool_tag(content):
+        if (_has_unexecuted_agent_exec(content) or _has_pseudo_tool_tag(content)
+                or _has_fake_tool_summary(content)):
             # Nudges exhausted (or fallback disabled) and the tag survived:
             # it never executed, so don't show its fabricated result as fact
             # or store it verbatim where future turns would imitate it.

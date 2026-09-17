@@ -111,10 +111,10 @@ def _short_repr(v, limit: int = 40) -> str:
     """repr() capped at `limit` chars without splitting string quotes.
 
     A blindly sliced repr like `'https://x.pl/wiadomosc/202` (closing quote
-    lost) lands in <agent_exec args="..."> summaries; models imitate that form
-    and _parse_agent_exec_args then splices the next `key=` into the value.
-    Strings are shortened before repr so quoting stays balanced, and the `…`
-    marker makes truncation visible — and rejectable — in imitations.
+    lost) lands in the compaction summary lines; models imitate whatever those
+    look like, and _parse_agent_exec_args then splices the next `key=` into the
+    value. Strings are shortened before repr so quoting stays balanced, and the
+    `…` marker makes truncation visible — and rejectable — in imitations.
     """
     r = repr(v)
     if len(r) <= limit:
@@ -122,6 +122,31 @@ def _short_repr(v, limit: int = 40) -> str:
     if isinstance(v, str):
         return repr(v[: max(1, limit - 4)] + "…")
     return r[: limit - 1] + "…"
+
+
+def _summary_safe(v) -> str:
+    """One-line, tag-free rendering of a value for a compaction summary.
+
+    `<` is the only character that has to go: left alone, a result containing
+    one revives the very tag-shaped text these summaries exist to avoid, and
+    the unexecuted-tag detectors would fire on replayed history. Newlines are
+    folded so one collapsed call stays one line, which is what
+    _TOOL_SUMMARY_RE and the http replay both key on.
+    """
+    return " ".join(str(v).split()).replace("<", "&lt;")
+
+
+def _tool_summary_line(name: str, args: str, result: str) -> str:
+    """Render one executed tool call for the compacted history.
+
+    Deliberately NOT `<agent_exec .../>` syntax. Models imitate whatever shape
+    they see in history, and the tag form was imitable as a call: a copied tag
+    carried `…`-truncated args, so _parse_agent_exec_args rejected every value,
+    nothing executed, and the fabricated result the model wrote inside the tag
+    read as fact. This form cannot be mistaken for a call by any parser — and
+    an imitation of it is caught by _has_fake_tool_summary instead.
+    """
+    return f"[tool] {name}({_summary_safe(args)}) → {_summary_safe(result)}".rstrip()
 
 
 def _collapse_tool_rounds(
@@ -176,9 +201,7 @@ def _collapse_tool_rounds(
                             result_content = raw[:result_preview]
                         break
 
-                safe_args = t_arg_str.replace('"', '&quot;').replace('>', '&gt;').replace('<', '&lt;')
-                safe_result = result_content.replace('"', '&quot;').replace('>', '&gt;').replace('<', '&lt;')
-                exec_parts.append(f'<agent_exec tool="{tc_name}" args="{safe_args}">{safe_result}</agent_exec>')
+                exec_parts.append(_tool_summary_line(tc_name, t_arg_str, result_content))
 
                 if side_log is not None:
                     try:
@@ -264,13 +287,11 @@ def _build_extracted_summary(filename: str, code: str, outcome: str, err: str | 
     else:
         arrow = f"ERROR: {err}"
 
-    safe_path = filename.replace("\\", "\\\\").replace("'", "\\'").replace('"', '&quot;').replace('>', '&gt;').replace('<', '&lt;')
-    # Tool name must stay a plain \w+ identifier: models imitate these history
-    # summaries verbatim, and a name like "write_file (extracted)" is unparseable
-    # by _parse_agent_exec_xml — the imitation then neither executes nor gets
-    # stripped, and a fabricated "ok" result reaches the user as fact. The path
-    # is single-quoted so imitations parse whole instead of truncating at "/".
-    summary_text = f"<agent_exec tool=\"write_file\" args=\"path='{safe_path}'\">{arrow} (extracted from narration)</agent_exec>"
+    safe_path = filename.replace("\\", "\\\\").replace("'", "\\'")
+    # Tool name stays a plain \w+ identifier so the line matches
+    # _TOOL_SUMMARY_RE like any other collapsed round (http replay unfolds it,
+    # and an imitation of it is detected rather than silently believed).
+    summary_text = _tool_summary_line("write_file", f"path='{safe_path}'", f"{arrow} (extracted from narration)")
     summary_msg: dict = {"role": "assistant", "content": summary_text}
 
     if side_log is not None:

@@ -98,7 +98,7 @@ def test_collapse_reuses_existing_side_log_row(tmp_path):
 
     rows = (tmp_path / "tool_calls.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(rows) == 1, "collapse must not duplicate an already-logged call"
-    summary = next(m for m in collapsed if "<agent_exec " in (m.get("content") or ""))
+    summary = next(m for m in collapsed if "[tool] " in (m.get("content") or ""))
     assert summary["_tool_refs"] == [seq]
     # The surviving row is the richer execution-time one.
     assert json.loads(rows[0])["duration_ms"] == 3.0

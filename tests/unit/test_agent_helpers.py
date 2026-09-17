@@ -12,6 +12,8 @@ from agent.core.tool_calls import (
 from agent.core.streaming import (
     _is_narrating_tool_use,
     _has_unexecuted_agent_exec,
+    _has_fake_tool_summary,
+    _unexecuted_tool_names,
     _mark_unexecuted_agent_exec,
     _UNEXECUTED_EXEC_NOTE,
     _strip_tool_blocks,
@@ -143,6 +145,44 @@ class TestUnexecutedAgentExec:
         assert out.count("<agent_exec") == 1  # only the fenced one remains
 
 
+class TestFakeToolSummary:
+    """Regression: session 20260917T210850.160Z_90d5.
+
+    The model copied the history-summary format for its own "calls" — with
+    `…`-truncated args no parser accepts — and stated a result it made up
+    ("['ok', 'applied']"). Nothing ran. The summary shape changed to stop
+    teaching it (history_ops._tool_summary_line), so an imitation of the new
+    shape has to be caught here instead of passing as prose.
+    """
+
+    FAKE = ("Zmieniam elipse:\n\n"
+            "[tool] edit_file(purpose='replace amphitheatre: ell…', "
+            "chunks=[{'path': '/home/a/objects.js…') → ['ok', 'applied']\n\n"
+            "Gotowe.")
+
+    def test_detected_in_prose(self):
+        assert _has_fake_tool_summary(self.FAKE)
+        assert _is_narrating_tool_use(self.FAKE)
+
+    def test_ignored_inside_code_fence(self):
+        text = "The fold format is:\n```\n[tool] edit_file(path='x') → ok\n```\nas shown."
+        assert not _has_fake_tool_summary(text)
+        assert not _is_narrating_tool_use(text)
+
+    def test_fabricated_result_is_replaced_not_shown(self):
+        out = _mark_unexecuted_agent_exec(self.FAKE)
+        assert "['ok', 'applied']" not in out
+        assert _UNEXECUTED_EXEC_NOTE in out
+        assert "Zmieniam elipse:" in out and "Gotowe." in out
+
+    def test_names_the_tool_for_the_escalated_nudge(self):
+        assert _unexecuted_tool_names(self.FAKE) == ["edit_file"]
+
+    def test_names_the_tool_from_a_tag(self):
+        text = '<agent_exec tool="web_fetch" args="url=\'https://x…\'">ok</agent_exec>'
+        assert _unexecuted_tool_names(text) == ["web_fetch"]
+
+
 class TestCollapseToolRounds:
     def test_collapses_tool_call_and_result(self):
         messages = [
@@ -158,7 +198,12 @@ class TestCollapseToolRounds:
             {"role": "assistant", "content": "Done."},
         ]
         collapsed = _collapse_tool_rounds(messages)
-        assert any("<agent_exec " in m.get("content", "") for m in collapsed if m.get("role") == "assistant")
+        assert any(
+            re.search(r"^\[tool\] read_file\(.*\) → ", m.get("content", ""), re.M)
+            for m in collapsed if m.get("role") == "assistant"
+        )
+        # The tag form is never written any more: models imitated it as a call.
+        assert not any("<agent_exec" in (m.get("content") or "") for m in collapsed)
 
     def test_preserves_user_messages(self):
         messages = [
@@ -184,7 +229,7 @@ class TestCollapseToolRounds:
         ]
         collapsed = _collapse_tool_rounds(messages)
         summary = collapsed[0]["content"]
-        m = re.search(r'args="([^"]*)"', summary.replace("&quot;", '"'))
+        m = re.search(r"^\[tool\] web_fetch\((.*)\) → ", summary, re.M)
         assert m is not None
         args_part = m.group(1)
         assert args_part.count("'") % 2 == 0  # quotes balanced
