@@ -1264,7 +1264,18 @@ async def run_turn(
             _justify_pending_content = None
             _justify_messages_snapshot = None
 
-        if fallback_enabled and (iter_count == 0 or _is_narrating_tool_use(content)) and not already_nudged and nudge_count < MAX_NUDGES:
+        # A fabricated call (tag, pseudo-tag or "[tool] name(...) → result" line)
+        # states a result that never happened, so one nudge is not enough: a
+        # degenerating model repeats the fabrication and, with the single-nudge
+        # gate, its invented output was returned as the answer. Re-nudge those up
+        # to MAX_NUDGES; plain narration keeps the one-shot gate.
+        _fabricated_call = (
+            _has_unexecuted_agent_exec(content)
+            or _has_pseudo_tool_tag(content)
+            or _has_fake_tool_summary(content)
+        )
+        if (fallback_enabled and (iter_count == 0 or _is_narrating_tool_use(content))
+                and (not already_nudged or _fabricated_call) and nudge_count < MAX_NUDGES):
             messages_with_current = messages + [stamp_reasoning({"role": "assistant", "content": content})]
             applied = _apply_code_from_history(messages_with_current, on_tool_call, side_log=side_log, turn_id=turn_index)
             if applied:
