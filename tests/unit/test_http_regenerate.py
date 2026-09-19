@@ -109,3 +109,77 @@ class TestButton:
         i = APP_JS.index("async function regenerate(")
         body = APP_JS[i:i + 900]
         assert "if (!r.ok)" in body and body.index("if (!r.ok)") < body.index("'/api/chat'")
+
+
+HISTORY = [
+    {"role": "system", "content": "sys"},
+    {"role": "user", "content": "first question"},
+    {"role": "assistant", "content": "first answer"},
+    {"role": "user", "content": "second question"},
+    {"role": "assistant", "content": "[SESSION SUMMARY · round 6] fabricated"},
+    {"role": "user", "content": "You wrote a tool call as plain text…",
+     "_injected_kind": "text_call_nudge", "_nudged": True},
+    {"role": "assistant", "content": "still fabricated"},
+]
+
+
+class TestRewind:
+    """Editing the conversation itself: a hallucinated answer leaves the context."""
+
+    def test_it_cuts_back_to_the_chosen_message(self):
+        ui = _ui(HISTORY)
+        out = ui.rewind_to_user(1, "second question")
+        assert out["ok"] and out["text"] == "second question" and out["dropped"] == 4
+        assert [m["role"] for m in ui.server.msgs] == ["system", "user", "assistant"]
+        assert "SESSION SUMMARY" not in "".join(str(m["content"]) for m in ui.server.msgs)
+
+    def test_an_earlier_message_can_be_chosen(self):
+        ui = _ui(HISTORY)
+        out = ui.rewind_to_user(2, "first question")
+        assert out["ok"] and out["dropped"] == 6
+        assert [m["role"] for m in ui.server.msgs] == ["system"]
+
+    def test_stale_page_is_refused(self):
+        ui = _ui(HISTORY)
+        out = ui.rewind_to_user(1, "something else")
+        assert not out["ok"] and "reload" in out["msg"]
+        assert len(ui.server.msgs) == len(HISTORY)
+
+    def test_out_of_range_is_refused(self):
+        ui = _ui(HISTORY)
+        assert not ui.rewind_to_user(9, "")["ok"]
+        assert not ui.rewind_to_user(0, "")["ok"]
+        assert not ui.rewind_to_user("x", "")["ok"]
+        assert len(ui.server.msgs) == len(HISTORY)
+
+    def test_regenerate_ignores_harness_nudges(self):
+        """A nudge is stored with role user; re-sending its text asks the model
+        to answer the harness instead of the user."""
+        ui = _ui(HISTORY)
+        out = ui.drop_last_exchange()
+        assert out["ok"] and out["text"] == "second question"
+        assert [m["role"] for m in ui.server.msgs] == ["system", "user", "assistant"]
+
+    def test_the_route_refuses_mid_turn(self):
+        i = HTTP_LOOP.index('elif self.path == "/api/rewind":')
+        block = HTTP_LOOP[i:i + 300]
+        assert "if ui.busy:" in block and block.index("ui.busy") < block.index("rewind_to_user")
+
+
+class TestRewindButton:
+    def test_only_user_rows_carry_it(self):
+        i = APP_JS.index("function row(cls, html, text)")
+        body = APP_JS[i:APP_JS.index("function copyText(")]
+        assert "'copy rewind'" in body and "cls.indexOf('user') > 0" in body
+
+    def test_it_counts_from_the_end_and_sends_the_text(self):
+        i = APP_JS.index("async function rewindTo(")
+        body = APP_JS[i:i + 1200]
+        assert "rows.length - rows.indexOf(msg)" in body
+        assert "from_end" in body and "text: msg.innerText" in body
+
+    def test_it_waits_rebuilds_and_says_what_it_did(self):
+        i = APP_JS.index("async function rewindTo(")
+        body = APP_JS[i:i + 1600]
+        assert "if (busyFlag)" in body and "await resyncView();" in body
+        assert "dropped from the context" in body and "/undo" in body

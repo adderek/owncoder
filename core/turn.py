@@ -13,13 +13,14 @@ from openai import APIConnectionError, APIError, APITimeoutError, BadRequestErro
 
 from .prompts import _build_call_kwargs, apply_prompt_hints, _log_llm_request
 from .tool_calls import _tool_result_message, _FakeToolCall, execute_tool, _parse_raw_tool_calls
-from .streaming import _stream_response, _strip_tool_blocks, _is_narrating_tool_use, _has_unexecuted_agent_exec, _has_pseudo_tool_tag, _mark_unexecuted_agent_exec, _has_fake_tool_summary, _unexecuted_tool_names, _gpu_slot, build_streamed_choice, StreamStalledError
+from .streaming import _stream_response, _strip_tool_blocks, _is_narrating_tool_use, _has_unexecuted_agent_exec, _has_pseudo_tool_tag, _mark_unexecuted_agent_exec, _has_fake_tool_summary, _has_harness_marker, _unexecuted_tool_names, _gpu_slot, build_streamed_choice, StreamStalledError
 from .cache_tracker import check_cache, mark_request
 from .history_ops import (
     _merge_consecutive_assistants, _collapse_tool_rounds, _truncate_large_messages,
     apply_code_from_history_gated,
 )
 from . import diagnostics
+from . import markers
 from . import prompt_cache
 from . import turn_batch
 from . import turn_errors
@@ -38,6 +39,9 @@ if TYPE_CHECKING:
     from agent.config import Config
 
 logger = logging.getLogger(__name__)
+
+# Placeholder kept in history in place of a reply the answer check rejected.
+_ANSWER_DISCARDED = "[removed: reply rejected by answer check ({label}) — not shown to the user]"
 
 
 async def _post_turn_capture_and_summarize(
@@ -249,7 +253,8 @@ async def run_turn(
                 on_injected_message(kind, text)
             except Exception:
                 logger.exception("on_injected_message callback failed")
-        return {"role": "user", "content": text, "_injected_kind": kind, **extra}
+        return {"role": "user", "content": markers.mark(text), "_injected_kind": kind,
+                "_source": "harness", **extra}
 
     def _notify_ctx(n: int) -> None:
         if on_context_size is None:
@@ -461,6 +466,26 @@ async def run_turn(
         return True
 
     _health_probes_done: set[str] = set()
+    _answer_retried = False
+
+    async def _answer_check(answer: str):
+        """Classify the reply about to be returned (classify.answer_check).
+
+        → turn_health.Decision or None when disabled / classifier unavailable.
+        Metadata + a 300-char excerpt only; never the whole answer.
+        """
+        from agent.classify import turn_health as _th
+        if not _th.answer_enabled(config):
+            return None
+        names = [t.get("function", {}).get("name", "") for t in (tools or [])
+                 if isinstance(t, dict)]
+        state = _th.build_answer_state(messages, answer, [n for n in names if n])
+        v = await _th.check_answer(config, state)
+        d = _th.decide_answer(config, v, _answer_retried)
+        _th.log(config, state, v, d.action, "final_answer")
+        if v is not None and v.label != "answers_request":
+            _phase("answer_check", f"{v.label} p={v.p:.2f} -> {d.action}")
+        return d
 
     async def _turn_health(trigger: str):
         """Ask the classifier whether this turn is still healthy (classify.turn_health).
@@ -933,8 +958,9 @@ async def run_turn(
                                 loop_detector.acknowledge(_sig)
                         if _try_escalate_loop_guard(_ack_triggered):
                             continue
-                        note = turn_guards.loop_guard_stop_note(summary, triggered)
-                        messages = messages + [{"role": "assistant", "content": note}]
+                        note = markers.mark(turn_guards.loop_guard_stop_note(summary, triggered))
+                        messages = messages + [{"role": "assistant", "content": note,
+                                                "_source": "harness"}]
                         return "".join(content_parts + [note]), messages
 
             clean_content = _strip_tool_blocks(msg.content or "") if msg.content else None
@@ -1097,15 +1123,18 @@ async def run_turn(
             if _streak_max > 0 and _error_streak >= _streak_max:
                 logger.warning("error_guard: %d consecutive all-error tool rounds — stopping turn", _error_streak)
                 _phase("error_guard", f"{_error_streak} failed rounds")
-                note = (f"[error guard: tools failed in {_error_streak} consecutive rounds — "
-                        f"the backend may be down or rate-limited. Stopping; type 'continue' to retry.]")
-                messages = messages + [{"role": "assistant", "content": note}]
+                note = markers.mark(
+                    f"[error guard: tools failed in {_error_streak} consecutive rounds — "
+                    f"the backend may be down or rate-limited. Stopping; type 'continue' to retry.]")
+                messages = messages + [{"role": "assistant", "content": note,
+                                        "_source": "harness"}]
                 return "".join(content_parts + [note]), messages
 
             if _read_path_counts and max(_read_path_counts.values()) >= 3:
                 _hd = await _turn_health("repeat_read")
                 if _hd is not None and _hd.action == "stop":
-                    messages = messages + [{"role": "assistant", "content": _hd.text}]
+                    messages = messages + [{"role": "assistant", "content": markers.mark(_hd.text),
+                                            "_source": "harness"}]
                     return "".join(content_parts + [_hd.text]), messages
                 if _hd is not None and _hd.action == "escalate":
                     _try_escalate_loop_guard(_read_path_counts.clear)
@@ -1311,8 +1340,10 @@ async def run_turn(
             _has_unexecuted_agent_exec(content)
             or _has_pseudo_tool_tag(content)
             or _has_fake_tool_summary(content)
+            or _has_harness_marker(content)
         )
-        if (fallback_enabled and (iter_count == 0 or _is_narrating_tool_use(content))
+        if (fallback_enabled and (iter_count == 0 or _is_narrating_tool_use(content)
+                                  or _fabricated_call)
                 and (not already_nudged or _fabricated_call) and nudge_count < MAX_NUDGES):
             messages_with_current = messages + [stamp_reasoning({"role": "assistant", "content": content})]
             applied = await apply_code_from_history_gated(messages_with_current, on_tool_call, config, side_log=side_log, turn_id=turn_index)
@@ -1345,8 +1376,7 @@ async def run_turn(
             if on_tool_call:
                 on_tool_call("⟳ nudge", "")
             messages = messages_with_current
-            if (_has_unexecuted_agent_exec(content) or _has_pseudo_tool_tag(content)
-                    or _has_fake_tool_summary(content)):
+            if _fabricated_call:
                 # Keep the marker, not the fabrication: a verbatim fake
                 # "[tool] x(...) → result" line left in history is the example
                 # the next round copies (observed: 10 violations in one session).
@@ -1357,7 +1387,8 @@ async def run_turn(
                 if nudge_count >= 1 or any(m.get("_injected_kind") == _TEXT_CALL_KIND for m in messages):
                     _hd = await _turn_health("text_call")
                     if _hd is not None and _hd.action == "stop":
-                        messages = messages + [{"role": "assistant", "content": _hd.text}]
+                        messages = messages + [{"role": "assistant", "content": markers.mark(_hd.text),
+                                               "_source": "harness"}]
                         return "".join(content_parts + [_hd.text]), messages
                     if _hd is not None and _hd.action == "escalate":
                         _try_escalate_loop_guard(lambda: None)
@@ -1397,12 +1428,29 @@ async def run_turn(
         if not content.strip():
             logger.warning("run_turn: model returned empty/blank response (finish_reason=%r)", finish_reason)
         if (_has_unexecuted_agent_exec(content) or _has_pseudo_tool_tag(content)
-                or _has_fake_tool_summary(content)):
+                or _has_fake_tool_summary(content) or _has_harness_marker(content)):
             # Nudges exhausted (or fallback disabled) and the tag survived:
             # it never executed, so don't show its fabricated result as fact
             # or store it verbatim where future turns would imitate it.
             logger.warning("run_turn: unexecuted tool tag in final content — replacing with marker")
             content = _mark_unexecuted_agent_exec(content)
+
+        # Final-answer check (classify.answer_check): does this reply answer the
+        # request from what actually ran? A fabricated-call or echoed-template
+        # reply is re-prompted once and never enters history — kept, it is the
+        # example the next reply copies.
+        if content.strip():
+            _ac = await _answer_check(content)
+            if _ac is not None and _ac.action == "retry":
+                _answer_retried = True
+                messages = messages + [
+                    stamp_reasoning({"role": "assistant", "_source": "harness",
+                                     "content": markers.mark(
+                                         _ANSWER_DISCARDED.format(label=_ac.verdict.label))}),
+                    _injected("answer check", _ac.text, _nudged=True),
+                ]
+                continue
+
         content_parts.append(content)
         messages = messages + [stamp_reasoning({"role": "assistant", "content": content})]
         messages = _collapse_tool_rounds(messages, side_log=side_log, turn_id=turn_index)

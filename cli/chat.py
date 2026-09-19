@@ -182,7 +182,8 @@ def _warn_loop_guard_resume(console, messages: list[dict]) -> None:
     for m in reversed(messages):
         if m.get("role") == "assistant":
             content = m.get("content") or ""
-            if content.strip().startswith("[loop guard:"):
+            from agent.core import markers
+            if markers.strip(content).strip().startswith("[loop guard:"):
                 note = (
                     "Note: last session ended with a loop-guard stop:\n"
                     f"  {content.strip()[:200]}\n"

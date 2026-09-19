@@ -187,6 +187,16 @@ def _has_fake_tool_summary(text: str) -> bool:
     return bool(_TOOL_SUMMARY_RE.search(_prose_only(text)))
 
 
+def _has_harness_marker(text: str) -> bool:
+    """True if the model reproduced the harness source marker (core/markers.py).
+
+    One rule for the whole family of harness notes: the marker is written by us
+    and neutralised in everything that comes back from a tool, so a model
+    message carrying it is an imitation, whatever shape it copied."""
+    from agent.core import markers
+    return markers.contains(_prose_only(text))
+
+
 def _unexecuted_tool_names(text: str) -> list[str]:
     """Tool names the model wrote as text instead of calling, in order seen.
 
@@ -373,6 +383,10 @@ def _mark_unexecuted_tool_tags(text: str) -> str:
             # …]", "[released read_file …]"): authored by us, never by the
             # model — kept, they read as its own findings and get re-copied.
             seg = _HARNESS_NOTE_LINE_RE.sub("", seg)
+            # Any line carrying the source marker: ours by definition, so the
+            # model only has it by copying (core/markers.py).
+            from agent.core import markers as _markers
+            seg = _markers.drop_marked_lines(seg, note)
         out.append(seg)
     text = "".join(out)
     # One marker per run of fabricated lines is enough to say what happened.

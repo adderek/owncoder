@@ -668,6 +668,9 @@ details.think summary:hover { color: var(--dim); }
 .copy:hover { color: var(--fg); background: var(--panel2); filter: none; }
 /* Edit-and-send-again, on your own messages only; sits left of the copy. */
 .copy.reuse, .copy.regen { right: 34px; }
+/* Rewind sits left of edit; only user rows carry it, so it shares the slot
+   the fold toggle uses on answers. */
+.copy.rewind { right: 60px; }
 .copy.fold { right: 60px; }
 /* Folded answer: a few lines under a fade; click anywhere to unfold. The
    toggle stays visible so a folded balloon says it can be opened. */

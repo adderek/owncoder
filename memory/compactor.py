@@ -803,8 +803,9 @@ async def compact(
 
     # Marked so a replayed session can say where history was compacted rather
     # than silently showing fewer rounds than the live view had.
-    compacted_msg = {"role": "assistant", "content": compacted_content,
-                     "_compaction_marker": True}
+    from agent.core import markers
+    compacted_msg = {"role": "assistant", "content": markers.mark(compacted_content),
+                     "_compaction_marker": True, "_source": "harness"}
 
     verbatim = _truncate_tool_results_in(verbatim, max_chars=2000)
 

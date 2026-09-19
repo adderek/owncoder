@@ -633,6 +633,7 @@ worker_timeout_seconds = 120
 # hide_unconfigured_notice = false
 # review_below_confidence = 0.0     # unsure verdict → review (0 = off)
 # turn_health = "off"               # off | advisory | act — stuck/looping/fake-call turns
+# answer_check = "off"              # off | advisory | act — reply that fakes calls / echoes a template
 #
 # Cloud variant — TypeSafe Jev SaaS (same interface; redacted + identity-scrubbed
 # args leave the machine, file contents never; refused under air-gap/private):

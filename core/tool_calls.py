@@ -557,6 +557,12 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
             from agent.security.redaction import redact
             serialised = redact(serialised, config)
 
+        # Nothing outside the harness may forge the source marker: reading this
+        # repository, or a page that quotes it, would otherwise hand the model a
+        # line that reads as ours (see core/markers.py).
+        from agent.core import markers as _markers
+        serialised = _markers.neutralize(serialised)
+
         # Banner-wrap untrusted tool output (MCP/web) that contains prompt-injection
         # shapes, before it enters context/store. Local tools pass through.
         from agent.security.injection_scan import guard_tool_output

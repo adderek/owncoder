@@ -25,6 +25,13 @@ CHANGE_TOOLS = ("edit_file", "write_file", "patch_file", "replace_text",
 STUB_PREFIX = "[released read_file"
 
 
+def _stripped(text: str) -> str:
+    """Stub text carries the harness source marker (core/markers.py); the
+    prefix check has to look past it or a stub gets re-stubbed."""
+    from agent.core import markers
+    return markers.strip(text)
+
+
 def _args(tc: dict) -> dict:
     raw = (tc.get("function") or {}).get("arguments") or "{}"
     if isinstance(raw, dict):
@@ -112,10 +119,12 @@ def release_reads(messages: list[dict], idle_calls: int = 12) -> tuple[list[dict
     for m in messages:
         hit = released.get(m.get("tool_call_id")) if m.get("role") == "tool" else None
         content = m.get("content")
-        if hit and isinstance(content, str) and not content.startswith(STUB_PREFIX):
+        if hit and isinstance(content, str) and not _stripped(content).startswith(STUB_PREFIX):
             args, reason = hit
-            stub = (f"{STUB_PREFIX} {args['path']}{_range(args)} — {reason}. "
-                    f"Content dropped from context; read_file a range again if still needed.]")
+            from agent.core import markers
+            stub = markers.mark(
+                f"{STUB_PREFIX} {args['path']}{_range(args)} — {reason}. "
+                f"Content dropped from context; read_file a range again if still needed.]")
             if len(stub) < len(content):
                 freed += len(content) - len(stub)
                 out.append({**m, "content": stub})

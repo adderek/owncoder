@@ -15,6 +15,8 @@ from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
 
+from agent.core import markers
+
 
 # Tool names that mutate files on disk — a successful call marks the turn
 # "dirty" for the post-edit verify hook (see run_turn / VerifyConfig).
@@ -101,13 +103,13 @@ def patch_read_file_result(tc, result: str, read_path_counts: dict,
                         f"across {count} reads. Stop re-reading — make your change with "
                         f"edit_file, or use search_files for a specific anchor.]"
                     )
-                    result = json.dumps({"content": note, "end_of_file": True,
+                    result = json.dumps({"content": markers.mark(note), "end_of_file": True,
                                          "metadata": {"total_lines": total}})
                     auto_advanced = True
                 else:
                     adv = _rf(rpath, start_line=nxt, end_line=nxt + win - 1)
                     if isinstance(adv, dict) and not adv.get("error"):
-                        adv["_auto_advanced"] = (
+                        adv["_auto_advanced"] = markers.mark(
                             f"[loop-guard] You re-read '{rpath}' without acting, so this is the "
                             f"NEXT block (lines {nxt}+) — the offset advances on each repeat. "
                             f"Use search_files or edit_file once you have the anchor; do not "
@@ -122,7 +124,7 @@ def patch_read_file_result(tc, result: str, read_path_counts: dict,
         if count >= stop_threshold:
             logger.warning("loop_guard: read_file path '%s' range %s-%s count %d >= stop threshold",
                            rpath, a.get("start_line"), a.get("end_line"), count)
-            return result, (
+            return result, markers.mark(
                 f"[loop guard: '{rpath}' same range read {count}× this turn without progress. "
                 f"Stop re-reading — use search_files to find a specific anchor, "
                 f"or report what you need and ask the user for guidance.]"

@@ -448,6 +448,7 @@ def _transcript(messages, result_limit: int = 2000, sid: str = "") -> list[dict]
     output for collapsed rounds; without it those rounds replay from the
     shortened text kept in the message itself.
     """
+    from agent.core import markers as _markers
     records = _side_log_records(sid)
     reasoning_records = _side_log_records(sid, "reasoning.jsonl")
     out: list[dict] = []
@@ -467,7 +468,7 @@ def _transcript(messages, result_limit: int = 2000, sid: str = "") -> list[dict]
                 out.append({"role": "user", "content": m.get("content") or ""})
         elif role == "assistant":
             if m.get("_compaction_marker") or (
-                    (m.get("content") or "").startswith("[SESSION SUMMARY")):
+                    _markers.strip(m.get("content") or "").startswith("[SESSION SUMMARY")):
                 # Not an answer: the boundary where older rounds were folded
                 # into a summary. Replaying it as an assistant message made a
                 # compacted session look like the agent had said this.
@@ -499,6 +500,11 @@ def _transcript(messages, result_limit: int = 2000, sid: str = "") -> list[dict]
                 "content": _result_preview(m.get("content"), result_limit),
                 "ok": _tool_ok(m.get("content")),
             })
+    # The source marker is for the model, not for the reader: the browser shows
+    # these rows with their own styling already (see core/markers.py).
+    for entry in out:
+        if isinstance(entry.get("content"), str):
+            entry["content"] = _markers.strip(entry["content"])
     return out
 
 
@@ -1589,6 +1595,19 @@ class _HttpUI:
         out["watches"].sort(key=lambda r: (not r["enabled"], r["name"]))
         return out
 
+    @staticmethod
+    def _typed_user_indices(msgs: list[dict]) -> list[int]:
+        """Positions of messages the USER actually typed.
+
+        Nudges, verify notes and goal checks are stored with role "user" too, so
+        a plain reverse scan for role == "user" lands on a harness note and
+        would re-send its text as if it were a question.
+        """
+        return [i for i, m in enumerate(msgs)
+                if m.get("role") == "user" and not m.get("_injected_kind")
+                and not m.get("_nudged") and isinstance(m.get("content"), str)
+                and m["content"].strip()]
+
     def drop_last_exchange(self) -> dict:
         """Remove the last user message and everything it produced.
 
@@ -1596,19 +1615,34 @@ class _HttpUI:
         so the previous answer, and the tool calls it made, have to go first,
         or the model just reads its own reply and agrees with it.
         """
+        out = self.rewind_to_user(1, "")
+        if not out.get("ok"):
+            out["msg"] = "nothing to regenerate"
+        return out
+
+    def rewind_to_user(self, from_end: int, text: str = "") -> dict:
+        """Cut history back to just before the *from_end*-th typed user message
+        (1 = the last one) and hand that message's text back for editing.
+
+        This is how a hallucinated answer leaves the model's context for good:
+        it and everything after it stop being part of the conversation. Files
+        those turns changed stay changed — that is what /undo is for.
+        """
         msgs = list(self.server.get_messages())
-        cut = None
-        for i in range(len(msgs) - 1, -1, -1):
-            if msgs[i].get("role") == "user":
-                cut = i
-                break
-        if cut is None:
-            return {"ok": False, "msg": "nothing to regenerate"}
-        text = msgs[cut].get("content") or ""
-        if not isinstance(text, str) or not text.strip():
-            return {"ok": False, "msg": "the last message has no text to re-send"}
+        typed = self._typed_user_indices(msgs)
+        try:
+            from_end = int(from_end)
+        except (TypeError, ValueError):
+            from_end = 0
+        if from_end < 1 or from_end > len(typed):
+            return {"ok": False, "msg": "that message is no longer in the model's context "
+                                        "(compacted or already dropped) — reload the page"}
+        cut = typed[-from_end]
+        current = (msgs[cut].get("content") or "").strip()
+        if text.strip() and text.strip() != current:
+            return {"ok": False, "msg": "history changed since this page loaded — reload"}
         self.server.set_messages(msgs[:cut])
-        return {"ok": True, "text": text, "dropped": len(msgs) - cut}
+        return {"ok": True, "text": current, "dropped": len(msgs) - cut}
 
     _SEARCH_HITS_MAX = 50
     _SEARCH_SNIPPET = 160
@@ -2587,6 +2621,12 @@ def _make_handler(ui: _HttpUI):
                     self._json({"ok": False, "msg": "a turn is running"})
                 else:
                     self._json(ui.drop_last_exchange())
+            elif self.path == "/api/rewind":
+                if ui.busy:
+                    self._json({"ok": False, "msg": "a turn is running"})
+                else:
+                    self._json(ui.rewind_to_user(payload.get("from_end"),
+                                                 str(payload.get("text") or "")))
             elif self.path == "/api/upload":
                 fname = str(payload.get("filename") or "")
                 data = str(payload.get("data") or "")

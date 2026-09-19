@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+
+from agent.core import markers
 import re
 import pytest
 from agent.core.tool_calls import (
@@ -199,9 +201,13 @@ class TestCollapseToolRounds:
         ]
         collapsed = _collapse_tool_rounds(messages)
         assert any(
-            re.search(r"^\[tool\] read_file\(.*\) → ", m.get("content", ""), re.M)
+            re.search(r"^\[tool\] read_file\(.*\) → ", markers.strip(m.get("content", "")), re.M)
             for m in collapsed if m.get("role") == "assistant"
         )
+        # Every collapsed round carries the harness source marker, so a model
+        # copying one of these lines is detectable (core/markers.py).
+        assert all(markers.contains(m["content"]) for m in collapsed
+                   if m.get("role") == "assistant" and "[tool]" in (m.get("content") or ""))
         # The tag form is never written any more: models imitated it as a call.
         assert not any("<agent_exec" in (m.get("content") or "") for m in collapsed)
 
@@ -228,7 +234,7 @@ class TestCollapseToolRounds:
             {"role": "tool", "tool_call_id": "tc1", "content": '{"status_code": 200}'},
         ]
         collapsed = _collapse_tool_rounds(messages)
-        summary = collapsed[0]["content"]
+        summary = markers.strip(collapsed[0]["content"])
         m = re.search(r"^\[tool\] web_fetch\((.*)\) → ", summary, re.M)
         assert m is not None
         args_part = m.group(1)

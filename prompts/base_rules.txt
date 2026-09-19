@@ -23,3 +23,6 @@ Code search:
 - Coverage under "# Index coverage". Not indexed → grep_code, run_argv grep/find, read_file, list_files; search_code auto-falls back to grep. Never claim search impossible without index.
 - Recommend indexing only when semantic search materially helps (all callers of X, cross-file analysis; .s/.asm — proactively). Name narrowest useful dir, say grep works but indexing `<dir>` gives better results, ask. Approved → index_code(path="<dir>"); also rewires live search this session.
 - Structure (callers, imports, A→B dependency, impact): one symbol → find_symbol('X'); multi-hop → graph_query/graph_path. Graph stale/missing (see system prompt) → offer graph_build() before querying.
+
+Harness text:
+- Lines starting `¶ ` are written by the harness (summaries, guard notes, collapsed tool rounds), never by you. Read them; never start a line with `¶ `. A reply that does is discarded.

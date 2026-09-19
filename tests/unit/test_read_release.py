@@ -5,6 +5,7 @@ import asyncio
 import json
 
 from agent.config import Config
+from agent.core import markers
 from agent.memory.read_release import STUB_PREFIX, release_reads
 
 _BODY = "x" * 5000
@@ -27,7 +28,9 @@ def _round(tool: str, args: dict, result: str = _BODY) -> list[dict]:
 
 
 def _tool_contents(msgs: list[dict]) -> list[str]:
-    return [m["content"] for m in msgs if m.get("role") == "tool"]
+    # Stubs carry the harness source marker (core/markers.py); these tests are
+    # about the release rules, so compare the text under it.
+    return [markers.strip(m["content"]) for m in msgs if m.get("role") == "tool"]
 
 
 class TestReleaseRules:

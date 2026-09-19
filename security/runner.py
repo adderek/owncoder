@@ -159,8 +159,14 @@ def _rlimit_preexec(sandbox_backend: str = "none") -> None:
     except (ValueError, OSError):
         pass
     try:
-        rss = cfg.rss_mb * 1024 * 1024
-        resource.setrlimit(resource.RLIMIT_AS, (rss, rss))
+        # RLIMIT_DATA (heap/anonymous memory), not RLIMIT_AS (address space):
+        # V8 reserves >1 GB of *virtual* memory for its code range at startup,
+        # so an AS cap killed every node/npx call with "Failed to reserve
+        # virtual memory for CodeRange" no matter how little it really used.
+        # Measured at 1 GB: node runs, a 2 GB allocation is still refused and a
+        # node heap bomb still dies.
+        mem = cfg.rss_mb * 1024 * 1024
+        resource.setrlimit(resource.RLIMIT_DATA, (mem, mem))
     except (ValueError, OSError):
         pass
     if sandbox_backend == "none":

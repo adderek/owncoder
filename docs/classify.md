@@ -82,6 +82,22 @@ harness notes the model copied (`[loop guard: …]`, `[released …]`) are repla
 by one marker before the message enters history — they were the examples the
 model kept imitating.
 
+### Final-answer check (`answer_check`)
+
+Runs on the reply the turn is about to return (`classify/turn_health.py`, probe
+`answer_check`): `answers_request | fabricated_calls | template_echo | needs_user`.
+State: request, a 300-char excerpt, reply features (length, code blocks, count of
+`[tool] …`-shaped lines, starts-like-session-summary), the tools that actually ran
+with their result kinds, the available tool names, and one line stating how calls
+really happen. `act`: `fabricated_calls`/`template_echo` ≥ 0.7 → one targeted
+re-prompt; the rejected reply is replaced in history by a marker, so the next
+reply cannot copy it. One retry per turn; `needs_user` and low confidence pass.
+
+Measured on jev-1.13.0 with replies from session 20260919T195940.436Z_532b:
+faked session summary → template_echo 0.86; text-written calls →
+fabricated_calls 0.98; a real answer → answers_request; a question to the user →
+needs_user 0.99.
+
 ### Commands
 
 `/classify` (status) · `/classify accept` · `/classify test <shell command>` · `/classify preview <shell command>` (exact payload, nothing sent) · `/classify mode <off|advisory|enforce>` (session only).

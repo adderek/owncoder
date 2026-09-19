@@ -95,6 +95,14 @@ function row(cls, html, text) {
       e.title = 'Edit and send again';
       e.textContent = '✎';
       wrap.appendChild(e);
+      // Edit the conversation itself: everything from this message on leaves
+      // the model's context, so a hallucinated answer stops being an example
+      // for the next one. Files those turns wrote stay written.
+      const w = document.createElement('button');
+      w.className = 'copy rewind'; w.type = 'button';
+      w.title = 'Rewind here: drop this and everything after, then edit it';
+      w.textContent = '⤾';
+      wrap.appendChild(w);
     } else if (cls.indexOf('assistant') > 0) {
       const r = document.createElement('button');
       r.className = 'copy regen'; r.type = 'button';
@@ -163,6 +171,12 @@ log.addEventListener('click', (e) => {
     regenerate(gb);
     return;
   }
+  const wb = e.target.closest('.rewind');
+  if (wb) {
+    const msg = wb.parentElement.querySelector('.msg');
+    rewindTo(wb, msg);
+    return;
+  }
   const rb = e.target.closest('.reuse');
   if (rb) {
     const msg = rb.parentElement.querySelector('.msg');
@@ -192,6 +206,35 @@ async function regenerate(btn) {
     });
   } catch (e) {
     row('sys error', null, 'regenerate failed: ' + e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// Drop this message and everything after it from the model's context, then put
+// its text in the box to edit. Counted from the end so the server can match the
+// row to its message without the page tracking history indices.
+async function rewindTo(btn, msg) {
+  if (busyFlag) { row('sys', null, 'wait for the running turn to finish'); return; }
+  const rows = Array.from(log.querySelectorAll('.msg.user'));
+  const fromEnd = rows.length - rows.indexOf(msg);
+  if (fromEnd < 1) return;
+  btn.disabled = true;
+  try {
+    const r = await (await fetch('/api/rewind', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({from_end: fromEnd, text: msg.innerText}),
+    })).json();
+    if (!r.ok) { row('sys error', null, 'rewind: ' + (r.msg || 'failed')); return; }
+    await resyncView();
+    input.value = r.text;
+    input.dispatchEvent(new Event('input'));
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+    row('sys', null, '⤾ rewound — ' + r.dropped + ' message(s) dropped from the context. '
+        + 'Files those turns changed are unchanged (/undo).');
+  } catch (e) {
+    row('sys error', null, 'rewind failed: ' + e);
   } finally {
     btn.disabled = false;
   }

@@ -21,7 +21,8 @@ def _find_loop_guard_stop(messages: list[dict]) -> str | None:
     for m in reversed(messages):
         if m.get("role") == "assistant":
             content = (m.get("content") or "").strip()
-            return content if content.startswith("[loop guard:") else None
+            from agent.core import markers
+            return content if markers.strip(content).startswith("[loop guard:") else None
     return None
 
 

@@ -9,6 +9,7 @@ import pytest
 
 from agent.config import Config
 import agent.core.turn as turn_mod
+from agent.core import markers
 from agent.core.turn import run_turn
 
 
@@ -231,7 +232,10 @@ async def test_a_failing_verify_is_announced_while_it_happens(monkeypatch):
 
     stored = [m["content"] for m in out_messages
               if m.get("role") == "user" and "[verify]" in (m.get("content") or "")]
-    assert [text for _, text in announced] == stored
+    # Stored copies carry the harness source marker; the announcement the UI
+    # gets is the same text without it (core/markers.py).
+    assert [text for _, text in announced] == [markers.strip(c) for c in stored]
+    assert all(markers.contains(c) for c in stored)
     # Labelled, so no view has to guess whether the user typed it.
     assert [kind for kind, _ in announced] == ["verify"]
     assert all(m.get("_injected_kind") == "verify" for m in out_messages

@@ -146,7 +146,9 @@ def _tool_summary_line(name: str, args: str, result: str) -> str:
     read as fact. This form cannot be mistaken for a call by any parser — and
     an imitation of it is caught by _has_fake_tool_summary instead.
     """
-    return f"[tool] {name}({_summary_safe(args)}) → {_summary_safe(result)}".rstrip()
+    from agent.core import markers
+    return markers.mark(
+        f"[tool] {name}({_summary_safe(args)}) → {_summary_safe(result)}".rstrip())
 
 
 def _collapse_tool_rounds(

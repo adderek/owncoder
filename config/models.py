@@ -554,7 +554,10 @@ class SecurityConfig:
     network: str = "off"
     cpu_seconds: int = 20
     wall_seconds: int = 30
-    rss_mb: int = 512
+    # Heap cap per sandboxed process (RLIMIT_DATA). 512 MB is under what a V8
+    # runtime needs to start at all, so node/npx could never run; 1 GB runs
+    # node and still refuses a 2 GB allocation.
+    rss_mb: int = 1024
     nproc: int = 64
     fsize_mb: int = 256
     nofile: int = 256
@@ -1242,6 +1245,11 @@ class ClassifyConfig:
     # format_broken / needs_user. "off" | "advisory" (log + notice) | "act"
     # (escalate via auto_tier if enabled, else end the turn with an explanation).
     turn_health: str = "off"
+    # Final-answer check (same module): does the reply answer the request using
+    # what actually ran, or does it write tool calls / repeat a harness template?
+    # "off" | "advisory" | "act" (one targeted re-prompt, the bad reply is not
+    # kept in history).
+    answer_check: str = "off"
     # Tools whose calls are classified before they run.
     tools: list = field(default_factory=lambda: [
         "run_argv", "run_argv_bg", "write_file", "edit_file", "replace_symbol",

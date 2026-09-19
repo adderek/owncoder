@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -31,6 +32,11 @@ if TYPE_CHECKING:
     from agent.config import Config
 
 logger = logging.getLogger(__name__)
+
+
+def _strip(text: str) -> str:
+    from agent.core import markers
+    return markers.strip(text or "")
 
 TURN_HEALTH = Probe(
     name="turn_health",
@@ -47,10 +53,40 @@ TURN_HEALTH = Probe(
     ),
 )
 
+ANSWER_CHECK = Probe(
+    name="answer_check",
+    task="the reply an AI coding agent is about to give its user, and what it actually ran",
+    labels=(
+        ("answers_request", "it responds to the request, and any action it reports is in "
+                            "the executed list"),
+        ("fabricated_calls", "it writes tool calls or tool results as text, or reports "
+                             "actions that are not in the executed list"),
+        ("template_echo", "it repeats a harness artefact (a session summary block, a "
+                          "notes/JSON template) instead of answering the request"),
+        ("needs_user", "it asks the user for information or says it cannot proceed"),
+    ),
+)
+
+# How calls really happen — Jev reads the state literally, so say it plainly.
+CALL_FORMAT = ("Tools are called through the API function-call channel and appear in "
+               "executed. Text in the reply such as \"[tool] name(...) -> result\", "
+               "\"<name ... />\" or \"[SESSION SUMMARY ...]\" is never a call and never ran.")
+
 # Verdict must clear this probability before "act" does anything.
 _ACT_AT = {"circling": 0.7, "format_broken": 0.6, "needs_user": 0.7}
 _MAX_EVENTS = 12
 MAX_PROBES_PER_TURN = 2
+
+_ANSWER_ACT_AT = {"fabricated_calls": 0.7, "template_echo": 0.7}
+
+_RETRY_TEXT = {
+    "fabricated_calls": ("Your reply wrote tool calls or their results as text. Nothing you "
+                         "described that way ran. Answer the user now using only what the "
+                         "executed tool results above actually say, or call a tool properly."),
+    "template_echo": ("Your reply repeated an internal summary/template block instead of "
+                      "answering. Those blocks are context written by the harness, never a "
+                      "format for your answer. Answer the user's request directly, in prose."),
+}
 
 _STOP_TEXT = {
     "circling": ("Stopped: the model is repeating the same calls without using their "
@@ -75,6 +111,59 @@ class Decision:
 def enabled(config: "Config") -> bool:
     cfg = getattr(config, "classify", None)
     return bool(cfg) and cfg.mode != "off" and cfg.turn_health in ("advisory", "act")
+
+
+def answer_enabled(config: "Config") -> bool:
+    cfg = getattr(config, "classify", None)
+    return bool(cfg) and cfg.mode != "off" and cfg.answer_check in ("advisory", "act")
+
+
+def build_answer_state(messages: list[dict], answer: str, tools_available: list[str]) -> dict:
+    """Metadata + a short excerpt of the reply. Never the whole answer (it can be
+    the file the model just wrote)."""
+    turn = build_state(messages, {})
+    executed = [{"call": e["call"], "result": e.get("result", "?")}
+                for e in turn["recent"] if "call" in e]
+    text = (answer or "").strip()
+    return {
+        "request": turn["request"],
+        "reply_excerpt": text[:300],
+        "reply": {
+            "chars": len(text),
+            "code_blocks": text.count("```") // 2,
+            "tool_call_shaped_lines": len(_TOOL_LINE_RE.findall(text)),
+            "starts_like_session_summary": _strip(text).startswith("[SESSION SUMMARY"),
+        },
+        "executed": executed or "nothing ran this turn",
+        "tools_available": sorted(tools_available)[:40],
+        "call_format": CALL_FORMAT,
+    }
+
+
+async def check_answer(config: "Config", state: dict) -> Verdict | None:
+    """Classify the reply. None when disabled or the classifier is unavailable."""
+    if not answer_enabled(config):
+        return None
+    from agent.classify import guard
+    if guard.is_down()[0]:
+        return None
+    try:
+        v = await classify(config, ANSWER_CHECK, state)
+    except ClassifierUnavailable as e:
+        guard.mark_down(str(e))
+        return None
+    guard.stats[f"answer:{v.label}"] += 1
+    return v
+
+
+def decide_answer(config: "Config", v: Verdict | None, already_retried: bool) -> Decision:
+    """Verdict → "continue" (hand the reply over) or "retry" (re-prompt once)."""
+    if v is None or v.label in ("answers_request", "needs_user"):
+        return Decision("continue", v)
+    if (config.classify.answer_check != "act" or already_retried
+            or v.p < _ANSWER_ACT_AT.get(v.label, 1.1)):
+        return Decision("continue", v)
+    return Decision("retry", v, _RETRY_TEXT[v.label])
 
 
 def _real_user(m: dict) -> bool:
@@ -103,11 +192,14 @@ def _result_kind(content: str) -> str:
         return "truncated"
     if "outline only" in head or '"outline_only": true' in c[-200:]:
         return "outline_only"
-    if head.startswith("[released"):
+    if _strip(head).startswith("[released"):
         return "released"
     if head.startswith('{"error"') or '"permission_denied": true' in head:
         return "error"
     return "ok"
+
+
+_TOOL_LINE_RE = re.compile(r"^[ \t]*\[tool\]\s+\w+\s*\(", re.MULTILINE)
 
 
 def _fabricated(text: str) -> bool:
