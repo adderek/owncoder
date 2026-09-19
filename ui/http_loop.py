@@ -1714,6 +1714,9 @@ class _HttpUI:
             # match set costs nothing beyond the slice that used to be taken.
             matches = (search_sessions(query, limit=None, sort=sort) if query.strip()
                        else list_sessions(sort=sort))
+            # Pinned first, before the row cap cuts anything; sort is stable,
+            # so each group keeps the requested order.
+            matches.sort(key=lambda s: not s.get("pinned"))
             total = len(matches)
             sessions = [
                 {"id": s.get("id", ""),
@@ -1724,7 +1727,10 @@ class _HttpUI:
                  "classification": s.get("classification") or "",
                  "messages": s.get("message_count", 0),
                  "summary": (s.get("description") or s.get("summary") or "")[:160],
-                 "hidden": bool(s.get("hidden", False))}
+                 "hidden": bool(s.get("hidden", False)),
+                 "pinned": bool(s.get("pinned", False)),
+                 "status": s.get("status") or "",
+                 "status_reason": s.get("status_reason") or ""}
                 for s in matches[:self._SESSION_ROWS]
             ]
         except Exception:
@@ -2007,7 +2013,8 @@ class _HttpUI:
             return False
 
     def session_action(self, payload: dict) -> dict:
-        """Session list ops from the browser: new / rename / hide / autoname / switch."""
+        """Session list ops from the browser: new / rename / hide / pin / status /
+        autoname / switch."""
         action = str(payload.get("action") or "")
         sid = str(payload.get("id") or "")
         cur = self.session is not None and sid == self.session.id
@@ -2033,20 +2040,34 @@ class _HttpUI:
                         return {"ok": False, "msg": err}
                 return {"ok": True, "msg": f"renamed to '{new}'"}
 
-            if action == "hide":
-                hidden = bool(payload.get("hidden", True))
-                if cur:
-                    def _do() -> None:
-                        self.session.hidden = hidden
-                        self.server.save_session(self.session)
-                    self._call_on_loop(_do)
-                else:
-                    from agent.memory.session import update_session_fields
-                    s, err = update_session_fields(sid, hidden=hidden)
-                    if s is None:
-                        return {"ok": False, "msg": err}
+            if action in ("hide", "pin"):
+                on = bool(payload.get("hidden" if action == "hide" else "pinned", True))
+                field_ = "hidden" if action == "hide" else "pinned"
+                err = self._edit_session(sid, cur, lambda s: setattr(s, field_, on))
+                if err:
+                    return {"ok": False, "msg": err}
+                word = {("hide", True): "hidden", ("hide", False): "unhidden",
+                        ("pin", True): "pinned", ("pin", False): "unpinned"}[(action, on)]
+                return {"ok": True, "msg": f"session {word}"}
+
+            if action == "status":
+                # Bookkeeping only (todo/completed/broken, "" reopens): stored
+                # on the session file, never put into the model's context.
+                from agent.memory.session import (
+                    BROKEN_REASONS, SESSION_STATUSES, set_session_status)
+                status = str(payload.get("status") or "").strip().lower()
+                reason = str(payload.get("reason") or "").strip().lower()
+                if status and status not in SESSION_STATUSES:
+                    return {"ok": False, "msg": f"unknown status {status!r}"}
+                if status == "broken" and reason and reason not in BROKEN_REASONS:
+                    return {"ok": False, "msg": f"unknown reason {reason!r}"}
+                err = self._edit_session(
+                    sid, cur, lambda s: set_session_status(s, status, reason))
+                if err:
+                    return {"ok": False, "msg": err}
+                label = status + (f" ({reason})" if status == "broken" and reason else "")
                 return {"ok": True,
-                        "msg": f"session {'hidden' if hidden else 'unhidden'}"}
+                        "msg": f"session marked {label}" if status else "session reopened"}
 
             if action == "autoname":
                 fn = getattr(self.server, "autoname_session", None)
@@ -2106,6 +2127,28 @@ class _HttpUI:
         except Exception as exc:
             logger.exception("http ui: session action failed")
             return {"ok": False, "msg": f"failed: {exc}"}
+
+    def _edit_session(self, sid: str, cur: bool, fn) -> str:
+        """Apply *fn(session)* to a session's metadata and persist it.
+        Returns an error message, or "" on success.
+
+        The live session is mutated in place — a file round-trip would be
+        clobbered by the next turn-end save of the stale copy. Others are
+        edited on disk without touching their last-activity time.
+        """
+        if cur:
+            def _do() -> None:
+                fn(self.session)
+                self.server.save_session(self.session)
+            self._call_on_loop(_do)
+            return ""
+        from agent.memory.session import load_session, save_session
+        s, messages = load_session(sid)
+        if s is None:
+            return f"session '{sid}' not found"
+        fn(s)
+        save_session(s, messages, touch=False)
+        return ""
 
     def _force_stop(self, payload: dict, timeout: float = 10.0) -> bool:
         """Hard-stop a running turn on behalf of new/switch, for a browser that

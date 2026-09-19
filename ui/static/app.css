@@ -298,6 +298,8 @@ aside.resizing { transition: none; }   /* no lag while dragging */
 .sess-menu button:hover, .sess-menu button:focus-visible {
   background: var(--panel2); color: var(--fg); }
 .sess-menu .mi { width: 1.2em; text-align: center; flex-shrink: 0; }
+.sess-menu .msep { border-top: 1px solid var(--border); margin: 3px 4px; }
+.sess-item .spin { margin-right: 4px; font-size: 10px; }
 .sess-more { color: var(--dimmer); font-size: 11px; cursor: pointer; padding: 4px 8px; }
 /* How many of the matches are on screen: a statement, not a control. */
 .sess-more.count { cursor: default; font-family: var(--mono); font-size: 10.5px; }

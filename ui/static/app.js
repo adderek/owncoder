@@ -2740,6 +2740,8 @@ document.getElementById('condchip').addEventListener('click', () => {
 
 function startRename(item, id) {
   const nameEl = item.querySelector('.sname');
+  const pin = nameEl.querySelector('.spin');
+  if (pin) pin.remove();   // the 📌 marker is not part of the name
   const old = nameEl.textContent;
   nameEl.innerHTML = '<input type="text" value="' + esc(old) + '">';
   const inp = nameEl.querySelector('input');
@@ -2783,16 +2785,28 @@ function sessionMenu(btn) {
   acts.push(['copyid', '⧉', 'Copy session ID']);
   acts.push(['rename', '✎', 'Rename…']);
   acts.push(['autoname', '✨', 'Auto-name with the model']);
+  acts.push(btn.dataset.pinned ? ['unpin', '📍', 'Unpin']
+                               : ['pin', '📌', 'Pin to the top']);
   acts.push(btn.dataset.hidden ? ['hide', '👁', 'Show in the list again']
                                : ['hide', '🚫', 'Hide from the list']);
+  // Status: user bookkeeping kept on the session, never sent to the model.
+  const st = btn.dataset.status || '';
+  const rs = btn.dataset.reason || '';
+  acts.push(['-']);
+  if (st !== 'todo') acts.push(['st:todo', '📝', 'Mark to do']);
+  if (st !== 'completed') acts.push(['st:completed', '✅', 'Mark completed']);
+  for (const [r, label] of [['model', 'model issue'], ['harness', 'harness issue'], ['other', 'other']])
+    if (!(st === 'broken' && rs === r)) acts.push(['st:broken:' + r, '💥', 'Mark broken — ' + label]);
+  if (st) acts.push(['st:', '↺', st === 'completed' ? 'Reactivate' : 'Clear status']);
 
   const menu = document.createElement('div');
   menu.className = 'sess-menu';
   menu.dataset.for = id;
   menu.setAttribute('role', 'menu');
-  menu.innerHTML = acts.map(([act, icon, label]) =>
-    '<button role="menuitem" data-act="' + act + '"><span class="mi">' + icon +
-    '</span>' + esc(label) + '</button>').join('');
+  menu.innerHTML = acts.map(([act, icon, label]) => act === '-'
+    ? '<div class="msep" role="separator"></div>'
+    : '<button role="menuitem" data-act="' + act + '"><span class="mi">' + icon +
+      '</span>' + esc(label) + '</button>').join('');
   item.appendChild(menu);
   sessMenuEl = menu;
 
@@ -2810,6 +2824,11 @@ function sessionMenu(btn) {
       sessionAction({action: 'autoname', id});
     } else if (act === 'hide') {
       sessionAction({action: 'hide', id, hidden: !btn.dataset.hidden});
+    } else if (act === 'pin' || act === 'unpin') {
+      sessionAction({action: 'pin', id, pinned: act === 'pin'});
+    } else if (act.startsWith('st:')) {
+      const [, status, reason] = act.split(':');
+      sessionAction({action: 'status', id, status, reason: reason || ''});
     }
   }));
   const first = menu.querySelector('button');
@@ -2855,8 +2874,11 @@ async function loadSessions() {
       const when = String(s.updated_at || '').replace('T', ' ').slice(0, 16);
       return '<div class="sess-item' + (cur ? ' current' : '') +
         (s.id === previewing ? ' previewed' : '') + '" data-id="' +
-        esc(s.id) + '" title="' + esc(s.id) + ' — click to view history">' +
-        '<div class="sname">' + esc(s.name || s.id) + '</div>' +
+        esc(s.id) + '" title="' + esc(s.id) +
+        (s.status ? ' — ' + esc(s.status + (s.status_reason ? ' (' + s.status_reason + ')' : '')) : '') +
+        ' — click to view history">' +
+        '<div class="sname">' + (s.pinned ? '<span class="spin" title="pinned">📌</span>' : '') +
+        esc(s.name || s.id) + '</div>' +
         '<div class="smeta">' + esc(when) + ' · ' + (s.messages || 0) + ' msgs' +
         (s.hidden ? ' · hidden' : '') + '</div>' +
         // Why this session matched — a name alone rarely says.
@@ -2866,7 +2888,9 @@ async function loadSessions() {
         // happen. The menu opens on demand and names what each one does.
         '<div class="sess-acts">' +
         '<button class="sbtn smenu" data-act="menu" data-hidden="' +
-        (s.hidden ? '1' : '') + '" data-cur="' + (cur ? '1' : '') +
+        (s.hidden ? '1' : '') + '" data-pinned="' + (s.pinned ? '1' : '') +
+        '" data-status="' + esc(s.status || '') + '" data-reason="' + esc(s.status_reason || '') +
+        '" data-cur="' + (cur ? '1' : '') +
         '" title="Actions for this session" aria-haspopup="menu">⋯</button>' +
         '</div></div>';
     }).join('') +

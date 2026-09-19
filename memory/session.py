@@ -57,6 +57,15 @@ class Session:
     user_outcome: str | None = None   # "good" | "bad" | "ok" — set by user
     agent_outcome: str | None = None  # "good" | "bad" | "ok" — set by agent
     hidden: bool = False  # hidden from session lists (still on disk, still loadable)
+    pinned: bool = False  # listed above unpinned sessions, whatever the sort
+    # User bookkeeping, never sent to the model: "" (open) | one of
+    # SESSION_STATUSES. status_reason qualifies "broken" (model/harness/other).
+    status: str = ""
+    status_reason: str = ""
+    # Every status change, oldest first: {"status", "reason", "at", "prev"}.
+    # Reopening sets status "" and records "reopened", so a session that was
+    # completed and later resumed still shows when it was completed.
+    status_history: list[dict] = field(default_factory=list)
 
     working_dir: str = ""  # project root this session belongs to
     # Session-scoped extra path grants: [{"path", "mode", "origin"}] — the
@@ -174,6 +183,10 @@ def _session_from_data(data: dict, file_path: Path | None = None) -> Session:
         user_outcome=data.get("user_outcome"),
         agent_outcome=data.get("agent_outcome"),
         hidden=bool(data.get("hidden", False)),
+        pinned=bool(data.get("pinned", False)),
+        status=data.get("status", "") or "",
+        status_reason=data.get("status_reason", "") or "",
+        status_history=list(data.get("status_history") or []),
         working_dir=data.get("working_dir", ""),
         path_grants=list(data.get("path_grants") or []),
     )
@@ -201,6 +214,14 @@ def _session_to_data(session: Session, messages: list[dict]) -> dict:
         data["agent_outcome"] = session.agent_outcome
     if session.hidden:
         data["hidden"] = True
+    if session.pinned:
+        data["pinned"] = True
+    if session.status:
+        data["status"] = session.status
+        if session.status_reason:
+            data["status_reason"] = session.status_reason
+    if session.status_history:
+        data["status_history"] = session.status_history
     if session.working_dir:
         data["working_dir"] = session.working_dir
     if session.path_grants:
@@ -289,6 +310,8 @@ def _locked_entry(path: Path) -> dict:
         "updated_at": None,
         "message_count": 0,
         "hidden": False,
+        "pinned": False,
+        "status": "",
         "locked": True,
     }
 
@@ -303,12 +326,23 @@ def _logical_mtime(path: Path) -> float:
     return 0.0
 
 
+def _restore_mtime(path: Path, mtime: float) -> None:
+    """Set *path*'s (plain or sealed) mtime back to *mtime* after a rewrite."""
+    import os
+    for candidate in (path, vault.sealed_path(path)):
+        try:
+            os.utime(candidate, (mtime, mtime))
+            return
+        except OSError:
+            continue
+
+
 def _already_saved(session: "Session") -> bool:
     path = getattr(session, "_file_path", None)
     return bool(path is not None and vault.exists(path))
 
 
-def save_session(session: Session, messages: list[dict]) -> None:
+def save_session(session: Session, messages: list[dict], touch: bool = True) -> None:
     """Persist session and messages to disk.
 
     System preamble (repetitive tool rules, project context) is stripped into a
@@ -317,6 +351,10 @@ def save_session(session: Session, messages: list[dict]) -> None:
     Incognito and private sessions are never written to disk; vault sessions are
     written sealed. This is the single chokepoint all persistence paths (cli, UI,
     idle tasks) funnel through — see agent/security/vault.py.
+
+    touch=False is for metadata edits (rename, hide, pin, status): updated_at
+    and the file mtime are left as they were, so "last activity" ordering
+    reflects conversation, not bookkeeping.
     """
     if not vault.persist_allowed() or session.mode in ("incognito", "private"):
         return
@@ -347,7 +385,10 @@ def save_session(session: Session, messages: list[dict]) -> None:
     if preamble:
         stripped = [_PREAMBLE_PLACEHOLDER] + stripped
 
-    session.updated_at = time.time()
+    old_mtime = _logical_mtime(session._file_path) if (
+        not touch and session._file_path is not None) else 0.0
+    if touch:
+        session.updated_at = time.time()
     data = _session_to_data(session, stripped)
 
     # Determine file path
@@ -362,6 +403,8 @@ def save_session(session: Session, messages: list[dict]) -> None:
     # vault.write_json seals the payload in vault mode and writes plain JSON
     # otherwise; either way the path here is the logical one.
     vault.write_json(session._file_path, data)
+    if old_mtime:
+        _restore_mtime(session._file_path, old_mtime)
 
     # Write preamble sidecar once per session (overwrite — same content each time)
     if preamble:
@@ -473,6 +516,9 @@ def list_sessions(oldest_first: bool = False, limit: int | None = None,
                     # an empty session read as "1 msgs".
                     "message_count": content_count(data.get("messages", [])),
                     "hidden": bool(data.get("hidden", False)),
+                    "pinned": bool(data.get("pinned", False)),
+                    "status": data.get("status", "") or "",
+                    "status_reason": data.get("status_reason", "") or "",
                 }
             )
         except Exception:
@@ -492,15 +538,53 @@ def update_session_fields(id_or_name: str, **fields) -> "tuple[Session | None, s
     """Load a session by id/name, set *fields*, persist. Returns (session, error).
 
     Round-trips messages through load/save (preamble sidecar preserved).
-    Meant for occasional metadata edits (rename, hide) on non-active sessions.
+    Meant for occasional metadata edits (rename, hide, pin) on non-active
+    sessions; the session's last-activity time is left untouched.
     """
     session, messages = load_session(id_or_name)
     if session is None:
         return None, f"session '{id_or_name}' not found"
     for k, v in fields.items():
         setattr(session, k, v)
-    save_session(session, messages)
+    save_session(session, messages, touch=False)
     return session, ""
+
+
+#: Statuses a user can mark a session with. "" means open (the default).
+SESSION_STATUSES = ("todo", "completed", "broken")
+BROKEN_REASONS = ("model", "harness", "other")
+
+
+def set_session_status(session: Session, status: str, reason: str = "",
+                       now: float | None = None) -> str:
+    """Set *session*'s status in memory, appending to status_history.
+
+    status "" reopens: the current status is cleared and a "reopened" entry is
+    recorded, keeping the earlier "completed" (or other) entry and its time.
+    Returns an error string, or "" on success. The caller persists.
+    """
+    status = (status or "").strip().lower()
+    reason = (reason or "").strip().lower()
+    if status and status not in SESSION_STATUSES:
+        return f"unknown status {status!r}"
+    if status != "broken":
+        reason = ""
+    elif reason and reason not in BROKEN_REASONS:
+        return f"unknown reason {reason!r}"
+    prev = session.status or ""
+    if status == prev and reason == (session.status_reason or ""):
+        return ""
+    if not status and not prev:
+        return ""
+    entry = {"status": status or "reopened",
+             "at": time.time() if now is None else now,
+             "prev": prev}
+    if reason:
+        entry["reason"] = reason
+    session.status_history = list(session.status_history or []) + [entry]
+    session.status = status
+    session.status_reason = reason
+    return ""
 
 
 def search_sessions(query: str, limit: int | None = 20,
