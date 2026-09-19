@@ -465,6 +465,18 @@ async def run_turn(
             messages = messages + [_loop_guard_escalation_note()]
         return True
 
+    _batch_results: list[str] = []
+    _batch_raw: list[str] = []
+
+    def _delivered(i: int):
+        """What the model actually received for tool call *i*: the result plus
+        whatever the harness appended (error hints, guard notes, compaction), or
+        None when nothing was added. The UI shows it for a failed call, so a
+        refused edit no longer looks like a silent dead end."""
+        if i < len(_batch_results) and _batch_results[i] != _batch_raw[i]:
+            return _batch_results[i]
+        return None
+
     _health_probes_done: set[str] = set()
     _answer_retried = False
 
@@ -1047,6 +1059,8 @@ async def run_turn(
                 except Exception:
                     logger.exception("diagnostics.annotate failed")
             _batch_errs = 0
+            # What the model will actually read, after the guards annotated it.
+            _batch_results, _batch_raw = list(patched_results), list(raw_results)
             for i, (tc, result) in enumerate(zip(tool_calls, patched_results)):
                 messages.append(_tool_result_message(tc.id, result))
                 ok = True
@@ -1069,6 +1083,7 @@ async def run_turn(
                             "tool": tc.function.name,
                             "arguments": parsed_args[i],
                             "result": raw_results[i],
+                            "delivered": _delivered(i),
                             "ok": ok,
                             "duration_ms": round(duration_map.get(i, 0.0), 1),
                         })
@@ -1099,6 +1114,7 @@ async def run_turn(
                             "tool": tc.function.name,
                             "arguments": parsed_args[i],
                             "result": raw_results[i],
+                            "delivered": _delivered(i),
                             "ok": ok,
                             "duration_ms": round(duration_map.get(i, 0.0), 1),
                         })

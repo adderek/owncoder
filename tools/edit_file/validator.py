@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
+
+_HEX64_RE = re.compile(r"[0-9a-f]{64}")
 
 from .matcher import (
     _count_lines, _find_exact, _find_loose_v2, _find_near_misses,
@@ -185,9 +188,24 @@ def _validate_chunk(
 
     sha = chunk.get("anchor_sha256")
     if sha:
+        # Optional self-check. A weak model fills it with whatever the schema
+        # looked like to it ("sha256:placeholder" was observed) and then retries
+        # the same call: say what to do, not only what is wrong.
+        given = str(sha).strip().lower()
+        if given.startswith("sha256:"):
+            given = given[7:]
         actual = hashlib.sha256(anchor.encode("utf-8")).hexdigest()
-        if actual.lower() != str(sha).lower():
-            return None, err("anchor_sha_mismatch", "anchor_sha256 does not match the anchor you provided; re-read the file", expected=sha, actual=actual)
+        if not _HEX64_RE.fullmatch(given):
+            return None, err("bad_input",
+                             f"anchor_sha256={sha!r} is not a 64-character hex sha256",
+                             fix="omit anchor_sha256 (it is an optional self-check) and retry",
+                             actual=actual)
+        if actual != given:
+            return None, err("anchor_sha_mismatch",
+                             "anchor_sha256 does not match the anchor you provided",
+                             expected=given, actual=actual,
+                             fix="omit anchor_sha256, or re-read the file and hash the exact "
+                                 "anchor text you are sending")
 
     tol = max(0, edit_cfg.line_delta_tolerance)
     if "expect_removed" in chunk and chunk["expect_removed"] is not None:
@@ -196,14 +214,22 @@ def _validate_chunk(
         except (TypeError, ValueError):
             return None, err("bad_input", "expect_removed must be int")
         if abs(exp - anchor_lines) > tol:
-            return None, err("delta_exceeds_tolerance", f"expect_removed={exp} but anchor has {anchor_lines} lines (tolerance ±{tol})", expected=exp, actual=anchor_lines, tolerance=tol)
+            return None, err("delta_exceeds_tolerance",
+                             f"expect_removed={exp} but anchor has {anchor_lines} lines (tolerance ±{tol})",
+                             expected=exp, actual=anchor_lines, tolerance=tol,
+                             fix=f"the anchor and replacement themselves were not checked — set "
+                                 f"expect_removed={anchor_lines} or omit it, and resend the same chunk")
     if "expect_added" in chunk and chunk["expect_added"] is not None:
         try:
             exp = int(chunk["expect_added"])
         except (TypeError, ValueError):
             return None, err("bad_input", "expect_added must be int")
         if abs(exp - repl_lines) > tol:
-            return None, err("delta_exceeds_tolerance", f"expect_added={exp} but replacement has {repl_lines} lines (tolerance ±{tol})", expected=exp, actual=repl_lines, tolerance=tol)
+            return None, err("delta_exceeds_tolerance",
+                             f"expect_added={exp} but replacement has {repl_lines} lines (tolerance ±{tol})",
+                             expected=exp, actual=repl_lines, tolerance=tol,
+                             fix=f"the anchor and replacement themselves were not checked — set "
+                                 f"expect_added={repl_lines} or omit it, and resend the same chunk")
 
     lo, hi = 0, len(original)
     if chunk.get("range_hint") is not None:

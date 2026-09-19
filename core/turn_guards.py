@@ -172,6 +172,27 @@ def patch_edit_file_result(tc, result: str, read_path_counts: dict,
                     read_advance.pop(e_path, None)
             return result
         if e_parsed.get("error") == "atomic_rollback":
+            # Self-check failures (anchor_sha256, expect_added/removed) are the
+            # model's own bookkeeping, not the edit: observed three identical
+            # retries against the same complaint. After a repeat, say plainly
+            # that those fields are optional.
+            for e_chunk in e_parsed.get("errors", []):
+                if not isinstance(e_chunk, dict):
+                    continue
+                if e_chunk.get("kind") not in ("delta_exceeds_tolerance", "anchor_sha_mismatch",
+                                               "bad_input"):
+                    continue
+                fail_key = f"{e_path}:selfcheck"
+                edit_file_fails[fail_key] = edit_file_fails.get(fail_key, 0) + 1
+                if edit_file_fails[fail_key] >= 2:
+                    e_parsed["_error_hint"] = markers.mark(
+                        "[edit guard] The edit was refused by an OPTIONAL self-check field "
+                        f"({e_chunk.get('kind')}), {edit_file_fails[fail_key]}× now — the anchor "
+                        "and replacement were never checked. Resend the same chunk WITHOUT "
+                        "anchor_sha256, expect_added and expect_removed."
+                    )
+                    result = json.dumps(e_parsed)
+                break
             for e_chunk in e_parsed.get("errors", []):
                 if isinstance(e_chunk, dict) and e_chunk.get("kind") == "anchor_not_found":
                     fail_key = f"{e_path}:{e_chunk.get('chunk_index', 0)}"
@@ -192,7 +213,7 @@ def patch_edit_file_result(tc, result: str, read_path_counts: dict,
                         if hint_parts:
                             hint += "File has " + "; ".join(hint_parts) + ". "
                         hint += "Search the file with search_files or read different sections to find the right anchor."
-                        e_parsed["_error_hint"] = hint
+                        e_parsed["_error_hint"] = markers.mark(hint)
                         result = json.dumps(e_parsed)
                     break  # only process first anchor_not_found per call
     except Exception:

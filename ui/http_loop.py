@@ -3655,6 +3655,8 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
                      "ok": bool(rec.get("ok")),
                      "ms": rec.get("duration_ms", 0),
                      "text": _result_preview(rec.get("result")),
+                     "to_model": (_result_preview(rec.get("delivered"), 1500)
+                                  if rec.get("delivered") and not rec.get("ok") else ""),
                      "classify": _classify_verdict(rec.get("tool_call_id"))}),
                 on_phase=lambda label, detail="": pub(
                     {"type": "phase", "label": label, "detail": detail}),

@@ -827,18 +827,29 @@ function classifyTitle(c) {
     (c.backend || '') + (c.model ? ':' + c.model : '') + (c.ms ? '  ·  ' + c.ms + ' ms' : '');
 }
 
-function toolOutput(name, ok, text, ms, cls) {
+function toolOutput(name, ok, text, ms, cls, toModel) {
   const q = resolvedTools[name];
   const d = q && q.shift();
   if (d && cls) {
     const mark = d.querySelector('.mark');
     if (mark) mark.title = classifyTitle(cls);
   }
-  if (!d || !text) return;
-  const body = document.createElement('div');
-  body.className = 'toolout' + (ok ? '' : ' fail');
-  body.textContent = text;
-  d.appendChild(body);
+  if (!d) return;
+  if (text) {
+    const body = document.createElement('div');
+    body.className = 'toolout' + (ok ? '' : ' fail');
+    body.textContent = text;
+    d.appendChild(body);
+  }
+  // A failed call is answered: the harness hands the model the error plus what
+  // to do next. Without this the fold showed the refusal and nothing else, and
+  // a model retrying the same mistake looked unexplained.
+  if (toModel) {
+    const note = document.createElement('div');
+    note.className = 'toolreply';
+    note.textContent = '→ sent to the model: ' + toModel;
+    d.appendChild(note);
+  }
 }
 
 // Replay counterparts of toolCall/toolResult: same fold, but the outcome is
@@ -994,7 +1005,7 @@ function handle(ev) {
     if (!Object.keys(pendingTools).some(n => pendingTools[n].length))
       setActivity('thinking');
   } else if (ev.type === 'tool_io') {
-    toolOutput(ev.name, ev.ok, ev.text, ev.ms, ev.classify);
+    toolOutput(ev.name, ev.ok, ev.text, ev.ms, ev.classify, ev.to_model);
   } else if (ev.type === 'phase') {
     // A stall heartbeat is not a new step in the turn: keep the half-finished
     // stream bubble (and its caret) open so the gap is visible where the text

@@ -672,6 +672,12 @@ details.think summary:hover { color: var(--dim); }
    the fold toggle uses on answers. */
 .copy.rewind { right: 60px; }
 .copy.fold { right: 60px; }
+/* What the harness answered the model with after a failed call: the error plus
+   the instruction for the next attempt. Quieter than the output itself. */
+details.tool .toolreply { white-space: pre-wrap; font-family: var(--mono);
+             font-size: 12px; color: var(--dim); border-left: 2px solid var(--accent);
+             padding: 6px 10px; margin: 2px 0 2px 16px; }
+
 /* Folded answer: a few lines under a fade; click anywhere to unfold. The
    toggle stays visible so a folded balloon says it can be opened. */
 .msg.assistant.folded { cursor: pointer; }
