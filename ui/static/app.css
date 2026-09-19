@@ -668,6 +668,14 @@ details.think summary:hover { color: var(--dim); }
 .copy:hover { color: var(--fg); background: var(--panel2); filter: none; }
 /* Edit-and-send-again, on your own messages only; sits left of the copy. */
 .copy.reuse, .copy.regen { right: 34px; }
+.copy.fold { right: 60px; }
+/* Folded answer: a few lines under a fade; click anywhere to unfold. The
+   toggle stays visible so a folded balloon says it can be opened. */
+.msg.assistant.folded { cursor: pointer; }
+.msg.assistant.folded .md { max-height: 4.6em; overflow: hidden;
+  -webkit-mask-image: linear-gradient(#000 55%, transparent);
+          mask-image: linear-gradient(#000 55%, transparent); }
+.msg.folded ~ .copy.fold { opacity: .85; }
 .copy:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
 /* Copy affordance on code fences and diff boxes — same look as .copy but
    positioned relative to their own (non-message) container. */

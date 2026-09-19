@@ -28,6 +28,7 @@ let thinkEl = null;       // open reasoning fold being streamed into
 let pendingTools = {};    // name -> [tool detail elements awaiting result]
 let turn = null;          // active work fold: {details, body, tools, steps, t0, userToggled}
 let lastTurn = null;      // the round before it, still open until this one starts
+let lastAnswer = null;    // newest answer balloon, folds when the next round starts
 let foldJournal = 'on_next_round';  // from /api/state; see _HttpUI._fold_journal
 let busyFlag = false;
 let visionOn = false;   // active model accepts image blocks (drives the attach notice)
@@ -71,6 +72,7 @@ function row(cls, html, text) {
   d.className = cls;
   if (html !== null) d.innerHTML = html; else d.textContent = text;
   wrap.appendChild(d);
+  if (cls === 'msg user') foldLastAnswer();   // a new round starts
   if (cls.indexOf('msg') === 0) {
     // When it happened. Live only: a replayed transcript carries no clock, and
     // stamping it with the time of the reload would be a plausible lie.
@@ -141,6 +143,14 @@ log.addEventListener('click', (e) => {
     if (box) copyText(box.innerText, db);
     return;
   }
+  const fb = e.target.closest('.fold');
+  const folded = !fb && e.target.closest('.msg.assistant.folded');
+  if (fb || folded) {
+    const msg = (fb ? fb.parentElement : folded.parentElement).querySelector('.msg');
+    msg.dataset.userToggled = '1';
+    setAnswerFolded(msg, !msg.classList.contains('folded'));
+    return;
+  }
   const gb = e.target.closest('.regen');
   if (gb) {
     // Only the newest answer: re-running an older one would leave every turn
@@ -200,8 +210,34 @@ function reuseMessage(text) {
 
 function assistantMd(text) {
   const d = row('msg assistant', '<div class="md">' + renderMd(text) + '</div>', null);
+  const f = document.createElement('button');
+  f.className = 'copy fold'; f.type = 'button';
+  d.parentElement.appendChild(f);
+  setAnswerFolded(d, false);
+  lastAnswer = d;
   stickScroll();
   return d;
+}
+
+// Answer balloons fold like the work journal: the newest stays open, and the
+// one before it folds when the next round starts — once. A balloon the user
+// folded or unfolded by hand is never auto-folded again.
+
+function setAnswerFolded(d, folded) {
+  d.classList.toggle('folded', folded);
+  const f = d.parentElement.querySelector('.fold');
+  if (!f) return;
+  f.textContent = folded ? '▾' : '▴';
+  f.title = folded ? 'Unfold this answer' : 'Fold this answer';
+}
+
+function foldLastAnswer() {
+  const d = lastAnswer;
+  lastAnswer = null;
+  if (!d || !d.isConnected || d.dataset.userToggled) return;
+  // Nothing to gain folding an answer that is already about one line tall.
+  if (d.scrollHeight < 110) return;
+  setAnswerFolded(d, true);
 }
 
 // ── Activity + stall watchdog ────────────────────────────────────────────────
@@ -369,6 +405,7 @@ function mount(el) {
 // whole "agent working" phase collapses to one line when the answer lands.
 function beginTurn() {
   if (turn) return turn;
+  foldLastAnswer();   // rounds without a user message (scheduled, injected)
   // The previous round is no longer the current one: fold its journal away,
   // unless the user opened it by hand — a manual toggle always wins.
   if (lastTurn && foldJournal === 'on_next_round' && !lastTurn.userToggled) {
