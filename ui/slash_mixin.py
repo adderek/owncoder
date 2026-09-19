@@ -339,6 +339,10 @@ class SlashHandlerMixin:
             from agent.security.sandbox_status import run_sandbox_command
             self._write_sys(_escape(run_sandbox_command(self._server._agent.config, arg)))
 
+        elif cmd == "/classify":
+            from agent.classify import run_classify_command
+            self._write_sys(_escape(run_classify_command(self._server._agent.config, arg)))
+
         elif cmd == "/speech":
             from agent.speech import run_speech_command
             self._write_sys(_escape(run_speech_command(self._server._agent.config, arg)))

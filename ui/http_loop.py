@@ -137,6 +137,16 @@ def _args_full(args, limit: int = 4000) -> str:
     return text[:limit] + ("…" if len(text) > limit else "")
 
 
+def _classify_verdict(call_id) -> dict | None:
+    """Action-classifier verdict for one tool call (hover badge), None if the
+    call was not classified or the classifier is not in use."""
+    try:
+        from agent.classify.guard import pop_call_verdict
+        return pop_call_verdict(call_id)
+    except Exception:
+        return None
+
+
 def _result_preview(result, limit: int = 4000) -> str:
     """What a tool returned, shortened for the browser.
 
@@ -3144,6 +3154,14 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
             from agent.security.permissions import run_permissions_command
             pub({"type": "sys",
                  "text": await asyncio.to_thread(run_permissions_command, cfg, arg)})
+    elif cmd == "/classify":
+        cfg = _agent_config(server)
+        if cfg is None:
+            pub({"type": "sys", "error": True, "text": _NEEDS_LOCAL})
+        else:
+            from agent.classify import run_classify_command
+            pub({"type": "sys",
+                 "text": await asyncio.to_thread(run_classify_command, cfg, arg)})
     elif cmd == "/hooks":
         cfg = _agent_config(server)
         if cfg is None:
@@ -3596,7 +3614,8 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
                      "id": rec.get("tool_call_id", ""),
                      "ok": bool(rec.get("ok")),
                      "ms": rec.get("duration_ms", 0),
-                     "text": _result_preview(rec.get("result"))}),
+                     "text": _result_preview(rec.get("result")),
+                     "classify": _classify_verdict(rec.get("tool_call_id"))}),
                 on_phase=lambda label, detail="": pub(
                     {"type": "phase", "label": label, "detail": detail}),
                 # Verify failures and the other notes the turn writes into

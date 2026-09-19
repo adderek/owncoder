@@ -618,6 +618,29 @@ worker_timeout_seconds = 120
 # max_concurrent = 5                   # API rate-limit headroom
 
 # ── Remote → local failover ───────────────────────────────────────────────────
+# ── Action classifier ─────────────────────────────────────────────────────────
+# Optional. Small local/LAN model scores risky tool calls before they run
+# (safe / needs_review / destructive / exfiltration + probability). Only ever
+# escalates: advisory = note, enforce = ask/deny. Loopback/private-IP endpoints
+# only unless allow_remote. Server setup: docs/classify.md. Off by default.
+# [classify]
+# mode      = "advisory"          # off | advisory | enforce
+# endpoint  = "http://192.168.31.42:8084/v1"
+# model     = "classifier"
+# timeout_s = 1.5
+# ask_at    = { needs_review = 0.85, destructive = 0.6, exfiltration = 0.5 }
+# deny_at   = { exfiltration = 0.9 }
+# hide_unconfigured_notice = false
+# review_below_confidence = 0.0     # unsure verdict → review (0 = off)
+# turn_health = "off"               # off | advisory | act — stuck/looping/fake-call turns
+#
+# Cloud variant — TypeSafe Jev SaaS (same interface; redacted + identity-scrubbed
+# args leave the machine, file contents never; refused under air-gap/private):
+# backend      = "jev"
+# allow_remote = true
+# api_key      = "file:~/.config/agent/typesafe.key"   # or "env:VAR"; default $TYPESAFE_API_KEY
+# timeout_s    = 3.0
+
 # When the active (remote) endpoint is unreachable / times out / 5xx — or serves
 # no model under the configured id — retry the turn on another live entry so the
 # agent keeps working offline. Failover only ever routes toward local (or to a

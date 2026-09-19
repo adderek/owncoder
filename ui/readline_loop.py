@@ -483,6 +483,10 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                 from agent.security.sandbox_status import run_sandbox_command
                 console.print(run_sandbox_command(agent.config, arg), markup=False)
 
+            elif cmd == "/classify":
+                from agent.classify import run_classify_command
+                console.print(run_classify_command(agent.config, arg), markup=False)
+
             elif cmd == "/speech":
                 from agent.speech import run_speech_command
                 console.print(run_speech_command(agent.config, arg))

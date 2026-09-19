@@ -74,6 +74,33 @@ def start_enrichment(config: "Config", timeout: int = 3) -> None:
     _startup_enrichment.start()
 
 
+def _active_entry(config: "Config"):
+    """The model entry config.llm currently points at (base_url + model), or None."""
+    llm = config.llm
+    for name, e in config.model_entries.items():
+        if e.base_url == llm.base_url and (not e.model or e.model == llm.model):
+            return name, e
+    return None
+
+
+def sync_entry_ctx(config: "Config", ctx: int) -> None:
+    """Record a detected ctx on the active entry if it has none."""
+    hit = _active_entry(config)
+    if hit and not hit[1].ctx_window and ctx > 0:
+        hit[1].ctx_window = ctx
+
+
+def adopt_entry_ctx(config: "Config") -> None:
+    """After background enrichment: an unset config.llm.ctx_window takes the
+    value enrichment found for the active entry (it only writes entries)."""
+    if config.llm.ctx_window:
+        return
+    hit = _active_entry(config)
+    if hit and hit[1].ctx_window:
+        config.llm.ctx_window = hit[1].ctx_window
+        logger.info("ctx_window for %s: %d (from server)", hit[0], hit[1].ctx_window)
+
+
 def join_enrichment(timeout: float = 20.0) -> None:
     """Wait for start_enrichment(), if one is in flight."""
     global _startup_enrichment
@@ -224,9 +251,13 @@ def _enrich_entry(
         if not is_ollama:
             server_ctx = _probe_llamacpp_props(name, base_url, timeout)
 
+    # 2b. llama.cpp router: an unloaded preset's --ctx-size from its launch args
+    if not isinstance(server_ctx, int) or server_ctx <= 0:
+        server_ctx = _router_ctx_size(server_info)
+
     # 3. Fallback to n_ctx_train (model capacity) if still not found
     if not isinstance(server_ctx, int) or server_ctx <= 0:
-        server_ctx = server_info.get("meta", {}).get("n_ctx_train")
+        server_ctx = (server_info.get("meta", {}) or {}).get("n_ctx_train")
 
     if isinstance(server_ctx, int) and server_ctx > 0:
         _fill_or_warn(name, "ctx_window", entry, server_ctx, global_max_ctx)

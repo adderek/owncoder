@@ -26,8 +26,21 @@ def _tool_result_message(tool_call_id: str, content: str) -> dict:
 
 
 def _tool_result_char_limit(config: "Config") -> int:
-    ctx_tokens = config.llm.ctx_window
-    return max(2_000, int(ctx_tokens * 0.30 * 4))
+    # effective_ctx_window, not the raw field: an unprobed model (ctx_window=0)
+    # otherwise got the 2 000-char floor, so every read of a 7 KB file came back
+    # head/tail-truncated and a weak model re-read it in a loop.
+    from agent.core.context_budget import effective_ctx_window
+    return max(2_000, int(effective_ctx_window(config) * 0.30 * 4))
+
+
+def _read_file_truncation_note(args: dict, call_id: str) -> str:
+    """Truncation hint for read_file: point at a line range, the call the model
+    already knows — weak models do not reach for retrieve_output and re-read the
+    whole file instead."""
+    path = str((args or {}).get("path", ""))
+    return (f"File too large to show whole. Do NOT re-read it the same way: call "
+            f"read_file(path='{path}', start_line=N, end_line=M) for the part you need "
+            f"(use grep_code/find_symbol to find N), or retrieve_output(call_id='{call_id}').")
 
 
 def _extract_json_objects(text: str) -> list[dict]:
@@ -383,6 +396,53 @@ async def _invoke_tool(name: str, fn, args: dict, config):
     return retried
 
 
+async def pre_tool_gates(name: str, args: dict, config: "Config | None",
+                         call_id: str | None = None) -> tuple[dict | None, str]:
+    """Every policy gate a tool call passes before it runs, in order:
+    permission policy → pre-tool hooks → action classifier.
+
+    → (denial result or None, classifier note to append to the result or "").
+    Shared by execute_tool and every path that writes on the model's behalf
+    without a real tool call (narration fallback) — one gate, no side doors.
+    """
+    # Permission policy: allow / ask / deny per tool + primary argument. Runs
+    # after argument validation (so the prompt shows the real arguments) and
+    # before hooks and the tool itself. It can only narrow — the sandbox, fs
+    # gate, deny globs and air-gap all sit below and are untouched by a verdict.
+    _decision = None
+    if config is not None:
+        try:
+            from agent.security import permissions as _perms
+            _decision = await _perms.check(name, args, config)
+        except Exception:
+            logger.exception("permission check failed for %s", name)
+            _decision = None
+        if _decision is not None and not _decision.allowed:
+            logger.warning("permission denied: %s (%s)", name, _decision.reason)
+            return _perms.denial_result(name, _decision), ""
+
+    # Pre-tool hooks: a blocking hook (non-zero exit) denies the call before
+    # the tool runs. User-authored shell from [[hooks.entries]].
+    try:
+        from agent.core import hooks as _hooks
+        _allow, _hmsg = await _hooks.run_pre_tool(config, name, args)
+    except Exception:
+        logger.debug("pre_tool hook run failed (ignored)", exc_info=True)
+        _allow, _hmsg = True, ""
+    if not _allow:
+        return {"error": _hmsg, "tool": name, "blocked_by_hook": True}, ""
+
+    # Action classifier (optional, [classify]): a local model scores the call;
+    # a verdict can add a note, ask, or deny — never allow what was refused above.
+    if config is not None and getattr(getattr(config, "classify", None), "mode", "off") != "off":
+        try:
+            from agent.classify import guard_tool_call
+            return await guard_tool_call(config, name, args, _decision, call_id=call_id)
+        except Exception:
+            logger.exception("classifier gate failed for %s (ignored)", name)
+    return None, ""
+
+
 async def execute_tool(tool_call, config: "Config | None" = None) -> str:
     from agent import failure_report as _fr
     from agent.tools import get_tool, get_schemas
@@ -474,33 +534,11 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
                 }, config=config)
                 args = {k: v for k, v in args.items() if k in allowed}
 
-    # Permission policy: allow / ask / deny per tool + primary argument. Runs
-    # after argument validation (so the prompt shows the real arguments) and
-    # before hooks and the tool itself. It can only narrow — the sandbox, fs
-    # gate, deny globs and air-gap all sit below and are untouched by a verdict.
-    if config is not None:
-        try:
-            from agent.security import permissions as _perms
-            _decision = await _perms.check(name, args, config)
-        except Exception:
-            logger.exception("permission check failed for %s", name)
-            _decision = None
-        if _decision is not None and not _decision.allowed:
-            rules.record_tool_usage(name, False)
-            logger.warning("permission denied: %s (%s)", name, _decision.reason)
-            return json.dumps(_perms.denial_result(name, _decision))
-
-    # Pre-tool hooks: a blocking hook (non-zero exit) denies the call before
-    # the tool runs. User-authored shell from [[hooks.entries]].
-    try:
-        from agent.core import hooks as _hooks
-        _allow, _hmsg = await _hooks.run_pre_tool(config, name, args)
-    except Exception:
-        logger.debug("pre_tool hook run failed (ignored)", exc_info=True)
-        _allow, _hmsg = True, ""
-    if not _allow:
+    _blocked, _cls_note = await pre_tool_gates(name, args, config,
+                                               call_id=getattr(tool_call, "id", None))
+    if _blocked is not None:
         rules.record_tool_usage(name, False)
-        return json.dumps({"error": _hmsg, "tool": name, "blocked_by_hook": True})
+        return json.dumps(_blocked)
 
     try:
         result = await _invoke_tool(name, fn, args, config)
@@ -537,6 +575,8 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
             _notes = []
         if _notes:
             serialised = serialised + "\n\n[hook notes]\n" + "\n".join(_notes)
+        if _cls_note:
+            serialised = serialised + "\n\n" + _cls_note
 
         logger.debug("execute_tool: %s  result_len=%d", name, len(serialised))
 
@@ -559,7 +599,8 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
                 "original_lines": serialised.count("\n") + 1,
                 "head_chars": store.head_chars,
                 "tail_chars": store.tail_chars,
-                "note": "Output too large. Use retrieve_output(call_id='%s') to get full result or specific range." % call_id,
+                "note": (_read_file_truncation_note(args, call_id) if name == "read_file" else
+                         "Output too large. Use retrieve_output(call_id='%s') to get full result or specific range." % call_id),
             }, ensure_ascii=False)
 
         rules.record_tool_usage(name, True)

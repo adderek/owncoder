@@ -329,6 +329,10 @@ def _strip_agent_exec_xml(text: str) -> str:
 _UNEXECUTED_EXEC_NOTE = "[removed: tool call written as text — this tool was NOT executed]"
 
 
+_HARNESS_NOTE_LINE_RE = re.compile(
+    r"^[ \t]*\[(?:loop guard:|released \w+ |goal check\]|confidence guard)[^\n]*$", re.MULTILINE)
+
+
 def _mark_unexecuted_agent_exec(text: str) -> str:
     """Replace leftover <agent_exec> tags with an explicit not-executed marker.
 
@@ -365,8 +369,15 @@ def _mark_unexecuted_tool_tags(text: str) -> str:
             # Fabricated compaction-summary lines: the whole line goes, so the
             # invented result never reads as a real one.
             seg = re.sub(r"^[ \t]*\[tool\]\s+\w+\s*\(.*$", note, seg, flags=re.MULTILINE)
+            # Harness notes the model copied into its own prose ("[loop guard:
+            # …]", "[released read_file …]"): authored by us, never by the
+            # model — kept, they read as its own findings and get re-copied.
+            seg = _HARNESS_NOTE_LINE_RE.sub("", seg)
         out.append(seg)
-    return "".join(out).strip()
+    text = "".join(out)
+    # One marker per run of fabricated lines is enough to say what happened.
+    text = re.sub(r"(" + re.escape(note) + r")(?:\s*" + re.escape(note) + r")+", r"\1", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
 def _clean_output(text: str) -> str:

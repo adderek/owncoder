@@ -284,6 +284,8 @@ def _build_extracted_summary(filename: str, code: str, outcome: str, err: str | 
         arrow = "ok"
     elif outcome == "refused_shrink":
         arrow = f"refused (would shrink {existing_len}→{len(code)} chars)"
+    elif outcome == "refused_policy":
+        arrow = f"refused by policy: {err}"
     else:
         arrow = f"ERROR: {err}"
 
@@ -341,6 +343,57 @@ def _apply_code_from_history(
     side_log=None,
     turn_id: int | None = None,
 ) -> tuple[str, dict | None] | None:
+    """UNGATED narration fallback (no permissions/hooks/classifier) — kept for
+    tests of the extraction rules. The turn loop uses
+    ``apply_code_from_history_gated``."""
+    prep = _prepare_extracted_write(messages, side_log=side_log, turn_id=turn_id)
+    if prep is None or prep[0] == "done":
+        return None if prep is None else prep[1]
+    _, filename, code, existing_len = prep
+    return _commit_extracted_write(filename, code, existing_len, on_tool_call,
+                                   side_log=side_log, turn_id=turn_id)
+
+
+async def apply_code_from_history_gated(
+    messages: list[dict],
+    on_tool_call,
+    config,
+    side_log=None,
+    turn_id: int | None = None,
+) -> tuple[str, dict | None] | None:
+    """Narration fallback through the same gates as a real write_file call.
+
+    The extraction rules (prose, XML tags, missing parent, shrink) run first,
+    so the user is never asked to approve a write that would be refused anyway;
+    then permissions → pre-tool hooks → action classifier (pre_tool_gates);
+    only then the file is written. A blocked write is reported to the model
+    like any refused call, not silently dropped.
+    """
+    prep = _prepare_extracted_write(messages, side_log=side_log, turn_id=turn_id)
+    if prep is None or prep[0] == "done":
+        return None if prep is None else prep[1]
+    _, filename, code, existing_len = prep
+    from agent.core.tool_calls import pre_tool_gates
+    blocked, _note = await pre_tool_gates("write_file", {"path": filename, "content": code}, config)
+    if blocked is not None:
+        reason = str(blocked.get("error") or "blocked by policy")
+        logger.warning("[extract] write to %s blocked by gate: %s", filename, reason)
+        human = (f"Refused to write `{filename}` from narration: {reason}. "
+                 f"Nothing was written.")
+        summary = _build_extracted_summary(filename, code, "refused_policy", err=reason,
+                                           existing_len=existing_len, side_log=side_log,
+                                           turn_id=turn_id)
+        return human, summary
+    return _commit_extracted_write(filename, code, existing_len, on_tool_call,
+                                   side_log=side_log, turn_id=turn_id)
+
+
+def _prepare_extracted_write(messages: list[dict], side_log=None, turn_id: int | None = None):
+    """Extraction + refusal rules, no disk write.
+
+    → None (nothing to apply) | ("done", (human, summary)) for a refusal already
+    decided here | ("write", filename, code, existing_len).
+    """
     # A message that wrote tool calls as XML tags (<write_file path=... content=...>)
     # cannot be mined safely: the "code" lives inside an attribute value, so any
     # block we pull out is a truncated, backslash-escaped fragment. Let the turn
@@ -361,7 +414,6 @@ def _apply_code_from_history(
 
     outcome: str
     human: str
-    err: str | None = None
 
     # Reject prose masquerading as code before touching disk.
     if _is_prose_not_code(filename, code):
@@ -405,10 +457,15 @@ def _apply_code_from_history(
                     f"Call edit_file or write_file explicitly if this is intended."
                 )
                 summary = _build_extracted_summary(filename, code, outcome, err=None, existing_len=existing_len, side_log=side_log, turn_id=turn_id)
-                return human, summary
+                return "done", (human, summary)
         except Exception:
             pass
+    return "write", filename, code, existing_len
 
+
+def _commit_extracted_write(filename: str, code: str, existing_len: int, on_tool_call,
+                            side_log=None, turn_id: int | None = None) -> tuple[str, dict]:
+    err: str | None = None
     from agent.tools.files import write_file
     if on_tool_call:
         on_tool_call("write_file (extracted)", filename)

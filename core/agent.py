@@ -612,7 +612,8 @@ class Agent:
         if self._last_turn_time != stamp:
             return  # user started typing while we worked
         token_est = self.token_estimate()
-        min_tokens = int(self.config.llm.ctx_window * 0.3)
+        from agent.core.context_budget import effective_ctx_window
+        min_tokens = int(effective_ctx_window(self.config) * 0.3)
         if token_est < min_tokens:
             return  # not enough content to bother compacting
         try:
@@ -926,8 +927,9 @@ class Agent:
         # needed: the ctx window this turn is budgeted against.
         if turn_id == 1:
             try:
-                from agent.config.model_probe import join_enrichment
+                from agent.config.model_probe import adopt_entry_ctx, join_enrichment
                 join_enrichment()
+                adopt_entry_ctx(self.config)
             except Exception:
                 logger.debug("model enrichment join failed", exc_info=True)
 

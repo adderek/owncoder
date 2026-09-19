@@ -17,7 +17,7 @@ from .streaming import _stream_response, _strip_tool_blocks, _is_narrating_tool_
 from .cache_tracker import check_cache, mark_request
 from .history_ops import (
     _merge_consecutive_assistants, _collapse_tool_rounds, _truncate_large_messages,
-    _apply_code_from_history,
+    apply_code_from_history_gated,
 )
 from . import diagnostics
 from . import prompt_cache
@@ -459,6 +459,36 @@ async def run_turn(
         if inject_note:
             messages = messages + [_loop_guard_escalation_note()]
         return True
+
+    _health_probes_done: set[str] = set()
+
+    async def _turn_health(trigger: str):
+        """Ask the classifier whether this turn is still healthy (classify.turn_health).
+
+        → turn_health.Decision, or None when disabled / already asked for this
+        trigger / classifier unavailable. Metadata only — see classify/turn_health.py.
+        """
+        from agent.classify import turn_health as _th
+        if (not _th.enabled(config) or trigger in _health_probes_done
+                or len(_health_probes_done) >= _th.MAX_PROBES_PER_TURN):
+            return None
+        _health_probes_done.add(trigger)
+        counters = {
+            "text_call_violations_turn": nudge_count,
+            "text_call_violations_session": sum(
+                1 for m in messages if m.get("_injected_kind") == _TEXT_CALL_KIND),
+            "max_same_file_reads": max(_read_path_counts.values(), default=0),
+            "iteration": iter_count,
+        }
+        state = _th.build_state(messages, counters)
+        v = await _th.assess(config, state)
+        can_escalate = bool(config.auto_tier.enabled and config.auto_tier.escalate_on_loop_guard
+                            and not _tier_escalated)
+        d = _th.decide(config, v, can_escalate)
+        _th.log(config, state, v, d.action, trigger)
+        if v is not None and d.action != "continue":
+            _phase("turn_health", f"{v.label} p={v.p:.2f} -> {d.action}")
+        return d
 
     def _checkpoint_partial() -> None:
         """Publish the round so far for a caller that may never get a return.
@@ -1072,6 +1102,14 @@ async def run_turn(
                 messages = messages + [{"role": "assistant", "content": note}]
                 return "".join(content_parts + [note]), messages
 
+            if _read_path_counts and max(_read_path_counts.values()) >= 3:
+                _hd = await _turn_health("repeat_read")
+                if _hd is not None and _hd.action == "stop":
+                    messages = messages + [{"role": "assistant", "content": _hd.text}]
+                    return "".join(content_parts + [_hd.text]), messages
+                if _hd is not None and _hd.action == "escalate":
+                    _try_escalate_loop_guard(_read_path_counts.clear)
+
             if _read_guard_escalated:
                 # Tool results are paired up now; deliver the escalation note and
                 # fall through to compaction/iteration bookkeeping as usual.
@@ -1277,7 +1315,7 @@ async def run_turn(
         if (fallback_enabled and (iter_count == 0 or _is_narrating_tool_use(content))
                 and (not already_nudged or _fabricated_call) and nudge_count < MAX_NUDGES):
             messages_with_current = messages + [stamp_reasoning({"role": "assistant", "content": content})]
-            applied = _apply_code_from_history(messages_with_current, on_tool_call, side_log=side_log, turn_id=turn_index)
+            applied = await apply_code_from_history_gated(messages_with_current, on_tool_call, config, side_log=side_log, turn_id=turn_index)
             if applied:
                 human, summary = applied
                 messages = messages_with_current + [summary, {"role": "assistant", "content": human}]
@@ -1309,6 +1347,20 @@ async def run_turn(
             messages = messages_with_current
             if (_has_unexecuted_agent_exec(content) or _has_pseudo_tool_tag(content)
                     or _has_fake_tool_summary(content)):
+                # Keep the marker, not the fabrication: a verbatim fake
+                # "[tool] x(...) → result" line left in history is the example
+                # the next round copies (observed: 10 violations in one session).
+                messages = messages[:-1] + [stamp_reasoning(
+                    {"role": "assistant", "content": _mark_unexecuted_agent_exec(content)})]
+                # Repeat offender (this turn or earlier ones): let the classifier
+                # decide whether another nudge can still help.
+                if nudge_count >= 1 or any(m.get("_injected_kind") == _TEXT_CALL_KIND for m in messages):
+                    _hd = await _turn_health("text_call")
+                    if _hd is not None and _hd.action == "stop":
+                        messages = messages + [{"role": "assistant", "content": _hd.text}]
+                        return "".join(content_parts + [_hd.text]), messages
+                    if _hd is not None and _hd.action == "escalate":
+                        _try_escalate_loop_guard(lambda: None)
                 nudge_text = _text_call_nudge(content, messages)
                 nudge_kind = _TEXT_CALL_KIND
             else:
@@ -1320,7 +1372,7 @@ async def run_turn(
             continue
 
         if fallback_enabled and already_nudged and (not content.strip() or _is_narrating_tool_use(content)):
-            applied = _apply_code_from_history(messages, on_tool_call, side_log=side_log, turn_id=turn_index)
+            applied = await apply_code_from_history_gated(messages, on_tool_call, config, side_log=side_log, turn_id=turn_index)
             if applied:
                 human, summary = applied
                 messages = messages + [summary, {"role": "assistant", "content": human}]

@@ -770,9 +770,27 @@ function resolvePermission(choice) {
 
 // What the tool actually returned. Folded away with everything else, but
 // there: "⚙ read_file ✓" alone never answered the question being asked.
-function toolOutput(name, ok, text, ms) {
+// Action-classifier verdict as a tooltip on the fold's ✓/✗ mark — nothing on
+// screen until hovered. Calls the classifier did not see carry no verdict.
+function classifyTitle(c) {
+  if (!c) return '';
+  if (!c.label) return 'classifier: not classified — ' + (c.error || c.action);
+  const pct = x => (Number(x) || 0).toFixed(2);
+  const dist = Object.keys(c.dist || {})
+    .sort((a, b) => c.dist[b] - c.dist[a])
+    .map(k => k + ' ' + pct(c.dist[k])).join('  ·  ');
+  return 'classifier: ' + c.label + '  p=' + pct(c.p) + '  conf=' + pct(c.confidence) +
+    '  →  ' + c.action + '\n' + dist + '\n' +
+    (c.backend || '') + (c.model ? ':' + c.model : '') + (c.ms ? '  ·  ' + c.ms + ' ms' : '');
+}
+
+function toolOutput(name, ok, text, ms, cls) {
   const q = resolvedTools[name];
   const d = q && q.shift();
+  if (d && cls) {
+    const mark = d.querySelector('.mark');
+    if (mark) mark.title = classifyTitle(cls);
+  }
   if (!d || !text) return;
   const body = document.createElement('div');
   body.className = 'toolout' + (ok ? '' : ' fail');
@@ -933,7 +951,7 @@ function handle(ev) {
     if (!Object.keys(pendingTools).some(n => pendingTools[n].length))
       setActivity('thinking');
   } else if (ev.type === 'tool_io') {
-    toolOutput(ev.name, ev.ok, ev.text, ev.ms);
+    toolOutput(ev.name, ev.ok, ev.text, ev.ms, ev.classify);
   } else if (ev.type === 'phase') {
     // A stall heartbeat is not a new step in the turn: keep the half-finished
     // stream bubble (and its caret) open so the gap is visible where the text

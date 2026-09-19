@@ -1210,6 +1210,56 @@ class SpeechConfig:
 
 
 @dataclass
+class ClassifyConfig:
+    """Action classifier: a small local/LAN model scores each risky tool call
+    into one label of a fixed set, with a probability. Off by default.
+
+    mode: "off" | "advisory" (log + note, never blocks) | "enforce" (a verdict
+      over threshold escalates the call to an approval prompt or a denial).
+    A verdict only ever NARROWS what the permission layer allows — it never
+    grants. Protocol + server spec: docs/classify.md.
+    """
+    mode: str = "off"
+    # "local" = OpenAI-compatible llama.cpp with logprobs (own hardware);
+    # "jev"   = TypeSafe Jev SaaS (cloud — also needs allow_remote).
+    backend: str = "local"
+    endpoint: str = ""              # local: e.g. http://192.168.31.42:8084/v1; jev: "" = https://api.typesafe.ai
+    model: str = ""                 # "" = "classifier" (local) / "jev-latest" (jev)
+    # Literal, "env:VAR" or "file:~/path" (resolved at load; the literal never
+    # needs to sit in the yaml). jev falls back to $TYPESAFE_API_KEY.
+    api_key: str = ""
+    timeout_s: float = 1.5          # per call; a miss counts as "unavailable"
+    # Local-first: only loopback / private-IP endpoints unless this is set.
+    allow_remote: bool = False
+    # Cloud only: string args longer than this (file contents etc.) are sent as
+    # "<omitted: N chars>"; argv/cmd/url/path are always kept. 0 = no limit.
+    remote_max_field_chars: int = 300
+    # Verdict confidence below this → treated like an ask_at hit (review).
+    # 0 = off. TypeSafe suggests ~0.5 as "genuinely uncertain".
+    review_below_confidence: float = 0.0
+    # Turn health probe (classify/turn_health.py): on repeated fabricated tool
+    # calls or re-reads, ask whether the turn is progressing / circling /
+    # format_broken / needs_user. "off" | "advisory" (log + notice) | "act"
+    # (escalate via auto_tier if enabled, else end the turn with an explanation).
+    turn_health: str = "off"
+    # Tools whose calls are classified before they run.
+    tools: list = field(default_factory=lambda: [
+        "run_argv", "run_argv_bg", "write_file", "edit_file", "replace_symbol",
+        "delete_command", "schedule_task", "web_fetch",
+    ])
+    # label → min probability that escalates the call to an approval prompt
+    # (enforce) or surfaces a warning note (advisory).
+    ask_at: dict = field(default_factory=lambda: {
+        "needs_review": 0.85, "destructive": 0.6, "exfiltration": 0.5,
+    })
+    # label → min probability that denies outright (enforce only).
+    deny_at: dict = field(default_factory=lambda: {"exfiltration": 0.9})
+    log_verdicts: bool = True       # <agent_dir>/classify/verdicts.jsonl
+    # Skip the "classifier not configured" startup notice (same as /classify accept).
+    hide_unconfigured_notice: bool = False
+
+
+@dataclass
 class AutoTierConfig:
     """Per-turn model tiering: run the main thread on a FAST model by default and
     escalate to a STRONG model for complex turns, then revert to fast next turn.
@@ -1422,6 +1472,7 @@ class Config:
     notify: NotifyConfig = field(default_factory=NotifyConfig)
     mcp: MCPConfig = field(default_factory=MCPConfig)
     speech: SpeechConfig = field(default_factory=SpeechConfig)
+    classify: ClassifyConfig = field(default_factory=ClassifyConfig)
     auto_tier: AutoTierConfig = field(default_factory=AutoTierConfig)
     failover: FailoverConfig = field(default_factory=FailoverConfig)
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)

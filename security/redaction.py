@@ -43,6 +43,7 @@ _PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"gsk_[A-Za-z0-9]{20,}"), "groq-key"),
     (re.compile(r"r8_[A-Za-z0-9]{20,}"), "replicate-token"),
     (re.compile(r"dop_v1_[a-f0-9]{40,}"), "digitalocean-token"),
+    (re.compile(r"apikey_[0-9a-f]{20,}_[0-9a-f]{20,}"), "typesafe-key"),
     # Credentials embedded in a URL: proto://user:pass@host
     (re.compile(r"(?P<proto>[a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@]+:)[^\s:/@]+(?P<at>@)"), "url-credential"),
     # JWT (header.payload.signature)
@@ -84,6 +85,11 @@ def _config_literals(config: "Config | None") -> list[str]:
             entries = entries.values()
         for e in entries or []:
             _add(getattr(e, "api_key", None))
+    except Exception:
+        pass
+    # Action classifier key (resolved from file:/env: at load).
+    try:
+        _add(getattr(getattr(config, "classify", None), "api_key", None))
     except Exception:
         pass
     # Notify channel secrets (hello tokens, e2e key files' inline values).

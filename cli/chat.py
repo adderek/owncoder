@@ -154,6 +154,29 @@ def _audit_crash(console, sentinel: Path, messages: list[dict]) -> None:
             + "\n  Restore: git checkout HEAD -- <file>")
 
 
+def _run_teardown_steps(console, steps) -> None:
+    """Run session-end steps with a live line each: what runs, how long, what it
+    produced. Ctrl+C skips the current and remaining steps; errors are logged
+    and the next step still runs."""
+    import time
+    console.print("[dim]Session end — learning from this session (Ctrl+C again to skip)…[/dim]")
+    for label, unit, fn in steps:
+        t0 = time.monotonic()
+        try:
+            with console.status(f"[dim]  {label}…[/dim]"):
+                out = fn()
+        except KeyboardInterrupt:
+            console.print(f"[yellow]  skipped: {label} and the rest[/yellow]")
+            return
+        except Exception:
+            logger.debug("teardown step %r failed", label, exc_info=True)
+            console.print(f"[dim]  {label}: failed ({time.monotonic() - t0:.1f}s, see agent.log)[/dim]")
+            continue
+        n = len(out) if isinstance(out, (list, tuple)) else out if isinstance(out, int) else 0
+        result = f"{n} {unit}" if n else "nothing new"
+        console.print(f"[dim]  {label}: {result} ({time.monotonic() - t0:.1f}s)[/dim]")
+
+
 def _warn_loop_guard_resume(console, messages: list[dict]) -> None:
     """Warn user when resuming a session that was stopped by the loop guard."""
     for m in reversed(messages):
@@ -440,6 +463,18 @@ def cmd_chat(args, config):
     except Exception:
         logger.debug("hook trust warning failed", exc_info=True)
 
+    # Optional action classifier: say once when it is not there; the user
+    # accepts running without it via /classify accept.
+    try:
+        from agent.classify import startup_warning as _cls_warning
+        _cw = _cls_warning(agent.config)
+        if _cw:
+            console.print(_cw, style="yellow", markup=False, highlight=False)
+            from agent import ui_notice
+            ui_notice.record(_cw)
+    except Exception:
+        logger.debug("classifier startup check failed", exc_info=True)
+
     # Tamper check: warn if sealed skills/config drifted, or pinned weights moved.
     try:
         from agent.security.integrity import warn_if_tampered
@@ -518,47 +553,38 @@ def cmd_chat(args, config):
         except Exception:
             pass
         save_session(session, agent.messages)
-        try:
+        # Session-end learning: up to three LLM calls (tens of seconds on a LAN
+        # model). Shown step by step; a second Ctrl+C skips the rest instead of
+        # aborting the whole teardown (stores and MCP would stay open).
+        _facts = getattr(agent, "_facts_store", None)
+
+        def _promote():
             from agent.memory.promoter import promote_session_to_notes
-            promote_session_to_notes(
-                session_id=session.id,
-                config=config,
-                facts_store=getattr(agent, "_facts_store", None),
-                embedder=embedder,
-                session_mode=session.mode,
-            )
-        except Exception:
-            pass
-        try:
+            return promote_session_to_notes(session_id=session.id, config=config, facts_store=_facts,
+                                            embedder=embedder, session_mode=session.mode)
+
+        def _reflect():
             from agent.memory.reflector import reflect_session
-            reflect_session(
-                session_id=session.id,
-                config=config,
-                facts_store=getattr(agent, "_facts_store", None),
-                embedder=embedder,
-                store=getattr(agent, "_project_memory_store", None),
-            )
-        except Exception:
-            logger.debug("reflect_session teardown failed", exc_info=True)
-            pass
-        try:
+            return reflect_session(session_id=session.id, config=config, facts_store=_facts,
+                                   embedder=embedder,
+                                   store=getattr(agent, "_project_memory_store", None))
+
+        def _distill():
             from agent.memory.skill_distiller import distill_session_skills
-            distill_session_skills(
-                session_id=session.id,
-                config=config,
-                facts_store=getattr(agent, "_facts_store", None),
-            )
-        except Exception:
-            logger.debug("distill_session_skills teardown failed", exc_info=True)
-            pass
-        try:
+            return distill_session_skills(session_id=session.id, config=config, facts_store=_facts)
+
+        def _evaluate_prompts():
             # A/B verdict on compiled prompts: recompile/pin variants that
             # measurably regress vs their original-text control arm.
             from agent import prompt_compiler
-            prompt_compiler.evaluate(config)
-        except Exception:
-            logger.debug("prompt_compiler.evaluate teardown failed", exc_info=True)
-            pass
+            return prompt_compiler.evaluate(config)
+
+        _run_teardown_steps(console, [
+            ("saving notes", "note(s)", _promote),
+            ("reflecting on the session", "rule(s)", _reflect),
+            ("distilling skills", "skill(s)", _distill),
+            ("checking compiled prompts", "verdict(s)", _evaluate_prompts),
+        ])
         try:
             from agent.mcp import shutdown_mcp
             shutdown_mcp()

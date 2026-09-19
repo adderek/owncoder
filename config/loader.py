@@ -269,6 +269,7 @@ def _merge(config: Config, data: dict) -> None:
         ("notify", config.notify),
         ("mcp", config.mcp),
         ("speech", config.speech),
+        ("classify", config.classify),
         ("auto_tier", config.auto_tier),
         ("failover", config.failover),
         ("privacy", config.privacy),
@@ -294,7 +295,7 @@ _KNOWN_SECTIONS = {
     "verify", "diagnostics", "checkpoints", "tests", "confidence_guard", "compile_prompts", "token_limits",
     "tool_compaction", "security", "planning", "recovery", "parallel",
     "explore", "web_search", "concurrency", "kb", "aei", "notify", "mcp",
-    "speech", "auto_tier", "failover", "privacy", "scheduler", "hooks",
+    "speech", "classify", "auto_tier", "failover", "privacy", "scheduler", "hooks",
     "credpool", "permissions", "tool_discovery", "summarization", "output_store",
     "turn_signals", "ui_server", "models", "vision",
 }
@@ -595,9 +596,13 @@ def _merge_models(config: Config, data: dict) -> None:
                     config.model_entries[name] = existing
                 for fld, val in entry_data.items():
                     if hasattr(existing, fld):
-                        # Strict check for ctx_window to prevent "auto" string usage
-                        if fld == "ctx_window" and isinstance(val, str) and val == "auto":
-                            raise ValueError(f"Invalid value for model '{name}' ctx_window: use 0 instead of 'auto'")
+                        # ctx_window "auto" = 0 = ask the server (/models meta, /props,
+                        # router preset --ctx-size). Any other string is a typo.
+                        if fld == "ctx_window" and isinstance(val, str):
+                            if val.strip().lower() != "auto":
+                                raise ValueError(f"Invalid value for model '{name}' ctx_window: "
+                                                 f"{val!r} (use a number, or 0 / \"auto\")")
+                            val = 0
                         setattr(existing, fld, val)
 
 
@@ -623,6 +628,33 @@ def _resolve_api_key_refs(config: Config) -> None:
                 "model '%s': api_key refers to $%s, which is unset or empty", name, var
             )
         entry.api_key = value
+
+
+def _resolve_classify_key(config: Config) -> None:
+    """Expand ``classify.api_key`` = "env:VAR" / "file:PATH" to the key itself.
+
+    file: keeps the key out of agent.yaml (a 0600 file next to it); jev with no
+    key configured falls back to $TYPESAFE_API_KEY (the TypeSafe SDK's name).
+    Unresolvable → "" and the classifier reports "no API key" at startup.
+    """
+    import os
+    cfg = config.classify
+    ref = cfg.api_key if isinstance(cfg.api_key, str) else ""
+    value = ref
+    if ref.startswith("env:"):
+        value = os.environ.get(ref[4:].strip(), "")
+    elif ref.startswith("file:"):
+        path = Path(os.path.expanduser(ref[5:].strip()))
+        try:
+            value = path.read_text(encoding="utf-8").strip()
+            if path.stat().st_mode & 0o077:
+                logger.warning("classify.api_key file %s is readable by others — chmod 600", path)
+        except OSError as e:
+            logger.warning("classify.api_key file unreadable: %s", e)
+            value = ""
+    elif not ref and cfg.backend == "jev":
+        value = os.environ.get("TYPESAFE_API_KEY", "")
+    cfg.api_key = value
 
 
 def _apply_entry_to_llm(config: Config, name: str, entry: "ModelEntry") -> None:
@@ -857,6 +889,7 @@ def load_config(extra_path: Path | list[Path] | None = None) -> Config:
                     config.project_model_entries.add(name)
 
     _resolve_api_key_refs(config)
+    _resolve_classify_key(config)
 
     # Bridge: populate config.llm/embeddings from model entries + config.agent
     _apply_model_entry_to_llm(config)
@@ -1203,6 +1236,11 @@ def _try_detect_ctx_window(config: Config, data: dict) -> None:
             from agent.config.model_probe import _probe_llamacpp_props
             ctx_size = _probe_llamacpp_props("default", config.llm.base_url, timeout=3)
         if not isinstance(ctx_size, int) or ctx_size <= 0:
+            # llama.cpp router: a preset that is not loaded has no meta and the
+            # router's /props says 0 — its launch args carry the real --ctx-size.
+            from agent.config.model_probe import _router_ctx_size
+            ctx_size = _router_ctx_size(model_info)
+        if not isinstance(ctx_size, int) or ctx_size <= 0:
             return
         # Apply global cap if set
         if config.llm.global_max_ctx > 0:
@@ -1210,6 +1248,10 @@ def _try_detect_ctx_window(config: Config, data: dict) -> None:
         current = config.llm.ctx_window
         if current == 0:
             config.llm.ctx_window = ctx_size
+            # Also on the entry: pinning / switching re-copies entry.ctx_window
+            # onto config.llm, and a 0 there silently undid this detection.
+            from agent.config.model_probe import sync_entry_ctx
+            sync_entry_ctx(config, ctx_size)
         elif ctx_size < current:
             print(
                 f"Auto-detected context window: {ctx_size} tokens "
