@@ -266,3 +266,37 @@ Qwen (0.95, 1/36) unknown until trained on thousands of logged verdicts.
 Not a replacement for `local` as shipped. Path: fine-tune on `verdicts.jsonl`
 (Jev + Qwen as teachers; upstream RLCD notebook), evaluate on held-out real calls.
 
+---
+
+## Part 5 — main chat LLM as the classifier (measured 2026-09-21)
+
+Any instruct LLM behind llama.cpp works with `backend: local` — same one-letter
+logprob readout, no code change. Condition: the template honours
+`enable_thinking: false` (first token must be the letter; Ornith-1.5-9B fails this).
+Same 80 calls as Part 4, fractal router 8081 on GPU1:
+
+| model | accuracy | destructive/exfil → safe | p50 |
+|---|---|---|---|
+| Qwen3-4B-Instruct Q8_0 (`clf`, gpu0) | 0.95 | 1/36 | 42 ms |
+| ornith10-35B | 0.90 | 1/36 | 108 ms |
+| ornith10-35B while generating | 0.90 | 1/36 | 140 ms — generation 105 → 64 tok/s |
+| qwen3.6-27B (thinking model, thinking off) | 0.925 | 2/36 | 185 ms |
+
+- The contention row is a worst case (80 calls back to back). In one session the
+  check runs after the model emitted the tool call, while it waits anyway; only
+  parallel sessions/agents pay.
+- Not independent: the model that proposed the action judges it. The probe sees
+  only the call in a fresh context (no conversation), so injected text does not
+  carry over directly, but the blind spots are shared. Keep a separate model as
+  the guard; the main LLM fits as a fallback (needs an ordered backend list,
+  not implemented) or as an extra teacher for laya-teacher.
+
+Config: `classify: {backend: local, endpoint: http://192.168.31.42:8081/v1, model: ornith10-35B}`.
+
+Community (2026-09): a dozen open Jev-alikes, none reproduces RLCD (weights and
+recipe unpublished). Three families: encoder + heads (Laya, OpenJev 151M),
+frozen LLM reading option-letter logits (mini-jev, SemIf, openjev-sglang — what
+`local` does), LoRA on a small LLM (Bespoke Nimble, Decider, kev, eve-rlcd).
+pngwn's controlled comparison: architectures within ~0.006 of each other,
+pretraining knowledge decides; a 0.6B causal letter-logit scorer had the best
+calibration (ECE 0.015). Shared benchmark: `LocalLLaMA/typed-decisions`.
