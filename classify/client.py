@@ -317,9 +317,13 @@ async def _jev_post(config: "Config", body: dict) -> dict:
 
 def jev_body(config: "Config", probe: Probe, state: dict) -> dict:
     """Exact request body sent to Jev/Laya (also shown by `/classify preview`).
-    Jev is always cloud → always minimised; Laya only when it is remote."""
+    Jev is always cloud → always minimised; Laya only when it is remote.
+    Laya never gets cwd: it is identity, not risk signal, it is not in the
+    verdict log Laya is trained from (laya-teacher), and its context is short."""
     if config.classify.backend == "jev" or is_cloud(config):
         state = minimise_for_cloud(config, state)
+    elif config.classify.backend == "laya":
+        state = {k: v for k, v in state.items() if k != "cwd"}
     return {
         "model": model(config),
         "state": state,

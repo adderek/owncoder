@@ -351,12 +351,14 @@ class TestLaya:
 
     def test_local_no_key_no_scrub(self, laya):
         client.check_endpoint(laya)          # no key needed, loopback allowed
-        state = {"tool": "run_argv", "args": "{}", "cwd": "/home/someone/project"}
+        args = '{"argv": ["cat", "/home/someone/project/x"]}'
+        state = {"tool": "run_argv", "args": args, "cwd": "/home/someone/project"}
         v = asyncio.run(client.classify(laya, client.ACTION_RISK, state))
         assert (v.label, v.p, v.backend, v.model) == ("destructive", 0.7, "laya", "laya-english")
         body = laya._sent[0]
         assert body["model"] == "english"
-        assert body["state"] == state        # stays on the LAN → sent as is
+        # LAN → not scrubbed; cwd dropped = same shape laya-teacher trains on
+        assert body["state"] == {"tool": "run_argv", "args": args}
 
     def test_remote_needs_allow_remote_and_is_scrubbed(self, laya, monkeypatch):
         laya.classify.endpoint = "https://laya.example.com"
