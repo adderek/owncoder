@@ -286,6 +286,6 @@ def log(config: "Config", state: dict, v: Verdict | None, action: str, trigger: 
     """Append to the verdict log and surface a one-line notice for non-progress."""
     from agent.classify import guard
     guard._log(config, "(turn_health)", json.dumps({"trigger": trigger, **state.get("counters", {})}),
-               v, action)
+               v, action, state=state)
     if v is not None and v.label != "progressing":
         guard._notice(f"⚠ classifier: turn_health={v.label} p={v.p:.2f} → {action} ({trigger})")

@@ -40,7 +40,7 @@ Invariants:
 - Outage: one failed call marks it down 30 s → one timeout per 30 s, not per call.
 - Verdict cache: 256 entries per process, keyed on tool + redacted args.
 - HTTP UI: hover the ✓/✗ mark of a tool fold → verdict tooltip (label, p, conf, action, distribution, backend:model, ms). Nothing shown until hovered; unclassified tools have no tooltip. Live turns only (not on session replay).
-- Log: `<agent_dir>/classify/verdicts.jsonl` (ts, tool, args[:500], label, p, dist, mass, ms, action). Training/calibration data for later.
+- Log: `<agent_dir>/classify/verdicts.jsonl` (ts, tool, args[:4000] = what the classifier saw, probe, label, p, dist, confidence, mass, backend, model, ms, action; turn_health/answer_check also `state` = full probe input). = training data for a local classifier (Laya): teacher = backend:model, `action` approved/denied = user's own label. `log_verdicts: false` disables. Cache hits are logged again → dedupe on tool+args.
 
 ### Config
 
@@ -239,3 +239,30 @@ Known Jev limits (their docs): reads state literally; does not treat state as
 hostile (injection can sway it) → our "only escalates, never grants" rule
 matters; retention: ZDR only on enterprise plans; no training on user data per
 their privacy policy.
+
+---
+
+## Part 4 — Laya backend (self-hosted, Jev wire format)
+
+`backend: laya`, `endpoint: http://<box>:8085`, `model: english | typed-decisions | multilingual`.
+Server: ollama-turboquant `go-laya.sh` / `laya/laya-server.py` (service `laya`, default `off`).
+Laya = ModernBERT/mmBERT encoder + typed heads, one forward pass, `POST /v1/systemone`
+same body as Jev. No key. Payload minimised only if the endpoint is remote.
+
+Measured 2026-09-21, 80 hand-labelled calls (`ollama-turboquant/laya/eval/`), zero-shot:
+
+| backend | accuracy | destructive/exfil → safe | p50 GPU | p50 CPU -t12 |
+|---|---|---|---|---|
+| local Qwen3-4B Q8_0 | 0.95 | 1/36 | 41 ms | 432 ms |
+| laya english | 0.48 | 21/36 | 29 ms | 421 ms |
+| laya typed-decisions | 0.51 | 16/36 | 29 ms | — |
+| laya multilingual | 0.38 | 30/36 | 26 ms | — |
+
+Frozen encoder + logistic regression (`laya/eval/probe_frozen.py`, 5×5-fold CV,
+~64 train examples per fold): acc 0.58–0.72, destructive/exfil → safe ~4/36
+(from 16–30/36). Supervision fixes most of the misses even at n=64; ceiling vs
+Qwen (0.95, 1/36) unknown until trained on thousands of logged verdicts.
+
+Not a replacement for `local` as shipped. Path: fine-tune on `verdicts.jsonl`
+(Jev + Qwen as teachers; upstream RLCD notebook), evaluate on held-out real calls.
+

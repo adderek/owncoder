@@ -11,6 +11,8 @@ jev    TypeSafe Jev SaaS (``POST /v1/systemone``, Choice question). Returns the
        choice, per-option probabilities and its own confidence. Cloud: needs
        ``allow_remote`` and is refused under air-gap or a private session.
        What leaves the machine is minimised by ``minimise_for_cloud``.
+laya   Self-hosted Laya encoder (ollama-turboquant ``laya/laya-server.py``),
+       same wire format as jev. Local/LAN like ``local``; no key needed.
 
 Either way the answer is always one of the declared labels. Any failure
 (timeout, refused connection, auth, rate limit, off-protocol response) raises
@@ -134,7 +136,8 @@ def endpoint_tier(url: str) -> str:
 
 JEV_DEFAULT_URL = "https://api.typesafe.ai"
 JEV_DEFAULT_MODEL = "jev-latest"
-BACKENDS = ("local", "jev")
+BACKENDS = ("local", "jev", "laya")
+_SYSTEMONE = ("jev", "laya")    # backends speaking POST /v1/systemone
 
 
 def endpoint(config: "Config") -> str:
@@ -148,7 +151,7 @@ def model(config: "Config") -> str:
     cfg = config.classify
     if cfg.model:
         return cfg.model
-    return JEV_DEFAULT_MODEL if cfg.backend == "jev" else "classifier"
+    return {"jev": JEV_DEFAULT_MODEL, "laya": "english"}.get(cfg.backend, "classifier")
 
 
 def is_cloud(config: "Config") -> bool:
@@ -302,21 +305,24 @@ async def _jev_post(config: "Config", body: dict) -> dict:
     import httpx
     cfg = config.classify
     url = endpoint(config).rstrip("/") + "/v1/systemone"
+    headers = {"Authorization": f"Bearer {cfg.api_key}"} if cfg.api_key else {}
     async with httpx.AsyncClient(timeout=cfg.timeout_s) as client:
-        resp = await client.post(url, json=body,
-                                 headers={"Authorization": f"Bearer {cfg.api_key}"})
+        resp = await client.post(url, json=body, headers=headers)
     if resp.status_code != 200:
         hint = {401: "invalid API key", 422: "request rejected",
                 429: "rate limited", 529: "service overloaded"}.get(resp.status_code, "")
-        raise ClassifierUnavailable(f"jev HTTP {resp.status_code} {hint}".strip())
+        raise ClassifierUnavailable(f"{cfg.backend} HTTP {resp.status_code} {hint}".strip())
     return resp.json()
 
 
 def jev_body(config: "Config", probe: Probe, state: dict) -> dict:
-    """Exact request body sent to Jev (also shown by `/classify preview`)."""
+    """Exact request body sent to Jev/Laya (also shown by `/classify preview`).
+    Jev is always cloud → always minimised; Laya only when it is remote."""
+    if config.classify.backend == "jev" or is_cloud(config):
+        state = minimise_for_cloud(config, state)
     return {
         "model": model(config),
-        "state": minimise_for_cloud(config, state),
+        "state": state,
         "questions": {probe.name: {
             "type": "choice",
             "instructions": (f"The state describes {probe.task}. Which label fits it? "
@@ -335,12 +341,13 @@ async def _classify_jev(config: "Config", probe: Probe, state: dict) -> Verdict:
         dist = {k: float(ans["probabilities"].get(k, 0.0)) for k, _ in probe.labels}
         conf = float(ans.get("confidence", spread_confidence(dist)))
     except (KeyError, TypeError, ValueError, AttributeError) as e:
-        raise ClassifierUnavailable("jev response missing answers/choice/probabilities") from e
+        raise ClassifierUnavailable(
+            f"{config.classify.backend} response missing answers/choice/probabilities") from e
     if label not in dist:
-        raise ClassifierUnavailable(f"jev returned unknown label {label!r}")
+        raise ClassifierUnavailable(f"{config.classify.backend} returned unknown label {label!r}")
     return Verdict(probe=probe.name, label=label, p=dist[label], dist=dist,
                    confidence=conf, model=str(raw.get("model") or model(config)),
-                   backend="jev")
+                   backend=config.classify.backend)
 
 
 async def _classify_local(config: "Config", probe: Probe, state: dict) -> Verdict:
@@ -384,7 +391,7 @@ async def classify(config: "Config", probe: Probe, state: dict,
     """Classify *state* with *probe*. Raises ClassifierUnavailable on any failure."""
     import asyncio
     check_endpoint(config)
-    run = _classify_jev if config.classify.backend == "jev" else _classify_local
+    run = _classify_jev if config.classify.backend in _SYSTEMONE else _classify_local
     t0 = time.monotonic()
     try:
         v = await asyncio.wait_for(run(config, probe, state),

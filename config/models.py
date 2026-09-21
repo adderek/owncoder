@@ -1225,9 +1225,10 @@ class ClassifyConfig:
     mode: str = "off"
     # "local" = OpenAI-compatible llama.cpp with logprobs (own hardware);
     # "jev"   = TypeSafe Jev SaaS (cloud — also needs allow_remote).
+    # "laya"  = self-hosted Laya encoder, Jev wire format (e.g. http://host:8085).
     backend: str = "local"
     endpoint: str = ""              # local: e.g. http://192.168.31.42:8084/v1; jev: "" = https://api.typesafe.ai
-    model: str = ""                 # "" = "classifier" (local) / "jev-latest" (jev)
+    model: str = ""                 # "" = "classifier" (local) / "jev-latest" (jev) / "english" (laya)
     # Literal, "env:VAR" or "file:~/path" (resolved at load; the literal never
     # needs to sit in the yaml). jev falls back to $TYPESAFE_API_KEY.
     api_key: str = ""

@@ -75,7 +75,7 @@ def probe(config: "Config", text: str = "git status",
 def preview(config: "Config", text: str) -> str:
     """The exact payload a backend would receive for `run_argv <text>` — nothing sent."""
     state = _sample_state(config, text)
-    if config.classify.backend == "jev":
+    if config.classify.backend in ("jev", "laya"):
         body = client.jev_body(config, ACTION_RISK, state)
         return f"POST {client.endpoint(config)}/v1/systemone\n" + json.dumps(body, indent=2, ensure_ascii=False)
     if client.is_cloud(config):

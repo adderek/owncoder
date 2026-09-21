@@ -175,6 +175,22 @@ class TestGuard:
         rec = json.loads(log[0])
         assert rec["label"] == "safe" and rec["action"] == "pass"
 
+    def test_log_keeps_input_long_enough_to_train_on(self, cfg, monkeypatch, tmp_path):
+        _serve(monkeypatch, _top(A=1.0))
+        long_cmd = "echo " + "x" * 2000
+        _call(cfg, long_cmd)
+        rec = json.loads((tmp_path / ".agent" / "classify" / "verdicts.jsonl").read_text())
+        assert long_cmd in rec["args"]
+        assert (rec["probe"], rec["backend"], rec["model"]) == ("action_risk", "local", "test-cls")
+
+    def test_turn_health_logs_probe_state(self, cfg, tmp_path):
+        from agent.classify import turn_health
+        v = client.Verdict(probe="turn_health", label="circling", p=0.9, backend="jev", model="jev-1")
+        state = {"request": "fix the bug", "recent": [{"tool": "read_file"}], "counters": {"reads": 3}}
+        turn_health.log(cfg, state, v, "advisory", "reread")
+        rec = json.loads((tmp_path / ".agent" / "classify" / "verdicts.jsonl").read_text())
+        assert rec["state"] == state and rec["label"] == "circling"
+
 
 class TestUnavailable:
     def test_advisory_runs_unclassified(self, cfg, monkeypatch):
@@ -311,6 +327,46 @@ class TestJev:
     def test_guard_end_to_end(self, jev):
         assert _call(jev, "ls")["ok"] is True
         assert jev._sent
+
+
+# ── Laya (self-hosted, Jev wire format) backend ──────────────────────────────
+
+class TestLaya:
+    @pytest.fixture()
+    def laya(self, cfg, monkeypatch):
+        cfg.classify.backend = "laya"
+        cfg.classify.endpoint = "http://127.0.0.1:8085"
+        cfg.classify.api_key = ""
+        cfg.tools.working_dir = "/home/someone/project"
+        sent = []
+
+        async def fake(config, body):
+            sent.append(body)
+            return {**_jev_answer("destructive", {"safe": 0.2, "needs_review": 0.1,
+                                                  "destructive": 0.7, "exfiltration": 0.0}),
+                    "model": "laya-english"}
+        monkeypatch.setattr(client, "_jev_post", fake)
+        cfg._sent = sent
+        return cfg
+
+    def test_local_no_key_no_scrub(self, laya):
+        client.check_endpoint(laya)          # no key needed, loopback allowed
+        state = {"tool": "run_argv", "args": "{}", "cwd": "/home/someone/project"}
+        v = asyncio.run(client.classify(laya, client.ACTION_RISK, state))
+        assert (v.label, v.p, v.backend, v.model) == ("destructive", 0.7, "laya", "laya-english")
+        body = laya._sent[0]
+        assert body["model"] == "english"
+        assert body["state"] == state        # stays on the LAN → sent as is
+
+    def test_remote_needs_allow_remote_and_is_scrubbed(self, laya, monkeypatch):
+        laya.classify.endpoint = "https://laya.example.com"
+        monkeypatch.setitem(client._tier_cache, laya.classify.endpoint, "remote")
+        with pytest.raises(client.ClassifierUnavailable, match="allow_remote"):
+            client.check_endpoint(laya)
+        laya.classify.allow_remote = True
+        asyncio.run(client.classify(laya, client.ACTION_RISK,
+                                    {"tool": "run_argv", "args": "{}", "cwd": "/x"}))
+        assert "cwd" not in laya._sent[0]["state"]
 
 
 class TestMinimiseForCloud:

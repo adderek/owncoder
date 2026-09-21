@@ -28,7 +28,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agent.classify.client import ACTION_RISK, ClassifierUnavailable, Verdict, classify
+from agent.classify.client import (
+    _MAX_STATE_CHARS, ACTION_RISK, ClassifierUnavailable, Verdict, classify)
 
 if TYPE_CHECKING:
     from agent.config import Config
@@ -117,11 +118,20 @@ def _agent_dir(config) -> Path:
 
 
 def _log(config: "Config", tool: str, args_text: str, verdict: Verdict | None,
-         action: str, error: str = "", call_id: str | None = None) -> None:
+         action: str, error: str = "", call_id: str | None = None,
+         state: dict | None = None) -> None:
+    """One line per classification. Doubles as training data for a local
+    classifier (teacher = backend:model), so the input is kept as long as the
+    classifier itself sees it; ``state`` = the probe input when it is not just
+    tool + args (turn_health / answer_check). ``action`` approved/denied = the
+    user's own call on it."""
     _remember(call_id, verdict, action, error)
     if not config.classify.log_verdicts:
         return
-    rec = {"ts": time.time(), "tool": tool, "args": args_text[:500], "action": action}
+    rec = {"ts": time.time(), "tool": tool, "args": args_text[:_MAX_STATE_CHARS],
+           "action": action}
+    if state is not None:
+        rec["state"] = state
     if verdict is not None:
         rec.update(probe=verdict.probe, label=verdict.label, p=round(verdict.p, 4),
                    dist={k: round(v, 4) for k, v in verdict.dist.items()},
@@ -133,7 +143,7 @@ def _log(config: "Config", tool: str, args_text: str, verdict: Verdict | None,
         path = _agent_dir(config) / "classify" / "verdicts.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            f.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
     except OSError:
         logger.debug("classifier: verdict log write failed", exc_info=True)
 
