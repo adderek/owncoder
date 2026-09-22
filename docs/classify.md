@@ -199,6 +199,68 @@ Endpoint URL, `--alias`, model file + sha256, GPU/CPU placement, VRAM used, test
 - Granite Guardian (groundedness, function-call hallucination) as 2nd probe backend on another port.
 - Distilled encoder (ModernBERT) served by HF TEI `/predict` — CPU, ~10–20 ms, trained on `verdicts.jsonl`.
 
+### Deployed — fractal, 2026-09-20
+
+Running. `~/src/ollama-turboquant/go-classifier.sh`, registered in that directory's
+`_` launcher as `clf 8084`, so `./_ start` brings it up with the others.
+
+| | |
+|---|---|
+| endpoint | `http://192.168.31.42:8084/v1` (`--alias classifier`) |
+| model | `Qwen3-4B-Instruct-2507-Q8_0.gguf` (unsloth), 4 280 405 600 B |
+| sha256 | `391c1e410fd9f4cf2de2b510273b56a84c19ce18f4fa3bfb3774031dac4ef068` |
+| placement | **CPU**, `-ngl 0 -t 12`, ~4.3 GB RSS. No VRAM taken. |
+| binary | `src-cpuonly/build/bin/llama-server` b9145, the one already serving 8082/8083 |
+| flags vs the sketch | `-t 12` instead of `-ngl 99`; `-fa off`, `-b/-ub 2048` to match the other CPU services. No `--api-key`. |
+
+Test 1 `{"status":"ok"}`, `/v1/models` → `classifier`. Test 2 content `C`,
+20 `top_logprobs`, `C` at logprob 0.00 against `D` at -25.5.
+
+Test 3 **8/8**, every row at p = 1.00.
+
+Test 4 is where CPU shows:
+
+| | p50 | p95 | budget |
+|---|---|---|---|
+| repeated identical payload | 169 ms | 178 ms | 150 / 400 |
+| **varied payloads** (realistic) | **432 ms** | **443 ms** | 150 / 400 |
+
+The varied number is the one to plan against: the system prompt is cached, the
+tool args are not, and a ~300-1200 token prefill on CPU costs ~400 ms. That
+misses the p50 budget and sits just over p95 — still ~1.5x faster than the Jev
+figures in Part 3 (640-740 ms), and nothing leaves the LAN.
+
+**On a card it clears the budget outright.** Measured the same day, same set,
+classifier moved to GPU0 (`./llm-servers up clf gpu0` in ollama-turboquant):
+
+| | p50 | p95 | 4 concurrent, warm |
+|---|---|---|---|
+| CPU, `-t 12` | 432 ms | 443 ms | ~650-740 ms wall |
+| **GPU0** | **45 ms** | **52 ms** | **~60-70 ms wall** |
+
+8/8 on the sanity set either way, every row p = 1.00. ~9.6x, 4.25 GB of VRAM,
+and the router on the other card was unaffected (a live request through :8081
+answered in 0.22 s during the run).
+
+CPU remains the default placement, because 4.25 GB resident on GPU0 costs the
+big-model path context: `go-big.sh` sizes its window against free VRAM and
+reads >256 MiB on GPU0 as "a compositor is up". Treat gpu0 as the choice to
+make when classification latency matters more than a split model's context.
+
+Thread count is not monotonic on this box — measured p50 over varied payloads:
+t=8 495 ms, **t=12 432 ms**, t=16 485 ms, t=24 885 ms. 24 oversubscribes against
+the 8082/8083 servers.
+
+4 concurrent requests all succeed. The first round after a restart costs ~1.5 s
+wall because each of the 4 slots keeps its own prefix cache and pays for the
+system prompt once; warm rounds finish in ~0.7 s wall.
+
+Test 6 (reboot survival) **not met, pre-existing**: nothing on this box runs under
+systemd — the router, emb and cpu servers are all started by `./_ start`. The
+classifier now has the same property, no better and no worse.
+
+---
+
 ---
 
 ## Part 3 — TypeSafe Jev backend (cloud, opt-in)
@@ -265,6 +327,7 @@ Qwen (0.95, 1/36) unknown until trained on thousands of logged verdicts.
 
 Not a replacement for `local` as shipped. Path: fine-tune on `verdicts.jsonl`
 (Jev + Qwen as teachers; upstream RLCD notebook), evaluate on held-out real calls.
+
 
 ---
 
