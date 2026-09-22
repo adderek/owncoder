@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import threading
 
+import pytest
+
 from agent.config import Config
 from agent.config.models import ModelEntry, RAGConfig
 from agent.rag.maintainer import IndexMaintainer, _try_lock, is_ignored_event, safe_embeddings_config
@@ -153,6 +155,7 @@ def _kb_project(tmp_path, monkeypatch):
 
 
 def test_kb_sync_imports_graph_into_project_corpus(tmp_path, monkeypatch):
+    pytest.importorskip("kb.migrations.from_code")
     c = _kb_project(tmp_path, monkeypatch)
     m = IndexMaintainer(c)
     out = {}
@@ -311,6 +314,7 @@ def _linked_project(tmp_path, monkeypatch):
 
 
 def test_link_notes_attaches_unambiguous_refs_once(tmp_path, monkeypatch):
+    pytest.importorskip("kb.migrations.from_code")
     from kb.api import Corpus
     from kb.migrations.from_code import node_id_for
     c, root = _linked_project(tmp_path, monkeypatch)

@@ -399,6 +399,7 @@ class TestKB:
 
     def test_a_path_that_is_not_a_corpus_says_how_to_make_one(self, config, tmp_path):
         """An empty directory is the normal first mistake after setting the path."""
+        pytest.importorskip("kb.api")
         empty = tmp_path / "not-a-corpus"
         empty.mkdir()
         config.kb.enabled = True

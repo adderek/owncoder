@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+pytest.importorskip("cryptography")
+
 from agent.security import vault
 
 

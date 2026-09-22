@@ -23,6 +23,16 @@ jobs:
           cache: pip
           cache-dependency-path: agent/pyproject.toml
 
+      # Shell/security tests exercise the real sandbox (require_sandbox is the
+      # default). Ubuntu 24.04 blocks unprivileged user namespaces via
+      # AppArmor, which bwrap needs.
+      - name: Sandbox backend
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q bubblewrap libseccomp2
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          bwrap --unshare-user --unshare-pid --ro-bind / / -- true
+
       - name: Install
         working-directory: agent
         run: pip install -e ".[dev]"
