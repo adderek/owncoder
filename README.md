@@ -1,3 +1,5 @@
+[![tests](https://github.com/adderek/owncoder/actions/workflows/tests.yml/badge.svg)](https://github.com/adderek/owncoder/actions/workflows/tests.yml)
+
 # What is it?
 
 Local-first coding agent with solid security. Runs against your own llama.cpp/vLLM/ollama, or any OpenAI-compatible API (deepseek, openai). Use it when you want a coding agent that keeps code on your machine and is built for heavy analysis of low-structure languages like assembler.
