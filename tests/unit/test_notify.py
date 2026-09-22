@@ -101,6 +101,9 @@ async def test_ask_first_answer_wins(tmp_path):
     ans, _ = await asyncio.gather(broker.ask(q), answer_later())
     assert ans is not None and ans.choice == "accept"
     assert q.id not in broker._pending
+    # submit_answer spawns an "answered" notice (a subprocess); let it finish
+    # so loop teardown does not cancel it mid-spawn, which can hang forever.
+    await asyncio.gather(*broker._tasks)
 
 
 async def test_ask_timeout_returns_default(tmp_path):
@@ -138,6 +141,7 @@ async def test_answer_validation(tmp_path):
     assert broker.submit_answer(Answer(question_id=q.id, choice="b")) is True
     ans = await task
     assert ans.choice == "b"
+    await asyncio.gather(*broker._tasks)
 
 
 def test_broker_status_lines(tmp_path):

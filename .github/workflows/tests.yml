@@ -8,6 +8,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       # Packaging and pytest both resolve the `agent` package from the
       # parent directory (where=[".."], pythonpath=[".."]), so the repo
@@ -28,4 +29,4 @@ jobs:
 
       - name: Unit + integration tests (offline)
         working-directory: agent
-        run: pytest tests/unit tests/integration -q
+        run: pytest tests/unit tests/integration -q -o faulthandler_timeout=120
