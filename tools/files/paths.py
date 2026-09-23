@@ -120,6 +120,38 @@ def _resolve(path: str) -> Path:
     return resolved
 
 
+def _gated() -> bool:
+    """True when the security harness is live for the files layer — the same
+    condition _resolve uses to defer to security.fs."""
+    try:
+        from agent.security import policy as _sec_policy
+    except ImportError:
+        return False
+    return _config is not None and _sec_policy.is_configured()
+
+
+def _read_text(fpath: Path) -> str:
+    """Read *fpath* through security.fs.safe_open (fd walk, O_NOFOLLOW on
+    every component): a path checked by _resolve can be swapped for a symlink
+    by a concurrent sandboxed command before a plain open() follows it."""
+    if _gated():
+        from agent.security import fs as _sec_fs
+        with _sec_fs.safe_open(fpath, "rb") as f:
+            return f.read().decode("utf-8", errors="replace")
+    return fpath.read_text(encoding="utf-8", errors="replace")
+
+
+def _write_text(fpath: Path, content: str) -> None:
+    """Write *fpath* through security.fs.safe_open — see _read_text. Also
+    re-applies the write-deny gate at the moment of the write."""
+    if _gated():
+        from agent.security import fs as _sec_fs
+        with _sec_fs.safe_open(fpath, "wb") as f:
+            f.write(content.encode("utf-8"))
+        return
+    fpath.write_text(content, encoding="utf-8")
+
+
 def _post_write_stats(path: str) -> dict:
     """Read the just-written file once for everything downstream needs.
 

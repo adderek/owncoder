@@ -11,6 +11,7 @@ All file I/O the agent performs on behalf of the LLM should go through
 """
 from __future__ import annotations
 
+import errno
 import fnmatch
 import os
 import stat
@@ -59,7 +60,15 @@ _DEFAULT_READ_DENY_GLOBS: list[str] = [
 
 _DEFAULT_WRITE_DENY_GLOBS: list[str] = [
     ".git/**",
+    # A worktree/submodule `.git` is a file naming the git dir; rewritten, it
+    # points host git (and the user's shell prompt) at a config of our choice.
+    ".git",
+    # Every name config.loader.CONFIG_FILENAMES reads as the project layer —
+    # yaml overrides toml, so protecting only agent.toml left the stronger one
+    # open (mcp.servers, agent.goal "$cmd" and hooks all run on the host).
     "agent.toml",
+    "agent.yaml",
+    "agent.yml",
     ".agent.toml",
     ".agent.*",
     # AGENT.md and CLAUDE.md are deliberately *not* here: they are project
@@ -67,6 +76,7 @@ _DEFAULT_WRITE_DENY_GLOBS: list[str] = [
     # actually bind the agent live in `.agent/core.md` and the `.agent.*` files
     # above, which stay read-only.
     ".claude/**",
+    ".gemini/**",
     ".agent/**/*.toml",
     ".agent/path_grants.json",  # agent must not self-grant paths
     ".agent/permissions.json",  # agent must not rewrite the policy binding it
@@ -363,18 +373,49 @@ def safe_open(path: str | os.PathLike, mode: str = "r", *, encoding: str | None 
     elif _is_read_protected(_guard_base(real, grant), real):
         raise ReadProtected(f"secret file read blocked: {real}")
     flags = _flags_for_mode(mode)
-    if not pol.cfg.follow_symlinks:
-        flags |= os.O_NOFOLLOW
     # O_CLOEXEC on the resulting fd so it doesn't leak into child processes.
     flags |= getattr(os, "O_CLOEXEC", 0)
     # 0o600 — the agent may write files derived from secrets; don't leak
     # them to other local users via the default umask.
-    fd = os.open(real, flags, 0o600)
+    if pol.cfg.follow_symlinks or grant is None:
+        fd = os.open(real, flags, 0o600)
+    else:
+        fd = _open_beneath(grant.path, real, flags | os.O_NOFOLLOW, 0o600)
     # Wrap fd in a Python file object with the requested textness.
     binary = "b" in mode
     if binary:
         return os.fdopen(fd, mode, closefd=True)
     return os.fdopen(fd, mode, encoding=encoding, closefd=True)
+
+
+def _open_beneath(base: Path, real: Path, flags: int, mode: int) -> int:
+    """Open *real* by walking down from *base* one directory fd at a time.
+
+    safe_resolve checks the path, but opening it by name afterwards re-walks
+    every component: a sandboxed command running concurrently (run_argv_bg)
+    can swap a checked directory for a symlink to $HOME in between, and the
+    host-side write lands outside the grant. Each intermediate component is
+    opened O_NOFOLLOW|O_DIRECTORY relative to its parent's fd, so a symlink
+    anywhere on the path fails the open instead of being followed.
+    """
+    parts = real.relative_to(base).parts
+    dir_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0)
+    if not parts:
+        return os.open(base, flags, mode)
+    dfd = os.open(base, dir_flags)
+    try:
+        for part in parts[:-1]:
+            try:
+                nfd = os.open(part, dir_flags | os.O_NOFOLLOW, dir_fd=dfd)
+            except OSError as e:
+                if e.errno in (errno.ELOOP, errno.ENOTDIR):
+                    raise SymlinkDenied(f"symlink traversal denied: {part} in {real}") from e
+                raise
+            os.close(dfd)
+            dfd = nfd
+        return os.open(parts[-1], flags, mode, dir_fd=dfd)
+    finally:
+        os.close(dfd)
 
 
 def safe_mkdir(path: str | os.PathLike, *, parents: bool = False, exist_ok: bool = True) -> Path:

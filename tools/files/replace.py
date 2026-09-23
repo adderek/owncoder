@@ -4,7 +4,7 @@ import re
 
 from agent.tools import register
 from agent.tools.rules import get_rules
-from .paths import _resolve, _working_dir, _undo_stack, _log_edit
+from .paths import _resolve, _working_dir, _undo_stack, _log_edit, _read_text, _write_text
 
 
 def _find_matches_fuzzy(haystack: str, needle: str) -> list[tuple[int, int]]:
@@ -41,7 +41,7 @@ def replace_text(path: str, search_block: str, replace_block: str, match_index: 
         _log_edit("replace_text", path, "not_found")
         return {"error": f"File not found: {path}"}
 
-    original = fpath.read_text(encoding="utf-8", errors="replace")
+    original = _read_text(fpath)
 
     spans: list[tuple[int, int]] = []
     idx = original.find(search_block)
@@ -82,7 +82,7 @@ def replace_text(path: str, search_block: str, replace_block: str, match_index: 
         return {"dry_run": True, "path": path, "would_replace": f"{e - s} chars -> {len(replace_block)} chars", "match_mode": match_mode}
 
     _undo_stack[path] = original
-    fpath.write_text(new_content, encoding="utf-8")
+    _write_text(fpath, new_content)
     _log_edit("replace_text", path, "ok", match_mode=match_mode, candidates=len(spans))
     return {"ok": path, "match_mode": match_mode}
 
@@ -123,7 +123,7 @@ def replace_symbol(path: str, symbol: str, new_source: str) -> dict:
     if fpath.suffix != ".py":
         return {"error": "replace_symbol currently supports Python files only."}
 
-    original = fpath.read_text(encoding="utf-8", errors="replace")
+    original = _read_text(fpath)
     try:
         tree = ast.parse(original)
     except SyntaxError as e:
@@ -177,6 +177,6 @@ def replace_symbol(path: str, symbol: str, new_source: str) -> dict:
         return {"dry_run": True, "path": path, "symbol": symbol, "old_lines": end_line - start_line, "new_lines": new_indented.count("\n")}
 
     _undo_stack[path] = original
-    fpath.write_text(candidate, encoding="utf-8")
+    _write_text(fpath, candidate)
     _log_edit("replace_symbol", path, "ok", symbol=symbol)
     return {"ok": path, "symbol": symbol, "replaced_lines": end_line - start_line}

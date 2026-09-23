@@ -91,6 +91,7 @@ def edit_file(
     expect_rev: str | None = None,
 ) -> dict:
     from agent.tools.files import _resolve, _log_edit, _undo_stack
+    from agent.tools.files.paths import _write_text
 
     rules = get_rules()
     ec = rules.config.edit
@@ -201,7 +202,7 @@ def edit_file(
             continue
         if rules.config.dry_run:
             continue
-        fpath.write_text(content, encoding="utf-8")
+        _write_text(fpath, content)
         try:
             current[path] = _current_view(content, vs)
         except Exception:

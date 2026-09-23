@@ -253,6 +253,7 @@ def test_history_listing(tmp_path, monkeypatch):
 
 
 def test_autoconfirm_keeps_reproduced(tmp_path, monkeypatch):
+    monkeypatch.setattr("agent.security.policy._policy", None)  # no leaked sandbox root
     cfg = _cfg(tmp_path)
     (tmp_path / "bad.py").write_text("def run(x):\n    return eval(x)\n")
     # review reports an eval finding...

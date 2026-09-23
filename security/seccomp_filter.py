@@ -13,6 +13,9 @@ Blocked syscalls (SCMP_ACT_ERRNO(EPERM)):
   - privilege: acct, syslog
   - file-handle escape: open_by_handle_at, name_to_handle_at
   - notification: fanotify_init
+  - new mount API: open_tree, move_mount, fs{open,config,mount,pick}, mount_setattr
+  - kernel modules / kexec
+  - io_uring_* (ENOSYS, so runtimes fall back)
 
 Partially blocked: clone is allowed only when no namespace flag is set
 (threads/subprocesses); namespace-creating clone and all clone3 are denied.
@@ -87,6 +90,29 @@ _BLOCKED_SYSCALLS = [
     "open_by_handle_at",
     "name_to_handle_at",
     "fanotify_init",
+    # New mount API: same power as mount(2), separate syscalls.
+    "open_tree",
+    "move_mount",
+    "fsopen",
+    "fsconfig",
+    "fsmount",
+    "fspick",
+    "mount_setattr",
+    # Kernel code loading / replacement.
+    "init_module",
+    "finit_module",
+    "delete_module",
+    "kexec_load",
+    "kexec_file_load",
+]
+
+# io_uring: a recurring kernel-exploit surface, and its ops bypass the
+# per-syscall filter above. ENOSYS, not EPERM, so runtimes that probe it
+# (libuv, tokio) fall back to plain syscalls.
+_ENOSYS_SYSCALLS = [
+    "io_uring_setup",
+    "io_uring_enter",
+    "io_uring_register",
 ]
 
 
@@ -154,6 +180,15 @@ def build_filter_fd() -> int | None:
             skipped.append(name)
             continue
         ret = lib.seccomp_rule_add_array(ctx_ptr, _SCMP_ACT_ERRNO_EPERM, nr, 0, None)
+        if ret != 0:
+            logger.warning("seccomp_rule_add %s failed: %d", name, ret)
+
+    for name in _ENOSYS_SYSCALLS:
+        nr = lib.seccomp_syscall_resolve_name(name.encode())
+        if nr < 0:
+            skipped.append(name)
+            continue
+        ret = lib.seccomp_rule_add_array(ctx_ptr, _SCMP_ACT_ERRNO_ENOSYS, nr, 0, None)
         if ret != 0:
             logger.warning("seccomp_rule_add %s failed: %d", name, ret)
 

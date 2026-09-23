@@ -3,7 +3,7 @@ from __future__ import annotations
 from agent.core import revisions
 from agent.tools import register
 from agent.tools.rules import get_rules
-from .paths import _resolve, _working_dir, _undo_stack, _log_edit
+from .paths import _resolve, _working_dir, _undo_stack, _log_edit, _read_text, _write_text
 
 
 @register(
@@ -49,7 +49,7 @@ def write_file(path: str, content: str, expect_rev: str | None = None,
 
     replaced_lines = 0
     if fpath.exists():
-        original = fpath.read_text(encoding="utf-8", errors="replace")
+        original = _read_text(fpath)
         replaced_lines = len(original.splitlines())
         _undo_stack[path] = original
         diff_lines = list(
@@ -67,24 +67,10 @@ def write_file(path: str, content: str, expect_rev: str | None = None,
     else:
         diff_summary = f"(new file, {len(content.splitlines())} lines)"
 
-    # Route through security.fs.safe_open so the final component gets
-    # O_NOFOLLOW — a symlink planted at fpath between _resolve and the
-    # write must not redirect the write. Fall back to write_text only when
-    # the harness is not configured (bare ToolsConfig fixtures).
-    try:
-        from agent.security import policy as _sec_policy, fs as _sec_fs
-        from . import paths as _paths
-        # Mirror _resolve's gate: only route through safe_open when the
-        # files-layer config is set *and* the security harness is active.
-        # Otherwise sec_policy.root may point at a stale root from a prior
-        # fixture and safe_resolve would spuriously reject the write.
-        if _paths._config is not None and _sec_policy.is_configured():
-            with _sec_fs.safe_open(fpath, "w") as f:
-                f.write(content)
-        else:
-            fpath.write_text(content, encoding="utf-8")
-    except ImportError:
-        fpath.write_text(content, encoding="utf-8")
+    # _write_text goes through security.fs.safe_open when the harness is live:
+    # every path component is opened O_NOFOLLOW, so a symlink planted between
+    # _resolve and the write (by a concurrent sandboxed command) fails it.
+    _write_text(fpath, content)
 
     if not is_new and fpath.suffix == ".py":
         try:

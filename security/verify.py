@@ -123,13 +123,16 @@ def _generate_sync(config, finding, target) -> str:
 def _run_test(target: str, test_path: Path, timeout: int = _TEST_TIMEOUT) -> tuple[int, str]:
     """Run pytest on *test_path* inside the sandbox (no network). Returns (rc, output)."""
     argv = [sys.executable, "-m", "pytest", "-q", "-x", "--no-header", str(test_path)]
-    try:
-        from agent.security import runner, policy
-        if policy.is_configured():
+    from agent.security import runner, policy
+    if policy.is_configured():
+        # No host fallback: the test and any conftest.py next to it are
+        # agent-written code, and a sandbox failure is not permission to run
+        # them unconfined.
+        try:
             res = runner.run(argv, cwd=target, network=False, timeout=timeout)
-            return res.returncode, (res.stdout + res.stderr)[-4000:]
-    except Exception:  # noqa: BLE001 - fall back to plain subprocess
-        pass
+        except Exception as e:  # noqa: BLE001
+            return 127, f"sandboxed pytest run failed: {e}"
+        return res.returncode, (res.stdout + res.stderr)[-4000:]
     try:
         p = subprocess.run(argv, cwd=target, capture_output=True, text=True, timeout=timeout)
         return p.returncode, (p.stdout + p.stderr)[-4000:]

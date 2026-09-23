@@ -148,7 +148,8 @@ def _validate_chunk(
     if path in file_cache:
         _, original = file_cache[path]
     else:
-        original = fpath.read_text(encoding="utf-8", errors="replace")
+        from agent.tools.files.paths import _read_text
+        original = _read_text(fpath)
         file_cache[path] = (fpath, original)
 
     # The pin is checked against the very bytes this chunk is validated against,

@@ -179,7 +179,7 @@ class TestUndoFile:
         def _boom(self, *a, **k):
             raise OSError("disk full")
 
-        monkeypatch.setattr("pathlib.Path.write_text", _boom)
+        monkeypatch.setattr("agent.tools.files.undo._write_text", _boom)
         r = undo_file("keep.txt")
         assert "error" in r
         # Snapshot retained for a retry.

@@ -140,12 +140,15 @@ def scan(
     timeout_s: float,
     max_matches: int,
     prune: "frozenset[str] | set[str] | None" = None,
+    dir_sets: "frozenset[str] | set[str]" = frozenset(),
 ) -> ScanResult:
     """Walk *root* once and match every glob set in *sets*.
 
     *sets* maps a name to ``(globs, skip_dirs)``; a set is not matched inside
     its own skip_dirs (the caller covers those wholesale), and a subtree every
-    set skips is not descended at all. Returns partial matches with
+    set skips is not descended at all. Sets named in *dir_sets* also match
+    directory names — checked before pruning, so a nested `.git` is found even
+    though the walk never descends into it. Returns partial matches with
     ``stats.incomplete`` set when the time budget or the match limit ran out.
     """
     root_s = str(root)
@@ -176,8 +179,25 @@ def scan(
                 dirnames[:] = []
                 continue
             stats.dirs += 1
-            dirnames[:] = [d for d in dirnames if d not in pruned]
             relbase = "" if dirpath == root_s else dirpath[len(root_s) + 1:] + "/"
+            dir_active = [(name, rx) for name, rx in active if name in dir_sets]
+            if dir_active:
+                keep = []
+                for dn in dirnames:
+                    rel = relbase + dn
+                    hit = False
+                    for name, rx in dir_active:
+                        if rx.match(dn) or rx.match(rel):
+                            matches[name].append(Path(dirpath, dn))
+                            total += 1
+                            hit = True
+                    if not hit:
+                        keep.append(dn)     # a matched dir is bound whole
+                dirnames[:] = keep
+                if total > max_matches:
+                    stats.incomplete = f"scan hit the {max_matches}-match limit"
+                    break
+            dirnames[:] = [d for d in dirnames if d not in pruned]
             for fn in filenames:
                 stats.files += 1
                 since_clock += 1

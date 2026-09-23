@@ -26,7 +26,6 @@ import json
 import logging
 import os
 import re
-import subprocess
 from typing import TYPE_CHECKING, Any
 
 from agent.tools import register
@@ -171,16 +170,31 @@ def _find_unused(declared: list, imports: set[str],
     return unused
 
 
-def _run_pip(venv: str, args: list[str], timeout_s: int) -> tuple[int, str]:
+def _run_pip(venv: str, args: list[str], timeout_s: int,
+             network: bool = False) -> tuple[int, str]:
+    """Run the project venv's pip — inside the sandbox.
+
+    `<root>/.venv/bin/python` and its site-packages are writable by any
+    sandboxed command, so running them on the host is running code the agent
+    wrote. Never falls back to host exec.
+    """
     py = os.path.join(venv, "bin", "python")
     try:
-        proc = subprocess.run([py, "-m", "pip", *args], capture_output=True,
-                              text=True, timeout=timeout_s)
-        return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
-    except subprocess.TimeoutExpired:
-        return 124, f"pip {' '.join(args)} timed out after {timeout_s}s"
-    except OSError as e:
+        from agent.security import policy as _sec_policy, runner as _runner
+        if not _sec_policy.is_configured():
+            return 127, "security harness not initialized; pip not run"
+        r = _runner.run([py, "-m", "pip", *args], cwd=working_dir(_config),
+                        network=network, timeout=timeout_s)
+    except Exception as e:   # SandboxUnavailable, OSError, ...
         return 127, str(e)
+    if r.timed_out:
+        return 124, f"pip {' '.join(args)} timed out after {timeout_s}s"
+    return r.returncode, r.stdout + r.stderr
+
+
+def _network_allowed() -> bool:
+    sec = getattr(_config, "security", None)
+    return getattr(sec, "network", "off") == "on"
 
 
 def _pip_conflicts(venv: str) -> tuple[list[str], str | None]:
@@ -195,8 +209,13 @@ def _pip_conflicts(venv: str) -> tuple[list[str], str | None]:
 
 
 def _pip_outdated(venv: str) -> tuple[list[dict], str | None]:
+    if not _network_allowed():
+        # Egress for code the sandbox can rewrite is what security.network
+        # decides; pip here is exactly that.
+        return [], "skipped: security.network is not 'on'"
     rc, out = _run_pip(venv, ["list", "--outdated", "--format=json",
-                              "--disable-pip-version-check"], _OUTDATED_TIMEOUT_S)
+                              "--disable-pip-version-check"], _OUTDATED_TIMEOUT_S,
+                       network=True)
     if rc != 0:
         return [], out.strip()[:500] or f"pip list --outdated failed (rc {rc})"
     try:

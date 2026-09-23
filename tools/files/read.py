@@ -4,7 +4,7 @@ from pathlib import Path
 
 from agent.tools import register
 from agent.tools.rules import get_rules
-from .paths import _resolve, _working_dir, _undo_stack
+from .paths import _resolve, _working_dir, _undo_stack, _read_text
 
 # Default window (lines) served for an unbounded read of a large file. The
 # loop-guard auto-advance in core/turn.py pages through files in this same
@@ -170,8 +170,8 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
         return {"error": f"Not a file: {path}", "resolved": str(fpath)}
 
     try:
-        text = fpath.read_text(encoding="utf-8", errors="replace")
-    except OSError as e:
+        text = _read_text(fpath)
+    except (OSError, ValueError) as e:   # ValueError: security.fs refusal
         return {"error": str(e)}
 
     lines = text.splitlines()

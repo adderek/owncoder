@@ -98,6 +98,17 @@ class TestFindUnused:
 
 
 class TestPipOutdated:
+    @pytest.fixture(autouse=True)
+    def _network_on(self, monkeypatch):
+        monkeypatch.setattr("agent.tools.analyze_deps.main._network_allowed", lambda: True)
+
+    def test_skipped_without_network(self, monkeypatch):
+        monkeypatch.setattr("agent.tools.analyze_deps.main._network_allowed", lambda: False)
+        with patch("agent.tools.analyze_deps.main._run_pip") as run:
+            rows, err = _pip_outdated("/fake")
+        assert rows == [] and "security.network" in err
+        run.assert_not_called()
+
     def test_parses_json(self):
         out = '[{"name": "requests", "version": "2.0", "latest_version": "2.32"}]'
         with patch("agent.tools.analyze_deps.main._run_pip", return_value=(0, out)):

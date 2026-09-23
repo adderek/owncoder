@@ -155,6 +155,8 @@ _CONTROL_PLANE: tuple[Rule, ...] = (
          no_override=True),
     # Project-level policy files, by name anywhere in the tree.
     Rule("**/agent.toml", Access.READ, "agent configuration", no_override=True),
+    Rule("**/agent.yaml", Access.READ, "agent configuration", no_override=True),
+    Rule("**/agent.yml", Access.READ, "agent configuration", no_override=True),
     Rule("**/.agent.toml", Access.READ, "agent configuration", no_override=True),
     Rule("**/.agent.ignore", Access.READ, "path rules", no_override=True),
     Rule("**/.agent.ro", Access.READ, "path rules", no_override=True),
@@ -172,6 +174,8 @@ _CONTROL_PLANE: tuple[Rule, ...] = (
     Rule("**/.claude/**", Access.READ, "another agent's configuration"),
     Rule("**/.claude/**", Access.READ,
          "another agent's configuration: its hooks run commands"),
+    Rule("**/.gemini/**", Access.READ,
+         "another agent's configuration: its hooks and MCP servers run commands"),
     Rule("**/.config/agent/**", Access.READ,
          "the user config that defines the grant ceiling", no_override=True),
     Rule("**/.config/agent/*.token", Access.NONE, "credential", no_override=True),

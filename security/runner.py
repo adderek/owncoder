@@ -207,6 +207,63 @@ def _protected_paths() -> tuple[str, ...]:
     return path_policy.project_readonly_names()
 
 
+def _guarded_root_names(root: Path) -> set[str]:
+    """Which _protected_paths() names exist at *root* right now.
+
+    The read-only bind for these is `--ro-bind-try`: a name that does not exist
+    has no mountpoint, so the sandboxed shell can create it — `agent.yaml`
+    (project config: MCP servers, hooks, `$goal` run on the host), `.agent.config`
+    (`[edit] post_check_cmd` runs on the host), `.claude/settings.json` (another
+    agent's hooks), `.git/config`. Snapshot before, sweep after (_sweep_created).
+    """
+    return {n for n in _protected_paths() if os.path.lexists(root / n)}
+
+
+def _sweep_created(root: Path, before: set[str]) -> list[str]:
+    """Quarantine protected root names a command created; return notes.
+
+    Moved, not deleted, to `<agent_dir>/quarantine/sandbox/` — the sandbox
+    cannot write there (the agent dir is read-only inside it), and a user who
+    really meant it can move the file back. Residual gap: a host process that
+    dies mid-command never sweeps.
+    """
+    notes: list[str] = []
+    created = [n for n in _protected_paths()
+               if n not in before and os.path.lexists(root / n)]
+    if not created:
+        return notes
+    qdir = policy.get().agent_dir / "quarantine" / "sandbox"
+    stamp = time.strftime("%Y%m%dT%H%M%S")
+    for n in created:
+        src = root / n
+        dst = qdir / f"{stamp}-{os.getpid()}-{n.lstrip('.') or n}"
+        try:
+            qdir.mkdir(parents=True, exist_ok=True)
+            os.rename(src, dst)
+            notes.append(f"[sandbox] refused: command created protected path {n!r} "
+                         f"— moved to {dst}")
+        except OSError as e:
+            notes.append(f"[sandbox] WARNING: command created protected path {n!r} "
+                         f"and it could not be quarantined: {e}")
+        logger.warning("sandbox: command created protected %s — %s", src, notes[-1])
+        audit.record("run.protected_created", path=str(src), note=notes[-1])
+    return notes
+
+
+def _own_interpreter_under_root(root: Path) -> Path | None:
+    """The running interpreter's prefix when it lives inside the project.
+
+    Self-hosting: the agent runs from `<root>/.venv`. That tree is covered by
+    the read-write root bind, so a sandboxed command could drop a `.pth` into
+    site-packages or replace `bin/python` — code the host runs at the next
+    start. Bound read-only on top of the root bind.
+    """
+    prefix = Path(sys.prefix).resolve()
+    if prefix != root and root in prefix.parents and prefix.is_dir():
+        return prefix
+    return None
+
+
 def _truncated(partial, root: Path, globs: list[str], why: str):
     """Handle a scan that ran out of budget before covering the tree.
 
@@ -256,6 +313,9 @@ def _scan(root: Path, sets: dict[str, tuple[list[str], list[Path]]]) -> dict[str
         pruned.discard(pol.agent_dir.name)
     result = mask_scan.scan(
         root, sets, prune=pruned,
+        # write-deny binds whole directories too: a nested `.git` holds a
+        # config that git (the user's, or host git tools) executes from.
+        dir_sets={"write_deny"},
         timeout_s=mask_scan.effective_timeout(
             getattr(cfg, "mask_scan_timeout_s", mask_scan.DEFAULT_TIMEOUT_S)),
         max_matches=mask_scan.effective_max_matches(
@@ -551,7 +611,11 @@ def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool, seccomp_fd: int | 
     ]
     for p in _interpreter_paths(root):
         a += ["--ro-bind-try", p, p]
-    # Layer read-only overlays over sensitive paths. --ro-bind-try skips missing paths.
+    own = _own_interpreter_under_root(root)
+    if own is not None:
+        a += ["--ro-bind", str(own), str(own)]
+    # Layer read-only overlays over sensitive paths. --ro-bind-try skips missing
+    # paths; run() sweeps any the command creates (_sweep_created).
     for rel in _protected_paths():
         p = root / rel
         a += ["--ro-bind-try", str(p), str(p)]
@@ -617,6 +681,9 @@ def _firejail_argv(argv: list[str], *, cwd: Path, network: bool) -> list[str]:
     ]
     for p in _interpreter_paths(pol.root):
         a += [f"--whitelist={p}", f"--read-only={p}"]
+    own = _own_interpreter_under_root(pol.root)
+    if own is not None:
+        a += [f"--read-only={own}"]
     # Mark the same sensitive paths read-only inside firejail.
     for rel in _protected_paths():
         p = pol.root / rel
@@ -700,6 +767,8 @@ def run(
     start = time.monotonic()
     timed_out = False
     pass_fds = (seccomp_fd,) if seccomp_fd is not None else ()
+    guarded_before = _guarded_root_names(pol.root)
+    swept: list[str] = []
     try:
         proc = subprocess.Popen(
             wrapped,
@@ -743,9 +812,15 @@ def run(
         if isinstance(e, FileNotFoundError):
             audit.record("run.error", backend=backend, argv=list(argv), error=str(e))
         raise
+    finally:
+        swept = _sweep_created(pol.root, guarded_before)
     duration_ms = int((time.monotonic() - start) * 1000)
     stdout = (out_b or b"").decode("utf-8", errors="replace")
     stderr = (err_b or b"").decode("utf-8", errors="replace")
+    if swept:
+        stderr = (stderr + "\n" if stderr else "") + "\n".join(swept)
+        if rc == 0:
+            rc = 1
     audit.record(
         "run.end",
         backend=backend,

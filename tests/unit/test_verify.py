@@ -35,7 +35,10 @@ def test_classify():
     assert "INCONCLUSIVE" in verify._classify(2)
 
 
-def test_run_test_executes_real_pytest(tmp_path):
+def test_run_test_executes_real_pytest(tmp_path, monkeypatch):
+    # No policy leaked from an earlier test: with one configured, the
+    # run goes through the sandbox rooted elsewhere and is refused.
+    monkeypatch.setattr("agent.security.policy._policy", None)
     # A passing test -> rc 0 -> classified VULNERABLE (PoC reproduced).
     tp = tmp_path / "test_poc_pass.py"
     tp.write_text("def test_repro():\n    assert 1 == 1\n")

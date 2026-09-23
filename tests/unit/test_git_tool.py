@@ -1,7 +1,10 @@
 """Unit tests for agent.tools.git.main._run_git hardening."""
 from __future__ import annotations
 
+import shutil
 import subprocess
+
+import pytest
 
 import agent.tools.git.main as gm
 
@@ -34,7 +37,8 @@ def test_run_git_passes_timeout_and_noninteractive_env(monkeypatch, tmp_path):
     assert seen["timeout"] == 30.0
     assert seen["env"]["GIT_TERMINAL_PROMPT"] == "0"
     assert seen["env"]["GIT_OPTIONAL_LOCKS"] == "0"
-    assert seen["cmd"] == ["git", "--no-pager", "-c", "core.fsmonitor=false", "status"]
+    assert seen["cmd"] == ["git", "--no-pager", "-c", "core.fsmonitor=false",
+                           "-c", "log.showSignature=false", "status"]
 
 
 def _setup_repo(tmp_path):
@@ -116,15 +120,55 @@ def test_git_diff_ignores_external_diff_driver(tmp_path):
     assert not marker.exists()
 
 
-def test_git_repo_param_runs_in_subrepo(tmp_path):
-    _setup_repo(tmp_path)
-    sub = tmp_path / "sub"
+@pytest.fixture
+def sandboxed(tmp_path, monkeypatch):
+    """Security policy rooted at tmp_path/p — nested repos run git through it."""
+    from agent.config import Config
+    from agent.security import fs as sec_fs, policy as sec_policy, runner as sec_runner
+    root = tmp_path / "p"
+    root.mkdir()
+    cfg = Config()
+    cfg.tools.working_dir = str(root)
+    cfg.tools.agent_dir = str(root / ".agent")
+    cfg.security.require_sandbox = False
+    monkeypatch.setattr(sec_runner, "_BACKEND", None)
+    monkeypatch.setattr(sec_fs, "_root_dev", None)
+    monkeypatch.setattr(sec_fs, "_root_ino", None)
+    sec_policy.setup(cfg)
+    gm.setup(cfg)
+    yield root
+    sec_policy._policy = None
+    sec_fs._root_dev = None
+    sec_fs._root_ino = None
+
+
+def test_git_repo_param_runs_in_subrepo(sandboxed):
+    sub = sandboxed / "sub"
     sub.mkdir()
     _git(sub, "init", "-q")
     (sub / "f.txt").write_text("a\n")
     _git(sub, "add", ".")
     _git(sub, "commit", "-qm", "subcommit")
     assert "subcommit" in gm.git_log(repo="sub")["log"]
+
+
+@pytest.mark.skipif(shutil.which("bwrap") is None, reason="bwrap not installed")
+def test_nested_repo_config_does_not_run_on_host(sandboxed, tmp_path):
+    """A nested repo's config may be the agent's (`git init` in a sandboxed
+    command), so what it executes must stay in the sandbox."""
+    sub = sandboxed / "sub"
+    sub.mkdir()
+    _git(sub, "init", "-q")
+    (sub / "f.txt").write_text("a\n")
+    _git(sub, "add", ".")
+    (sub / "f.txt").write_text("b\n")
+    marker = tmp_path / "pwned"      # outside the project: invisible in the sandbox
+    _git(sub, "config", "core.pager", f"touch {marker}")
+    (sub / ".gitattributes").write_text("*.txt filter=x\n")
+    _git(sub, "config", "filter.x.clean", f"sh -c 'touch {marker}; cat'")
+    gm.git_diff(repo="sub")
+    gm.git_status(repo="sub")
+    assert not marker.exists()
 
 
 def test_git_repo_param_rejects_escape(tmp_path):

@@ -118,8 +118,11 @@ class Rules:
                 if decision.max < _pp.Access.WRITE:
                     why = f" ({decision.why})" if decision.why else ""
                     return False, f"write to protected path denied: {rel_path}{why}"
-        except Exception:
-            pass
+        except Exception as e:
+            # Fail closed: an error here means the protected-path check did not
+            # run, and allowing the write would skip it silently.
+            logger.warning("check_write: protection check failed for %s: %s", rel_path, e)
+            return False, f"write refused: protection check failed for {rel_path}: {e}"
 
         ro_match, reason = self.readonly.matches(rel_path)
         if ro_match:

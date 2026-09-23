@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from agent.tools import register
-from .paths import _resolve, _undo_stack
+from .paths import _resolve, _undo_stack, _write_text
 
 
 @register(
@@ -25,7 +25,7 @@ def undo_file(path: str) -> dict:
         # Write first, drop the snapshot only on success — otherwise a failed
         # write would lose the snapshot and leave the file un-reverted with no
         # way to retry the undo.
-        fpath.write_text(_undo_stack[path], encoding="utf-8")
+        _write_text(fpath, _undo_stack[path])
         _undo_stack.pop(path, None)
         return {"ok": path}
     except Exception as e:

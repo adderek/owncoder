@@ -41,11 +41,42 @@ def _repo_dir(repo: str | None) -> tuple[str | None, str | None]:
     return str(target), None
 
 
+def _untrusted_git_dir(target: Path, root: Path) -> bool:
+    """True when *target*'s git dir may hold a config the agent wrote.
+
+    Only the root `.git` (and what lives under it, e.g. submodule dirs in
+    `.git/modules/`) was there before the agent and is read-only in the
+    sandbox. A `sub/.git` made by `git init` in a command, or a gitfile
+    pointing into the tree, carries a config the agent chose — filter
+    drivers, gpg.program, core.pager — so git for it runs sandboxed.
+    """
+    dotgit = target / ".git"
+    if dotgit.is_file():
+        try:
+            line = dotgit.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            return True
+        if not line.startswith("gitdir:"):
+            return True
+        gitdir = Path(line[len("gitdir:"):].strip())
+        if not gitdir.is_absolute():
+            gitdir = target / gitdir
+        gitdir = gitdir.resolve()
+    elif dotgit.is_dir():
+        gitdir = dotgit.resolve()
+    else:
+        return False    # git walks up to an enclosing repo
+    trusted = root / ".git"
+    if gitdir == trusted or trusted in gitdir.parents:
+        return False
+    return gitdir == root or root in gitdir.parents
+
+
 # Read-only git must not execute anything configured by the repository:
 # fsmonitor hooks run on status/diff, external diff drivers and textconv
 # filters run on diff/blame. The agent cannot write .git/** (security/fs.py),
 # but a checkout received with its .git dir can carry such config.
-_GIT_PREFIX = ("--no-pager", "-c", "core.fsmonitor=false")
+_GIT_PREFIX = ("--no-pager", "-c", "core.fsmonitor=false", "-c", "log.showSignature=false")
 _DIFF_SAFE = ("--no-ext-diff", "--no-textconv")
 
 
@@ -57,6 +88,9 @@ def _run_git(*args: str, cwd: str | None = None, timeout: float = 30.0) -> tuple
     # GIT_OPTIONAL_LOCKS=0 keeps status from taking index.lock at all, so it
     # never collides with the user's own git in the same tree.
     import os
+    root = Path(_working_dir()).resolve()
+    if Path(cwd).resolve() != root and _untrusted_git_dir(Path(cwd).resolve(), root):
+        return _run_git_sandboxed(args, cwd, timeout)
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0"}
     try:
         result = subprocess.run(
@@ -70,6 +104,23 @@ def _run_git(*args: str, cwd: str | None = None, timeout: float = 30.0) -> tuple
     except subprocess.TimeoutExpired:
         return "", f"git timed out after {timeout:.0f}s: git {' '.join(args)}", 124
     return result.stdout, result.stderr, result.returncode
+
+
+def _run_git_sandboxed(args, cwd: str, timeout: float) -> tuple[str, str, int]:
+    """git inside the sandbox, for a repo whose config the agent may have
+    written: whatever that config executes stays confined. No host fallback."""
+    try:
+        from agent.security import policy as _sec_policy, runner as _runner
+        if not _sec_policy.is_configured():
+            return "", "git refused: repo config is untrusted and no sandbox is configured", 1
+        r = _runner.run(["env", "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0",
+                         "git", *_GIT_PREFIX, *args],
+                        cwd=cwd, timeout=int(timeout))
+    except Exception as e:   # SandboxUnavailable and friends
+        return "", f"git refused: sandbox unavailable for untrusted repo: {e}", 1
+    if r.timed_out:
+        return "", f"git timed out after {timeout:.0f}s: git {' '.join(args)}", 124
+    return r.stdout, r.stderr, r.returncode
 
 
 _REPO_PARAM = {
