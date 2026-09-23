@@ -1,5 +1,6 @@
 """Event watches: signal computation, fire edges, store round-trip, commands."""
 import os
+import subprocess
 import time
 
 import pytest
@@ -36,8 +37,12 @@ def test_cmd_and_pid_signals():
     assert _watch_signal(Job(kind="watch", watch_type="cmd", watch_target="false")) == "unmet"
     assert _watch_signal(
         Job(kind="watch", watch_type="pid", watch_target=str(os.getpid()))) == "alive"
+    # A reaped child's pid, not a fixed number: 999999 can be a live thread id
+    # on a host with a large pid_max.
+    child = subprocess.Popen(["true"])
+    child.wait()
     assert _watch_signal(
-        Job(kind="watch", watch_type="pid", watch_target="999999")) == "dead"
+        Job(kind="watch", watch_type="pid", watch_target=str(child.pid))) == "dead"
 
 
 def test_should_fire_edges():
