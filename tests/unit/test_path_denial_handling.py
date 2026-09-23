@@ -39,7 +39,9 @@ def test_denial_logs_warning_without_traceback(caplog):
     data = json.loads(out)
     assert data["error_type"] == "PathAccessDenied"
     assert "/tmp/x.py" in data["error"]
-    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+    # Only agent loggers: asyncio may log GC of tasks leaked by earlier tests.
+    assert not [r for r in caplog.records
+                if r.levelno >= logging.ERROR and r.name.startswith("agent")]
     assert not any("Traceback" in r.getMessage() for r in caplog.records)
     rep.assert_not_called()
 
