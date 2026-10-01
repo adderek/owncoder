@@ -8,7 +8,9 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from . import prompt_cache
+import openai
+
+from . import prompt_cache, token_stats
 from .prompts import apply_prompt_hints, _log_llm_request, _build_call_kwargs
 from .tool_calls import _FakeToolCall, _parse_text_tool_calls, _parse_qwen_function_xml, _parse_agent_exec_xml
 from .tool_discovery import CORE_TOOLS as _CORE_TOOLS
@@ -523,7 +525,7 @@ async def _next_chunk(stream_it, *, budget_s: int, heartbeat_s: int, waiting_for
                 logger.exception("on_heartbeat callback failed")
 
 
-async def _stream_response(client, config: "Config", api_messages, tools, on_token, on_usage=None, on_reasoning=None, stop_event=None, on_stall_progress=None):
+async def _stream_response(client, config: "Config", api_messages, tools, on_token, on_usage=None, on_reasoning=None, stop_event=None, on_stall_progress=None, token_stats_out: list | None = None):
     from agent._tokens import count_tokens_approx
     from agent.memory.compactor import _count_tokens_approx
     from agent.core.model_status import _inc as _ms_inc, _dec as _ms_dec, provider_label
@@ -543,18 +545,40 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
     t_first_token: float | None = None
     server_usage: dict | None = None
 
-    _endpoint = provider_label(str(getattr(client, "base_url", "") or getattr(config.llm, "base_url", "")))
+    _base_url = str(getattr(client, "base_url", "") or getattr(config.llm, "base_url", ""))
+    _endpoint = provider_label(_base_url)
     _model = getattr(config.llm, "model", None)
     _ms_inc("main", _endpoint, _model)
+    _ts_rows: list[list] | None = [] if token_stats.wanted(config, _base_url) else None
     try:
         async with _gpu_slot(config):
-            stream = await client.chat.completions.create(
-            messages=api_messages,
-            tools=tools if tools else None,
-            stream=True,
-            stream_options={"include_usage": True},
-            **_build_call_kwargs(config),
-        )
+            call_kwargs = _build_call_kwargs(config)
+            if _ts_rows is not None:
+                ts_kw = token_stats.request_kwargs(config)
+                extra = {**(call_kwargs.get("extra_body") or {}), **ts_kw.pop("extra_body", {})}
+                ts_call = {**call_kwargs, **ts_kw, **({"extra_body": extra} if extra else {})}
+                try:
+                    stream = await client.chat.completions.create(
+                        messages=api_messages,
+                        tools=tools if tools else None,
+                        stream=True,
+                        stream_options={"include_usage": True},
+                        **ts_call,
+                    )
+                except openai.BadRequestError as e:
+                    # Capture is optional; never let it cost the turn.
+                    if not token_stats.is_rejection(e):
+                        raise
+                    token_stats.mark_unsupported(_base_url, e)
+                    _ts_rows = None
+            if _ts_rows is None:
+                stream = await client.chat.completions.create(
+                    messages=api_messages,
+                    tools=tools if tools else None,
+                    stream=True,
+                    stream_options={"include_usage": True},
+                    **call_kwargs,
+                )
 
         # Two distinct fuses: prefill (no first token yet) emits no chunks while the
         # backend chews a big prompt — that is slow, not wedged, so it gets a generous
@@ -631,6 +655,11 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
             choice = chunk.choices[0] if chunk.choices else None
             if choice is None:
                 continue
+            if _ts_rows is not None:
+                try:
+                    _ts_rows.extend(token_stats.chunk_rows(choice))
+                except Exception:
+                    logger.debug("token_stats: chunk parse failed", exc_info=True)
 
             if choice.finish_reason:
                 finish_reason = choice.finish_reason
@@ -674,6 +703,13 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
                         tc_acc[idx]["function"]["arguments"] += tc_delta.function.arguments
     finally:
         _ms_dec("main", _endpoint, _model)
+
+    if _ts_rows:
+        record = token_stats.build_record(
+            _ts_rows, model=_model, limit=int(getattr(config.token_stats, "max_tokens", 4000)))
+        if token_stats_out is not None:
+            token_stats_out.append(record)
+        token_stats.publish(record)
 
     raw_content = "".join(content_parts)
     full_content = _clean_output(raw_content)

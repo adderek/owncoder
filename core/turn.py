@@ -619,6 +619,7 @@ async def run_turn(
                 return reason, messages
 
         turn_reasoning: str = ""
+        turn_token_stats: list[dict] = []
         try:
             if on_token is not None:
                 if config.llm.cache_ttl > 0:
@@ -640,6 +641,7 @@ async def run_turn(
                         client, config, api_messages, tools, on_token,
                         on_usage=on_usage, on_reasoning=on_reasoning, stop_event=stop_event,
                         on_stall_progress=_on_stall_progress,
+                        token_stats_out=turn_token_stats,
                     )
                 if config.llm.cache_ttl > 0:
                     mark_request(config.llm.base_url, config.llm.model)
@@ -898,12 +900,25 @@ async def run_turn(
                 })
             except Exception as e:
                 logger.warning("side_log append failed (reasoning): %s", e)
+        # Per-token confidence rows (core/token_stats.py), referenced the same
+        # way so the HTTP UI can replay them after a reload.
+        _pending_tokstats_ref: list[int | None] = [None]
+        if turn_token_stats and side_log is not None:
+            from agent.core import token_stats as _token_stats
+            try:
+                _pending_tokstats_ref[0] = side_log.append(
+                    _token_stats.SIDE_LOG_FILE, {"turn": turn_index, **turn_token_stats[-1]})
+            except Exception as e:
+                logger.warning("side_log append failed (tokstats): %s", e)
 
         def stamp_reasoning(m: dict) -> dict:
             ref = _pending_reasoning_ref[0]
             extra: dict = {}
             if turn_reasoning:
                 extra["_reasoning_content"] = turn_reasoning
+            if _pending_tokstats_ref[0] is not None:
+                extra["_tokstats_ref"] = _pending_tokstats_ref[0]
+                _pending_tokstats_ref[0] = None
             if ref is None:
                 return {**m, **extra} if extra else m
             _pending_reasoning_ref[0] = None

@@ -926,6 +926,92 @@ function replayReasoning(text) {
   return d;
 }
 
+// Token confidence (core/token_stats.py; [token_stats] enabled). One fold per
+// model call, raw tokens as the server sent them — no attempt to align with
+// the rendered markdown. Single-hue shading (not green→red: colour-blind
+// safe), darker = worse on the chosen metric; wavy underline = sampled from
+// outside the top-k list. Rows: [text, logprob, entropy, margin, rank, kind].
+const TOK_METRICS = {
+  p: {label: 'improbability (1 − p)', bad: (r) => r[1] == null ? null : 1 - Math.exp(r[1])},
+  H: {label: 'entropy / hesitation', bad: (r) => r[2] == null ? null : Math.min(1, r[2] / 2.3)},
+  m: {label: 'thin margin (1 − top1+top2 gap)', bad: (r) => r[3] == null ? null : 1 - r[3]},
+};
+let tokMetric = 'p';
+try { tokMetric = localStorage.getItem('oc-tok-metric') || 'p'; } catch (e) {}
+if (!TOK_METRICS[tokMetric]) tokMetric = 'p';
+
+function tokSummaryText(sum, truncated) {
+  if (!sum) return 'token confidence';
+  const bits = [sum.n + ' tok'];
+  if (sum.ppl != null) bits.push('ppl ' + sum.ppl.toFixed(2));
+  if (sum.min_p != null) bits.push('min p ' + sum.min_p.toFixed(3));
+  if (sum.low_p) bits.push(sum.low_p + ' below p½');
+  if (sum.mean_H != null) bits.push('H̄ ' + sum.mean_H.toFixed(2));
+  if (sum.tool_ppl != null) bits.push('tool ppl ' + sum.tool_ppl.toFixed(2));
+  if (truncated) bits.push('first ' + truncated + ' dropped');
+  return 'token confidence · ' + bits.join(' · ');
+}
+
+function tokRender(body, rec) {
+  body.innerHTML = '';
+  const bar = document.createElement('div');
+  bar.className = 'tokbar';
+  for (const k of Object.keys(TOK_METRICS)) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'sbtn' + (k === tokMetric ? ' on' : '');
+    b.textContent = TOK_METRICS[k].label;
+    b.addEventListener('click', () => {
+      tokMetric = k;
+      try { localStorage.setItem('oc-tok-metric', k); } catch (e) {}
+      tokRender(body, rec);
+    });
+    bar.appendChild(b);
+  }
+  body.appendChild(bar);
+  const pre = document.createElement('div');
+  pre.className = 'toks';
+  const bad = TOK_METRICS[tokMetric].bad;
+  for (const r of (rec.tokens || [])) {
+    const sp = document.createElement('span');
+    sp.className = 'tok k' + (r[5] || 'c') + (r[4] === -1 ? ' tail' : '');
+    sp.textContent = r[0];
+    const v = bad(r);
+    if (v != null) sp.style.setProperty('--a', Math.round(Math.max(0, Math.min(1, v)) * 70) + '%');
+    sp.title = 'p=' + (r[1] == null ? '?' : Math.exp(r[1]).toFixed(3)) +
+      '  H=' + (r[2] == null ? '?' : r[2].toFixed(2)) +
+      '  margin=' + (r[3] == null ? '?' : r[3].toFixed(3)) +
+      '  rank=' + r[4] + '  ' + ({c: 'content', r: 'reasoning', t: 'tool args'}[r[5]] || '');
+    pre.appendChild(sp);
+  }
+  body.appendChild(pre);
+}
+
+// rec = full record (live event) or null + a side-log ref to fetch on open.
+function tokstatsFold(rec, ref) {
+  const d = document.createElement('details');
+  d.className = 'think tokstats';
+  d.innerHTML = '<summary></summary><div class="body"></div>';
+  d.querySelector('summary').textContent = rec ? tokSummaryText(rec.summary, rec.truncated)
+                                               : 'token confidence';
+  const body = d.querySelector('.body');
+  let loaded = !!rec;
+  if (rec) tokRender(body, rec);
+  d.addEventListener('toggle', async () => {
+    if (!d.open || loaded) return;
+    loaded = true;
+    body.textContent = 'loading…';
+    try {
+      const sid = previewing || currentSessionId;
+      const r = await (await fetch('/api/tokstats?id=' + encodeURIComponent(sid) +
+                                   '&seq=' + encodeURIComponent(ref))).json();
+      if (r.error) { body.textContent = r.error; return; }
+      d.querySelector('summary').textContent = tokSummaryText(r.summary, r.truncated);
+      tokRender(body, r);
+    } catch (e) { body.textContent = 'failed: ' + e; loaded = false; }
+  });
+  return d;
+}
+
 function reasoning(text) {
   if (!thinkEl) {
     const d = document.createElement('details');
@@ -976,6 +1062,8 @@ function handle(ev) {
     streamEl.classList.remove('paused');
     setActivity('streaming');
     stickScroll();
+  } else if (ev.type === 'tokstats') {
+    stamp(metaMount(tokstatsFold(ev, null)));
   } else if (ev.type === 'changeset') {
     // Fires once at round end, before `response` — stash it on the open work
     // fold so endTurn() renders it under that round, not the next one.
@@ -3081,6 +3169,10 @@ function replayTranscriptInner(messages) {
       if (m.reasoning) {
         if (!work) { work = beginTurn(); work.replay = true; }
         replayReasoning(m.reasoning);
+      }
+      if (m.tokstats_ref != null) {
+        if (!work) { work = beginTurn(); work.replay = true; }
+        work.body.appendChild(tokstatsFold(null, m.tokstats_ref));
       }
       for (const c of (m.tool_calls || [])) {
         if (!work) { work = beginTurn(); work.replay = true; }

@@ -1430,6 +1430,25 @@ class HooksConfig:
 
 
 @dataclass
+class TokenStatsConfig:
+    """Per-token logprob capture for the HTTP UI confidence overlay (core/token_stats.py).
+
+    Off by default: costs a little bandwidth per token and most users would
+    not read the numbers. Docs: docs/token_stats.md.
+    """
+    enabled: bool = False
+    top_logprobs: int = 5        # 1..20; entropy/margin need >= 2
+    # Only ask loopback/private endpoints: the llama.cpp-specific knobs below
+    # would be a 400 on a strict cloud API.
+    local_only: bool = True
+    # Per-request llama.cpp speculative override while capturing ("" = leave
+    # the server's setting). Accepted draft tokens carry no probs, so "none"
+    # buys honest numbers at the cost of the draft speedup.
+    speculative_type: str = "none"
+    max_tokens: int = 4000       # rows kept per model call (newest kept)
+
+
+@dataclass
 class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
@@ -1489,6 +1508,7 @@ class Config:
     hooks: HooksConfig = field(default_factory=HooksConfig)
     credpool: CredPoolConfig = field(default_factory=CredPoolConfig)
     vision: VisionConfig = field(default_factory=VisionConfig)
+    token_stats: TokenStatsConfig = field(default_factory=TokenStatsConfig)
     # Runtime (non-persisted) flag: True while the active session pins every LLM
     # call to a LOCAL endpoint (private session mode). Set by
     # Agent.set_session_mode("private"); read by mid-turn routing so an auto-tier

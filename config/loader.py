@@ -282,6 +282,7 @@ def _merge(config: Config, data: dict) -> None:
         ("turn_signals", config.turn_signals),
         ("ui_server", config.ui_server),
         ("vision", config.vision),
+        ("token_stats", config.token_stats),
     ):
         section_data = data.get(section_name, {})
         _merge_obj(obj, section_data, path=f"{section_name}.")
@@ -297,7 +298,7 @@ _KNOWN_SECTIONS = {
     "explore", "web_search", "concurrency", "kb", "aei", "notify", "mcp",
     "speech", "classify", "auto_tier", "failover", "privacy", "scheduler", "hooks",
     "credpool", "permissions", "tool_discovery", "summarization", "output_store",
-    "turn_signals", "ui_server", "models", "vision",
+    "turn_signals", "ui_server", "models", "vision", "token_stats",
 }
 
 

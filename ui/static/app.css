@@ -771,6 +771,18 @@ details.think { margin: 0 0 8px 6px; font-size: 12px; color: var(--dimmer); font
 details.think summary { cursor: pointer; list-style: none; user-select: none; color: var(--dimmer); }
 details.think summary::before { content: "◦ "; }
 details.think .body { padding: 4px 0 2px 14px; white-space: pre-wrap; }
+/* Token confidence overlay (core/token_stats.py). --a = how bad, 0–70%. */
+details.think.tokstats { font-style: normal; }
+details.think.tokstats summary::before { content: "◔ "; }
+details.think.tokstats .tokbar { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+details.think.tokstats .tokbar .sbtn.on { border-color: var(--accent); color: var(--fg); }
+details.think.tokstats .toks { font-family: var(--mono); font-size: 12px; color: var(--fg);
+                               white-space: pre-wrap; word-break: break-word;
+                               max-height: 420px; overflow: auto; }
+.tok { background: color-mix(in srgb, var(--err) var(--a, 0%), transparent); border-radius: 2px; }
+.tok.kr { color: var(--dim); font-style: italic; }
+.tok.kt { outline: 1px dotted var(--border); }
+.tok.tail { text-decoration: underline wavy var(--warn); }
 /* Notes the turn wrote into its own history (a failing verify command, a goal
    check). Same fold as thinking, but upright and a shade brighter: this is an
    outcome the round has to answer for, not the model musing. */

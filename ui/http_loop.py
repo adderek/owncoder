@@ -340,6 +340,28 @@ def _side_log_records(sid: str, filename: str = "tool_calls.jsonl") -> dict:
         return {}
 
 
+_SID_RE = re.compile(r"^[\w:.+-]{1,80}$")
+
+
+def _tokstats_record(sid: str, seq: int) -> dict | None:
+    """One token-confidence record (core/token_stats.py) from a session's side-log."""
+    if not sid or not _SID_RE.match(sid) or ".." in sid:
+        return None
+    try:
+        from agent.core.token_stats import SIDE_LOG_FILE
+        from agent.memory.session import get_session_full_dir
+        from agent.security import vault
+        path = get_session_full_dir(sid) / SIDE_LOG_FILE
+        if not path.exists():
+            return None
+        for rec in vault.iter_jsonl(path):
+            if isinstance(rec, dict) and rec.get("seq") == seq:
+                return rec
+    except Exception:
+        logger.debug("http ui: tokstats unreadable for %s", sid, exc_info=True)
+    return None
+
+
 def _unfold_round(m: dict, records: dict, result_limit: int) -> list[dict] | None:
     """Turn a collapsed assistant message back into call/result messages.
 
@@ -477,6 +499,8 @@ def _transcript(messages, result_limit: int = 2000, sid: str = "") -> list[dict]
             unfolded = _unfold_round(m, records, result_limit)
             if unfolded is not None:
                 _attach_reasoning(m, unfolded, reasoning_records)
+                if unfolded and isinstance(m.get("_tokstats_ref"), int):
+                    unfolded[0]["tokstats_ref"] = m["_tokstats_ref"]
                 out.extend(unfolded)
                 continue
             calls = []
@@ -490,6 +514,8 @@ def _transcript(messages, result_limit: int = 2000, sid: str = "") -> list[dict]
             entry = {"role": "assistant", "content": m.get("content") or ""}
             if calls:
                 entry["tool_calls"] = calls
+            if isinstance(m.get("_tokstats_ref"), int):
+                entry["tokstats_ref"] = m["_tokstats_ref"]
             if entry["content"] or calls:
                 _attach_reasoning(m, [entry], reasoning_records)
                 out.append(entry)
@@ -1803,6 +1829,19 @@ class _HttpUI:
         _attach_changesets(sid, messages)
         return {"id": sid, "name": name, "workdir": workdir, "messages": messages}
 
+    def tokstats_info(self, sid: str, seq: str) -> dict:
+        """Token-confidence rows for one model call — fetched lazily when the
+        overlay is opened on a replayed message (whole-session payloads would
+        be megabytes)."""
+        if not sid and self.session is not None:
+            sid = self.session.id
+        try:
+            n = int(seq)
+        except (TypeError, ValueError):
+            return {"error": "bad seq"}
+        rec = _tokstats_record(sid, n)
+        return rec if rec is not None else {"error": "not found"}
+
     def qa_info(self, sid: str = "") -> dict:
         """Condensed Q/A data — per-turn one-line summaries from the QA log,
         with full content for inline expansion. Backs the condensed view."""
@@ -2471,6 +2510,11 @@ def _make_handler(ui: _HttpUI):
                 from urllib.parse import parse_qs, urlparse
                 sid = (parse_qs(urlparse(self.path).query).get("id") or [""])[0]
                 self._json(ui.history_info(sid))
+            elif self.path.startswith("/api/tokstats"):
+                from urllib.parse import parse_qs, urlparse
+                qs = parse_qs(urlparse(self.path).query)
+                self._json(ui.tokstats_info((qs.get("id") or [""])[0],
+                                            (qs.get("seq") or [""])[0]))
             elif self.path.startswith("/api/qa"):
                 from urllib.parse import parse_qs, urlparse
                 sid = (parse_qs(urlparse(self.path).query).get("id") or [""])[0]
@@ -3640,6 +3684,11 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
 
             # Run the turn as a task so /api/stop mode=hard can cancel it
             # outright (e.g. when the model deadloops).
+            # Token confidence rows (off unless [token_stats] enabled) ride a
+            # ContextVar the chat task inherits — see core/token_stats.py.
+            from agent.core import token_stats as _token_stats
+            _ts_token = _token_stats.sink.set(
+                lambda rec: pub({"type": "tokstats", **rec}))
             chat_task = asyncio.ensure_future(server.chat(
                 text,
                 session_id=ui.session.id if ui.session else "",
@@ -3678,6 +3727,7 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
                 on_changeset=lambda cs: pub(ui.changeset_event(cs)),
                 source="http",
             ))
+            _token_stats.sink.reset(_ts_token)   # the task already holds its own copy
             ui.chat_task = chat_task
             try:
                 response = await chat_task
