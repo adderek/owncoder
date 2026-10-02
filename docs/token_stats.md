@@ -1,6 +1,6 @@
 # Token confidence overlay
 
-Per-token logprob capture for model output, shown in the HTTP UI. Off by default.
+Per-token logprob capture for model output, shown in the HTTP UI. On by default for local/LAN endpoints; cost measured 2026-10-02 on ornith10-35B: ~2% tok/s with fork 188aaff93 (16% before that optimisation). Toggle per session with the header `ppl` chip.
 
 ## Use
 

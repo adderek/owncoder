@@ -1440,10 +1440,12 @@ class HooksConfig:
 class TokenStatsConfig:
     """Per-token logprob capture for the HTTP UI confidence overlay (core/token_stats.py).
 
-    Off by default: costs a little bandwidth per token and most users would
-    not read the numbers. Docs: docs/token_stats.md.
+    On by default for local/LAN endpoints (local_only): measured 2026-10-02 on
+    ornith10-35B with the fork's optimised logprobs (188aaff93) at ~2% fewer
+    tok/s (was 16% before). Servers that refuse logprobs are detected on the
+    first request and skipped. Docs: docs/token_stats.md.
     """
-    enabled: bool = False
+    enabled: bool = True
     top_logprobs: int = 5        # 1..20; entropy/margin need >= 2
     # Only ask loopback/private endpoints: the llama.cpp-specific knobs below
     # would be a 400 on a strict cloud API.

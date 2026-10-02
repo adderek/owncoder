@@ -1,6 +1,6 @@
 """Per-token confidence of model output (logprobs) for the HTTP UI overlay.
 
-Off by default ([token_stats] enabled). When on, the streaming request asks a
+On by default for local/LAN endpoints ([token_stats] enabled, local_only). The streaming request asks a
 local endpoint for ``logprobs`` + ``top_logprobs`` and each streamed token is
 reduced to a compact row:
 

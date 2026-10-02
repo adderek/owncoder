@@ -120,14 +120,15 @@ body[data-mode]:not([data-mode="standard"]) #input:focus { border-color: var(--p
 .icon:hover { color: var(--fg); background: var(--panel2); filter: none; }
 .icon.active { color: var(--accent); border-color: var(--border); background: var(--panel2); }
 /* Token confidence toggle: the state must read at a glance in every theme
-   (solarized dark made dimmed-vs-normal indistinguishable). On = accent chip
-   with a ring; off = struck-through, faded glyph. */
+   (solarized dark made dimmed-vs-normal indistinguishable). */
 #tokstatstoggle { font: 700 11px var(--mono); letter-spacing: .02em; padding: 2px 6px;
                   border-radius: 4px; }
-#tokstatstoggle.on { color: var(--ok); background: color-mix(in srgb, var(--ok) 18%, transparent);
-                     border-color: var(--ok); }
-#tokstatstoggle.off { color: var(--dimmer); border-color: var(--border); text-decoration: line-through;
-                      text-decoration-thickness: 2px; }
+/* On is the recommended default (~2% tok/s), so it stays quiet; off loses
+   functionality and is the state worth noticing. */
+#tokstatstoggle.on { color: var(--dim); border-color: var(--border); }
+#tokstatstoggle.off { color: var(--err); border-color: var(--err); text-decoration: line-through;
+                      text-decoration-thickness: 2px;
+                      background: color-mix(in srgb, var(--err) 15%, transparent); }
 #tokstatstoggle.inactive { color: var(--warn); border-color: var(--warn);
                            background: color-mix(in srgb, var(--warn) 15%, transparent); }
 /* Also a <button> (see .chip): stripped back to the bare bar + count. */

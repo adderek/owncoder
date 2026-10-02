@@ -1,7 +1,7 @@
 """Tests for agent/core/token_stats.py and its streaming / HTTP UI wiring.
 
 Pins: row math (logprob, entropy lower bound, margin, rank), chunk kind
-detection, gating (off by default, local-only, rejected endpoints), the
+detection, gating (on by default for local, local-only, rejected endpoints), the
 streaming fallback when the server refuses logprobs, and the side-log ref the
 HTTP transcript exposes for lazy loading.
 """
@@ -142,8 +142,9 @@ class TestSummaryAndRecord:
 
 
 class TestGating:
-    def test_off_by_default(self):
-        assert not token_stats.wanted(Config(), LOCAL)
+    def test_on_by_default_for_local_only(self):
+        assert token_stats.wanted(Config(), LOCAL)
+        assert not token_stats.wanted(Config(), "https://api.openai.com/v1")
 
     def test_local_only(self):
         c = Config()
