@@ -296,6 +296,13 @@ class UIConfig:
     http_port: int = 8180  # http mode port; walks forward up to +19 if taken
     http_tls_cert: str = ""  # PEM cert path — enables HTTPS, required for browser microphone on a LAN IP
     http_tls_key: str = ""  # PEM private key path
+    # Without cert/key: "lan" = self-signed cert (~/.config/agent/tls) when bound beyond
+    # loopback, "always" = also on loopback, "off" = plain HTTP. Same port redirects http→https.
+    http_tls_auto: str = "lan"
+    # Unknown browsers (no startup token) may ask to connect; the operator approves in
+    # the agent's terminal or an open tab. Approved browsers get their own cookie token.
+    connect_approval: bool = True
+    connect_remember_days: int = 30   # lifetime of a "remember" approval
     http_sidecar: bool = False  # run a companion browser view alongside textual/simple mode (see ui/http_sidecar.py)
     allowed_hosts: list = field(default_factory=list)  # extra Origin/Host names accepted by the HTTP UI beyond loopback (e.g. ["192.168.31.42"] for LAN access); also settable via --allow-host
     q_summaries: bool = False

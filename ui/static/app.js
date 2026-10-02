@@ -774,6 +774,32 @@ function resolveLoopGuard(choice) {
 // outside the work fold, with a countdown, because no answer means DENY.
 let permEl = null;
 let permTimer = null;
+// Another browser asks to connect (ui_server/client_auth.py). Same code is on
+// its waiting page — approve only if it matches the device you are holding.
+const connectEls = {};
+function connectPrompt(ev) {
+  if (connectEls[ev.id]) return;
+  const d = document.createElement('div');
+  d.className = 'loopguard';
+  d.innerHTML = '🔌 Connection attempt from <b>' + esc(ev.ip) + '</b> — code <b>' + esc(ev.code) +
+    '</b><div class="dim">' + esc(ev.agent || 'unknown browser') + '</div><div class="lg-acts">' +
+    '<button class="sbtn" data-c="session">allow this session</button>' +
+    '<button class="sbtn" data-c="remember">allow &amp; remember</button>' +
+    '<button class="sbtn" data-c="deny">deny</button></div>';
+  d.querySelectorAll('[data-c]').forEach(b => b.addEventListener('click', async () => {
+    const c = b.dataset.c;
+    try {
+      const r = await (await fetch('/api/connect/decide', {method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({id: ev.id, allow: c !== 'deny', remember: c === 'remember'})})).json();
+      if (r.error) metaRow('sys', r.error);
+    } catch (e) { row('sys error', null, 'connect decision failed: ' + e); }
+  }));
+  connectEls[ev.id] = mount(d);
+  setTimeout(() => { const el = connectEls[ev.id]; if (el) { (el.closest('.row') || el).remove(); delete connectEls[ev.id]; } },
+             125000);
+}
+
 function permissionPrompt(ev) {
   resolvePermission(null);   // stale prompt (reconnect edge) — clear it
   const opts = ev.options || [];
@@ -1067,7 +1093,7 @@ function handle(ev) {
   if (['tokens', 'stats'].indexOf(ev.type) < 0) lastEventAt = Date.now();
   // History preview is read-only: drop render events while it's open (header
   // chips still update); count them so the banner shows activity happened.
-  if (previewing && ['tokens','stats','state','switched','mode','token_stats',
+  if (previewing && ['tokens','stats','state','switched','mode','token_stats','connect_request','connect_done',
                      'loopguard','loopguard_done','permission','permission_done',
                      'grants_changed'].indexOf(ev.type) < 0) {
     missedLive++;
@@ -1093,6 +1119,12 @@ function handle(ev) {
     streamEl.classList.remove('paused');
     setActivity('streaming');
     stickScroll();
+  } else if (ev.type === 'connect_request') {
+    connectPrompt(ev);
+    notify('Connection attempt from ' + ev.ip + ' (code ' + ev.code + ')');
+  } else if (ev.type === 'connect_done') {
+    const el = connectEls[ev.id];
+    if (el) { (el.closest('.row') || el).remove(); delete connectEls[ev.id]; }
   } else if (ev.type === 'token_stats') {
     tokStats = ev; renderTokStatsBtn();
   } else if (ev.type === 'tokstats') {

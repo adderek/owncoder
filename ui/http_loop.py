@@ -848,6 +848,10 @@ class _HttpUI:
         # printed at startup (see the banner in http_loop()).
         from agent.ui_server.auth import AuthState
         self.auth = AuthState()
+        # Per-browser access approved by the operator (ui_server/client_auth.py);
+        # None = only the startup token admits a browser. Set in http_loop().
+        self.clients = None
+        self.tls = False
 
     def submit(self, text: str) -> bool:
         """Called from handler threads. Returns True if injected mid-turn."""
@@ -2430,6 +2434,10 @@ class _HttpUI:
 
 
 def _make_handler(ui: _HttpUI):
+    def _clients():
+        # Absent on test doubles and router-managed processes: token-only access.
+        return getattr(ui, "clients", None)
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):  # silence per-request stderr noise
             logger.debug("http ui: " + fmt, *args)
@@ -2459,15 +2467,59 @@ def _make_handler(ui: _HttpUI):
                 return True
             if ui.auth.validate_cookie(self):
                 return True
+            if _clients() is not None:
+                from agent.ui_server.auth import _extract_cookie
+                from agent.ui_server.client_auth import COOKIE
+                if _clients().validate(_extract_cookie(self, COOKIE) or "") is not None:
+                    return True
             if ui.auth.validate_bootstrap(self):
                 # Serve the response, and leave the cookie behind so the page's
                 # fetch()/EventSource calls authorise without the URL.
                 self._auth_cookie = ui.auth.session_cookie_header()
                 return True
+            if _clients() is not None and self.command == "GET" and \
+                    self.path.split("?", 1)[0] in ("", "/", "/index.html"):
+                # Unknown browser opening the page: ask the operator instead of a 403.
+                from agent.ui_server.client_auth import WAIT_PAGE
+                self._bytes(WAIT_PAGE.encode(), "text/html; charset=utf-8")
+                return False
             self._json({"error": "forbidden — token required. Open the URL "
                                  "printed in the terminal at startup (it ends "
                                  "in /?token=…), or append ?token=… to this "
-                                 "address."}, 403)
+                                 "address."
+                                 + (" Or open / to ask the operator for access."
+                                    if _clients() is not None else "")}, 403)
+            return False
+
+        def _connect_api(self) -> bool:
+            """Unauthenticated connect-request endpoints (Origin/Host still enforced).
+
+            Returns True when the request was handled here.
+            """
+            path = self.path.split("?", 1)[0]
+            if _clients() is None or path not in ("/api/connect", "/api/connect/status"):
+                return False
+            from agent.ui_server.auth import origin_host_error, validate_origin_host
+            if not validate_origin_host(self):
+                self._json(origin_host_error(self), 403)
+                return True
+            if os.environ.get("AGENT_PROJECT_SECRET", ""):
+                return False   # router-managed: the router authenticates
+            if path == "/api/connect" and self.command == "POST":
+                p, claim, err = _clients().request(self.client_address[0],
+                                                   self.headers.get("User-Agent", ""))
+                self._json({"error": err} if err else
+                           {"id": p.id, "code": p.code, "claim": claim}, 429 if err else 200)
+                return True
+            if path == "/api/connect/status" and self.command == "GET":
+                from urllib.parse import parse_qs, urlparse
+                q = parse_qs(urlparse(self.path).query)
+                state, token, remember = _clients().status((q.get("id") or [""])[0],
+                                                           (q.get("claim") or [""])[0])
+                if token:
+                    self._auth_cookie = _clients().cookie_header(token, remember, getattr(ui, 'tls', False))
+                self._json({"state": state})
+                return True
             return False
 
         def _emit_auth_cookie(self) -> None:
@@ -2506,6 +2558,8 @@ def _make_handler(ui: _HttpUI):
                 logger.debug("http ui: client dropped during response: %s", exc)
 
         def do_GET(self):
+            if self._connect_api():
+                return
             if not self._check_auth():
                 return
             # The startup URL carries ?token=…, so match on the path alone.
@@ -2517,6 +2571,12 @@ def _make_handler(ui: _HttpUI):
                 self._bytes(body, content_type, cache="no-cache")
             elif self.path == "/api/state":
                 self._json(ui.state())
+            elif self.path == "/api/clients":
+                self._json({"enabled": _clients() is not None, "clients": [
+                    {"id": c.id, "ip": c.ip, "agent": c.agent, "remember": c.remember,
+                     "last_seen": c.last_seen, "expires": c.expires}
+                    for c in (_clients().clients() if _clients() else [])],
+                    "pending": [p.public() for p in (_clients().pending() if _clients() else [])]})
             elif self.path == "/api/context":
                 self._json(ui.context_info())
             elif self.path == "/api/modelcalls":
@@ -2650,6 +2710,8 @@ def _make_handler(ui: _HttpUI):
                 ui.bus.unsubscribe(q)
 
         def do_POST(self):
+            if self._connect_api():
+                return
             if not self._check_auth():
                 return
             length = int(self.headers.get("Content-Length") or 0)
@@ -2660,6 +2722,20 @@ def _make_handler(ui: _HttpUI):
                 return
             if self.path == "/api/tokstats":
                 self._json(ui.set_token_stats(bool(payload.get("enabled"))))
+                return
+            if self.path == "/api/connect/decide":
+                if _clients() is None:
+                    self._json({"error": "connection approval is off"}, 400)
+                    return
+                ok = _clients().decide(str(payload.get("id") or ""), bool(payload.get("allow")),
+                                       bool(payload.get("remember")))
+                if ok:
+                    ui.bus.publish({"type": "connect_done", "id": str(payload.get("id") or "")})
+                self._json({"ok": ok} if ok else {"error": "no such pending request (expired?)"})
+                return
+            if self.path == "/api/clients/revoke":
+                ok = _clients() is not None and _clients().revoke(str(payload.get("id") or ""))
+                self._json({"ok": bool(ok)})
                 return
             if self.path == "/api/chat":
                 text = str(payload.get("text") or "").strip()
@@ -2760,24 +2836,99 @@ def _bind_server(handler, host: str, port: int,
     over a LAN IP needs TLS (loopback is exempt).
     """
     from agent.ui_server.quiet_http import QuietThreadingHTTPServer
+    from agent.ui_server.tls import DualProtocolServer, server_context
 
-    ctx = None
-    if tls_cert and tls_key:
-        import ssl
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ctx.load_cert_chain(tls_cert, tls_key)
+    ctx = server_context(tls_cert, tls_key) if (tls_cert and tls_key) else None
 
     last_exc: OSError | None = None
     for p in range(port, port + 20):
         try:
-            httpd = QuietThreadingHTTPServer((host, p), handler)
+            if ctx is not None:
+                # Same port answers plain http:// with a redirect to https://.
+                httpd = DualProtocolServer((host, p), handler)
+                httpd.ssl_context = ctx
+            else:
+                httpd = QuietThreadingHTTPServer((host, p), handler)
         except OSError as exc:
             last_exc = exc
             continue
-        if ctx is not None:
-            httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
         return httpd
     raise last_exc  # type: ignore[misc]
+
+
+def _start_connect_approvers(ui, console) -> None:
+    """Route connection requests to the operator: open browser tabs (SSE) and,
+    when stdin is a terminal, a prompt in the agent's own console."""
+    import sys
+
+    def _to_browsers(p) -> None:
+        ui.bus.publish({"type": "connect_request", **p.public()})
+
+    ui.clients.on_request(_to_browsers)
+    try:
+        interactive = sys.stdin is not None and sys.stdin.isatty()
+    except (ValueError, OSError):
+        interactive = False
+    if not interactive:
+        return
+
+    def _prompt(p) -> None:
+        console.print(f"\n[bold yellow]⚠ Connection attempt[/bold yellow] from [bold]{p.ip}[/bold] "
+                      f"— code [bold cyan]{p.code}[/bold cyan]\n  [dim]{p.agent or 'unknown browser'}[/dim]\n"
+                      "  Allow? [bold]s[/bold] = this session · [bold]r[/bold] = remember "
+                      f"{ui.clients.remember_days} days · [bold]d[/bold] = deny  (then Enter)")
+
+    def _reader() -> None:
+        # Answers apply to the oldest pending request; nothing else reads stdin
+        # once the HTTP UI is up.
+        while True:
+            try:
+                line = sys.stdin.readline()
+            except (ValueError, OSError):
+                return
+            if not line:
+                return
+            ans = line.strip().lower()
+            pend = ui.clients.pending()
+            if not pend:
+                if ans:
+                    console.print("[dim]no connection request is waiting[/dim]")
+                continue
+            p = min(pend, key=lambda x: x.created)
+            if ans in ("s", "a", "y", "yes", "r"):
+                ui.clients.decide(p.id, True, remember=(ans == "r"))
+                console.print(f"[green]✓ {p.ip} allowed"
+                              f"{' and remembered' if ans == 'r' else ' for this session'}[/green]")
+            elif ans in ("d", "n", "no"):
+                ui.clients.decide(p.id, False)
+                console.print(f"[red]✗ {p.ip} denied[/red]")
+            else:
+                _prompt(p)
+                continue
+            ui.bus.publish({"type": "connect_done", "id": p.id})
+
+    ui.clients.on_request(_prompt)
+    threading.Thread(target=_reader, daemon=True, name="http-ui-connect-approver").start()
+
+
+def _auto_tls(cfg, host: str, extra_hosts: list[str]) -> tuple[str, str, str]:
+    """Self-signed cert per [ui] http_tls_auto: "lan" (default — only when the
+    UI is reachable beyond loopback), "always", or "off". Returns
+    (cert, key, fingerprint), or empty strings for plain HTTP."""
+    mode = str(getattr(cfg, "http_tls_auto", "lan") or "off").lower()
+    loopback = host in ("127.0.0.1", "localhost", "::1")
+    if mode == "off" or (mode == "lan" and loopback):
+        return "", "", ""
+    try:
+        from agent.ui_server.tls import ensure_cert, local_names
+        cert, key, fp = ensure_cert(local_names(extra_hosts))
+        return str(cert), str(key), fp
+    except ImportError:
+        logger.warning("http ui: self-signed TLS needs the 'cryptography' package — serving plain HTTP")
+    except Exception:
+        logger.warning("http ui: could not create a self-signed certificate — serving plain HTTP",
+                       exc_info=True)
+    return "", "", ""
 
 
 def _publish_usage(server, pub, cost_before: float = 0.0) -> None:
@@ -3580,6 +3731,14 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
         os.environ["AGENT_ALLOWED_HOSTS"] = ",".join(_extra_hosts)
     tls_cert = str(getattr(cfg, "http_tls_cert", "") or "")
     tls_key = str(getattr(cfg, "http_tls_key", "") or "")
+    tls_fp = ""
+    if not (tls_cert and tls_key):
+        tls_cert, tls_key, tls_fp = _auto_tls(cfg, host, _extra_hosts)
+    ui.tls = bool(tls_cert and tls_key)
+    if getattr(cfg, "connect_approval", True):
+        from agent.ui_server.client_auth import ClientRegistry
+        ui.clients = ClientRegistry(remember_days=int(getattr(cfg, "connect_remember_days", 30)))
+        _start_connect_approvers(ui, console)
     httpd = _bind_server(_make_handler(ui), host, port, tls_cert, tls_key)
     actual_port = httpd.server_address[1]
 
@@ -3598,8 +3757,14 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
         "[dim]The token is the only credential for this UI (loopback included) "
         "and it changes on every start.[/dim]"
     )
+    if tls_fp:
+        console.print(f"[dim]Self-signed certificate — the browser warns once; accept it if the "
+                      f"fingerprint matches:[/dim]\n[dim]SHA-256 {tls_fp}[/dim]")
     if host in ("0.0.0.0", ""):
         console.print(f"[yellow]Listening on all interfaces — reachable on your LAN.[/yellow]")
+        if scheme == "http":
+            console.print("[yellow]Plain HTTP: the token and your prompts cross the LAN unencrypted "
+                          "([ui] http_tls_auto = \"lan\" needs the 'cryptography' package).[/yellow]")
     console.print("[dim]Ctrl+C here to quit.[/dim]\n")
 
     pub = ui.bus.publish

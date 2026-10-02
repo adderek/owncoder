@@ -196,6 +196,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Persist everything encrypted at rest (prompts for a "
                              "passphrase; lose it and the session is unrecoverable)")
 
+    # http-clients
+    hc_p = sub.add_parser("http-clients", help="Browsers approved for the HTTP UI: list / revoke")
+    hc_p.add_argument("action", nargs="?", choices=["list", "revoke", "clear"], default="list")
+    hc_p.add_argument("id", nargs="?", help="Client id (from list) for revoke")
+
     # vault
     vault_p = sub.add_parser("vault", help="Read back files sealed by vault mode")
     vault_sub = vault_p.add_subparsers(dest="vault_action")
@@ -340,6 +345,35 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _cmd_http_clients(args) -> int:
+    """Remembered HTTP UI browsers (~/.config/agent/http_clients.json).
+
+    Session-only approvals live in the running agent and end with it.
+    """
+    import datetime
+    from agent.ui_server.client_auth import ClientRegistry
+    reg = ClientRegistry()
+    if args.action == "revoke":
+        if not args.id:
+            print("usage: agent http-clients revoke <id>")
+            return 2
+        ok = reg.revoke(args.id)
+        print("revoked" if ok else f"no client '{args.id}'")
+        return 0 if ok else 1
+    if args.action == "clear":
+        for c in reg.clients():
+            reg.revoke(c.id)
+        print("all remembered browsers revoked")
+        return 0
+    rows = reg.clients()
+    if not rows:
+        print(f"no remembered browsers ({reg.store})")
+    for c in rows:
+        ts = lambda t: datetime.datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M") if t else "-"  # noqa: E731
+        print(f"{c.id}  {c.ip:<15}  last {ts(c.last_seen)}  expires {ts(c.expires)}  {c.agent[:60]}")
+    return 0
+
+
 def main() -> None:
     sys.setrecursionlimit(5000)
     parser = build_parser()
@@ -466,6 +500,8 @@ def main() -> None:
                 except Exception:
                     pass
             cmd_chat(args, config)
+        elif args.command == "http-clients":
+            sys.exit(_cmd_http_clients(args))
         elif args.command == "vault":
             from agent.cli.vault_cli import cmd_vault
             sys.exit(cmd_vault(args, config))
