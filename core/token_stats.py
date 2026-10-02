@@ -131,8 +131,14 @@ def token_row(entry: Any, kind: str) -> list:
             rank, kind]
 
 
-def chunk_rows(choice: Any) -> list[list]:
-    """Rows carried by one streamed chunk's choice (empty when none)."""
+def chunk_rows(choice: Any, prev_kind: str = "c") -> list[list]:
+    """Rows carried by one streamed chunk's choice (empty when none).
+
+    A chunk may carry several rows: the server holds back probs of tokens whose
+    text the tool-call/reasoning parser withheld and flushes them with the next
+    chunk that has a delta. Rows on a chunk with an empty delta (the finish
+    chunk, EOS) belong to whatever came before → *prev_kind*.
+    """
     lps = _get(choice, "logprobs", None)
     if not lps:
         return []
@@ -144,8 +150,10 @@ def chunk_rows(choice: Any) -> list[list]:
         kind = "t"
     elif delta is not None and _get(delta, "reasoning_content", None) and not _get(delta, "content", None):
         kind = "r"
-    else:
+    elif delta is not None and _get(delta, "content", None):
         kind = "c"
+    else:
+        kind = prev_kind
     return [token_row(e, kind) for e in content]
 
 

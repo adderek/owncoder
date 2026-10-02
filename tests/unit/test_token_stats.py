@@ -72,6 +72,18 @@ class TestChunkRows:
         assert token_stats.chunk_rows(self._choice(reasoning_content="x"))[0][5] == "r"
         assert token_stats.chunk_rows(self._choice(tool_calls=[object()]))[0][5] == "t"
 
+    def test_empty_delta_inherits_previous_kind(self):
+        # Finish chunk: EOS row on an empty delta follows the tool call it ends.
+        finish = NS(delta=NS(content=None, reasoning_content=None, tool_calls=None),
+                    logprobs=NS(content=[_entry("", 0.9, [("", 0.9)])]))
+        assert token_stats.chunk_rows(finish, "t")[0][5] == "t"
+        assert token_stats.chunk_rows(finish)[0][5] == "c"
+
+    def test_several_rows_in_one_chunk(self):
+        ch = NS(delta=NS(content=None, reasoning_content=None, tool_calls=[object()]),
+                logprobs=NS(content=[_entry("<tool_call>", .9, []), _entry("{", .8, [])]))
+        assert [r[0] for r in token_stats.chunk_rows(ch)] == ["<tool_call>", "{"]
+
     def test_no_logprobs(self):
         assert token_stats.chunk_rows(NS(delta=NS(content="x"), logprobs=None)) == []
         assert token_stats.chunk_rows({"delta": {}, "logprobs": {"content": []}}) == []
@@ -115,9 +127,9 @@ class TestGating:
         c.token_stats.top_logprobs = 99
         kw = token_stats.request_kwargs(c)
         assert kw["logprobs"] is True and kw["top_logprobs"] == 20
-        assert kw["extra_body"] == {"speculative.type": "none"}
-        c.token_stats.speculative_type = ""
-        assert "extra_body" not in token_stats.request_kwargs(c)
+        assert "extra_body" not in kw          # default: leave the server's setting
+        c.token_stats.speculative_type = "none"
+        assert token_stats.request_kwargs(c)["extra_body"] == {"speculative.type": "none"}
 
 
 def _chunk(content, entry=None):
@@ -162,7 +174,7 @@ class TestStreamingCapture:
             token_stats.sink.reset(tok)
         assert content == "Hello"
         kw = client.chat.completions.create.call_args.kwargs
-        assert kw["logprobs"] is True and kw["extra_body"]["speculative.type"] == "none"
+        assert kw["logprobs"] is True and "speculative.type" not in kw.get("extra_body", {})
         assert [r[0] for r in out[0]["tokens"]] == ["Hel", "lo"]
         assert seen == out
 
@@ -207,7 +219,7 @@ class TestHttpTranscript:
         from agent.ui.http_loop import _transcript
         out = _transcript([{"role": "user", "content": "q"},
                            {"role": "assistant", "content": "a", "_tokstats_ref": 3}])
-        assert out[-1]["tokstats_ref"] == 3
+        assert out[-1]["tokstats_refs"] == [3]
 
     def test_record_rejects_bad_session_ids(self):
         from agent.ui.http_loop import _tokstats_record
@@ -245,3 +257,36 @@ async def test_run_turn_persists_tokstats_ref(tmp_path, monkeypatch, reset_file_
     assert _json.loads(rows[0])["tokens"] == record["tokens"]
     last = [m for m in new_msgs if m.get("role") == "assistant"][-1]
     assert last.get("_tokstats_ref") == 0
+
+
+class TestRefsSurviveHistoryRewrites:
+    def _round(self, **extra):
+        return [{"role": "assistant", "content": "", **extra,
+                 "tool_calls": [{"id": "c1", "type": "function",
+                                 "function": {"name": "read_file", "arguments": '{"path": "a"}'}}]},
+                {"role": "tool", "tool_call_id": "c1", "content": "hello"}]
+
+    def test_collapse_keeps_side_log_refs(self):
+        from agent.core.history_ops import _collapse_tool_rounds
+        out = _collapse_tool_rounds(self._round(_tokstats_ref=4, _reasoning_ref=2))
+        assert out[0]["_tokstats_ref"] == 4 and out[0]["_reasoning_ref"] == 2
+
+    def test_merge_keeps_both_refs(self):
+        # Collapsed tool round + the final answer merge into one message; both
+        # model calls keep their token-confidence record.
+        from agent.core.history_ops import _merge_consecutive_assistants
+        out = _merge_consecutive_assistants([
+            {"role": "assistant", "content": "a"},
+            {"role": "assistant", "content": "b", "_tokstats_ref": 7}])
+        assert out[0]["_tokstats_ref"] == 7
+        out = _merge_consecutive_assistants([
+            {"role": "assistant", "content": "a", "_tokstats_ref": 6},
+            {"role": "assistant", "content": "b", "_tokstats_ref": [7, 8]}])
+        assert out[0]["_tokstats_ref"] == [6, 7, 8]
+
+    def test_transcript_dedupes_a_ref_on_two_messages(self):
+        from agent.ui.http_loop import _transcript
+        out = _transcript([{"role": "user", "content": "q"},
+                           {"role": "assistant", "content": "a", "_tokstats_ref": 1},
+                           {"role": "assistant", "content": "b", "_tokstats_ref": 1}])
+        assert [e.get("tokstats_refs") for e in out if e["role"] == "assistant"] == [[1], None]

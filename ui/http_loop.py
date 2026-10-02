@@ -474,6 +474,14 @@ def _transcript(messages, result_limit: int = 2000, sid: str = "") -> list[dict]
     records = _side_log_records(sid)
     reasoning_records = _side_log_records(sid, "reasoning.jsonl")
     out: list[dict] = []
+    seen_tokstats: set[int] = set()
+
+    def _tokstats_refs(m: dict) -> list[int]:
+        from agent.core.history_ops import tokstats_refs
+        new = [r for r in tokstats_refs(m) if r not in seen_tokstats]
+        seen_tokstats.update(new)
+        return new
+
     for m in messages:
         role = m.get("role")
         if role == "user":
@@ -499,8 +507,9 @@ def _transcript(messages, result_limit: int = 2000, sid: str = "") -> list[dict]
             unfolded = _unfold_round(m, records, result_limit)
             if unfolded is not None:
                 _attach_reasoning(m, unfolded, reasoning_records)
-                if unfolded and isinstance(m.get("_tokstats_ref"), int):
-                    unfolded[0]["tokstats_ref"] = m["_tokstats_ref"]
+                refs = _tokstats_refs(m)
+                if unfolded and refs:
+                    unfolded[0]["tokstats_refs"] = refs
                 out.extend(unfolded)
                 continue
             calls = []
@@ -514,8 +523,9 @@ def _transcript(messages, result_limit: int = 2000, sid: str = "") -> list[dict]
             entry = {"role": "assistant", "content": m.get("content") or ""}
             if calls:
                 entry["tool_calls"] = calls
-            if isinstance(m.get("_tokstats_ref"), int):
-                entry["tokstats_ref"] = m["_tokstats_ref"]
+            refs = _tokstats_refs(m)
+            if refs:
+                entry["tokstats_refs"] = refs
             if entry["content"] or calls:
                 _attach_reasoning(m, [entry], reasoning_records)
                 out.append(entry)

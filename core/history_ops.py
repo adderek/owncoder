@@ -86,6 +86,12 @@ def _merge_consecutive_assistants(messages: list[dict]) -> list[dict]:
             refs = (a.get("_tool_refs") or []) + (b.get("_tool_refs") or [])
             if refs:
                 merged["_tool_refs"] = refs
+            if b.get("_reasoning_ref") is not None and "_reasoning_ref" not in merged:
+                merged["_reasoning_ref"] = b["_reasoning_ref"]
+            # One token-confidence record per model call: a merged message keeps all.
+            ts = tokstats_refs(a) + tokstats_refs(b)
+            if ts:
+                merged["_tokstats_ref"] = ts[0] if len(ts) == 1 else ts
 
             # Reasoning may live under either key; with tool_calls keep the longer,
             # otherwise concatenate (matches the prior per-case behaviour).
@@ -239,17 +245,41 @@ def _collapse_tool_rounds(
                     combined["_reasoning_content"] = rc
                 if refs:
                     combined["_tool_refs"] = refs
+                _carry_side_log_refs(m, combined)
                 out.append(combined)
             else:
                 summary_msg: dict = {"role": "assistant", "content": summary}
                 if refs:
                     summary_msg["_tool_refs"] = refs
+                _carry_side_log_refs(m, summary_msg)
                 out.append(summary_msg)
             i = j
         else:
             out.append(m)
             i += 1
     return out
+
+
+# Single-valued side-log links on an assistant message (reasoning.jsonl,
+# tokstats.jsonl). Rebuilding a message without them orphans the side-log row:
+# the UI can no longer replay the round's thinking or token confidence.
+_SIDE_LOG_REF_KEYS = ("_reasoning_ref", "_tokstats_ref")
+
+
+def tokstats_refs(m: dict) -> list[int]:
+    """`_tokstats_ref` is an int, or a list once messages were merged."""
+    v = m.get("_tokstats_ref")
+    if isinstance(v, int):
+        return [v]
+    if isinstance(v, list):
+        return [x for x in v if isinstance(x, int)]
+    return []
+
+
+def _carry_side_log_refs(src: dict, dst: dict) -> None:
+    for key in _SIDE_LOG_REF_KEYS:
+        if src.get(key) is not None:
+            dst[key] = src[key]
 
 
 def _truncate_large_messages(messages: list[dict], token_budget: int) -> list[dict]:

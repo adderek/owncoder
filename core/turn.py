@@ -916,9 +916,12 @@ async def run_turn(
             extra: dict = {}
             if turn_reasoning:
                 extra["_reasoning_content"] = turn_reasoning
+            # Not consumed (unlike the reasoning ref): the narration-fallback
+            # check stamps a throwaway copy first, which would otherwise take
+            # the ref from the message that actually lands in history. The UI
+            # dedupes a ref seen on two messages.
             if _pending_tokstats_ref[0] is not None:
                 extra["_tokstats_ref"] = _pending_tokstats_ref[0]
-                _pending_tokstats_ref[0] = None
             if ref is None:
                 return {**m, **extra} if extra else m
             _pending_reasoning_ref[0] = None

@@ -9,7 +9,7 @@ Per-token logprob capture for model output, shown in the HTTP UI. Off by default
 enabled = true
 top_logprobs = 5          # 1..20; entropy/margin need >= 2
 local_only = true         # only loopback/private endpoints get asked
-speculative_type = "none" # per-request llama.cpp override while capturing; "" = leave server setting
+speculative_type = ""     # per-request llama.cpp speculative.type; "" = leave server setting
 max_tokens = 4000         # rows kept per model call (newest)
 ```
 
@@ -25,7 +25,7 @@ fetch rows lazily (`GET /api/tokstats?id=<sid>&seq=<ref>`).
 - Entropy = top-k + one tail bucket → lower bound.
 - Pre-sampling distribution (llama.cpp default): model belief, not what temperature did.
 - Raw server tokens, before `_clean_output`; no alignment with rendered markdown.
-- Persisted: session side-log `tokstats.jsonl`, message key `_tokstats_ref` (stripped before API).
+- Persisted: session side-log `tokstats.jsonl`, message key `_tokstats_ref` (int, or list after messages merge; stripped before API). Carried through tool-round collapse and assistant merge (`core/history_ops.py`).
 - Live: `core/token_stats.sink` ContextVar → SSE event `tokstats`. Only the primary HTTP UI sets it (not the sidecar, not IPC-worker mode).
 - Streaming path only: `agent run` (non-streaming, no `on_token`) captures nothing.
 
@@ -55,6 +55,13 @@ fetch rows lazily (`GET /api/tokstats?id=<sid>&seq=<ref>`).
 - non-stream + tools: OK, rows == completion_tokens, raw `<tool_call>` tokens included.
 - `speculative.type` "none" and "bogus" both 200 on a server started without speculative → field not validated / ignored there.
 - owncoder vs mock emulating P1: rows for reasoning + tool args captured, side-log written, UI fold renders + lazy replay works.
+
+### Measured 2026-10-02 — fork branch `server-logprobs` (b878d0765, P1+P2), CPU, Qwen2.5-0.5B
+
+- P1: stream == non-stream token-for-token, rows == completion_tokens: plain, PL diacritics + emoji, 1 and 2 tool calls. Multi-row chunks and rows on empty-delta (finish) chunks occur; empty-text rows = partial UTF-8 / EOS.
+- P2: `--spec-type ngram-simple` vs no spec, 6 prompts: same tokens; case with 5 accepted drafts |Δlogprob| ≤ 7e-5 (batched verify vs sequential float noise), one top-3 order swap among p≈1e-5 alternatives. No fake p=1 rows.
+- `speculative.type` unknown → 400. **`"none"` per request does not stop drafting** on a server started with `--spec-type` (identical draft stats) → owncoder default is now "" (P2 makes override unnecessary).
+- owncoder HTTP UI E2E on real model: rows for tool-call round (`c`+`t`) and answer, both folds replay after reload.
 
 ### Patch spec for the fork
 

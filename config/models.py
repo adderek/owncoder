@@ -1441,10 +1441,12 @@ class TokenStatsConfig:
     # Only ask loopback/private endpoints: the llama.cpp-specific knobs below
     # would be a 400 on a strict cloud API.
     local_only: bool = True
-    # Per-request llama.cpp speculative override while capturing ("" = leave
-    # the server's setting). Accepted draft tokens carry no probs, so "none"
-    # buys honest numbers at the cost of the draft speedup.
-    speculative_type: str = "none"
+    # Per-request llama.cpp `speculative.type` while capturing ("" = leave the
+    # server's setting). Not needed on the fork's server-logprobs branch, which
+    # fills probs for accepted draft tokens; on older servers drafted tokens get
+    # fake p=1.0. Measured 2026-10-02: "none" per request did NOT stop drafting
+    # on a server started with --spec-type, so this is no reliable fix anyway.
+    speculative_type: str = ""
     max_tokens: int = 4000       # rows kept per model call (newest kept)
 
 

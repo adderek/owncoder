@@ -974,13 +974,17 @@ function tokRender(body, rec) {
   for (const r of (rec.tokens || [])) {
     const sp = document.createElement('span');
     sp.className = 'tok k' + (r[5] || 'c') + (r[4] === -1 ? ' tail' : '');
-    sp.textContent = r[0];
+    // A token ending mid UTF-8 character has no text of its own (the next
+    // token carries the character) — mark it so it can still be hovered.
+    if (r[0] === '') sp.classList.add('partial');
+    sp.textContent = r[0] === '' ? '·' : r[0];
     const v = bad(r);
     if (v != null) sp.style.setProperty('--a', Math.round(Math.max(0, Math.min(1, v)) * 70) + '%');
     sp.title = 'p=' + (r[1] == null ? '?' : Math.exp(r[1]).toFixed(3)) +
       '  H=' + (r[2] == null ? '?' : r[2].toFixed(2)) +
       '  margin=' + (r[3] == null ? '?' : r[3].toFixed(3)) +
-      '  rank=' + r[4] + '  ' + ({c: 'content', r: 'reasoning', t: 'tool args'}[r[5]] || '');
+      '  rank=' + r[4] + '  ' + ({c: 'content', r: 'reasoning', t: 'tool args'}[r[5]] || '') +
+      (r[0] === '' ? '  (partial UTF-8 byte(s))' : '');
     pre.appendChild(sp);
   }
   body.appendChild(pre);
@@ -3170,9 +3174,9 @@ function replayTranscriptInner(messages) {
         if (!work) { work = beginTurn(); work.replay = true; }
         replayReasoning(m.reasoning);
       }
-      if (m.tokstats_ref != null) {
+      for (const ref of (m.tokstats_refs || [])) {
         if (!work) { work = beginTurn(); work.replay = true; }
-        work.body.appendChild(tokstatsFold(null, m.tokstats_ref));
+        work.body.appendChild(tokstatsFold(null, ref));
       }
       for (const c of (m.tool_calls || [])) {
         if (!work) { work = beginTurn(); work.replay = true; }

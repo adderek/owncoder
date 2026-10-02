@@ -657,7 +657,8 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
                 continue
             if _ts_rows is not None:
                 try:
-                    _ts_rows.extend(token_stats.chunk_rows(choice))
+                    _ts_rows.extend(token_stats.chunk_rows(
+                        choice, _ts_rows[-1][5] if _ts_rows else "c"))
                 except Exception:
                     logger.debug("token_stats: chunk parse failed", exc_info=True)
 
