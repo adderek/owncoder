@@ -29,6 +29,7 @@ prompt-token logprobs are not available at all.
 """
 from __future__ import annotations
 
+import codecs
 import contextvars
 import logging
 import math
@@ -100,9 +101,26 @@ def mark_unsupported(base_url: str, exc: BaseException) -> None:
     _unsupported.add(base_url)
 
 
-def token_row(entry: Any, kind: str) -> list:
+def utf8_decoder():
+    """Incremental decoder carried across one call's rows.
+
+    A token ending mid UTF-8 character carries only part of its bytes (its
+    `token` is the longest valid prefix, often ""). Feeding each row's raw
+    `bytes` through one decoder gives the partial rows "" and the completing
+    row the whole character — readable display text, still one row per token.
+    """
+    return codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+
+def token_row(entry: Any, kind: str, decoder=None) -> list:
     """One logprobs.content entry → [text, lp, entropy, margin, rank, kind]."""
     text = _get(entry, "token", "") or ""
+    raw = _get(entry, "bytes", None)
+    if decoder is not None and isinstance(raw, list):
+        try:
+            text = decoder.decode(bytes(raw))
+        except (ValueError, TypeError):
+            pass
     lp = _get(entry, "logprob", None)
     lp = float(lp) if isinstance(lp, (int, float)) and math.isfinite(lp) else None
     tops = _get(entry, "top_logprobs", None) or []
@@ -113,7 +131,7 @@ def token_row(entry: Any, kind: str) -> list:
         if not isinstance(tlp, (int, float)) or not math.isfinite(tlp):
             continue
         probs.append(math.exp(tlp))
-        if rank < 0 and (_get(t, "token", None) == text):
+        if rank < 0 and (_get(t, "token", None) == _get(entry, "token", None)):
             rank = i
     entropy = None
     margin = None
@@ -131,7 +149,7 @@ def token_row(entry: Any, kind: str) -> list:
             rank, kind]
 
 
-def chunk_rows(choice: Any, prev_kind: str = "c") -> list[list]:
+def chunk_rows(choice: Any, prev_kind: str = "c", decoder=None) -> list[list]:
     """Rows carried by one streamed chunk's choice (empty when none).
 
     A chunk may carry several rows: the server holds back probs of tokens whose
@@ -154,7 +172,7 @@ def chunk_rows(choice: Any, prev_kind: str = "c") -> list[list]:
         kind = "c"
     else:
         kind = prev_kind
-    return [token_row(e, kind) for e in content]
+    return [token_row(e, kind, decoder) for e in content]
 
 
 def summarize(rows: list[list]) -> dict:

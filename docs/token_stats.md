@@ -63,6 +63,14 @@ fetch rows lazily (`GET /api/tokstats?id=<sid>&seq=<ref>`).
 - `speculative.type` unknown → 400. **`"none"` per request does not stop drafting** on a server started with `--spec-type` (identical draft stats) → owncoder default is now "" (P2 makes override unnecessary).
 - owncoder HTTP UI E2E on real model: rows for tool-call round (`c`+`t`) and answer, both folds replay after reload.
 
+### Measured 2026-10-02 — .42 router, fork 3e4738abf, ornith15-9B-mtp (MTP, turbo4 KV, GPU)
+
+- 8 cases (plain, PL+emoji, reasoning off/on, 1/2 tool calls, reasoning+tool, stop-word): stream rows == completion_tokens == non-stream rows, token ids identical stream vs non-stream; stop-word case rows = ct − 2 (" 7"). No empty top_logprobs. MTP accepted 250/298 drafts on the longest case. router.log: 0 "missing" warnings.
+- `speculative.type`: "none" → 200, no drafting; not-enabled type → 400 listing enabled; unknown → 400.
+- (fixed in eba1a92ae) Row `token`/`bytes` were the text emitted in that step, not the token's piece. Now: own piece; partial UTF-8 → `bytes` = raw part of the character. owncoder builds display text by incremental UTF-8 decoding of `bytes` across one call's rows (`token_stats.utf8_decoder`): partial rows show `·`, the completing row shows the whole character. Verified: joined display == reasoning+content (PL, emoji, Japanese, reasoning, stop-word), 0 U+FFFD.
+- Nit (eba1a92ae): rows holding only continuation bytes have `token` = U+FFFD instead of the documented longest valid prefix `""`. Harmless for owncoder (decodes `bytes`).
+- Reasoning needs `chat_template_kwargs.enable_thinking` on this model.
+
 ### Patch spec for the fork
 
 P1 — logprobs with tools + stream

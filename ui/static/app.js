@@ -974,8 +974,8 @@ function tokRender(body, rec) {
   for (const r of (rec.tokens || [])) {
     const sp = document.createElement('span');
     sp.className = 'tok k' + (r[5] || 'c') + (r[4] === -1 ? ' tail' : '');
-    // A token ending mid UTF-8 character has no text of its own (the next
-    // token carries the character) — mark it so it can still be hovered.
+    // A token ending mid UTF-8 character has no text of its own (the row
+    // that completes the character shows it) — mark it so it can be hovered.
     if (r[0] === '') sp.classList.add('partial');
     sp.textContent = r[0] === '' ? '·' : r[0];
     const v = bad(r);

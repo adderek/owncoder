@@ -550,6 +550,7 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
     _model = getattr(config.llm, "model", None)
     _ms_inc("main", _endpoint, _model)
     _ts_rows: list[list] | None = [] if token_stats.wanted(config, _base_url) else None
+    _ts_utf8 = token_stats.utf8_decoder()
     try:
         async with _gpu_slot(config):
             call_kwargs = _build_call_kwargs(config)
@@ -658,7 +659,7 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
             if _ts_rows is not None:
                 try:
                     _ts_rows.extend(token_stats.chunk_rows(
-                        choice, _ts_rows[-1][5] if _ts_rows else "c"))
+                        choice, _ts_rows[-1][5] if _ts_rows else "c", _ts_utf8))
                 except Exception:
                     logger.debug("token_stats: chunk parse failed", exc_info=True)
 

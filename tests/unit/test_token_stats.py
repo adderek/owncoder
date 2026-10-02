@@ -62,6 +62,27 @@ class TestTokenRow:
         assert r[1] is None
 
 
+class TestUtf8Join:
+    def test_partial_bytes_join_on_completing_row(self):
+        # "ą" = c4 85 split over two tokens; server sends token "" for both.
+        dec = token_stats.utf8_decoder()
+        a = token_stats.token_row({"token": "", "bytes": [0xC4], "logprob": -0.1}, "c", dec)
+        b = token_stats.token_row({"token": "", "bytes": [0x85], "logprob": -0.2}, "c", dec)
+        c = token_stats.token_row({"token": " 2", "bytes": [32, 50], "logprob": -0.3}, "c", dec)
+        assert [a[0], b[0], c[0]] == ["", "ą", " 2"]
+
+    def test_no_bytes_falls_back_to_token(self):
+        dec = token_stats.utf8_decoder()
+        assert token_stats.token_row({"token": "x", "logprob": -0.1}, "c", dec)[0] == "x"
+
+    def test_rank_compares_server_token_not_display_text(self):
+        dec = token_stats.utf8_decoder()
+        token_stats.token_row({"token": "", "bytes": [0xC4], "logprob": -1}, "c", dec)
+        r = token_stats.token_row({"token": "", "bytes": [0x85], "logprob": -0.1,
+                                   "top_logprobs": [{"token": "", "logprob": -0.1}]}, "c", dec)
+        assert r[0] == "ą" and r[4] == 0
+
+
 class TestChunkRows:
     def _choice(self, **delta):
         d = {"content": None, "reasoning_content": None, "tool_calls": None, **delta}
