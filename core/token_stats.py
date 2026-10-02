@@ -4,7 +4,7 @@ Off by default ([token_stats] enabled). When on, the streaming request asks a
 local endpoint for ``logprobs`` + ``top_logprobs`` and each streamed token is
 reduced to a compact row:
 
-    [text, logprob, entropy, margin, rank, kind]
+    [text, logprob, entropy, margin, rank, kind, alternatives]
 
 - logprob  ln p of the sampled token (pre-sampling distribution).
 - entropy  nats over the top-k list plus one bucket for the unseen tail —
@@ -13,6 +13,8 @@ reduced to a compact row:
 - rank     position of the sampled token in top-k (0 = greedy pick, -1 = not
            in the list, i.e. sampled from the tail).
 - kind     "c" content, "r" reasoning, "t" native tool-call arguments.
+- alternatives  top-k candidates [[text, logprob], ...], best first (rows
+           recorded before 2026-10 have six fields).
 
 Rows are what the server reports, before ``_clean_output`` — the overlay shows
 raw tokens instead of trying to align them with rendered markdown.
@@ -112,8 +114,28 @@ def utf8_decoder():
     return codecs.getincrementaldecoder("utf-8")(errors="replace")
 
 
+def _alt_text(t: Any) -> str:
+    """Display text of one top_logprobs candidate.
+
+    A candidate ending mid UTF-8 character has `token` "" (or a prefix) and
+    only part of the character in `bytes`; show the bytes so it is not blank.
+    """
+    tok = _get(t, "token", "") or ""
+    raw = _get(t, "bytes", None)
+    if isinstance(raw, list) and raw and tok.encode() != bytes(raw):
+        try:
+            bytes(raw).decode("utf-8")
+        except (UnicodeDecodeError, ValueError, TypeError):
+            return tok + "".join(f"\\x{b:02x}" for b in raw[len(tok.encode()):])
+    return tok
+
+
 def token_row(entry: Any, kind: str, decoder=None) -> list:
-    """One logprobs.content entry → [text, lp, entropy, margin, rank, kind]."""
+    """One logprobs.content entry → [text, lp, entropy, margin, rank, kind, alts].
+
+    alts = the server's top-k candidates as [[text, logprob], ...], best first
+    — what else the model considered at this step.
+    """
     text = _get(entry, "token", "") or ""
     raw = _get(entry, "bytes", None)
     if decoder is not None and isinstance(raw, list):
@@ -125,12 +147,14 @@ def token_row(entry: Any, kind: str, decoder=None) -> list:
     lp = float(lp) if isinstance(lp, (int, float)) and math.isfinite(lp) else None
     tops = _get(entry, "top_logprobs", None) or []
     probs: list[float] = []
+    alts: list[list] = []
     rank = -1
     for i, t in enumerate(tops):
         tlp = _get(t, "logprob", None)
         if not isinstance(tlp, (int, float)) or not math.isfinite(tlp):
             continue
         probs.append(math.exp(tlp))
+        alts.append([_alt_text(t), round(float(tlp), 3)])
         if rank < 0 and (_get(t, "token", None) == _get(entry, "token", None)):
             rank = i
     entropy = None
@@ -146,7 +170,7 @@ def token_row(entry: Any, kind: str, decoder=None) -> list:
             None if lp is None else round(lp, 4),
             None if entropy is None else round(entropy, 4),
             None if margin is None else round(margin, 4),
-            rank, kind]
+            rank, kind, sorted(alts, key=lambda a: -a[1])]
 
 
 def chunk_rows(choice: Any, prev_kind: str = "c", decoder=None) -> list[list]:

@@ -1037,10 +1037,22 @@ function tokRender(body, rec) {
       '  H=' + (r[2] == null ? '?' : r[2].toFixed(2)) +
       '  margin=' + (r[3] == null ? '?' : r[3].toFixed(3)) +
       '  rank=' + r[4] + '  ' + ({c: 'content', r: 'reasoning', t: 'tool args'}[r[5]] || '') +
-      (r[0] === '' ? '  (partial UTF-8 byte(s))' : '');
+      (r[0] === '' ? '  (partial UTF-8 byte(s))' : '') + tokAlts(r);
     pre.appendChild(sp);
   }
   body.appendChild(pre);
+}
+
+// What else the model considered at this step (server top_logprobs). The
+// sampled candidate is marked ✓; when it is missing (rank -1) it came from
+// outside the top-k list.
+function tokAlts(r) {
+  const alts = r[6];
+  if (!alts || !alts.length) return '';
+  const lines = alts.map((a, i) => (i === r[4] ? '✓ ' : '   ') +
+    JSON.stringify(a[0]) + '  ' + Math.exp(a[1]).toFixed(3));
+  if (r[4] === -1) lines.push('✓ (sampled outside this list)');
+  return '\nconsidered:\n' + lines.join('\n');
 }
 
 // rec = full record (live event) or null + a side-log ref to fetch on open.

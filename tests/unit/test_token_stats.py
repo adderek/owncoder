@@ -38,7 +38,7 @@ def _entry(tok, p, tops):
 class TestTokenRow:
     def test_greedy_confident_token(self):
         r = token_stats.token_row(_entry("a", 0.9, [("a", 0.9), ("b", 0.1)]), "c")
-        text, lp, ent, margin, rank, kind = r
+        text, lp, ent, margin, rank, kind, _alts = r
         assert text == "a" and kind == "c" and rank == 0
         assert lp == pytest.approx(math.log(0.9), abs=1e-3)
         assert margin == pytest.approx(0.8, abs=1e-3)
@@ -57,7 +57,7 @@ class TestTokenRow:
         assert r[4] == -1 and r[5] == "t"
 
     def test_missing_fields_do_not_raise(self):
-        assert token_stats.token_row({"token": "x"}, "c") == ["x", None, None, None, -1, "c"]
+        assert token_stats.token_row({"token": "x"}, "c") == ["x", None, None, None, -1, "c", []]
         r = token_stats.token_row({"token": "x", "logprob": float("-inf"), "top_logprobs": []}, "c")
         assert r[1] is None
 
@@ -81,6 +81,20 @@ class TestUtf8Join:
         r = token_stats.token_row({"token": "", "bytes": [0x85], "logprob": -0.1,
                                    "top_logprobs": [{"token": "", "logprob": -0.1}]}, "c", dec)
         assert r[0] == "ą" and r[4] == 0
+
+
+class TestAlternatives:
+    def test_alternatives_best_first_with_rank(self):
+        r = token_stats.token_row(_entry("own", 0.64, [("own", 0.64), ("Claude", 0.2), ("agent", 0.1)]), "c")
+        assert [a[0] for a in r[6]] == ["own", "Claude", "agent"]
+        assert r[6][0][1] == pytest.approx(math.log(0.64), abs=1e-3) and r[4] == 0
+
+    def test_partial_utf8_candidate_shows_bytes(self):
+        r = token_stats.token_row({"token": "", "bytes": [0xC4], "logprob": -0.1,
+                                   "top_logprobs": [{"token": "", "bytes": [0xC4], "logprob": -0.1},
+                                                    {"token": " a", "bytes": [32, 97], "logprob": -2.0}]},
+                                  "c")
+        assert r[6][0][0] == "\\xc4" and r[6][1][0] == " a"
 
 
 class TestChunkRows:
