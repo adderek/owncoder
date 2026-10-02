@@ -25,6 +25,42 @@ def _extra_allowed_hosts() -> set[str]:
     return {h.strip() for h in raw.split(",") if h.strip()}
 
 
+def _rejected_name(handler: BaseHTTPRequestHandler) -> str:
+    """The Host/Origin hostname that failed the allow-list, sanitised for echoing."""
+    from urllib.parse import urlparse
+    allowed = {"127.0.0.1", "localhost", "::1"} | _extra_allowed_hosts()
+    names = []
+    host = handler.headers.get("Host", "")
+    if host:
+        names.append(host.rsplit(":", 1)[0].strip("[]"))
+    origin = handler.headers.get("Origin", "")
+    if origin:
+        try:
+            names.append(urlparse(origin).hostname or "")
+        except ValueError:
+            pass
+    for n in names:
+        if n and n not in allowed and not n.startswith("127."):
+            clean = "".join(c for c in n if c.isalnum() or c in ".-:")[:80]
+            return clean
+    return ""
+
+
+def origin_host_error(handler: BaseHTTPRequestHandler) -> dict:
+    """403 body for a failed Origin/Host check, naming the flag that fixes it.
+
+    The allow-list holds the name the BROWSER typed for this server (what
+    arrives in Host), not the client's own address — the common mix-up.
+    """
+    name = _rejected_name(handler)
+    msg = "forbidden — bad Origin/Host"
+    if name:
+        msg += (f": '{name}' is not allowed. If that is this server's address as you typed it "
+                f"in the browser, restart with --allow-host {name} "
+                f"(or [ui] allowed_hosts in agent.toml/agent.yaml).")
+    return {"error": msg}
+
+
 def validate_origin_host(handler: BaseHTTPRequestHandler) -> bool:
     """Reject if Origin or Host header points to a non-loopback / foreign host.
 

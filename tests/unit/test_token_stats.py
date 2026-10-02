@@ -311,3 +311,29 @@ class TestRefsSurviveHistoryRewrites:
                            {"role": "assistant", "content": "a", "_tokstats_ref": 1},
                            {"role": "assistant", "content": "b", "_tokstats_ref": 1}])
         assert [e.get("tokstats_refs") for e in out if e["role"] == "assistant"] == [[1], None]
+
+
+class TestHttpToggle:
+    def _ui(self, monkeypatch, base_url=LOCAL):
+        from agent.ui import http_loop
+        cfg = Config()
+        cfg.llm.base_url = base_url
+        monkeypatch.setattr(http_loop, "_agent_config", lambda server: cfg)
+        events = []
+        ui = NS(server=None, bus=NS(publish=events.append))
+        ui.token_stats_info = lambda: http_loop._HttpUI.token_stats_info(ui)
+        return http_loop._HttpUI, ui, cfg, events
+
+    def test_toggle_flips_config_and_publishes(self, monkeypatch):
+        cls, ui, cfg, events = self._ui(monkeypatch)
+        r = cls.set_token_stats(ui, True)
+        assert cfg.token_stats.enabled is True and r["enabled"] and r["inactive_reason"] == ""
+        assert events[-1]["type"] == "token_stats" and events[-1]["enabled"]
+        assert cls.set_token_stats(ui, False)["enabled"] is False
+
+    def test_reports_why_capture_is_inactive(self, monkeypatch):
+        cls, ui, cfg, _ = self._ui(monkeypatch, "https://api.openai.com/v1")
+        assert "local" in cls.set_token_stats(ui, True)["inactive_reason"]
+        cls, ui, cfg, _ = self._ui(monkeypatch)
+        token_stats._unsupported.add(LOCAL + "/")
+        assert "rejected" in cls.set_token_stats(ui, True)["inactive_reason"]

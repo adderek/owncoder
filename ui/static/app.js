@@ -940,6 +940,33 @@ let tokMetric = 'p';
 try { tokMetric = localStorage.getItem('oc-tok-metric') || 'p'; } catch (e) {}
 if (!TOK_METRICS[tokMetric]) tokMetric = 'p';
 
+// Header toggle: capture on/off for new model calls (server config, session
+// only). Folds already recorded stay; nothing is captured retroactively.
+let tokStats = {enabled: false, available: false};
+function renderTokStatsBtn() {
+  const b = document.getElementById('tokstatstoggle');
+  if (!b) return;
+  b.style.display = tokStats.available ? '' : 'none';
+  b.classList.toggle('on', !!tokStats.enabled);
+  b.style.opacity = tokStats.enabled ? '1' : '0.45';
+  b.title = 'Token confidence overlay: ' + (tokStats.enabled ? 'ON' : 'off') +
+    (tokStats.inactive_reason ? ' — but inactive: ' + tokStats.inactive_reason : '') +
+    ' — click to toggle. When on, each model call gets a ◔ fold with perplexity, ' +
+    'lowest p, entropy and the raw tokens shaded by confidence.';
+}
+async function toggleTokStats() {
+  try {
+    const r = await (await fetch('/api/tokstats', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled: !tokStats.enabled})})).json();
+    if (r.error) { row('sys error', null, r.error); return; }
+    tokStats = r; renderTokStatsBtn();
+    metaRow('sys', 'token confidence overlay ' + (r.enabled ? 'on' : 'off') +
+      (r.inactive_reason ? ' (inactive: ' + r.inactive_reason + ')' : ''));
+  } catch (e) { row('sys error', null, 'toggle failed: ' + e); }
+}
+document.getElementById('tokstatstoggle').addEventListener('click', toggleTokStats);
+
 function tokSummaryText(sum, truncated) {
   if (!sum) return 'token confidence';
   const bits = [sum.n + ' tok'];
@@ -1040,7 +1067,7 @@ function handle(ev) {
   if (['tokens', 'stats'].indexOf(ev.type) < 0) lastEventAt = Date.now();
   // History preview is read-only: drop render events while it's open (header
   // chips still update); count them so the banner shows activity happened.
-  if (previewing && ['tokens','stats','state','switched','mode',
+  if (previewing && ['tokens','stats','state','switched','mode','token_stats',
                      'loopguard','loopguard_done','permission','permission_done',
                      'grants_changed'].indexOf(ev.type) < 0) {
     missedLive++;
@@ -1066,6 +1093,8 @@ function handle(ev) {
     streamEl.classList.remove('paused');
     setActivity('streaming');
     stickScroll();
+  } else if (ev.type === 'token_stats') {
+    tokStats = ev; renderTokStatsBtn();
   } else if (ev.type === 'tokstats') {
     stamp(metaMount(tokstatsFold(ev, null)));
   } else if (ev.type === 'changeset') {
@@ -3247,6 +3276,7 @@ async function resyncView() {
   try {
     const s = await (await fetch('/api/state')).json();
     if (s.fold_journal) foldJournal = s.fold_journal;
+    if (s.token_stats) { tokStats = s.token_stats; renderTokStatsBtn(); }
     log.innerHTML = '';
     logTrimmed = 0;   // the view starts over
     turn = null; lastTurn = null; streamEl = null; thinkEl = null; pendingTools = {}; resolvedTools = {};
@@ -3288,6 +3318,7 @@ async function init() {
   try {
     const s = await (await fetch('/api/state')).json();
     if (s.fold_journal) foldJournal = s.fold_journal;
+    if (s.token_stats) { tokStats = s.token_stats; renderTokStatsBtn(); }
     applyState(s);
   } catch (e) {
     statusEl.textContent = 'server unreachable — retrying…';

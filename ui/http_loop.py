@@ -629,6 +629,7 @@ _PAGE = r"""<!DOCTYPE html>
   <button type="button" class="chip btn" id="planchip" title="Active plan — click for the steps" style="display:none">◑</button>
   <button type="button" id="tokenwrap" title="Click for context buffer breakdown" aria-label="Context buffer usage — click for the breakdown"><div id="tokenbar"><div id="tokenfill"></div></div><span id="tokens"></span></button>
   <button type="button" class="chip btn" id="compact" title="Summarise the oldest messages to free context" style="display:none">⇘ compact</button>
+  <button class="icon" id="tokstatstoggle" title="Token confidence overlay: off — click to capture per-token logprobs (perplexity, entropy) for new model calls" aria-label="Toggle token confidence overlay">◔</button>
   <button class="icon" id="notifytoggle" title="Notify me when the agent needs an answer or finishes" aria-label="Toggle desktop notifications">🔕</button>
   <button class="icon" id="themetoggle" title="Theme: dark (click to cycle)" aria-label="Cycle theme">◐</button>
   <button class="icon" id="righttoggle" title="Details panel" aria-label="Toggle details panel">☰</button>
@@ -1329,6 +1330,7 @@ class _HttpUI:
             "messages": messages,
             "models": models,
             "fold_journal": self._fold_journal(),
+            "token_stats": self.token_stats_info(),
             "io": {"in": stats.get("input_tokens", 0),
                    "out": stats.get("output_tokens", 0),
                    "calls": stats.get("calls", 0),
@@ -1394,6 +1396,33 @@ class _HttpUI:
         if rollup:
             payload["rollup"] = rollup
         return payload
+
+    def token_stats_info(self) -> dict:
+        """Whether per-token logprob capture is on, and why it may not apply."""
+        cfg = _agent_config(self.server)
+        ts = getattr(cfg, "token_stats", None)
+        if ts is None:
+            return {"enabled": False, "available": False}
+        from agent.core import token_stats as _ts
+        base = str(getattr(getattr(cfg, "llm", None), "base_url", "") or "")
+        why = ""
+        if ts.enabled:
+            if ts.local_only and not _ts.is_private_endpoint(base):
+                why = "active model is not a local/LAN endpoint ([token_stats] local_only)"
+            elif any(base.rstrip("/") == u.rstrip("/") for u in _ts._unsupported):
+                why = "this endpoint rejected logprobs (restart after upgrading the server)"
+        return {"enabled": bool(ts.enabled), "available": True, "inactive_reason": why}
+
+    def set_token_stats(self, enabled: bool) -> dict:
+        """Runtime toggle (session only; [token_stats] enabled persists the default)."""
+        cfg = _agent_config(self.server)
+        ts = getattr(cfg, "token_stats", None)
+        if ts is None:
+            return {"error": "token_stats not available"}
+        ts.enabled = bool(enabled)
+        info = self.token_stats_info()
+        self.bus.publish({"type": "token_stats", **info})
+        return {"ok": True, **info}
 
     def _fold_journal(self) -> str:
         """When a round's work fold auto-collapses: "on_next_round" (the
@@ -2416,9 +2445,9 @@ def _make_handler(ui: _HttpUI):
             request is authorised by the project secret instead (s5).
             Returns True if the request is allowed, False if it should be rejected.
             """
-            from agent.ui_server.auth import constant_time_compare, validate_origin_host
+            from agent.ui_server.auth import constant_time_compare, origin_host_error, validate_origin_host
             if not validate_origin_host(self):
-                self._json({"error": "forbidden — bad Origin/Host"}, 403)
+                self._json(origin_host_error(self), 403)
                 return False
             # Project secret (s5): if running under a router, reject unproxied requests.
             secret = os.environ.get("AGENT_PROJECT_SECRET", "")
@@ -2628,6 +2657,9 @@ def _make_handler(ui: _HttpUI):
                 payload = json.loads(self.rfile.read(length) or b"{}")
             except Exception:
                 self._json({"error": "bad json"}, 400)
+                return
+            if self.path == "/api/tokstats":
+                self._json(ui.set_token_stats(bool(payload.get("enabled"))))
                 return
             if self.path == "/api/chat":
                 text = str(payload.get("text") or "").strip()

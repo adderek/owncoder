@@ -100,9 +100,9 @@ class _RouterHandler(BaseHTTPRequestHandler):
         logger.debug("router: " + fmt, *args)
 
     def _check_auth(self) -> bool:
-        from agent.ui_server.auth import validate_origin_host
+        from agent.ui_server.auth import origin_host_error, validate_origin_host
         if not validate_origin_host(self):
-            self._json({"error": "forbidden — bad Origin/Host"}, 403)
+            self._json(origin_host_error(self), 403)
             return False
         return True
 

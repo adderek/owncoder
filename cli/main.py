@@ -181,9 +181,12 @@ def build_parser() -> argparse.ArgumentParser:
                              "alongside it — see agent/ui/http_sidecar.py")
     chat_p.add_argument("--allow-host", action="append", dest="allow_hosts",
                         metavar="HOST", default=None,
-                        help="Extra Origin/Host name accepted by the HTTP UI "
-                             "beyond loopback (repeatable), e.g. "
-                             "--allow-host 192.168.31.42 for LAN access. "
+                        help="Address of THIS machine as typed in the remote "
+                             "browser's URL bar (the HTTP UI checks Host/Origin "
+                             "against it) — not the client's address. "
+                             "Repeatable: add both IP and hostname if you use both. "
+                             "E.g. the agent runs on 192.168.2.64 and you browse to "
+                             "http://192.168.2.64:8180 → --allow-host 192.168.2.64. "
                              "Same as [ui] allowed_hosts in agent.toml/agent.yaml.")
     chat_p.add_argument("--incognito", action="store_true",
                         help="Don't persist this session or any notes it produces")

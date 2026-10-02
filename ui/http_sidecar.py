@@ -396,9 +396,9 @@ def _make_sidecar_handler(wrapped: "_SidecarServer"):
             loopback port, so loopback remains the (thinner) boundary. Non-
             loopback binds are the operator's exposure to decide.
             """
-            from agent.ui_server.auth import validate_origin_host
+            from agent.ui_server.auth import origin_host_error, validate_origin_host
             if not validate_origin_host(self):
-                self._json({"error": "forbidden — bad Origin/Host"}, 403)
+                self._json(origin_host_error(self), 403)
                 return False
             return True
 
