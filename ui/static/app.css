@@ -119,6 +119,17 @@ body[data-mode]:not([data-mode="standard"]) #input:focus { border-color: var(--p
         padding: 2px 7px; border-radius: 6px; cursor: pointer; line-height: 1; }
 .icon:hover { color: var(--fg); background: var(--panel2); filter: none; }
 .icon.active { color: var(--accent); border-color: var(--border); background: var(--panel2); }
+/* Token confidence toggle: the state must read at a glance in every theme
+   (solarized dark made dimmed-vs-normal indistinguishable). On = accent chip
+   with a ring; off = struck-through, faded glyph. */
+#tokstatstoggle { font: 700 11px var(--mono); letter-spacing: .02em; padding: 2px 6px;
+                  border-radius: 4px; }
+#tokstatstoggle.on { color: var(--ok); background: color-mix(in srgb, var(--ok) 18%, transparent);
+                     border-color: var(--ok); }
+#tokstatstoggle.off { color: var(--dimmer); border-color: var(--border); text-decoration: line-through;
+                      text-decoration-thickness: 2px; }
+#tokstatstoggle.inactive { color: var(--warn); border-color: var(--warn);
+                           background: color-mix(in srgb, var(--warn) 15%, transparent); }
 /* Also a <button> (see .chip): stripped back to the bare bar + count. */
 #tokenwrap { display: flex; align-items: center; gap: 6px; margin-left: auto;
              background: none; border: none; padding: 0; font: inherit; }

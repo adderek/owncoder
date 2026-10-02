@@ -974,7 +974,9 @@ function renderTokStatsBtn() {
   if (!b) return;
   b.style.display = tokStats.available ? '' : 'none';
   b.classList.toggle('on', !!tokStats.enabled);
-  b.style.opacity = tokStats.enabled ? '1' : '0.45';
+  b.classList.toggle('off', !tokStats.enabled);
+  b.classList.toggle('inactive', !!(tokStats.enabled && tokStats.inactive_reason));
+  b.setAttribute('aria-pressed', tokStats.enabled ? 'true' : 'false');
   b.title = 'Token confidence overlay: ' + (tokStats.enabled ? 'ON' : 'off') +
     (tokStats.inactive_reason ? ' — but inactive: ' + tokStats.inactive_reason : '') +
     ' — click to toggle. When on, each model call gets a ◔ fold with perplexity, ' +
