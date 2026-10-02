@@ -48,6 +48,31 @@ def setup(config, data_provider) -> None:
         },
     },
 )
+def _mark_stale(results: list[dict]) -> list[str]:
+    """Flag hits whose file changed (or vanished) since indexing; one stat per file."""
+    import os
+    root = getattr(getattr(_config, "tools", None), "working_dir", None) or "."
+    getter = getattr(_data_provider, "indexed_mtime", None)
+    if getter is None:
+        return []
+    seen: dict[str, str] = {}
+    for r in results:
+        path = r.get("path") or ""
+        if not path or r.get("language") == "asm":
+            continue
+        if path not in seen:
+            indexed = getter(path)
+            full = path if os.path.isabs(path) else os.path.join(root, path)
+            try:
+                disk = os.stat(full).st_mtime
+                seen[path] = "changed" if indexed is not None and abs(disk - indexed) > 1.0 else ""
+            except OSError:
+                seen[path] = "deleted"
+        if seen[path]:
+            r["stale"] = seen[path] + " since indexed"
+    return [p for p, v in seen.items() if v]
+
+
 def search_code(query: str, top_k: int | None = None) -> dict:
     if _data_provider is None or not _data_provider.is_available():
         from agent.tools.search.grep import grep_code as _grep_code
@@ -99,7 +124,13 @@ def search_code(query: str, top_k: int | None = None) -> dict:
     if not rules.ignore.empty:
         cleaned = [r for r in cleaned if not rules.ignore.matches(r.get("path", ""))]
 
+    stale = _mark_stale(cleaned)
     result = {"results": cleaned, "count": len(cleaned), "query": query}
+    if stale:
+        result["stale_note"] = (
+            f"{len(stale)} result file(s) changed on disk since they were indexed "
+            f"({', '.join(stale[:5])}{' …' if len(stale) > 5 else ''}) — read the file for current "
+            "content; index_status shows overall freshness.")
     # Tell the model when it is getting keyword results from a semantic tool —
     # otherwise it reads a thin result set as "nothing matches" and stops.
     mismatch = getattr(_data_provider, "embedding_mismatch", lambda: "")()

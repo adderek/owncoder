@@ -122,3 +122,47 @@ def index_code(path: str, languages: str | None = None) -> dict[str, Any]:
             else "Indexing complete. Semantic search will be available on next session start."
         ),
     }
+
+
+@register(
+    "index_status",
+    {
+        "description": (
+            "Is the code index fresh and consistent? Reports files/chunks, embedding model and "
+            "coverage, when it was last indexed, files changed since then, and any consistency "
+            "defects. Use this instead of querying .agent/*.db with sqlite — the raw tables "
+            "include internal bookkeeping that looks contradictory out of context."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "check_files": {
+                    "type": "boolean",
+                    "description": "Also stat every project file to list ones changed since indexing (default true).",
+                },
+            },
+        },
+    },
+)
+def index_status(check_files: bool = True) -> dict:
+    if _config is None:
+        return {"error": "index_status not configured"}
+    import dataclasses
+    from agent.memory.overview import rag_db_path
+    from agent.rag import health
+    from agent.rag.store import VectorStore
+    db = rag_db_path(_config)
+    if not db.exists():
+        return {"status": "no code index yet — index_code '.' builds it"}
+    store = VectorStore(dataclasses.replace(_config.rag, db_path=str(db)))
+    try:
+        model = getattr(getattr(_config, "embeddings", None), "model", "") or ""
+        h = health.check(store, _config.tools.working_dir, embed_model=model,
+                         files=bool(check_files), cfg=_config.rag)
+        return {"status": health.summary(h), "defects": len(h["defects"]),
+                "changed_files": h.get("pending")}
+    except Exception as exc:
+        logger.warning("index_status failed", exc_info=True)
+        return {"error": f"index_status failed: {exc}"}
+    finally:
+        store.close()

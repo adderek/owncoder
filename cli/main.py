@@ -153,6 +153,8 @@ def build_parser() -> argparse.ArgumentParser:
     idx_p.add_argument("--stats", action="store_true", help="Show index statistics")
     idx_p.add_argument("--list-pending", action="store_true", help="With --stats, list files not yet indexed")
     idx_p.add_argument("--prune", action="store_true", help="Archive chunks for files that are missing or now match .agent.ignore")
+    idx_p.add_argument("--check", action="store_true", help="Consistency + freshness report (stale records, FTS drift, embedding coverage, root/model mismatch)")
+    idx_p.add_argument("--fix", action="store_true", help="With --check: repair what needs no embedder (stale/duplicate records, FTS, orphan vectors)")
     idx_p.add_argument("--restore", type=str, metavar="PATH", help="Restore a previously archived path back into the live index")
     idx_p.add_argument("--purge-archive", action="store_true", help="Permanently delete archive rows older than archive_ttl_days")
     idx_p.add_argument("--archive-ttl", type=int, metavar="DAYS", help="Override archive_ttl_days for this run (0 = disable expiration)")
@@ -453,6 +455,9 @@ def main() -> None:
                 cmd_index_stats(args, config)
             elif args.prune:
                 cmd_index_prune(args, config)
+            elif getattr(args, "check", False):
+                from agent.cli.index import cmd_index_check
+                sys.exit(cmd_index_check(args, config))
             elif args.restore:
                 cmd_index_restore(args, config)
             elif getattr(args, "purge_archive", False):

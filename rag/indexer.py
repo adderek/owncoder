@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from pathlib import Path
 
 from agent.security import path_policy
@@ -70,7 +71,9 @@ def prune_index(
     from agent.tools.rules import get_rules
     rules = get_rules()
 
-    indexed = store.list_paths()
+    # Chunkless rows in file_mtimes too: walking chunks alone left deleted,
+    # ignored and mis-rooted empty files behind forever.
+    indexed = store.list_paths() + store.list_mtime_only_paths()
     stale: list[str] = []
     for stored in indexed:
         fpath = Path(stored)
@@ -325,7 +328,7 @@ def index_directory(
                 try:
                     file_cs = _fast_file_checksum(abs_path)
                     if file_cs and file_cs in described_file_checksums:
-                        store.set_file_mtime(rel, mtime)
+                        store.touch_mtime(rel, mtime)
                         skipped += 1
                         continue
                 except OSError:
@@ -402,7 +405,7 @@ def index_directory(
                         try:
                             file_cs = _fast_file_checksum(abs_path)
                             if file_cs and file_cs in described_file_checksums:
-                                store.set_file_mtime(rel, mtime)
+                                store.touch_mtime(rel, mtime)
                                 skipped += 1
                                 work.append((rel, abs_path, mtime, None))
                                 continue
@@ -459,6 +462,11 @@ def index_directory(
             embed_failed,
         )
 
+    # Which root the stored relative paths are relative to — without it a
+    # re-rooted index (agent/ vs repo root) cannot tell its stale rows apart.
+    store.set_meta("index_root", str(root_path))
+    store.set_meta("last_index_at", str(time.time()))
+
     return {
         "indexed": indexed,
         "skipped": skipped,
@@ -467,6 +475,34 @@ def index_directory(
         "dedup_same": dedup_same,
         "dedup_cross": dedup_cross,
     }
+
+
+def embed_missing(store, embedder, limit: int = 0) -> dict:
+    """Embed chunks that have no vector, from their stored text.
+
+    A file indexed while the embedder was down keeps its chunks (keyword
+    search works) and its mtime, so nothing ever retried it — those chunks
+    stayed invisible to semantic search for good. Stops at the first failed
+    batch: a dead endpoint is not hammered, the next pass resumes.
+    Callers check the index's embedding model matches *embedder* first.
+    """
+    rows = store.missing_vector_texts(limit)
+    out = {"missing": len(rows), "embedded": 0, "failed": 0}
+    for i in range(0, len(rows), _BATCH_SIZE):
+        batch = rows[i:i + _BATCH_SIZE]
+        try:
+            vectors = embedder.embed([text for _, text in batch])
+        except Exception as e:
+            log.warning("embed-missing: batch failed (%s) — %d chunks left for the next pass",
+                        type(e).__name__, len(rows) - out["embedded"])
+            out["failed"] = len(rows) - out["embedded"]
+            break
+        if not vectors or len(vectors) != len(batch):
+            out["failed"] = len(rows) - out["embedded"]
+            break
+        store.write_embeddings([(cid, v) for (cid, _), v in zip(batch, vectors)])
+        out["embedded"] += len(vectors)
+    return out
 
 
 def reembed_all(store, embedder, cfg, progress_cb=None) -> dict:

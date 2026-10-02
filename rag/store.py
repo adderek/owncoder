@@ -361,6 +361,72 @@ class VectorStore:
         ).fetchone()
         return row["mtime"] if row else None
 
+    def touch_mtime(self, path: str, mtime: float) -> None:
+        """Record that *path* is current at *mtime* without re-chunking it.
+
+        Chunks are authoritative for a path that has them: updating only
+        file_mtimes left the old chunk mtime in place, `get_mtime` kept
+        returning it, and the file looked changed on every pass.
+        """
+        conn = self._conn()
+        cur = conn.execute("UPDATE chunks SET mtime = ? WHERE path = ?", (mtime, path))
+        if cur.rowcount:
+            conn.execute("DELETE FROM file_mtimes WHERE path = ?", (path,))
+            conn.commit()
+            return
+        self.set_file_mtime(path, mtime)
+
+    def list_mtime_only_paths(self) -> list[str]:
+        """Visited-but-chunkless paths (empty files etc.) — prune must see these too."""
+        rows = self._conn().execute(
+            "SELECT path FROM file_mtimes WHERE path NOT IN (SELECT DISTINCT path FROM chunks) "
+            "ORDER BY path"
+        ).fetchall()
+        return [r["path"] for r in rows]
+
+    def dedupe_file_mtimes(self) -> int:
+        """Drop file_mtimes rows shadowed by chunks for the same path."""
+        conn = self._conn()
+        cur = conn.execute("DELETE FROM file_mtimes WHERE path IN (SELECT DISTINCT path FROM chunks)")
+        conn.commit()
+        return cur.rowcount or 0
+
+    def vector_coverage(self) -> dict:
+        """Chunks with/without an embedding, and embeddings whose chunk is gone."""
+        conn = self._conn()
+        chunks = conn.execute("SELECT count(*) FROM chunks").fetchone()[0]
+        has_vec = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = 'vec_chunks'").fetchone() is not None
+        if not has_vec:
+            return {"chunks": chunks, "embedded": 0, "missing": chunks, "orphans": 0}
+        try:
+            import sqlite_vec  # noqa: F401  (loaded by _conn when available)
+            embedded = conn.execute(
+                "SELECT count(*) FROM chunks WHERE id IN (SELECT chunk_id FROM vec_chunks)").fetchone()[0]
+            orphans = conn.execute(
+                "SELECT count(*) FROM vec_chunks WHERE chunk_id NOT IN (SELECT id FROM chunks)").fetchone()[0]
+        except Exception:
+            return {"chunks": chunks, "embedded": None, "missing": None, "orphans": None}
+        return {"chunks": chunks, "embedded": embedded, "missing": chunks - embedded, "orphans": orphans}
+
+    def missing_vector_texts(self, limit: int = 0) -> list[tuple[str, str]]:
+        """(chunk_id, content) for chunks with no embedding; [] when there is no
+        vector table yet (that is a full `--reembed`, not a gap fill)."""
+        conn = self._conn()
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'vec_chunks'").fetchone() is None:
+            return []
+        sql = ("SELECT id, content FROM chunks WHERE id NOT IN (SELECT chunk_id FROM vec_chunks) "
+               "ORDER BY rowid")
+        if limit:
+            sql += f" LIMIT {int(limit)}"
+        return [(r["id"], r["content"]) for r in conn.execute(sql).fetchall()]
+
+    def delete_orphan_vectors(self) -> int:
+        conn = self._conn()
+        cur = conn.execute("DELETE FROM vec_chunks WHERE chunk_id NOT IN (SELECT id FROM chunks)")
+        conn.commit()
+        return cur.rowcount or 0
+
     def set_file_mtime(self, path: str, mtime: float) -> None:
         conn = self._conn()
         conn.execute(

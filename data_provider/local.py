@@ -61,6 +61,15 @@ class LocalDataProvider:
     def is_available(self) -> bool:
         return self._store is not None
 
+    def indexed_mtime(self, path: str) -> float | None:
+        """mtime the index holds for *path* (None when unknown or no store)."""
+        if self._store is None:
+            return None
+        try:
+            return self._store.get_mtime(path)
+        except Exception:
+            return None
+
     def search(self, query: str, top_k: int = 8) -> list[dict[str, Any]]:
         """Embed query and search; falls back to FTS if no embedder."""
         if self._store is None:

@@ -314,6 +314,10 @@ def _watch_and_reindex(config, console, languages=None, exclude=None):
     def _report(result: dict) -> None:
         if result.get("skipped"):
             console.print(f"[yellow]Index pass skipped: {result['skipped']}[/yellow]")
+        elif result.get("keyword_only"):
+            console.print(f"[yellow]Keyword-only pass ({result['keyword_only']}): "
+                          f"{result.get('indexed', 0)} file(s) updated without vectors — "
+                          "filled once a matching embedder is reachable[/yellow]")
         elif result.get("indexed") or result.get("pruned") or result.get("fts_repaired"):
             console.print(
                 f"[green]Re-indexed {result.get('indexed', 0)} file(s)[/green]"
@@ -370,6 +374,12 @@ def cmd_index_update(args, config):
     if embedder.call_count > 0:
         emb_summary = f"  [dim]emb: {embedder.call_count} vecs @ {embedder.rate:.1f}/s ({embedder.endpoint})[/dim]"
     console.print(f"Updated: {stats['indexed']} files re-indexed, {stats['skipped']} unchanged.{emb_summary}")
+    if not store.embedding_mismatch(config.embeddings.model, config.embeddings.dimensions):
+        from agent.rag.indexer import embed_missing
+        gap = embed_missing(store, embedder)
+        if gap["missing"]:
+            console.print(f"Embedded {gap['embedded']} of {gap['missing']} chunks that had no vector"
+                          + (f" ({gap['failed']} left — embedder failed)" if gap["failed"] else ""))
 
     # Resume any pending summarization left over from an interrupted run.
     if config.summarization.enabled:
@@ -466,8 +476,9 @@ def cmd_index_prune(args, config):
     archive = _open_archive(config)
 
     pruned = prune_index(config.tools.working_dir, store, archive, reason="prune")
-    if pruned["archived"]:
-        console.print(f"Archived {pruned['archived']} chunks from {len(pruned['paths'])} file(s):")
+    if pruned["paths"]:
+        console.print(f"Archived {pruned['archived']} chunks; removed {len(pruned['paths'])} "
+                      f"stale path(s):")
         for p in pruned["paths"]:
             console.print(f"  [dim]- {p}[/dim]")
     else:
@@ -702,3 +713,31 @@ def cmd_index_stats(args, config):
         if daemon_pid is not None:
             _daemon_pid_file(config).unlink(missing_ok=True)
         console.print("[bold]Daemon:[/bold] not running  (start with [bold]agent index --daemon[/bold])")
+
+
+def cmd_index_check(args, config) -> int:
+    """`agent index --check [--fix]` — exit 0 clean, 1 defects remain."""
+    from agent.rag import health
+    from agent.rag.store import VectorStore
+    from agent.tools.rules import load_rules
+
+    load_rules(config.tools.working_dir)
+    store = VectorStore(config.rag)
+    try:
+        model = getattr(config.embeddings, "model", "") or ""
+        h = health.check(store, config.tools.working_dir, embed_model=model, files=True, cfg=config.rag)
+        print(health.summary(h))
+        if getattr(args, "fix", False) and h["defects"]:
+            archive = _open_archive(config)
+            try:
+                done = health.fix(store, config.tools.working_dir, archive)
+            finally:
+                archive.close()
+            parts = ", ".join(f"{k}={v}" for k, v in done.items() if v)
+            print("fixed: " + (parts or "nothing"))
+            h = health.check(store, config.tools.working_dir, embed_model=model, cfg=config.rag)
+            for d in h["defects"]:
+                print(f"still: {d}")
+        return 1 if h["defects"] else 0
+    finally:
+        store.close()

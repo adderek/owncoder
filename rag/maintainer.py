@@ -197,6 +197,21 @@ def safe_embeddings_config(config: "Config", probe=None) -> tuple["EmbeddingsCon
     return None, "; ".join(reasons) or "no embeddings endpoint configured"
 
 
+class _NoEmbedder:
+    """Embedder stand-in for keyword-only passes: every batch fails, so the
+    indexer stores chunks (FTS current) without vectors."""
+    _cfg = None
+    call_count = 0
+    rate = 0.0
+    endpoint = "none"
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+
+    def embed(self, texts):
+        raise RuntimeError(f"keyword-only pass ({self.reason})")
+
+
 def _make_worker(config: "Config", code_store, entry):
     from openai import OpenAI
     from agent.rag.bg_worker import BgWorker
@@ -365,7 +380,7 @@ class IndexMaintainer:
                 self.last_skip = "another process is indexing"
                 return None
             result = self._index_pass()
-        self.last_skip = result.get("skipped", "")
+        self.last_skip = result.get("skipped", "") or result.get("keyword_only", "")
         self.last_result = result
         if self._on_pass is not None:
             try:
@@ -398,27 +413,40 @@ class IndexMaintainer:
             if pending["pending"]:
                 emb_cfg, why = safe_embeddings_config(cfg)
                 mismatch = store.embedding_mismatch(emb_cfg.model, emb_cfg.dimensions) if emb_cfg else ""
-                if emb_cfg is None:
-                    out["skipped"] = f"embeddings: {why}"
-                elif mismatch:
-                    out["skipped"] = f"embeddings: {emb_cfg.model} does not match the index ({mismatch})"
-                else:
-                    code_store = None
-                    if cfg.summarization.enabled:
-                        from agent.rag.code_store import CodeStore
-                        code_store = CodeStore(cfg.summarization.db_path)
-                    stats = index_directory(
-                        root=root, store=store, embedder=Embedder(emb_cfg), cfg=cfg.rag,
-                        languages=self._languages, exclude=self._exclude,
-                        force=False, code_store=code_store,
-                    )
-                    out["indexed"] = stats.get("indexed", 0)
-                    out["chunks"] = stats.get("chunks", 0)
+                embedder = Embedder(emb_cfg) if emb_cfg is not None and not mismatch else None
+                if embedder is None:
+                    # Keyword-only: chunk text and FTS stay current, vectors are
+                    # left missing (never written by a different model) and
+                    # embed_missing fills them once a matching embedder is back.
+                    out["keyword_only"] = (f"embeddings: {why}" if emb_cfg is None else
+                                           f"embeddings: {emb_cfg.model} does not match the index ({mismatch})")
+                    embedder = _NoEmbedder(out["keyword_only"])
+                code_store = None
+                if cfg.summarization.enabled and not isinstance(embedder, _NoEmbedder):
+                    from agent.rag.code_store import CodeStore
+                    code_store = CodeStore(cfg.summarization.db_path)
+                stats = index_directory(
+                    root=root, store=store, embedder=embedder, cfg=cfg.rag,
+                    languages=self._languages, exclude=self._exclude,
+                    force=False, code_store=code_store,
+                )
+                out["indexed"] = stats.get("indexed", 0)
+                out["chunks"] = stats.get("chunks", 0)
+
+            # Fill vectors missing since an embedder outage — bounded per pass,
+            # same safe-endpoint rule as indexing (never local CPU embed).
+            if store.vector_coverage().get("missing"):
+                emb_cfg, why = safe_embeddings_config(cfg)
+                if emb_cfg is not None and not store.embedding_mismatch(emb_cfg.model, emb_cfg.dimensions):
+                    from agent.rag.indexer import embed_missing
+                    out["embedded_missing"] = embed_missing(store, Embedder(emb_cfg), limit=512)["embedded"]
 
             archive = ArchiveStore(cfg.rag.archive_db_path)
             try:
                 out["pruned"] = len(prune_index(root, store, archive)["paths"])
                 archive.purge_expired(cfg.rag.archive_ttl_days)
+                out["duplicates"] = store.dedupe_file_mtimes()
+                store.set_meta("last_pass_at", str(time.time()))
             finally:
                 archive.close()
 
