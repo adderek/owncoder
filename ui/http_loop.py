@@ -647,6 +647,7 @@ _PAGE = r"""<!DOCTYPE html>
   <button class="icon" id="lefttoggle" title="Sessions panel — Ctrl+B toggles, Alt+↑/↓ switches session" aria-label="Toggle sessions panel">☰</button>
   <b>owncoder</b>
   <button type="button" class="chip btn" id="model" title="Click to manage models"></button>
+  <button type="button" class="chip btn" id="simplechip" title="Model choice: where · model · effort — click to change" aria-haspopup="menu" aria-expanded="false" style="display:none"></button>
   <button type="button" class="chip btn" id="session" title="Current session — click for the sessions panel"></button>
   <button type="button" class="chip btn" id="workdir" title="Project directory (session-scoped) — click to manage access"></button>
   <button type="button" class="chip btn" id="privchip" title="Session privacy mode — click for off-the-record options" aria-haspopup="menu" aria-expanded="false">▪ standard ▾</button>
@@ -1366,6 +1367,7 @@ class _HttpUI:
             "models": models,
             "fold_journal": self._fold_journal(),
             "token_stats": self.token_stats_info(),
+            "simple": self.simple_info(),
             "io": {"in": stats.get("input_tokens", 0),
                    "out": stats.get("output_tokens", 0),
                    "calls": stats.get("calls", 0),
@@ -1431,6 +1433,21 @@ class _HttpUI:
         if rollup:
             payload["rollup"] = rollup
         return payload
+
+    def simple_info(self) -> dict | None:
+        """Simple where · model · effort view (core/simple_select.py); None when
+        the agent is not local (a router-proxied backend owns its config)."""
+        cfg = _agent_config(self.server)
+        if cfg is None:
+            return None
+        try:
+            from agent.core import simple_select
+            st = simple_select.state(cfg)
+            st["label"] = simple_select.label(st)
+            return st
+        except Exception:
+            logger.debug("http ui: simple state failed", exc_info=True)
+            return None
 
     def token_stats_info(self) -> dict:
         """Whether per-token logprob capture is on, and why it may not apply."""
@@ -1556,6 +1573,18 @@ class _HttpUI:
                 ok, msg = self._call_on_loop(
                     setter, str(payload.get("entry") or ""),
                     bool(payload.get("enabled")))
+            elif action == "simple":
+                cfg = _agent_config(self.server)
+                if cfg is None:
+                    return {"ok": False, "msg": "simple selection needs a local agent"}
+                from agent.core import simple_select
+                arg = " ".join(f"{k}={payload[k]}" for k in ("where", "model", "effort")
+                               if payload.get(k))
+                msg = simple_select.run_use_command(cfg, arg)
+                ok = not msg.startswith("unknown")
+                info = self.simple_info()
+                if info is not None:
+                    self.bus.publish({"type": "simple", **info})
             elif action == "mode":
                 setter = getattr(self.server, "set_model_mode", None)
                 if setter is None:
@@ -3495,6 +3524,16 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
         else:
             from agent.core.model_tier import run_effort_command
             pub({"type": "sys", "text": run_effort_command(cfg, arg)})
+    elif cmd == "/use":
+        cfg = _agent_config(server)
+        if cfg is None:
+            pub({"type": "sys", "error": True, "text": _NEEDS_LOCAL})
+        else:
+            from agent.core import simple_select
+            text = await asyncio.to_thread(simple_select.run_use_command, cfg, arg)
+            pub({"type": "sys", "text": text})
+            st = simple_select.state(cfg)
+            pub({"type": "simple", "label": simple_select.label(st), **st})
     elif cmd == "/plan":
         _apply(server.set_plan)
     elif cmd == "/plans":

@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 # Keep in sync with the consumers noted on each line.
 _ALLOWED: list[tuple[str, set[str]]] = [
     ("agent.mode", {"fast", "ultrasecure"}),                       # core/agent.py
-    ("agent.model_mode", {"local-only", "lan-only", "free-cloud", "free-hybrid",
-                          "paid-cloud", "manual", "any"}),         # config/registry.py
+    ("agent.model_mode", {"local-only", "lan-only", "private", "cloud", "free-cloud",
+                          "free-hybrid", "paid-cloud", "manual", "any"}),         # config/registry.py
     ("agent.startup_profile", {"ask", "auto", "off"}),             # config/profile_detect.py
     ("rag.embed_server_device", {"cpu", "gpu"}),                   # rag/embed_server.py
     ("rag.embed_server_autostart", {"ask", "cpu", "gpu", "off"}),  # config/profile_detect.py
@@ -48,7 +48,7 @@ _ALLOWED: list[tuple[str, set[str]]] = [
     ("web_search.execution_mode", {"sandboxed", "direct"}),
     ("notify.on_timeout", {"continue", "wait"}),                   # notify/broker.py
     ("parallel.worker_tools", {"readonly", "all", "internet"}),    # tools/parallel/main.py
-    ("auto_tier.effort", {"quick", "smart", "deep"}),
+    ("auto_tier.effort", {"quick", "smart", "balanced", "deep"}),
     ("privacy.strategy", {"redact", "force-local", "block"}),
     ("speech.backend", {"faster-whisper", "realtime-stt"}),
     ("logs.level", {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}),

@@ -295,7 +295,30 @@ def escalate_mid_turn(config: "Config", reason: str = "confidence"):
     return make_llm_client(config, base_url=e.base_url, api_key=e.api_key)
 
 
-_EFFORT_LEVELS = ("quick", "smart", "deep")
+_EFFORT_LEVELS = ("quick", "smart", "balanced", "deep")
+
+
+def set_effort(config: "Config", level: str) -> list[str]:
+    """Set the ladder effort (no probing); returns notes on what else changed."""
+    cfg = config.auto_tier
+    lines: list[str] = []
+    cfg.effort = level
+    if getattr(config, "runtime_model_pinned", False):
+        # Asking for an effort level is asking auto-tier to choose again.
+        config.runtime_model_pinned = False
+        # ...and the session pin has to go with it, or config.reload keeps
+        # treating the released choice as live and refuses to let a changed
+        # `default` in the config file through.
+        pins = getattr(config, "session_role_pins", None)
+        if pins is not None:
+            pins.discard("default")
+        lines.append("model pin released — auto-tier picks per turn again.")
+    if not (cfg.enabled and getattr(cfg, "ladder", False)):
+        cfg.enabled = True
+        cfg.ladder = True
+        lines.append("auto-tier ladder enabled (runtime only — set "
+                     "auto_tier.enabled/ladder in config to persist).")
+    return lines
 
 
 def run_effort_command(config: "Config", arg: str = "") -> str:
@@ -316,24 +339,10 @@ def run_effort_command(config: "Config", arg: str = "") -> str:
     if arg:
         if arg not in _EFFORT_LEVELS:
             return f"unknown effort {arg!r}. valid: {', '.join(_EFFORT_LEVELS)}"
-        cfg.effort = arg
-        if getattr(config, "runtime_model_pinned", False):
-            # Asking for an effort level is asking auto-tier to choose again.
-            config.runtime_model_pinned = False
-            # ...and the session pin has to go with it, or config.reload keeps
-            # treating the released choice as live and refuses to let a changed
-            # `default` in the config file through.
-            pins = getattr(config, "session_role_pins", None)
-            if pins is not None:
-                pins.discard("default")
-            lines.append("model pin released — auto-tier picks per turn again.")
-        if not (cfg.enabled and getattr(cfg, "ladder", False)):
-            cfg.enabled = True
-            cfg.ladder = True
-            lines.append("auto-tier ladder enabled (runtime only — set "
-                         "auto_tier.enabled/ladder in config to persist).")
+        lines = set_effort(config, arg)
     lines.append(f"effort: {getattr(cfg, 'effort', 'smart')}  "
-                 f"(quick=weakest live model, smart=predict per turn, deep=strongest)")
+                 f"(quick=weakest live model, smart=predict per turn, "
+                 f"balanced=middle, deep=strongest)")
     ladder = build_ladder(config, check_available=False)
     if not ladder:
         lines.append("no chat model entries configured.")

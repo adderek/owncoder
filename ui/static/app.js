@@ -1161,7 +1161,7 @@ function handle(ev) {
   if (['tokens', 'stats'].indexOf(ev.type) < 0) lastEventAt = Date.now();
   // History preview is read-only: drop render events while it's open (header
   // chips still update); count them so the banner shows activity happened.
-  if (previewing && ['tokens','stats','state','switched','mode','token_stats','connect_request','connect_done',
+  if (previewing && ['tokens','stats','state','switched','mode','token_stats','simple','connect_request','connect_done',
                      'loopguard','loopguard_done','permission','permission_done',
                      'grants_changed'].indexOf(ev.type) < 0) {
     missedLive++;
@@ -1195,6 +1195,8 @@ function handle(ev) {
     if (el) { (el.closest('.row') || el).remove(); delete connectEls[ev.id]; }
   } else if (ev.type === 'token_stats') {
     tokStats = ev; renderTokStatsBtn();
+  } else if (ev.type === 'simple') {
+    simpleState = ev; renderSimpleChip();
   } else if (ev.type === 'tokstats') {
     stamp(metaMount(tokstatsFold(ev, null)));
     noteWatch(ev.watch);
@@ -2860,6 +2862,89 @@ document.addEventListener('keydown', (ev) => {
 }, true);
 setSessionMode('standard', false);
 
+// Simple model choice (core/simple_select.py): where · model · effort, the
+// codex/Claude Code-style three knobs. Writes /mode, /effort and /think
+// underneath; "advanced…" opens the full models panel.
+let simpleState = null;
+const SIMPLE_HINT = {
+  where: {auto: 'startup profile', local: 'this machine + LAN only', cloud: 'cloud endpoints only'},
+  model: {auto: 'pick per turn from the prompt', fast: 'weakest live model',
+          balanced: 'middle of the ladder', strong: 'strongest live model'},
+  effort: {off: 'no thinking', low: 'brief thinking', medium: 'default thinking',
+           high: 'more thinking', xhigh: 'maximum thinking'},
+};
+function renderSimpleChip() {
+  const b = document.getElementById('simplechip');
+  if (!b) return;
+  if (!simpleState) { b.style.display = 'none'; return; }
+  b.style.display = '';
+  b.textContent = (simpleState.label || '') + ' ▾';
+  const raw = simpleState.raw || {};
+  b.title = 'where · model · effort — click to change\n' +
+    'mode=' + raw.mode + '  auto_tier=' + raw.auto_tier + '  think=' + raw.think +
+    '  active=' + raw.active_model + (raw.pinned ? ' (pinned)' : '');
+}
+function closeSimpleMenu() {
+  const m = document.getElementById('simplemenu');
+  if (m) m.remove();
+  document.getElementById('simplechip').setAttribute('aria-expanded', 'false');
+}
+async function simpleSet(key, val) {
+  await modelAction({action: 'simple', [key]: val});
+}
+function toggleSimpleMenu() {
+  const chip = document.getElementById('simplechip');
+  if (document.getElementById('simplemenu')) { closeSimpleMenu(); return; }
+  if (!simpleState) return;
+  const menu = document.createElement('div');
+  menu.className = 'sess-menu simple-menu';
+  menu.id = 'simplemenu';
+  menu.setAttribute('role', 'menu');
+  let h = '';
+  for (const key of ['where', 'model', 'effort']) {
+    h += '<div class="sm-row"><span class="sm-key">' + key + '</span>';
+    for (const v of (simpleState.choices || {})[key] || []) {
+      h += '<button role="menuitemradio" data-k="' + key + '" data-v="' + esc(v) + '"' +
+        ' aria-checked="' + (simpleState[key] === v) + '"' +
+        ' class="sm-opt' + (simpleState[key] === v ? ' on' : '') + '"' +
+        ' title="' + esc((SIMPLE_HINT[key] || {})[v] || '') + '">' + esc(v) + '</button>';
+    }
+    if (simpleState[key] === 'custom' || simpleState[key] === 'default')
+      h += '<span class="sm-custom">(' + esc(simpleState[key]) + ')</span>';
+    h += '</div>';
+  }
+  h += '<button role="menuitem" class="sm-adv" data-adv="1">advanced… (roles, pins, modes)</button>';
+  menu.innerHTML = h;
+  document.getElementById('header').appendChild(menu);
+  const r = chip.getBoundingClientRect();
+  const hr = document.getElementById('header').getBoundingClientRect();
+  menu.style.left = Math.max(4, Math.min(r.left - hr.left, window.innerWidth - 340)) + 'px';
+  menu.style.top = (r.bottom - hr.top + 4) + 'px';
+  chip.setAttribute('aria-expanded', 'true');
+  menu.querySelectorAll('button').forEach(b => b.addEventListener('click', async (ev) => {
+    ev.stopPropagation();
+    if (b.dataset.adv) { closeSimpleMenu(); openDetails(loadModels, 'modelsfold'); return; }
+    closeSimpleMenu();
+    await simpleSet(b.dataset.k, b.dataset.v);
+  }));
+  const first = menu.querySelector('button.on') || menu.querySelector('button');
+  if (first) first.focus();
+}
+document.getElementById('simplechip').addEventListener('click', (ev) => {
+  ev.stopPropagation();
+  toggleSimpleMenu();
+});
+document.addEventListener('click', (ev) => {
+  if (document.getElementById('simplemenu') && !ev.target.closest('#simplemenu, #simplechip'))
+    closeSimpleMenu();
+});
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && document.getElementById('simplemenu')) {
+    closeSimpleMenu();
+    ev.stopPropagation();
+  }
+}, true);
+
 // Sessions list (left drawer) — loads lazily when the fold is opened.
 // Per-item actions: resume/switch, rename (inline), auto-name (LLM), hide.
 let showHidden = false;
@@ -3337,6 +3422,7 @@ function replayTranscriptInner(messages) {
 
 function applyState(s) {
   document.getElementById('model').textContent = s.model;
+  if ('simple' in s) { simpleState = s.simple; renderSimpleChip(); }
   visionOn = !!s.vision;
   if (s.models && s.models.llm) {
     // Hover the model chip for the full role table (llm/emb/sum + availability).

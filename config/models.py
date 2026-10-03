@@ -1294,8 +1294,8 @@ class AutoTierConfig:
     # only live endpoints, and pick per-turn by predicted effort. Mid-turn
     # escalation climbs to the next-stronger live entry (no-op at the top).
     ladder: bool = False
-    effort: str = "smart"           # quick | smart | deep — "smart" predicts per turn;
-                                    # quick/deep pin the ladder bottom/top. /effort sets this at runtime.
+    effort: str = "smart"           # quick | smart | balanced | deep — "smart" predicts per turn;
+                                    # quick/balanced/deep pin the ladder bottom/middle/top. /effort sets this at runtime.
     min_prompt_chars: int = 600     # prompt at/above this length escalates
     escalate_on_code: bool = True   # a fenced code block in the prompt escalates
     escalate_on_confidence: bool = True  # mid-turn escalate when the confidence guard fires

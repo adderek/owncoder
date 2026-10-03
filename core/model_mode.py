@@ -14,8 +14,8 @@ from agent.config import make_registry, entry_tier, MODE_TIERS
 if TYPE_CHECKING:
     from agent.config import Config
 
-_ORDER = ["local-only", "lan-only", "free-cloud", "free-hybrid", "paid-cloud",
-          "manual", "any"]
+_ORDER = ["private", "local-only", "lan-only", "cloud", "free-cloud", "free-hybrid",
+          "paid-cloud", "manual", "any"]
 
 
 # Probes per role on a mode switch. A slash command must not freeze the UI for
@@ -98,6 +98,10 @@ def run_mode_command(config: "Config", arg: str) -> str:
     reg = make_registry(config)
     if cur == "lan-only":
         head = "model-mode: lan-only  (LAN endpoints only; embeddings exempt)"
+    elif cur == "private":
+        head = "model-mode: private  (this machine + own LAN; nothing leaves the network)"
+    elif cur == "cloud":
+        head = "model-mode: cloud  (third-party endpoints only, free or paid)"
     else:
         head = f"model-mode: {cur}  (tiers: {', '.join(sorted(MODE_TIERS.get(cur, set())))})"
     lines = [head]

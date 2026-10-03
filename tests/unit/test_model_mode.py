@@ -114,7 +114,7 @@ class TestModeCommand:
 
     def test_all_modes_defined(self):
         assert set(MODE_TIERS) == {
-            "local-only", "lan-only", "free-cloud", "free-hybrid", "paid-cloud",
+            "local-only", "lan-only", "private", "cloud", "free-cloud", "free-hybrid", "paid-cloud",
             "manual", "any"
         }
 

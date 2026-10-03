@@ -969,3 +969,13 @@ button:hover { filter: brightness(1.15); }
                    z-index: 30; }
   #jumpdown { bottom: calc(76px + env(safe-area-inset-bottom)); }
 }
+/* Simple model choice popover (core/simple_select.py): one row per knob. */
+.sess-menu.simple-menu { right: auto; min-width: 300px; padding: 6px; }
+.simple-menu .sm-row { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin: 2px 0 6px; }
+.simple-menu .sm-key { width: 48px; color: var(--dimmer); font-size: 11px; }
+.sess-menu.simple-menu button.sm-opt { width: auto; padding: 2px 8px; border: 1px solid var(--border);
+                                       border-radius: 10px; font-size: 11px; }
+.sess-menu.simple-menu button.sm-opt.on { border-color: var(--accent); color: var(--fg); font-weight: 600; }
+.simple-menu .sm-custom { color: var(--warn); font-size: 11px; }
+.sess-menu.simple-menu button.sm-adv { color: var(--dim); font-size: 11px; border-top: 1px solid var(--border);
+                                       margin-top: 2px; padding-top: 5px; }

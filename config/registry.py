@@ -14,9 +14,14 @@ if TYPE_CHECKING:
 # (private-IP LAN box), not on cost, so its cost-tier set is empty and
 # `mode_allows` special-cases it. The empty set is also what keeps cloud→cloud
 # peer failover (model_routing.failover_to_peer) off in this mode.
+# "private" and "cloud" are the location modes behind the simple selector
+# (core/simple_select.py): private = this machine + own LAN (nothing leaves the
+# network; empty set → no cloud peer failover), cloud = third-party endpoints.
 MODE_TIERS: dict[str, set[str]] = {
     "local-only": {"local"},
     "lan-only": set(),
+    "private": set(),
+    "cloud": {"free", "bundled", "paid"},
     "free-cloud": {"free"},
     "free-hybrid": {"local", "free"},
     "paid-cloud": {"paid", "bundled"},
@@ -88,6 +93,14 @@ def mode_allows(entry: "ModelEntry", mode: str) -> bool:
     """
     if mode == "lan-only":
         return is_lan_entry(entry)
+    if mode in ("private", "cloud"):
+        try:
+            from agent.config.loader import entry_tier as location_tier
+            loc = location_tier(entry)
+        except Exception:
+            return mode == "cloud"
+        private = loc != "cloud" or entry_tier(entry) == "local"   # local=True flag counts
+        return private if mode == "private" else not private
     return entry_tier(entry) in MODE_TIERS.get(mode, MODE_TIERS["any"])
 
 

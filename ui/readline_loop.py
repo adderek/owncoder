@@ -735,6 +735,10 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                 from agent.core.model_mode import run_mode_command
                 console.print(run_mode_command(agent.config, arg))
 
+            elif cmd == "/use":
+                from agent.core.simple_select import run_use_command
+                console.print(run_use_command(agent.config, arg), markup=False)
+
             elif cmd == "/effort":
                 from agent.core.model_tier import run_effort_command
                 console.print(run_effort_command(agent.config, arg))

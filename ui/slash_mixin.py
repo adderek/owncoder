@@ -576,6 +576,11 @@ class SlashHandlerMixin:
             for line in msg.splitlines():
                 self._write_sys(_escape(line))
 
+        elif cmd == "/use":
+            from agent.core.simple_select import run_use_command
+            for line in run_use_command(self._server._agent.config, arg).splitlines():
+                self._write_sys(_escape(line))
+
         elif cmd == "/effort":
             from agent.core.model_tier import run_effort_command
             msg = run_effort_command(self._server._agent.config, arg)
