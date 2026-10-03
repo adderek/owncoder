@@ -362,6 +362,29 @@ def _tokstats_record(sid: str, seq: int) -> dict | None:
     return None
 
 
+def _tokwatch_by_ref(sid: str) -> dict[int, list[dict]]:
+    """tokstats seq → compact token_watch events (core/token_watch.py), so a
+    replayed confidence fold can show its alert before its rows are fetched."""
+    if not sid or not _SID_RE.match(sid) or ".." in sid:
+        return {}
+    out: dict[int, list[dict]] = {}
+    try:
+        from agent.core.token_watch import SIDE_LOG_FILE
+        from agent.memory.session import get_session_full_dir
+        from agent.security import vault
+        path = get_session_full_dir(sid) / SIDE_LOG_FILE
+        if not path.exists():
+            return {}
+        for rec in vault.iter_jsonl(path):
+            ref = rec.get("tokstats_ref") if isinstance(rec, dict) else None
+            if isinstance(ref, int):
+                out[ref] = [{k: ev.get(k) for k in ("kind", "severity", "action", "detail")}
+                            for ev in rec.get("events") or [] if isinstance(ev, dict)]
+    except Exception:
+        logger.debug("http ui: tokwatch unreadable for %s", sid, exc_info=True)
+    return out
+
+
 def _unfold_round(m: dict, records: dict, result_limit: int) -> list[dict] | None:
     """Turn a collapsed assistant message back into call/result messages.
 
@@ -473,8 +496,12 @@ def _transcript(messages, result_limit: int = 2000, sid: str = "") -> list[dict]
     from agent.core import markers as _markers
     records = _side_log_records(sid)
     reasoning_records = _side_log_records(sid, "reasoning.jsonl")
+    watch = _tokwatch_by_ref(sid)
     out: list[dict] = []
     seen_tokstats: set[int] = set()
+
+    def _watch_for(refs: list[int]) -> dict:
+        return {str(r): watch[r] for r in refs if r in watch}
 
     def _tokstats_refs(m: dict) -> list[int]:
         from agent.core.history_ops import tokstats_refs
@@ -510,6 +537,8 @@ def _transcript(messages, result_limit: int = 2000, sid: str = "") -> list[dict]
                 refs = _tokstats_refs(m)
                 if unfolded and refs:
                     unfolded[0]["tokstats_refs"] = refs
+                    if _watch_for(refs):
+                        unfolded[0]["tokwatch"] = _watch_for(refs)
                 out.extend(unfolded)
                 continue
             calls = []
@@ -526,6 +555,8 @@ def _transcript(messages, result_limit: int = 2000, sid: str = "") -> list[dict]
             refs = _tokstats_refs(m)
             if refs:
                 entry["tokstats_refs"] = refs
+                if _watch_for(refs):
+                    entry["tokwatch"] = _watch_for(refs)
             if entry["content"] or calls:
                 _attach_reasoning(m, [entry], reasoning_records)
                 out.append(entry)
@@ -3439,6 +3470,14 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
             from agent.classify import run_classify_command
             pub({"type": "sys",
                  "text": await asyncio.to_thread(run_classify_command, cfg, arg)})
+    elif cmd == "/tokwatch":
+        cfg = _agent_config(server)
+        if cfg is None:
+            pub({"type": "sys", "error": True, "text": _NEEDS_LOCAL})
+        else:
+            from agent.core.token_watch_calib import run_tokwatch_command
+            pub({"type": "sys",
+                 "text": await asyncio.to_thread(run_tokwatch_command, cfg, arg)})
     elif cmd == "/hooks":
         cfg = _agent_config(server)
         if cfg is None:

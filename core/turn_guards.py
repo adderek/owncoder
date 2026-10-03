@@ -289,14 +289,15 @@ def flag_identical_repeats(tool_calls, results: list[str],
 
 
 @contextmanager
-def temperature_override(config, temperature: float | None):
-    """Sample one request at *temperature* if it is higher than the configured one.
+def temperature_override(config, temperature: float | None, allow_lower: bool = False):
+    """Sample one request at *temperature* if it is higher than the configured one
+    (or any different value with *allow_lower* — token_watch cools a derailed call).
 
     Restores the previous value afterwards unless something else (model routing,
     failover) replaced it meanwhile — that newer value wins.
     """
     old = config.llm.temperature
-    if temperature is None or temperature <= float(old or 0.0):
+    if temperature is None or (temperature <= float(old or 0.0) and not allow_lower):
         yield
         return
     config.llm.temperature = temperature

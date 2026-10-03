@@ -796,6 +796,19 @@ details.think.tokstats .toks { font-family: var(--mono); font-size: 12px; color:
 .tok.kt { outline: 1px dotted var(--border); }
 .tok.tail { text-decoration: underline wavy var(--warn); }
 .tok.partial { color: var(--dimmer); }
+/* token_watch (core/token_watch.py): scenario detected in a model call. */
+.tok.flag { outline: 1px solid var(--warn); outline-offset: -1px; }
+details.think.tokstats.watch > summary { color: var(--warn); font-weight: 600; }
+details.think.tokstats.watch.sev-alert > summary { color: var(--err); }
+details.think.tokstats .watchlist { margin: 0 0 6px; font-family: var(--mono); font-size: 11px; }
+details.think.tokstats .watchlist .wev { color: var(--warn); white-space: pre-wrap; }
+details.think.tokstats .watchlist .wev.sev-alert { color: var(--err); }
+details.think.tokstats .watchlist .wev.sev-info { color: var(--dim); }
+.phase.watch { color: var(--warn); }
+details.work .wwatch { margin-left: 8px; color: var(--warn); font-weight: 600; }
+details.work.watch-alert, details.work.done.watch-alert { border-left-color: var(--err); }
+details.work.done.watch-warn { border-left-color: var(--warn); }
+details.work.watch-alert .wwatch { color: var(--err); }
 /* Notes the turn wrote into its own history (a failing verify command, a goal
    check). Same fold as thinking, but upright and a shade brighter: this is an
    outcome the round has to answer for, not the model musing. */

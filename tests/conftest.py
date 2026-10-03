@@ -50,3 +50,15 @@ def _fresh_probe_cache():
     probe_cache.invalidate()
     yield
     probe_cache.invalidate()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_token_watch_calibration(monkeypatch, tmp_path_factory):
+    """token_watch learns per-model profiles into ~/.config/agent; any test that
+    streams with token_stats would otherwise write the developer's real file."""
+    from agent.core import token_watch_calib
+    p = tmp_path_factory.mktemp("twcal") / "token_watch_calibration.json"
+    monkeypatch.setattr(token_watch_calib, "path", lambda: p)
+    token_watch_calib.reset_cache()
+    yield
+    token_watch_calib.reset_cache()

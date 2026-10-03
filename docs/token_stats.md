@@ -33,7 +33,8 @@ fetch rows lazily (`GET /api/tokstats?id=<sid>&seq=<ref>`).
 
 - Low p / high entropy = model hesitation. Not truth: confident-wrong facts score high.
 - Quantized KV (TurboQuant) shifts absolute logprobs → thresholds per model+KV type.
-- Confident + invalid tool call = suspect (hallucination / template issue). Detector not built yet; needs this data first.
+- Confident + invalid tool call = suspect (hallucination / template issue). Not detected yet.
+- Scenario detection + counter-actions on these rows: [token_watch.md](token_watch.md).
 
 ## Server gaps (llama.cpp, checked upstream a8681a0 + domvox-turboquant 89231e3b4)
 

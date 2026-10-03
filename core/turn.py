@@ -423,6 +423,12 @@ async def run_turn(
     _error_streak = 0        # consecutive iterations where every tool call errored
     _prev_round_results: dict[str, str] = {}  # signature -> result, previous tool round
     _repeat_temperature: float | None = None  # sampling bump for the next request
+    _watch_cfg = getattr(config, "token_watch", None)
+    _watch_retries = 0                 # token_watch retry actions taken this turn
+    _watch_notes: dict[str, int] = {}  # token_watch note actions taken, per scenario
+    _watch_tool_note: str | None = None  # lands after this round's tool results
+    _watch_claim: dict | None = None     # claim event of the latest model call
+    _watch_temperature: float | None = None  # retry temperature, either direction
 
     def _loop_guard_escalation_note() -> dict:
         return _injected("loop guard", (
@@ -636,12 +642,14 @@ async def run_turn(
                     of = f" of {budget}s" if budget > 0 else ""
                     _phase("waiting",
                            f"{secs}s{of} — backend quiet ({waiting_for}); interrupt to abort")
-                with turn_guards.temperature_override(config, _repeat_temperature):
+                with turn_guards.temperature_override(config, _repeat_temperature), \
+                        turn_guards.temperature_override(config, _watch_temperature, allow_lower=True):
                     finish_reason, full_content, raw_tool_calls, turn_reasoning = await _stream_response(
                         client, config, api_messages, tools, on_token,
                         on_usage=on_usage, on_reasoning=on_reasoning, stop_event=stop_event,
                         on_stall_progress=_on_stall_progress,
                         token_stats_out=turn_token_stats,
+                        watch_cut_ok=_watch_retries < int(getattr(_watch_cfg, "max_retries", 0)),
                     )
                 if config.llm.cache_ttl > 0:
                     mark_request(config.llm.base_url, config.llm.model)
@@ -689,6 +697,7 @@ async def run_turn(
                     mark_request(config.llm.base_url, config.llm.model)
             turn_errors.record_model_outcome(config, "success")
             _repeat_temperature = None   # the bump buys one answered request
+            _watch_temperature = None
         except StreamStalledError as e:
             # Backend wedged mid-stream (e.g. a GPU/HSA lost-wakeup on the
             # llama.cpp side). The stream was already closed, freeing the server
@@ -910,6 +919,39 @@ async def run_turn(
                     _token_stats.SIDE_LOG_FILE, {"turn": turn_index, **turn_token_stats[-1]})
             except Exception as e:
                 logger.warning("side_log append failed (tokstats): %s", e)
+
+        # Scenario events on those rows (core/token_watch.py): announce, log,
+        # then act — retry discards this call before it reaches history.
+        _watch_claim = None
+        _watch_events = (turn_token_stats[-1].get("watch") or []) if turn_token_stats else []
+        if _watch_events:
+            from agent.core import token_watch as _tw
+            if side_log is not None:
+                try:
+                    side_log.append(_tw.SIDE_LOG_FILE, {
+                        "turn": turn_index, "tokstats_ref": _pending_tokstats_ref[0],
+                        "model": turn_token_stats[-1].get("model"), "events": _watch_events})
+                except Exception as e:
+                    logger.warning("side_log append failed (tokwatch): %s", e)
+            for _ev in _watch_events:
+                logger.warning("token_watch: %s (%s) %s → %s", _ev["kind"], _ev["severity"],
+                               _ev["detail"], _ev["action"])
+                _phase("token_watch", f"{_ev['kind']} → {_ev['action']}: {_ev['detail']}")
+            _rev = _tw.retry_event(_watch_events)
+            if _rev is not None and _watch_retries < int(getattr(_watch_cfg, "max_retries", 0)):
+                _watch_retries += 1
+                _watch_temperature = _rev.get("temperature")
+                _phase("token_watch_retry",
+                       f"{_rev['kind']} — re-running call at T={_watch_temperature} "
+                       f"({_watch_retries}/{_watch_cfg.max_retries})")
+                continue
+            _max_notes = int(getattr(_watch_cfg, "max_notes", 0))
+            _tev = _tw.note_event(_watch_events, "tool_doubt")
+            if _tev is not None and _watch_notes.get("tool_doubt", 0) < _max_notes:
+                _watch_tool_note = _tw.tool_doubt_note(_tev)
+            _cev = _tw.note_event(_watch_events, "claim")
+            if _cev is not None and _watch_notes.get("claim", 0) < _max_notes:
+                _watch_claim = _cev
 
         def stamp_reasoning(m: dict) -> dict:
             ref = _pending_reasoning_ref[0]
@@ -1227,6 +1269,12 @@ async def run_turn(
                     _nudged=True)]
                 continue
 
+            if _watch_tool_note is not None:
+                # After the tool results, so assistant tool_calls stay paired.
+                _watch_notes["tool_doubt"] = _watch_notes.get("tool_doubt", 0) + 1
+                messages = messages + [_injected("token watch", _watch_tool_note)]
+                _watch_tool_note = None
+
             token_est = _count_tokens_approx(messages)
             _notify_ctx(token_est)
             # Same trigger as the pre-flight check, so compaction does not fire
@@ -1484,6 +1532,18 @@ async def run_turn(
                     _injected("answer check", _ac.text, _nudged=True),
                 ]
                 continue
+
+        # Invented specifics (token_watch claim → note): keep the answer, ask the
+        # model to verify or hedge them, and let the next answer replace it.
+        if content.strip() and _watch_claim is not None:
+            from agent.core import token_watch as _tw
+            _watch_notes["claim"] = _watch_notes.get("claim", 0) + 1
+            messages = messages + [
+                stamp_reasoning({"role": "assistant", "content": content}),
+                _injected("token watch", _tw.claim_note(_watch_claim), _nudged=True),
+            ]
+            _watch_claim = None
+            continue
 
         content_parts.append(content)
         messages = messages + [stamp_reasoning({"role": "assistant", "content": content})]

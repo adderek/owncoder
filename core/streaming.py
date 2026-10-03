@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 import openai
 
-from . import prompt_cache, token_stats
+from . import prompt_cache, token_stats, token_watch
 from .prompts import apply_prompt_hints, _log_llm_request, _build_call_kwargs
 from .tool_calls import _FakeToolCall, _parse_text_tool_calls, _parse_qwen_function_xml, _parse_agent_exec_xml
 from .tool_discovery import CORE_TOOLS as _CORE_TOOLS
@@ -525,7 +525,7 @@ async def _next_chunk(stream_it, *, budget_s: int, heartbeat_s: int, waiting_for
                 logger.exception("on_heartbeat callback failed")
 
 
-async def _stream_response(client, config: "Config", api_messages, tools, on_token, on_usage=None, on_reasoning=None, stop_event=None, on_stall_progress=None, token_stats_out: list | None = None):
+async def _stream_response(client, config: "Config", api_messages, tools, on_token, on_usage=None, on_reasoning=None, stop_event=None, on_stall_progress=None, token_stats_out: list | None = None, watch_cut_ok: bool = True):
     from agent._tokens import count_tokens_approx
     from agent.memory.compactor import _count_tokens_approx
     from agent.core.model_status import _inc as _ms_inc, _dec as _ms_dec, provider_label
@@ -551,6 +551,8 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
     _ms_inc("main", _endpoint, _model)
     _ts_rows: list[list] | None = [] if token_stats.wanted(config, _base_url) else None
     _ts_utf8 = token_stats.utf8_decoder()
+    _watch = (token_watch.LiveWatch(config, allow_cut=watch_cut_ok, model=_model)
+              if _ts_rows is not None and token_watch.enabled(config) else None)
     try:
         async with _gpu_slot(config):
             call_kwargs = _build_call_kwargs(config)
@@ -662,6 +664,11 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
                         choice, _ts_rows[-1][5] if _ts_rows else "c", _ts_utf8))
                 except Exception:
                     logger.debug("token_stats: chunk parse failed", exc_info=True)
+                if _watch is not None and _ts_rows and _watch.feed(_ts_rows):
+                    # Derailed/collapsed mid-call: the turn discards this call
+                    # and re-runs it (token_watch retry), so stop paying for it.
+                    await _safe_close(stream)
+                    break
 
             if choice.finish_reason:
                 finish_reason = choice.finish_reason
@@ -709,6 +716,13 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
     if _ts_rows:
         record = token_stats.build_record(
             _ts_rows, model=_model, limit=int(getattr(config.token_stats, "max_tokens", 4000)))
+        if _watch is not None:
+            try:
+                record["watch"] = token_watch.evaluate(
+                    _ts_rows, config, model=_model, truncated=record["truncated"],
+                    tripped=_watch.tripped)
+            except Exception:
+                logger.warning("token_watch: evaluation failed", exc_info=True)
         if token_stats_out is not None:
             token_stats_out.append(record)
         token_stats.publish(record)

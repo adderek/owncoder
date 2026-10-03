@@ -29,6 +29,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/output", ["/out"], "show model output breakdown (think/tool/reply/other)", True),
     ("/perf", ["/timing"], "session performance: LLM vs tool time + slowest tools; 'all' = cross-session data-source usage", False),
     ("/modelcalls", ["/mc"], "show model calls this session by cost tier (local/free/bundled/paid); 'detail' adds role × model table; 'reset' clears", True),
+    ("/tokwatch", [], "token confidence watch: per-model calibration  [reset [<model>]]", True),
     ("/who", ["/agents"], "list other agents active on this worktree", False),
     ("/continue", ["/c"], "resume after iteration cap or truncation", False),
     ("/goal", [], "set/show/clear completion goal  [<text> | $ <cmd> | clear]", True),
@@ -120,7 +121,7 @@ _GROUPS: dict[str, tuple[str, ...]] = {
     "privacy & access": ("/incognito", "/private", "/vault", "/paths",
                          "/permissions", "/hooks", "/classify", "/credpool", "/notify"),
     "automation": ("/schedule", "/watch"),
-    "diagnostics": ("/perf", "/modelcalls", "/output", "/speech", "/sandbox", "/wrap",
+    "diagnostics": ("/perf", "/modelcalls", "/tokwatch", "/output", "/speech", "/sandbox", "/wrap",
                     "/round-summary", "/tools", "/help"),
 }
 

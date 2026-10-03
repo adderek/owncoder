@@ -344,6 +344,10 @@ class SlashHandlerMixin:
             from agent.classify import run_classify_command
             self._write_sys(_escape(run_classify_command(self._server._agent.config, arg)))
 
+        elif cmd == "/tokwatch":
+            from agent.core.token_watch_calib import run_tokwatch_command
+            self._write_sys(_escape(run_tokwatch_command(self._server._agent.config, arg)))
+
         elif cmd == "/speech":
             from agent.speech import run_speech_command
             self._write_sys(_escape(run_speech_command(self._server._agent.config, arg)))

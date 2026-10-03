@@ -1460,6 +1460,51 @@ class TokenStatsConfig:
 
 
 @dataclass
+class TokenWatchConfig:
+    """Scenario detection + counter-actions on token_stats rows (core/token_watch.py).
+
+    Needs [token_stats] capture. Per scenario: "off" | "mark" (UI + log) |
+    "note" (harness note to the model) | "retry" (discard call, re-run at
+    another temperature). Thresholds calibrated on ornith10-35B — absolute
+    logprobs shift with model and KV quant. Docs: docs/token_watch.md.
+    """
+    enabled: bool = True
+    derail: str = "retry"        # off|mark|retry
+    collapse: str = "retry"      # off|mark|retry
+    tool_doubt: str = "note"     # off|mark|note
+    claim: str = "mark"          # off|mark|note — note costs one extra round
+    tail: str = "mark"           # off|mark
+    drift: str = "mark"          # off|mark
+    no_probs: str = "mark"       # off|mark
+    max_retries: int = 1         # retry actions per turn
+    max_notes: int = 1           # note actions per turn (per scenario)
+    live_step: int = 8           # streaming check every N rows
+    derail_window: int = 48
+    derail_entropy: float = 0.6  # mean H / ln(k+1); healthy max seen 0.43
+    derail_p: float = 0.5        # and mean p at most this; healthy min seen 0.69
+    derail_temperature: float = 0.2
+    collapse_window: int = 64
+    collapse_p: float = 0.97
+    collapse_distinct: float = 0.15  # distinct tokens / window
+    collapse_temperature: float = 0.9
+    cluster_p: float = 0.15      # improbable token
+    cluster_min: int = 3         # this many improbable tokens ...
+    cluster_span: int = 8        # ... within this many tokens
+    tail_share: float = 0.05
+    no_probs_share: float = 0.2
+    drift_ratio: float = 1.8
+    drift_min_samples: int = 3
+    min_tokens: int = 40         # share/ppl scenarios ignore shorter calls
+    # Per-model calibration (core/token_watch_calib.py): learn each model's
+    # normal from alarm-free calls, ~/.config/agent/token_watch_calibration.json.
+    calibrate: bool = True
+    calib_min_calls: int = 20    # learned thresholds apply after this many calls
+    calib_margin: float = 0.1    # added above the model's 99.5th percentile
+    # Hand overrides, beat learned values: {"<model>": {"derail_entropy": 0.7, ...}}
+    per_model: dict = field(default_factory=dict)
+
+
+@dataclass
 class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
@@ -1520,6 +1565,7 @@ class Config:
     credpool: CredPoolConfig = field(default_factory=CredPoolConfig)
     vision: VisionConfig = field(default_factory=VisionConfig)
     token_stats: TokenStatsConfig = field(default_factory=TokenStatsConfig)
+    token_watch: TokenWatchConfig = field(default_factory=TokenWatchConfig)
     # Runtime (non-persisted) flag: True while the active session pins every LLM
     # call to a LOCAL endpoint (private session mode). Set by
     # Agent.set_session_mode("private"); read by mid-turn routing so an auto-tier

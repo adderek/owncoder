@@ -459,7 +459,8 @@ function beginTurn() {
   d.open = true;
   d.innerHTML = '<summary><span class="wspin"></span>' +
     '<span class="wlabel working">working</span>' +
-    '<span class="wmeta"></span></summary><div class="wbody"></div>';
+    '<span class="wmeta"></span><span class="wwatch"></span></summary>' +
+    '<div class="wbody"></div>';
   mount(d);
   turn = {details: d, body: d.querySelector('.wbody'),
           tools: 0, steps: 0, changeset: null, t0: Date.now(), userToggled: false};
@@ -995,8 +996,38 @@ async function toggleTokStats() {
 }
 document.getElementById('tokstatstoggle').addEventListener('click', toggleTokStats);
 
-function tokSummaryText(sum, truncated) {
-  if (!sum) return 'token confidence';
+// token_watch scenarios (core/token_watch.py) found in a model call.
+const WATCH_SEV = {info: 0, warn: 1, alert: 2};
+function watchSeverity(events) {
+  let best = 'info';
+  for (const e of events || []) if ((WATCH_SEV[e.severity] || 0) > WATCH_SEV[best]) best = e.severity;
+  return best;
+}
+function watchKinds(events) {
+  return [...new Set((events || []).map((e) => e.kind))].join(', ');
+}
+// Flag the turn's work fold: it collapses when the answer lands, and an
+// alert inside a closed fold would otherwise go unseen.
+function noteWatch(events, t) {
+  if (!events || !events.length) return;
+  t = t || turn;
+  if (!t) return;
+  t.watch = (t.watch || []).concat(events);
+  const sev = watchSeverity(t.watch);
+  t.details.classList.add('watch');
+  t.details.classList.toggle('watch-alert', sev === 'alert');
+  t.details.classList.toggle('watch-warn', sev === 'warn');
+  const w = t.details.querySelector('.wwatch');
+  if (w) {
+    w.textContent = '⚠ ' + watchKinds(t.watch);
+    w.title = 'token watch: ' + t.watch.map((e) => e.kind + ' → ' + e.action +
+      (e.detail ? ' (' + e.detail + ')' : '')).join('\n');
+  }
+}
+
+function tokSummaryText(sum, truncated, events) {
+  const warn = events && events.length ? '⚠ ' + watchKinds(events) + ' · ' : '';
+  if (!sum) return warn + 'token confidence';
   const bits = [sum.n + ' tok'];
   if (sum.ppl != null) bits.push('ppl ' + sum.ppl.toFixed(2));
   if (sum.min_p != null) bits.push('min p ' + sum.min_p.toFixed(3));
@@ -1004,7 +1035,7 @@ function tokSummaryText(sum, truncated) {
   if (sum.mean_H != null) bits.push('H̄ ' + sum.mean_H.toFixed(2));
   if (sum.tool_ppl != null) bits.push('tool ppl ' + sum.tool_ppl.toFixed(2));
   if (truncated) bits.push('first ' + truncated + ' dropped');
-  return 'token confidence · ' + bits.join(' · ');
+  return warn + 'token confidence · ' + bits.join(' · ');
 }
 
 function tokRender(body, rec) {
@@ -1023,12 +1054,31 @@ function tokRender(body, rec) {
     bar.appendChild(b);
   }
   body.appendChild(bar);
+  // token_watch events: one line each, and their token spans outlined below.
+  const flagged = {};
+  if (rec.watch && rec.watch.length) {
+    const ul = document.createElement('div');
+    ul.className = 'watchlist';
+    for (const e of rec.watch) {
+      const li = document.createElement('div');
+      li.className = 'wev sev-' + e.severity;
+      li.textContent = '⚠ ' + e.kind + ' → ' + e.action + (e.cut ? ' (cut mid-stream)' : '') +
+        ' · ' + e.detail + (e.text ? ' · «' + e.text + '»' : '');
+      ul.appendChild(li);
+      const spans = e.spans || (e.start != null ? [[e.start, e.end]] : []);
+      for (const [a, b] of spans) {
+        for (let i = a; i <= b; i++) (flagged[i] = flagged[i] || []).push(e.kind);
+      }
+    }
+    body.appendChild(ul);
+  }
   const pre = document.createElement('div');
   pre.className = 'toks';
   const bad = TOK_METRICS[tokMetric].bad;
-  for (const r of (rec.tokens || [])) {
+  (rec.tokens || []).forEach((r, idx) => {
     const sp = document.createElement('span');
-    sp.className = 'tok k' + (r[5] || 'c') + (r[4] === -1 ? ' tail' : '');
+    sp.className = 'tok k' + (r[5] || 'c') + (r[4] === -1 ? ' tail' : '') +
+      (flagged[idx] ? ' flag' : '');
     // A token ending mid UTF-8 character has no text of its own (the row
     // that completes the character shows it) — mark it so it can be hovered.
     if (r[0] === '') sp.classList.add('partial');
@@ -1039,9 +1089,10 @@ function tokRender(body, rec) {
       '  H=' + (r[2] == null ? '?' : r[2].toFixed(2)) +
       '  margin=' + (r[3] == null ? '?' : r[3].toFixed(3)) +
       '  rank=' + r[4] + '  ' + ({c: 'content', r: 'reasoning', t: 'tool args'}[r[5]] || '') +
-      (r[0] === '' ? '  (partial UTF-8 byte(s))' : '') + tokAlts(r);
+      (r[0] === '' ? '  (partial UTF-8 byte(s))' : '') + tokAlts(r) +
+      (flagged[idx] ? '\ntoken watch: ' + flagged[idx].join(', ') : '');
     pre.appendChild(sp);
-  }
+  });
   body.appendChild(pre);
 }
 
@@ -1058,12 +1109,15 @@ function tokAlts(r) {
 }
 
 // rec = full record (live event) or null + a side-log ref to fetch on open.
-function tokstatsFold(rec, ref) {
+// watch = compact token_watch events for a replayed fold (rows not loaded yet).
+function tokstatsFold(rec, ref, watch) {
   const d = document.createElement('details');
   d.className = 'think tokstats';
   d.innerHTML = '<summary></summary><div class="body"></div>';
-  d.querySelector('summary').textContent = rec ? tokSummaryText(rec.summary, rec.truncated)
-                                               : 'token confidence';
+  const events = rec ? rec.watch : watch;
+  if (events && events.length) d.classList.add('watch', 'sev-' + watchSeverity(events));
+  d.querySelector('summary').textContent = rec ? tokSummaryText(rec.summary, rec.truncated, events)
+                                               : tokSummaryText(null, 0, events);
   const body = d.querySelector('.body');
   let loaded = !!rec;
   if (rec) tokRender(body, rec);
@@ -1076,7 +1130,7 @@ function tokstatsFold(rec, ref) {
       const r = await (await fetch('/api/tokstats?id=' + encodeURIComponent(sid) +
                                    '&seq=' + encodeURIComponent(ref))).json();
       if (r.error) { body.textContent = r.error; return; }
-      d.querySelector('summary').textContent = tokSummaryText(r.summary, r.truncated);
+      d.querySelector('summary').textContent = tokSummaryText(r.summary, r.truncated, r.watch);
       tokRender(body, r);
     } catch (e) { body.textContent = 'failed: ' + e; loaded = false; }
   });
@@ -1143,6 +1197,7 @@ function handle(ev) {
     tokStats = ev; renderTokStatsBtn();
   } else if (ev.type === 'tokstats') {
     stamp(metaMount(tokstatsFold(ev, null)));
+    noteWatch(ev.watch);
   } else if (ev.type === 'changeset') {
     // Fires once at round end, before `response` — stash it on the open work
     // fold so endTurn() renders it under that round, not the next one.
@@ -1178,7 +1233,8 @@ function handle(ev) {
     // stream bubble (and its caret) open so the gap is visible where the text
     // stopped, instead of closing it as if the model had moved on.
     if (STALL_PHASES.indexOf(ev.label) < 0) endStream();
-    metaRow('phase', '• ' + ev.label + (ev.detail ? ': ' + ev.detail : ''));
+    metaRow(ev.label.startsWith('token_watch') ? 'phase watch' : 'phase',
+            '• ' + ev.label + (ev.detail ? ': ' + ev.detail : ''));
     if (turn) turn.steps++;
     setBusy(true, ev.label + (ev.detail ? ': ' + ev.detail : ''));
     // The server's own stall heartbeat outranks the local watchdog: it knows
@@ -3251,7 +3307,9 @@ function replayTranscriptInner(messages) {
       }
       for (const ref of (m.tokstats_refs || [])) {
         if (!work) { work = beginTurn(); work.replay = true; }
-        work.body.appendChild(tokstatsFold(null, ref));
+        const w = (m.tokwatch || {})[ref];
+        work.body.appendChild(tokstatsFold(null, ref, w));
+        noteWatch(w, work);
       }
       for (const c of (m.tool_calls || [])) {
         if (!work) { work = beginTurn(); work.replay = true; }
