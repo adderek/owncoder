@@ -137,4 +137,5 @@ include-package-data = false
     "prompts/skills/*.md",
     "themes/*.toml",
     "agent.toml.example",
+    "data/*.json",
 ]

@@ -490,7 +490,9 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
 
             elif cmd == "/tokwatch":
                 from agent.core.token_watch_calib import run_tokwatch_command
-                console.print(run_tokwatch_command(agent.config, arg), markup=False)
+                console.print(run_tokwatch_command(agent.config, arg,
+                                                   session.id if session is not None else ""),
+                              markup=False)
 
             elif cmd == "/speech":
                 from agent.speech import run_speech_command

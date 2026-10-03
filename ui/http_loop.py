@@ -3506,7 +3506,9 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
         else:
             from agent.core.token_watch_calib import run_tokwatch_command
             pub({"type": "sys",
-                 "text": await asyncio.to_thread(run_tokwatch_command, cfg, arg)})
+                 "text": await asyncio.to_thread(
+                     run_tokwatch_command, cfg, arg,
+                     ui.session.id if ui.session is not None else "")})
     elif cmd == "/hooks":
         cfg = _agent_config(server)
         if cfg is None:

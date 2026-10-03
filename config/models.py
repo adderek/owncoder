@@ -1495,11 +1495,28 @@ class TokenWatchConfig:
     drift_ratio: float = 1.8
     drift_min_samples: int = 3
     min_tokens: int = 40         # share/ppl scenarios ignore shorter calls
-    # Per-model calibration (core/token_watch_calib.py): learn each model's
-    # normal from alarm-free calls, ~/.config/agent/token_watch_calibration.json.
+    session_drift: str = "mark"  # off|mark — this session vs other sessions
+    # Lower than drift_ratio: one call 1.8× off is noise-proof, a whole window
+    # of calls 1.3× off is a persistent shift worth knowing about.
+    session_drift_ratio: float = 1.3
+    regime_change: str = "mark"  # off|mark — model/harness configuration changed
+    # Layered calibration (core/token_watch_calib.py): shipped prior → slow
+    # (other sessions) → fast (this session, drift + post-change loosening).
+    # ~/.config/agent/token_watch/calibration.json
     calibrate: bool = True
-    calib_min_calls: int = 20    # learned thresholds apply after this many calls
-    calib_margin: float = 0.1    # added above the model's 99.5th percentile
+    calib_margin: float = 0.1    # added above the 99.5th percentile
+    prior_weight: float = 3.0    # prior counts as this many sessions
+    session_decay: float = 0.95  # slow profile: weight kept per merged session (~20-session memory)
+    session_min_calls: int = 3   # shorter sessions are not merged
+    pending_stale_minutes: float = 30  # quiet this long → session merged into slow
+    inherit_weight: float = 0.3  # new configuration starts from parent slow × this
+    thin_slow_weight: float = 1.0  # below this slow weight, fast may loosen thresholds
+    fast_window: int = 30        # calls kept in the fast (this-session) profile
+    fast_min_calls: int = 8      # fast needs this many calls to loosen / show drift
+    fast_loosen_cap: float = 0.1  # max loosening by the fast layer
+    # Diagnostics for later review: ~/.config/agent/token_watch/diag/YYYY-MM.jsonl
+    diag: bool = True
+    diag_max_mb: float = 50
     # Hand overrides, beat learned values: {"<model>": {"derail_entropy": 0.7, ...}}
     per_model: dict = field(default_factory=dict)
 

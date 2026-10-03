@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import subprocess
 import time
 from typing import TYPE_CHECKING
@@ -429,6 +430,13 @@ async def run_turn(
     _watch_tool_note: str | None = None  # lands after this round's tool results
     _watch_claim: dict | None = None     # claim event of the latest model call
     _watch_temperature: float | None = None  # retry temperature, either direction
+    _watch_outcome: dict | None = None   # action awaiting its effect on the next call
+
+    def _watch_ctx():
+        from agent.core.token_watch_calib import Context
+        # No session (one-shot runs, tests): a per-process id keeps unrelated
+        # runs from pooling into one pending bucket.
+        return Context(session=session_id or f"proc-{os.getpid()}", turn=turn_index)
 
     def _loop_guard_escalation_note() -> dict:
         return _injected("loop guard", (
@@ -650,6 +658,7 @@ async def run_turn(
                         on_stall_progress=_on_stall_progress,
                         token_stats_out=turn_token_stats,
                         watch_cut_ok=_watch_retries < int(getattr(_watch_cfg, "max_retries", 0)),
+                        watch_ctx=_watch_ctx(),
                     )
                 if config.llm.cache_ttl > 0:
                     mark_request(config.llm.base_url, config.llm.model)
@@ -924,6 +933,16 @@ async def run_turn(
         # then act — retry discards this call before it reaches history.
         _watch_claim = None
         _watch_events = (turn_token_stats[-1].get("watch") or []) if turn_token_stats else []
+        if _watch_outcome is not None and turn_token_stats:
+            # Evidence for later review: did the retry / note change anything?
+            from agent.core import token_watch_diag as _twd
+            _kinds = [e["kind"] for e in _watch_events]
+            _twd.log({"type": "outcome", **_watch_outcome,
+                      "cleared": _watch_outcome["kind"] not in _kinds,
+                      "next_events": _kinds,
+                      "next_tool_calls": len(msg.tool_calls or []) if msg is not None else None,
+                      "temperature": config.llm.temperature})
+            _watch_outcome = None
         if _watch_events:
             from agent.core import token_watch as _tw
             if side_log is not None:
@@ -941,6 +960,8 @@ async def run_turn(
             if _rev is not None and _watch_retries < int(getattr(_watch_cfg, "max_retries", 0)):
                 _watch_retries += 1
                 _watch_temperature = _rev.get("temperature")
+                _watch_outcome = {"kind": _rev["kind"], "action": "retry",
+                                  "session": session_id, "turn": turn_index}
                 _phase("token_watch_retry",
                        f"{_rev['kind']} — re-running call at T={_watch_temperature} "
                        f"({_watch_retries}/{_watch_cfg.max_retries})")
@@ -1274,6 +1295,8 @@ async def run_turn(
                 _watch_notes["tool_doubt"] = _watch_notes.get("tool_doubt", 0) + 1
                 messages = messages + [_injected("token watch", _watch_tool_note)]
                 _watch_tool_note = None
+                _watch_outcome = {"kind": "tool_doubt", "action": "note",
+                                  "session": session_id, "turn": turn_index}
 
             token_est = _count_tokens_approx(messages)
             _notify_ctx(token_est)
@@ -1543,6 +1566,8 @@ async def run_turn(
                 _injected("token watch", _tw.claim_note(_watch_claim), _nudged=True),
             ]
             _watch_claim = None
+            _watch_outcome = {"kind": "claim", "action": "note",
+                              "session": session_id, "turn": turn_index}
             continue
 
         content_parts.append(content)

@@ -346,7 +346,10 @@ class SlashHandlerMixin:
 
         elif cmd == "/tokwatch":
             from agent.core.token_watch_calib import run_tokwatch_command
-            self._write_sys(_escape(run_tokwatch_command(self._server._agent.config, arg)))
+            _sess = getattr(self, "_session", None)
+            for line in run_tokwatch_command(self._server._agent.config, arg,
+                                             _sess.id if _sess is not None else "").splitlines():
+                self._write_sys(_escape(line))
 
         elif cmd == "/speech":
             from agent.speech import run_speech_command

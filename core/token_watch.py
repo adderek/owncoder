@@ -34,8 +34,16 @@ Scenarios (thresholds calibrated 2026-10-03 on 37 ornith10-35B calls, healthy
 Normalised entropy = H / ln(k+1), k = alternatives on that row: H is a lower
 bound over top-k + one tail bucket, so its ceiling depends on k.
 
-Thresholds are per model (core/token_watch_calib.py): config overrides, else
-learned from that model's alarm-free calls, else the global values.
+Thresholds are per model and configuration (core/token_watch_calib.py):
+shipped prior → slow profile of other sessions → (after a config change) this
+session may loosen. Two more scenarios come from those layers:
+
+- session_drift  this session's recent ppl well above other sessions' —
+                 something changed mid-session (context growth, server).
+- regime_change  model/harness configuration changed; calibration restarted
+                 from the previous profile at reduced weight. Info only.
+
+Every evaluated call is logged for later review (core/token_watch_diag.py).
 """
 from __future__ import annotations
 
@@ -44,12 +52,14 @@ import math
 from typing import Any
 
 from . import token_watch_calib as calib
+from . import token_watch_diag as diag
 
 logger = logging.getLogger(__name__)
 
 SIDE_LOG_FILE = "tokwatch.jsonl"
 
-KINDS = ("derail", "collapse", "tool_doubt", "claim", "tail", "drift", "no_probs")
+KINDS = ("derail", "collapse", "tool_doubt", "claim", "tail", "drift", "no_probs",
+         "session_drift", "regime_change")
 # Actions each scenario may take; anything else falls back to "mark".
 _ALLOWED = {
     "derail": {"off", "mark", "retry"},
@@ -59,9 +69,12 @@ _ALLOWED = {
     "tail": {"off", "mark"},
     "drift": {"off", "mark"},
     "no_probs": {"off", "mark"},
+    "session_drift": {"off", "mark"},
+    "regime_change": {"off", "mark"},
 }
 _SEVERITY = {"derail": "alert", "collapse": "alert", "tool_doubt": "warn",
-             "claim": "warn", "tail": "info", "drift": "info", "no_probs": "info"}
+             "claim": "warn", "tail": "info", "drift": "info", "no_probs": "info",
+             "session_drift": "warn", "regime_change": "info"}
 
 
 def _cfg(config) -> Any:
@@ -147,10 +160,11 @@ class LiveWatch:
     unless it is re-run. Checks the newest window every *step* rows.
     """
 
-    def __init__(self, config, allow_cut: bool = True, model: str | None = None):
+    def __init__(self, config, allow_cut: bool = True, model: str | None = None,
+                 ctx: "calib.Context | None" = None):
         self.cfg = _cfg(config)
         if self.cfg is not None:
-            self.cfg = calib.effective(self.cfg, model)
+            self.cfg = calib.effective(self.cfg, config, ctx, model=model)
         self.kinds = [k for k in ("derail", "collapse")
                       if allow_cut and self.cfg is not None and action_for(self.cfg, k) == "retry"]
         self.tripped: str | None = None
@@ -229,12 +243,17 @@ def _event(kind, cfg, start, end, value, threshold, rows, detail, offset, **extr
 
 
 def evaluate(rows: list[list], config, *, model: str | None, truncated: int = 0,
-             tripped: str | None = None) -> list[dict]:
-    """All scenario events for one model call. *rows* = every row of the call."""
+             tripped: str | None = None, ctx: "calib.Context | None" = None,
+             summary: dict | None = None) -> list[dict]:
+    """All scenario events for one model call. *rows* = every row of the call.
+
+    Also folds the call into calibration and writes its diagnostics record.
+    """
     base_cfg = _cfg(config)
     if base_cfg is None or not rows:
         return []
-    cfg = calib.effective(base_cfg, model)
+    diag.configure(base_cfg)
+    cfg = calib.effective(base_cfg, config, ctx, model=model)
     events: list[dict] = []
 
     def on(kind: str) -> bool:
@@ -301,24 +320,46 @@ def evaluate(rows: list[list], config, *, model: str | None, truncated: int = 0,
                                  f"{share:.0%} scored tokens carry no alternatives — "
                                  "server probs likely fake (speculative path)", truncated))
 
-    # Drift: compare to the model's learned perplexity.
-    lps = [r[1] for r in rows if r[5] in "ct" and r[1] is not None]
-    base = calib.baseline_ppl(model, cfg)
-    if on("drift") and base and len(lps) >= int(cfg.min_tokens):
-        ppl = math.exp(-sum(lps) / len(lps))
-        if ppl > base * cfg.drift_ratio:
-            events.append(_event("drift", cfg, None, None, ppl, round(base * cfg.drift_ratio, 3),
-                                 rows, f"ppl {ppl:.2f} vs baseline {base:.2f} for {model}",
+    # Drift: this call against other sessions' perplexity (slow layer / prior).
+    stats = calib.call_stats(rows, cfg)
+    base = cfg.calibration.get("baseline_ppl")
+    ppl = stats["ppl"]
+    if on("drift") and base and ppl is not None and ppl > base * cfg.drift_ratio:
+        events.append(_event("drift", cfg, None, None, ppl, round(base * cfg.drift_ratio, 3),
+                             rows, f"ppl {ppl:.2f} vs baseline {base:.2f} for {model}",
+                             truncated))
+
+    # Fold the call into calibration (fast always, pending only when quiet).
+    learned = {"learned": False, "reason": "error", "notes": []}
+    try:
+        learned = calib.learn(config, ctx, stats, events, base_cfg, model=model)
+    except Exception:
+        logger.debug("token_watch: calibration update failed", exc_info=True)
+    if on("session_drift"):
+        sd = calib.session_drift(config, ctx, cfg, base, model=model)
+        if sd:
+            calib.flag_session(config, ctx, "drifted", model=model)
+            corr = sd["ctx_corr"]
+            hint = (f"; tracks context size (r={corr:.2f}) — compaction may help"
+                    if corr is not None and corr >= 0.6 else "")
+            events.append(_event("session_drift", cfg, None, None, sd["ppl"],
+                                 round(base * cfg.session_drift_ratio, 3), rows,
+                                 f"last {sd['calls']} calls ppl {sd['ppl']:.2f} vs other "
+                                 f"sessions {base:.2f}{hint}", truncated, ctx_corr=corr))
+    for note in learned.get("notes", []):
+        diag.log(note)
+        if note["type"] == "regime_change" and on("regime_change"):
+            changed = ", ".join(note["changed"]) or "?"
+            events.append(_event("regime_change", cfg, None, None, note["inherited_weight"],
+                                 None, rows, f"configuration changed ({changed}) — "
+                                 "calibration continues from the previous profile",
                                  truncated))
     if events:
         src = cfg.calibration["source"]
         for ev in events:
             ev["calib"] = src
-    # Then fold this call into the model's profile (skipped when it alarmed).
-    try:
-        calib.learn(model, rows, events, base_cfg)
-    except Exception:
-        logger.debug("token_watch: calibration update failed", exc_info=True)
+    diag.log(diag.call_record(ctx=ctx, model=model, stats=stats, eff=cfg, events=events,
+                              learned=learned, tripped=tripped, summary=summary))
     return events
 
 

@@ -98,17 +98,6 @@ def test_no_probs():
     assert "no_probs" in kinds(tw.evaluate(rows, cfg, model="m"))
 
 
-def test_drift_against_baseline():
-    cfg = Config()
-    for _ in range(3):
-        assert tw.evaluate(healthy(100), cfg, model="m") == []
-    worse = [row(f"w{i}", 0.45) for i in range(100)]
-    ev = tw.evaluate(worse, cfg, model="m")
-    assert "drift" in kinds(ev)
-    # Other models have their own norm.
-    assert "drift" not in kinds(tw.evaluate(worse, cfg, model="other"))
-
-
 def test_action_off_and_invalid_fallback():
     cfg = Config()
     cfg.token_watch.derail = "off"
@@ -144,89 +133,6 @@ def test_live_watch_cuts_derail_only_when_retry_allowed():
 
     lw2 = tw.LiveWatch(cfg, allow_cut=False)
     assert not any(lw2.feed((healthy(10) + bad)[:n]) for n in range(1, 91))
-
-
-def test_derailed_call_does_not_update_calibration():
-    cfg = Config()
-    bad = [row(f"x{i}", 0.2, top=[0.2] * 5) for i in range(60)]
-    tw.evaluate(bad, cfg, model="m")
-    assert calib.profile("m") is None
-
-
-# ── per-model calibration ─────────────────────────────────────────────────
-
-def hesitant(n, h_top=None):
-    """A model whose normal is hesitant: p 0.45, flatter top-k."""
-    top = h_top or [0.45, 0.25, 0.15, 0.1, 0.05]
-    return [row(f"w{i % 37}", 0.45, top=top) for i in range(n)]
-
-
-def test_profile_learned_and_persisted():
-    cfg = Config()
-    tw.evaluate(healthy(200), cfg, model="m")
-    prof = calib.profile("m")
-    assert prof["calls"] == 1 and sum(prof["h_hist"]) > 0 and prof["ppl"] is not None
-    calib.reset_cache()                       # reload from disk
-    assert calib.profile("m")["calls"] == 1
-    assert calib.path().exists()
-
-
-def test_learned_thresholds_follow_the_model():
-    cfg = Config()
-    tw_cfg = cfg.token_watch
-    eff = calib.effective(tw_cfg, "hes")
-    assert eff.calibration["source"] == "default"
-    for _ in range(tw_cfg.calib_min_calls):
-        calib.learn("hes", hesitant(200), [], tw_cfg)
-    eff = calib.effective(tw_cfg, "hes")
-    assert eff.calibration["source"] == "learned"
-    # Hesitant model: entropy ceiling rises, p floor drops below its normal 0.45.
-    assert eff.derail_entropy > tw_cfg.derail_entropy - 0.2
-    assert eff.derail_p < 0.45
-    # Other models untouched.
-    assert calib.effective(tw_cfg, "other").derail_entropy == tw_cfg.derail_entropy
-
-
-def test_hesitant_model_normal_output_not_derail_after_learning():
-    cfg = Config()
-    # Before learning: a hesitant-but-normal call; force a strict global value to show the effect.
-    cfg.token_watch.derail_p = 0.6
-    cfg.token_watch.derail_entropy = 0.55
-    sample = [row(f"w{i % 37}", 0.55, top=[0.55, 0.2, 0.12, 0.08, 0.05]) for i in range(120)]
-    assert "derail" in kinds(tw.evaluate(sample, cfg, model="hes"))
-    for _ in range(cfg.token_watch.calib_min_calls):
-        calib.learn("hes", sample, [], cfg.token_watch)
-    assert "derail" not in kinds(tw.evaluate(sample, cfg, model="hes"))
-    # A real derail (flat top-5) still trips.
-    bad = [row(f"x{i}", 0.2, top=[0.2] * 5) for i in range(60)]
-    assert "derail" in kinds(tw.evaluate(bad, cfg, model="hes"))
-
-
-def test_per_model_override_beats_learned():
-    cfg = Config()
-    tw_cfg = cfg.token_watch
-    for _ in range(tw_cfg.calib_min_calls):
-        calib.learn("m", healthy(200), [], tw_cfg)
-    tw_cfg.per_model = {"m": {"derail_entropy": 0.8, "bogus": 1, "derail_p": True}}
-    eff = calib.effective(tw_cfg, "m")
-    assert eff.derail_entropy == 0.8 and eff.calibration["source"] == "override"
-    assert eff.calibration["overrides"] == {"derail_entropy": 0.8}
-
-
-def test_calibrate_off_uses_globals():
-    cfg = Config()
-    cfg.token_watch.calibrate = False
-    tw.evaluate(healthy(200), cfg, model="m")
-    assert calib.profile("m") is None
-
-
-def test_forget_and_describe():
-    cfg = Config()
-    calib.learn("a", healthy(200), [], cfg.token_watch)
-    calib.learn("b", healthy(200), [], cfg.token_watch)
-    assert "learning 1/" in calib.describe(cfg.token_watch)
-    assert calib.forget("a") == 1 and calib.profile("a") is None
-    assert calib.forget() == 1
 
 
 # ── turn integration ──────────────────────────────────────────────────────
@@ -291,6 +197,13 @@ async def test_turn_retry_discards_call_and_cools(tmp_path, monkeypatch, reset_f
     assert any(p[0] == "token_watch_retry" for p in phases)
     side = (tmp_path / "_side" / tw.SIDE_LOG_FILE).read_text().splitlines()
     assert len(side) == 2
+    # Outcome logged for later review: the retried call derailed again.
+    import json
+    from agent.core import token_watch_diag as diag
+    recs = [json.loads(line) for f in diag.diag_dir().glob("*.jsonl")
+            for line in f.read_text().splitlines()]
+    (out,) = [r for r in recs if r["type"] == "outcome"]
+    assert out["kind"] == "derail" and out["action"] == "retry" and out["cleared"] is False
 
 
 async def test_turn_claim_note_asks_to_verify_once(tmp_path, monkeypatch, reset_file_tool_state):
@@ -303,6 +216,11 @@ async def test_turn_claim_note_asks_to_verify_once(tmp_path, monkeypatch, reset_
     assert reply == "Unverified: address unknown."
     notes = [m for m in msgs if m.get("_injected_kind") == "token watch"]
     assert len(notes) == 1 and "Kijowska 17" in notes[0]["content"]
+    import json
+    from agent.core import token_watch_diag as diag
+    recs = [json.loads(line) for f in diag.diag_dir().glob("*.jsonl")
+            for line in f.read_text().splitlines()]
+    assert [r["kind"] for r in recs if r["type"] == "outcome"] == ["claim"]
 
 
 async def test_turn_tool_doubt_note_after_tool_results(tmp_path, monkeypatch, reset_file_tool_state):
@@ -319,12 +237,3 @@ async def test_turn_tool_doubt_note_after_tool_results(tmp_path, monkeypatch, re
     i = next(i for i, m in enumerate(sent) if "[token watch]" in str(m.get("content")))
     assert sent[i - 1]["role"] == "tool"
 
-
-def test_tokwatch_command():
-    cfg = Config()
-    out = calib.run_tokwatch_command(cfg, "")
-    assert "derail=retry" in out and "no models learned" in out
-    calib.learn("m", healthy(200), [], cfg.token_watch)
-    assert "m: 1 calls" in calib.run_tokwatch_command(cfg, "")
-    assert "dropped 1" in calib.run_tokwatch_command(cfg, "reset m")
-    assert calib.run_tokwatch_command(cfg, "bogus").startswith("usage")

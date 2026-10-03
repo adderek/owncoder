@@ -1,0 +1,9 @@
+{
+  "_doc": "Shipped token_watch thresholds per model (core/token_watch_calib.py layer 0). First match wins; fnmatch on the model name, case-insensitive. Counts as [token_watch] prior_weight sessions. Add an entry after measuring a model: replay its tokstats.jsonl through token_watch_calib.call_stats + _hist_thresholds. derail_* are the learned thresholds; ppl = typical call perplexity (drift baseline before own data).",
+  "priors": [
+    {"match": "ornith10-35b-iq4nl*", "derail_entropy": 0.54, "derail_p": 0.58, "ppl": 1.18,
+     "source": "2026-10-03, 20 calls, fork server-logprobs, top_logprobs=5"},
+    {"match": "ornith10-35b*", "derail_entropy": 0.48, "derail_p": 0.62, "ppl": 1.10,
+     "source": "2026-10-03, 23 calls, fork server-logprobs, top_logprobs=5"}
+  ]
+}
