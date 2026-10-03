@@ -189,6 +189,24 @@ def _is_model_not_found(exc: BaseException) -> bool:
     return "not found" in low and ("model" in low or "no such model" in low)
 
 
+def _active_entry_ctx(config: "Config") -> int:
+    """Configured ctx_window of the active (base_url, model) entry, or 0.
+
+    Lets the ctx-exceeded handler tell a model served at its real window from
+    one answering with a tiny default — the latter means the endpoint is not
+    serving the model we expect (a box waking from suspend, a router that loaded
+    the wrong preset), i.e. the model is effectively unavailable.
+    """
+    try:
+        active = (config.llm.base_url, config.llm.model)
+        for e in (config.model_entries or {}).values():
+            if (e.base_url, e.model or config.llm.model) == active:
+                return int(getattr(e, "ctx_window", 0) or 0)
+    except Exception:
+        pass
+    return 0
+
+
 def _schema_weak(config: "Config") -> bool:
     """True when this endpoint has a recorded history of malformed tool calls.
 
@@ -421,6 +439,7 @@ async def run_turn(
     toolparse_retry_count = 0  # unparseable-tool-call retries taken this turn
     transport_retry_count = 0   # same-request retries after a dropped socket/timeout
     self_retry_count = 0        # retries on the only live endpoint when no failover target exists
+    ctx_shrink_count = 0        # compact-and-retry rounds after an exceed_context_size_error
     _error_streak = 0        # consecutive iterations where every tool call errored
     _prev_round_results: dict[str, str] = {}  # signature -> result, previous tool round
     _repeat_temperature: float | None = None  # sampling bump for the next request
@@ -726,9 +745,19 @@ async def run_turn(
             if isinstance(err_body, dict) and err_body.get("error", {}).get("type") == "exceed_context_size_error":
                 err_detail = err_body.get("error", {})
                 server_ctx = err_detail.get("n_ctx")
+                # An endpoint answering with a context window far below what this
+                # entry is configured for is not serving the model we expect: a
+                # llama.cpp box waking from suspend, or a router that loaded a
+                # default/wrong preset, reports a tiny n_ctx. The fixed
+                # system+tools preamble cannot be compacted below that floor, so
+                # retrying here loops forever against an effectively-unavailable
+                # model. Detect it and fail over instead.
+                expected_ctx = _active_entry_ctx(config)
+                degraded = bool(server_ctx and expected_ctx and server_ctx < expected_ctx // 2)
                 if server_ctx and server_ctx < config.llm.ctx_window:
                     logger.warning("Server reports ctx_window=%d, config had %d — adjusting", server_ctx, config.llm.ctx_window)
                     config.llm.ctx_window = server_ctx
+                ctx_shrink_count += 1
                 logger.warning("Context size exceeded (%s), compacting and retrying...", err_detail.get("message", ""))
                 _phase("compact", "context exceeded, retrying")
                 old_count = _count_tokens_approx(messages)
@@ -742,6 +771,41 @@ async def run_turn(
                     confidence_monitor.signal() if confidence_monitor else None)
                 if token_est > budget:
                     messages = _truncate_large_messages(messages, budget)
+                # Compaction cannot shrink the request below the server's window
+                # (degraded endpoint, or still over budget after truncation, or
+                # we have already tried compacting twice). The model is
+                # unavailable at the window we need — cool the endpoint down and
+                # fail over, exactly like model-not-found.
+                if degraded or token_est > budget or ctx_shrink_count > 2:
+                    turn_errors.record_model_outcome(config, "failure")
+                    turn_errors.mark_endpoint_cooldown(config)
+                    fcfg = getattr(config, "failover", None)
+                    if (fcfg is not None and fcfg.enabled
+                            and failover_count < max(1, int(fcfg.max_retries))):
+                        new_client = turn_errors.try_failover(config)
+                        if new_client is not None:
+                            client = new_client
+                            failover_count += 1
+                            ctx_shrink_count = 0
+                            _phase("failover", f"endpoint ctx too small → {config.llm.model}")
+                            logger.warning(
+                                "failover: endpoint ctx window %s too small "
+                                "(expected ~%s) — model unavailable, retrying on '%s'",
+                                server_ctx, expected_ctx or "?", config.llm.model)
+                            continue
+                    # No failover target. If the request now fits the degraded
+                    # window, soldier on rather than killing a turn that can
+                    # still complete; otherwise surface the no-model state.
+                    if token_est > budget:
+                        turn_errors.clear_endpoint_cooldown(config)
+                        raise turn_errors.no_usable_model_error(
+                            config, e,
+                            reason=(f"endpoint {config.llm.base_url} serves context window "
+                                    f"{server_ctx} (expected ~{expected_ctx or '?'}); the request "
+                                    f"does not fit even compacted and no other model could take "
+                                    f"over — the model may be unavailable (box asleep / wrong "
+                                    f"preset loaded)")) from e
+                    turn_errors.clear_endpoint_cooldown(config)
                 continue
             if _is_model_not_found(e):
                 # The endpoint is up but serves no such model (a router whose

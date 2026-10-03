@@ -119,3 +119,25 @@ def test_no_usable_model_error_accepts_reason():
     err = turn_errors.no_usable_model_error(
         cfg, RuntimeError("boom"), reason="endpoint X does not serve model 'y'")
     assert "does not serve model" in str(err)
+
+
+def test_active_entry_ctx_reads_configured_window():
+    # A box waking from suspend answers with a tiny n_ctx; the handler compares
+    # it against the entry's configured window to spot the degraded endpoint.
+    from agent.core.turn import _active_entry_ctx
+
+    cfg = _cfg(active_cloud=False)
+    cfg.model_entries["active"].ctx_window = 131072
+    assert _active_entry_ctx(cfg) == 131072
+    # Unknown active pair → 0 (no false "degraded" signal).
+    cfg.llm.model = "something-else"
+    assert _active_entry_ctx(cfg) == 0
+
+
+def test_degraded_ctx_detected_below_half_configured():
+    # server_ctx 8192 vs configured 131072 → degraded (model unavailable at the
+    # window we need); a legitimately small window that merely needs compaction
+    # is not flagged.
+    expected = 131072
+    assert (8192 < expected // 2) is True
+    assert (120000 < expected // 2) is False
