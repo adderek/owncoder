@@ -370,7 +370,7 @@ def _staged_repo(tmp_path, size=3000):
     return repo
 
 
-def _strict_run(monkeypatch, tmp_path, entry, *, fail=False, extra=()):
+def _strict_run(monkeypatch, tmp_path, entry, *, fail=False, extra=(), size=3000):
     """Run cmd_commit with `-ms strict` against a fake registry and client.
     Returns (models called, printed output, exit code or None)."""
     from types import SimpleNamespace
@@ -379,7 +379,7 @@ def _strict_run(monkeypatch, tmp_path, entry, *, fail=False, extra=()):
     from agent.config import Config
     from rich.console import Console
 
-    repo = _staged_repo(tmp_path)
+    repo = _staged_repo(tmp_path, size)
     monkeypatch.chdir(tmp_path)
     other = _StrictEntry(model="default-model")
 
@@ -434,11 +434,26 @@ def _strict_run(monkeypatch, tmp_path, entry, *, fail=False, extra=()):
 
 
 def test_strict_run_sizes_chunks_from_its_own_model_and_uses_only_it(monkeypatch, tmp_path):
-    entry = _StrictEntry(model="strict-model", ctx_window=2000)
+    entry = _StrictEntry(model="strict-model", ctx_window=500)
     calls, out, code = _strict_run(monkeypatch, tmp_path, entry, extra=("-c", "50%"))
     assert code is None, out
-    assert "chunks of ≤1,000" in out                  # 50% of the -ms model's 2000
+    assert "chunks of ≤1,000" in out                  # 50% of 500 tokens, 4 chars/token
     assert calls and set(calls) == {"strict-model"}   # summaries and final message
+
+
+def test_diff_that_fits_the_context_goes_in_one_request(monkeypatch, tmp_path):
+    entry = _StrictEntry(model="strict-model", ctx_window=10_000)
+    calls, out, code = _strict_run(monkeypatch, tmp_path, entry)   # no -c
+    assert code is None, out
+    assert "chunks of" not in out
+    assert calls == ["strict-model"]                  # one request, no summaries
+
+
+def test_diff_too_big_for_the_context_is_chunked_at_half(monkeypatch, tmp_path):
+    entry = _StrictEntry(model="strict-model", ctx_window=3000)
+    calls, out, code = _strict_run(monkeypatch, tmp_path, entry, size=30_000)
+    assert code is None, out
+    assert "chunks of ≤6,000" in out                  # 50% of 3000 tokens, 4 chars/token
 
 
 def test_strict_run_fails_instead_of_falling_back(monkeypatch, tmp_path):
@@ -456,3 +471,14 @@ def test_strict_run_refuses_an_unadvertised_model_before_any_call(monkeypatch, t
     assert code == 1
     assert calls == []
     assert "does not advertise" in out
+
+
+def test_commit_runs_without_agent_init(monkeypatch, tmp_path):
+    from agent.cli.main import _resolve_project, build_parser
+    monkeypatch.chdir(tmp_path)                       # no .agent/ here or above
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    args = build_parser().parse_args(["commit", "."])
+    root, config = _resolve_project(args)
+    assert root is None
+    assert config.tools.working_dir == str(tmp_path)
+    assert config.tools.agent_dir == str(tmp_path / "state" / "agent")

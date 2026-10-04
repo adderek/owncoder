@@ -30,6 +30,16 @@ def _version_string() -> str:
         return "owncoder (source checkout)"
 
 
+# Commands that work in any directory (`commit` only needs a git repo), so
+# they do not require `agent init`.
+_PROJECTLESS_COMMANDS = frozenset({"commit"})
+
+
+def _user_state_dir() -> Path:
+    base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+    return Path(base) / "agent"
+
+
 def _resolve_project(args) -> tuple[Path | None, "Config"]:
     """Find the project root and load that project's config.
 
@@ -53,7 +63,9 @@ def _resolve_project(args) -> tuple[Path | None, "Config"]:
     if args.command != "init":
         temp_tools = ToolsConfig()
         project_root = _find_project_root(start, temp_tools.search_parents)
-        if project_root is None:
+        if project_root is None and args.command in _PROJECTLESS_COMMANDS:
+            pass  # state goes to the user state dir, see below
+        elif project_root is None:
             where = str(start) if working_dir else "Current directory"
             print(f"Error: {where} (and parents) is not a valid agent project.")
             print("Please run 'agent init' in the desired project directory.")
@@ -73,6 +85,11 @@ def _resolve_project(args) -> tuple[Path | None, "Config"]:
     elif working_dir:
         # `init`: no root to find yet, but the flag still says where to work.
         config.tools.working_dir = str(start)
+    if project_root is None and args.command in _PROJECTLESS_COMMANDS:
+        # No `.agent/` here and none is created: logs and state go to the
+        # user state dir instead of littering the repo.
+        config.tools.working_dir = str(start)
+        config.tools.agent_dir = str(_user_state_dir())
 
     return project_root, config
 
@@ -263,8 +280,10 @@ def build_parser() -> argparse.ArgumentParser:
                                "no fallback to other models")
     commit_p.add_argument("--no-probe", dest="probe", action="store_false", default=True,
                           help="When listing models, skip the /models availability probe")
-    commit_p.add_argument("-c", "--chunk-size", type=str, default="50%",
-                          help="Chunk size (integer chars or percentage, e.g. '12000' or '50%%'); default: 50%% of context window")
+    commit_p.add_argument("-c", "--chunk-size", type=str, default=None,
+                          help="Chunk size (integer chars or percentage of the context window, e.g. "
+                               "'12000' or '50%%'). Default: whole diff in one request when it fits "
+                               "the summarizer's context, else token_limits.commit_chunk_chars or 50%%")
     commit_p.add_argument("-y", "--yes", action="store_true",
                           help="Commit without the confirmation prompt (for scripts and CI)")
     commit_p.add_argument("--print", dest="print_only", action="store_true",

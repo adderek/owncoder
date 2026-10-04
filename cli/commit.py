@@ -240,6 +240,9 @@ def _err_brief(exc: Exception) -> str:
     return f"{type(exc).__name__}: {s[:200]}" if s else type(exc).__name__
 
 
+_CHARS_PER_TOKEN = 4  # rough average for code and diffs
+
+
 def strict_summarizer(args) -> str | None:
     """The entry named by `-ms NAME`, or None (no flag, or bare `-ms` = list).
 
@@ -467,49 +470,6 @@ def cmd_commit(args, config):
                           f"ctx_window on the entry. Sizing chunks from the configured "
                           f"default ({ctx_window}).[/yellow]")
 
-    # Resolve chunk size
-    chunk_size_arg = getattr(args, "chunk_size", None)
-    if chunk_size_arg:
-        if chunk_size_arg.endswith("%"):
-            try:
-                percentage = float(chunk_size_arg[:-1]) / 100.0
-                chunk_chars = int(ctx_window * percentage) if ctx_window > 0 else 0
-            except (ValueError, TypeError):
-                console.print(f"[red]Invalid chunk size percentage: {chunk_size_arg}[/red]")
-                return
-        else:
-            try:
-                chunk_chars = int(chunk_size_arg)
-            except ValueError:
-                console.print(f"[red]Invalid chunk size: {chunk_size_arg}. Must be integer or percentage (e.g. '50%').[/red]")
-                return
-    else:
-        chunk_chars = 0
-
-    if chunk_chars <= 0:
-        chunk_chars = config.token_limits.commit_chunk_chars
-    if chunk_chars <= 0:
-        # Auto-derive: leave room for running summary (output of prev step),
-        # output budget for this step, and system/prompt overhead (~500 tok).
-        # chars_per_token ≈ 4 for code/diffs.
-        summary_tok = config.token_limits.commit_summary_tokens
-        overhead_tok = summary_tok + summary_tok + 500
-        chunk_chars = max(4000, (ctx_window - overhead_tok) * 4)
-
-    summary_tokens = config.token_limits.commit_summary_tokens
-    diff_chars = len(staged_diff)
-    chunks = _split_diff(staged_diff, chunk_chars) if diff_chars > chunk_chars else [staged_diff]
-    chunked = len(chunks) > 1
-
-    from rich.live import Live
-    from rich.spinner import Spinner
-    from rich.text import Text
-    from rich.markup import escape as _markup_escape
-    import time as _time
-
-    state = {"tokens": 0, "buf": "", "start": _time.monotonic(), "phase": "starting",
-             "raw_outputs": [], "fallback": False, "cand_idx": 0, "model_failures": []}
-
     # Resolve summarizer entry:
     # 1. explicit -ms NAME flag (strict: the only model used)
     # 2. [models] summarizer role in config
@@ -528,6 +488,59 @@ def cmd_commit(args, config):
         if entry is not None:
             summ_entry = entry
             summ_entry_name = name
+
+    # Chunks go to the summarizer, so size them from its context window,
+    # not the default model's.
+    if strict_entry is None and summ_entry is not None:
+        ctx_window = _strict_ctx_window(summ_entry) or config.llm.ctx_window
+
+    # Chunk sizing. Without -c the whole diff goes in one request whenever it
+    # fits the summarizer's window; chunks exist only for diffs that do not.
+    # An explicit -c always sets the chunk size.
+    summary_tok = config.token_limits.commit_summary_tokens
+    # Room for the running summary (previous step's output), this step's
+    # output budget and the system/prompt overhead (~500 tok).
+    overhead_tok = summary_tok + summary_tok + 500
+    single_max = max(4000, (ctx_window - overhead_tok) * _CHARS_PER_TOKEN)
+
+    chunk_size_arg = getattr(args, "chunk_size", None)
+    if chunk_size_arg is None:
+        if len(staged_diff) <= single_max:
+            chunk_size_arg = str(len(staged_diff))
+        elif config.token_limits.commit_chunk_chars > 0:
+            chunk_size_arg = str(config.token_limits.commit_chunk_chars)
+        else:
+            chunk_size_arg = "50%"
+    if chunk_size_arg.endswith("%"):
+        try:
+            percentage = float(chunk_size_arg[:-1]) / 100.0
+            # ctx_window is in tokens; chunks are chars (≈4 per token).
+            chunk_chars = int(ctx_window * percentage * _CHARS_PER_TOKEN) if ctx_window > 0 else 0
+        except (ValueError, TypeError):
+            console.print(f"[red]Invalid chunk size percentage: {chunk_size_arg}[/red]")
+            return
+    else:
+        try:
+            chunk_chars = int(chunk_size_arg)
+        except ValueError:
+            console.print(f"[red]Invalid chunk size: {chunk_size_arg}. Must be integer or percentage (e.g. '50%').[/red]")
+            return
+    if chunk_chars <= 0:
+        chunk_chars = single_max
+
+    summary_tokens = config.token_limits.commit_summary_tokens
+    diff_chars = len(staged_diff)
+    chunks = _split_diff(staged_diff, chunk_chars) if diff_chars > chunk_chars else [staged_diff]
+    chunked = len(chunks) > 1
+
+    from rich.live import Live
+    from rich.spinner import Spinner
+    from rich.text import Text
+    from rich.markup import escape as _markup_escape
+    import time as _time
+
+    state = {"tokens": 0, "buf": "", "start": _time.monotonic(), "phase": "starting",
+             "raw_outputs": [], "fallback": False, "cand_idx": 0, "model_failures": []}
 
     # Primary (final commit-message) model: an explicit `commit` role pin wins,
     # else the active default endpoint (config.llm).
