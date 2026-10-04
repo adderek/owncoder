@@ -141,3 +141,13 @@ def test_degraded_ctx_detected_below_half_configured():
     expected = 131072
     assert (8192 < expected // 2) is True
     assert (120000 < expected // 2) is False
+
+
+def test_default_policy_keeps_a_pin(monkeypatch):
+    # No pinned_policy configured: a pinned entry is not left automatically,
+    # even with live peers (the LAN model once took over a pinned OpenRouter one).
+    cfg = _cfg()
+    cfg.session_role_pins = {"default"}
+    _all_live(monkeypatch)
+    assert turn_errors.try_failover(cfg) is None
+    assert cfg.llm.model == "active-model"

@@ -658,7 +658,7 @@ max_retries = 1         # at most this many remote→local switches per turn
 #   "ask"       = never switch automatically; stop and ask the user
 # Ignored when the entry was NOT pinned — an auto-tier turn keeps failing over
 # freely within its model-mode tiers.
-# pinned_policy = "fallback"
+# pinned_policy = "ask"     # default: a pin is never left automatically
 
 # ── Per-turn privacy routing ──────────────────────────────────────────────────
 # When the active endpoint is REMOTE and the outbound payload contains a

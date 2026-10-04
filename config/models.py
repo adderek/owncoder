@@ -1329,7 +1329,8 @@ class FailoverConfig:
     #   "ask"       — never switch automatically; stop and surface it.
     # Only consulted for pinned entries — an unpinned (auto-tier) turn keeps
     # failing over freely within its model-mode tiers.
-    pinned_policy: str = "fallback"   # fallback | free-only | ask
+    # Default "ask": a pin is a hard choice, never left without the user.
+    pinned_policy: str = "ask"   # fallback | free-only | ask
 
 
 @dataclass
