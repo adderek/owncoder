@@ -116,12 +116,14 @@ def test_trailing_assistant_prefill_is_stripped():
     assert [m["role"] for m in out] == ["user"]
 
 
-def test_trailing_assistant_with_tool_calls_is_kept():
+def test_answered_tool_calls_are_kept():
     out = turn_setup.normalize_api_messages([
         {"role": "user", "content": "hi"},
         {"role": "assistant", "content": None, "tool_calls": [{"id": "a"}]},
+        {"role": "tool", "tool_call_id": "a", "content": "ok"},
     ])
-    assert [m["role"] for m in out] == ["user", "assistant"]
+    assert [m["role"] for m in out] == ["user", "assistant", "tool"]
+    assert out[1]["tool_calls"] == [{"id": "a"}]
 
 
 def test_reasoning_content_backfilled_for_thinking_sessions():
@@ -129,8 +131,10 @@ def test_reasoning_content_backfilled_for_thinking_sessions():
         {"role": "assistant", "content": "a", "_reasoning_content": "why"},
         {"role": "user", "content": "next"},
         {"role": "assistant", "content": "b", "tool_calls": [{"id": "x"}]},
+        {"role": "tool", "tool_call_id": "x", "content": "ok"},
     ])
     assistants = [m for m in out if m["role"] == "assistant"]
+    assert len(assistants) == 2
     assert all("reasoning_content" in m for m in assistants)
 
 
@@ -333,3 +337,20 @@ def test_marking_a_cooldown_never_raises(monkeypatch):
     monkeypatch.setattr(model_probe, "mark_rate_limited", _boom)
     turn_errors.mark_endpoint_cooldown(Config())
     turn_errors.mark_endpoint_cooldown(Config(), 300.0)
+
+
+def test_unanswered_tool_calls_are_dropped_from_the_wire_copy():
+    from agent.core.turn_setup import normalize_api_messages
+    call = lambda i: {"id": i, "type": "function",
+                      "function": {"name": "read_file", "arguments": "{}"}}
+    msgs = [
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "content": None, "tool_calls": [call("a"), call("b")]},
+        {"role": "tool", "tool_call_id": "a", "content": "ok"},
+        {"role": "assistant", "content": "stopped", "tool_calls": [call("c")]},
+    ]
+    out = normalize_api_messages(msgs)
+    assert [c["id"] for c in out[1]["tool_calls"]] == ["a"]   # "b" never answered
+    # The trailing call was never answered: it goes, and the content-only
+    # assistant left behind is a prefill, so it is stripped as well.
+    assert out[-1] == {"role": "tool", "tool_call_id": "a", "content": "ok"}

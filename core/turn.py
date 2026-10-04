@@ -1174,6 +1174,14 @@ async def run_turn(
                         if _try_escalate_loop_guard(_clear_read_counts, inject_note=False):
                             _read_guard_escalated = True
                         else:
+                            # Answer every call of this batch before stopping:
+                            # an assistant tool_calls message left without its
+                            # tool results is rejected by strict servers
+                            # (llama.cpp: "Cannot continue an assistant message
+                            # that contains tool calls") on the next request.
+                            done = patched_results + [result]
+                            for _tc, _r in zip(tool_calls, done + list(results[len(done):])):
+                                messages.append(_tool_result_message(_tc.id, _r))
                             messages = messages + [{"role": "assistant", "content": stop_note}]
                             return "".join(content_parts + [stop_note]), messages
                 elif tc.function.name == "edit_file":

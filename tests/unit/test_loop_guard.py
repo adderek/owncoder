@@ -277,3 +277,43 @@ class TestReadAutoAdvance:
         for _ in range(STOP):
             _, stop = patch_read_file_result(tc, result, counts, WARN, STOP, adv)
         assert stop is not None and "loop guard" in stop
+
+
+async def test_read_guard_stop_answers_every_tool_call(monkeypatch):
+    """The read-range stop used to leave the round's tool_calls unanswered;
+    llama.cpp then rejected the next request ("Cannot continue an assistant
+    message that contains tool calls")."""
+    cfg = Config()
+    cfg.loop_guard.repeat_threshold = 1000   # let the read guard be what stops
+    cfg.loop_guard.identical_repeat_error = False
+    cfg.llm.max_iterations = 50
+
+    async def _fake_execute(tc, config=None):
+        return json.dumps({"content": "same"})
+
+    import agent.core.turn as turn_mod
+    monkeypatch.setattr(turn_mod, "execute_tool", _fake_execute)
+    monkeypatch.setattr(turn_mod, "get_schemas", lambda: [])
+
+    seq = iter(range(10_000))
+
+    def _call(path):
+        tc = _fake_tool_call("read_file", {"path": path, "start_line": 1, "end_line": 9})
+        tc.id = f"call_{next(seq)}"              # unique per round, like a real server
+        return tc
+
+    class _Completions:
+        async def create(self, **kw):
+            return _StubResponse([_call("x.py"), _call("y.py")])
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=_Completions()))
+    messages = [{"role": "system", "content": "x"}, {"role": "user", "content": "go"}]
+    # The generic repeat guard is waved through (as the user did in the UI),
+    # so the read-range guard is what stops the turn.
+    response, out = await run_turn(messages, cfg, client,
+                                   on_loop_detected=lambda summary, count: True)
+    assert "same range read" in response
+    called = {c["id"] for m in out if m.get("role") == "assistant"
+              for c in m.get("tool_calls") or []}
+    answered = {m["tool_call_id"] for m in out if m.get("role") == "tool"}
+    assert called and called <= answered

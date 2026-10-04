@@ -69,6 +69,36 @@ def select_tools(all_schemas: list[dict], config: "Config",
     return tools, _refresh, compaction_on
 
 
+def _drop_unanswered_tool_calls(api_messages: list[dict]) -> list[dict]:
+    """Remove tool_calls that no tool message answers.
+
+    Strict servers reject them: llama.cpp answers 400 "Cannot continue an
+    assistant message that contains tool calls" for a trailing one. They come
+    from a turn that stopped between recording the calls and their results.
+    A call stripped here was never answered, so the model simply re-decides.
+    """
+    out: list[dict] = []
+    for i, m in enumerate(api_messages):
+        calls = m.get("tool_calls") if m.get("role") == "assistant" else None
+        if calls:
+            answered = set()
+            for nxt in api_messages[i + 1:]:
+                if nxt.get("role") != "tool":
+                    break
+                answered.add(nxt.get("tool_call_id"))
+            kept = [c for c in calls if c.get("id") in answered]
+            if len(kept) != len(calls):
+                logger.warning("run_turn: dropping %d unanswered tool call(s) before API call",
+                               len(calls) - len(kept))
+                m = {k: v for k, v in m.items() if k != "tool_calls"}
+                if kept:
+                    m["tool_calls"] = kept
+                elif not m.get("content"):
+                    continue  # nothing left to send
+        out.append(m)
+    return out
+
+
 def normalize_api_messages(messages: list[dict], config=None) -> list[dict]:
     """Strip internal keys and apply model-quirk fixups to produce API-ready messages.
 
@@ -100,6 +130,7 @@ def normalize_api_messages(messages: list[dict], config=None) -> list[dict]:
     if sys_msgs:
         merged_content = "\n\n".join(m["content"] for m in sys_msgs if m.get("content"))
         api_messages = [{**sys_msgs[0], "content": merged_content}] + rest
+    api_messages = _drop_unanswered_tool_calls(api_messages)
     # Trailing assistant without tool_calls = unintentional prefill; reject by
     # most APIs (and always incompatible with enable_thinking). Strip it.
     if api_messages and api_messages[-1].get("role") == "assistant" and not api_messages[-1].get("tool_calls"):
