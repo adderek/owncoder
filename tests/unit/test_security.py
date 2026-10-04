@@ -356,6 +356,18 @@ class TestRunnerHostFallback:
         with pytest.raises(sec_runner.SandboxUnavailable):
             sec_runner.run(["echo", "x"])
 
+    def test_bogus_backend_name_is_not_treated_as_a_sandbox(self, project, monkeypatch):
+        # Regression: _probe_backend() returned True for any name other than
+        # bwrap/firejail, so a mistyped security.sandbox_backend naming an
+        # ordinary binary on PATH was accepted as a working sandbox and run()
+        # fell through to its host-exec branch despite require_sandbox=True.
+        sec_policy.get().cfg.require_sandbox = True
+        sec_policy.get().cfg.sandbox_backend = "true"
+        sec_runner._BACKEND = None
+        monkeypatch.setattr(shutil, "which", lambda _n: "/usr/bin/true")
+        with pytest.raises(sec_runner.SandboxUnavailable):
+            sec_runner.run(["echo", "x"])
+
     def test_cwd_outside_root_rejected(self, project):
         sec_policy.get().cfg.sandbox_backend = "none"
         sec_runner._BACKEND = None

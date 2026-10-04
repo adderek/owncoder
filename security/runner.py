@@ -88,7 +88,11 @@ def _probe_backend(name: str) -> bool:
         elif name == "firejail":
             argv = ["firejail", "--quiet", "--noprofile", "--net=none", "--", "/bin/true"]
         else:
-            return True
+            # Unknown name: nothing is run, so nothing is confirmed. Returning
+            # True here let a bogus security.sandbox_backend value (any binary
+            # on PATH, e.g. "sh") pass select_backend() and fall through to
+            # run()'s host-exec branch — silently bypassing require_sandbox.
+            return False
         r = subprocess.run(argv, capture_output=True, timeout=5)
         return r.returncode == 0
     except Exception:
@@ -169,10 +173,12 @@ def _rlimit_preexec(sandbox_backend: str = "none") -> None:
         resource.setrlimit(resource.RLIMIT_DATA, (mem, mem))
     except (ValueError, OSError):
         pass
+    # RLIMIT_NPROC is per-UID, not per-process: applying it to the sandbox
+    # launcher (bwrap/firejail) counts ALL processes of the user, so
+    # unshare(CLONE_NEWPID) returns EAGAIN and the sandbox never starts.
+    # The sandboxed child is already bounded by its own PID namespace and
+    # cgroup. Only limit nproc for host exec.
     if sandbox_backend == "none":
-        # For bwrap/firejail the nproc limit would be applied to the sandbox
-        # launcher itself, causing unshare(CLONE_NEWPID) to fail with EAGAIN
-        # when the user already has many processes. Apply it only for host exec.
         try:
             resource.setrlimit(resource.RLIMIT_NPROC, (cfg.nproc, cfg.nproc))
         except (ValueError, OSError):
@@ -267,19 +273,24 @@ def _own_interpreter_under_root(root: Path) -> Path | None:
 def _truncated(partial, root: Path, globs: list[str], why: str):
     """Handle a scan that ran out of budget before covering the tree.
 
-    Fails closed by default. The limits bound how long this walk can take — it
-    runs for every command — and how many binds bwrap can take, but a
-    truncated walk silently stops masking the secrets and stops binding the
-    policy files read-only, and nothing downstream can tell that from "the
-    tree really has no more matches". A shell command is not worth running
-    under a protection that quietly lapsed.
+    The limits bound how long this walk can take — it runs for every command
+    — and how many binds bwrap can take, but a truncated walk silently stops
+    masking the secrets and stops binding the policy files read-only, and
+    nothing downstream can tell that from "the tree really has no more
+    matches". A shell command is not worth running under a protection that
+    quietly lapsed.
+
+    Default: fail closed. Users with large trees can opt in to fail-open via
+    `mask_scan_fail_open = true`, which returns partial results with a
+    warning instead of refusing the command.
     """
-    if getattr(policy.get().cfg, "mask_scan_fail_open", False):
+    if policy.get().cfg.mask_scan_fail_open:
         logger.warning(
-            "path-glob %s under %s — matching files beyond it were NOT masked / "
-            "made read-only (globs: %s). Running anyway: "
-            "security.mask_scan_fail_open is on.",
-            why, root, ", ".join(globs),
+            "sandbox: scan incomplete under %s — %s past that point were not "
+            "masked or made read-only (files matching %s). "
+            "Command running with partial protection "
+            "(security.mask_scan_fail_open is on).",
+            root, why, ", ".join(globs),
         )
         return partial
     raise SandboxMaskIncomplete(
@@ -506,6 +517,12 @@ def _interpreter_paths(root: Path) -> list[str]:
     too, or exec fails on the unresolvable hop. Paths under the project root
     are skipped — the rw root bind already covers them and a read-only
     re-bind would break writes.
+
+    The paths returned are *outside* the root by design (the venv / base Python
+    live there) and are bound read-only, so the sandbox can run the interpreter
+    without gaining write access. The values come from sys.executable /
+    sys.prefix — the trusted runtime, not attacker-controlled input — and /usr
+    is already excluded below.
     """
     cands: set[str] = {sys.prefix, sys.base_prefix}
     hop = Path(sys.executable)
@@ -523,6 +540,12 @@ def _interpreter_paths(root: Path) -> list[str]:
             continue
         cp = Path(c)
         if cp == root or root in cp.parents:
+            # Inside the project — already covered by the rw root bind.
+            continue
+        if cp.parent == cp or cp in root.parents:
+            # "/" or an ancestor of the project root. Binding it read-only
+            # would expose the whole host tree (or a parent dir) inside the
+            # sandbox; secrets outside the project are not masked. Refuse.
             continue
         if not cp.exists():
             continue
@@ -586,6 +609,9 @@ def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool, seccomp_fd: int | 
     a = [
         "bwrap",
         "--die-with-parent",
+        # --new-session starts a new session keyring and detaches the controlling
+        # terminal, which blocks TIOCSTI terminal-injection out of the sandbox.
+        # It is a hardening flag, not an escape vector — keep it.
         "--new-session",
         "--unshare-user",
         "--unshare-ipc",
@@ -593,6 +619,11 @@ def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool, seccomp_fd: int | 
         "--unshare-uts",
         "--unshare-cgroup-try",
         "--cap-drop", "ALL",
+        # --proc mounts a fresh /proc for the new PID namespace (it shows only the
+        # sandboxed processes, never the host's) and --dev mounts a minimal
+        # private /dev (null/zero/full/random/urandom/tty only — never /dev/mem).
+        # Both are required: without /proc the interpreter cannot start, without
+        # /dev most programs fail on the first open of /dev/null.
         "--proc", "/proc",
         "--dev", "/dev",
         *tmp_op,
@@ -787,6 +818,9 @@ def run(
             # fallback leaves grandchildren (e.g. a shell's subprocesses) alive.
             start_new_session=True,
         )
+        # Close seccomp_fd BEFORE on_spawn: the callback might capture the fd
+        # and keep it alive past the command's lifetime, leaking the seccomp
+        # filter to unrelated processes. We must close it ourselves.
         if seccomp_fd is not None:
             os.close(seccomp_fd)
             seccomp_fd = None

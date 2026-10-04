@@ -622,6 +622,11 @@ class SecurityConfig:
         r"^AZURE_.*", r"^GCP_.*", r"^GCLOUD_.*", r"^CLAUDE_.*",
         r"^NPM_TOKEN.*", r".*CREDENTIAL.*", r".*PASSWD.*",
         r"^DATABASE_URL$", r"^REDIS_URL$", r"^MONGO.*URI$",
+        # Code-injection hooks: LD_PRELOAD loads a library into every child,
+        # PYTHONSTARTUP/INSPECT/BREAKPOINT run code in every interpreter.
+        # (LD_LIBRARY_PATH stays: ROCm/CUDA toolchains need it to find libs.)
+        r"^LD_PRELOAD$", r"^PYTHONSTARTUP$",
+        r"^PYTHONINSPECT$", r"^PYTHONBREAKPOINT$",
     ])
     argv_allow: list = field(default_factory=list)
     # Write-deny globs (root-relative). None = use built-in defaults.

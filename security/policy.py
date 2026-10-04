@@ -108,14 +108,23 @@ class Policy:
         read-write access to whatever it points at — and `reset_scratch` would
         delete the target's contents from the *host* process. Both are verified
         attacks, not theory, so every use of the scratch re-checks the chain.
+
+        Also verifies the scratch directory itself is not a symlink: a command
+        that replaces the scratch dir with a symlink to `/` would mount the
+        entire filesystem as /tmp inside the sandbox.
         """
         d = self.scratch_dir()
+        # The scratch dir itself must not be a symlink — a symlinked scratch
+        # means bwrap --bind follows the link at mount time, mounting the
+        # target (not the link) onto /tmp. Verified escape vector.
+        if d.is_symlink():
+            return False
         try:
             rel = d.relative_to(self.root)
         except ValueError:
             # Scratch configured outside the project: the sandbox never mounts
             # that side, so the shell cannot plant a link there.
-            return not d.is_symlink()
+            return True
         cur = self.root
         for part in rel.parts:
             cur = cur / part
@@ -129,6 +138,10 @@ class Policy:
         None means callers fall back to the old behaviour — a per-command tmpfs
         /tmp and no TMPDIR override — rather than operating on a path an
         attacker chose.
+
+        Re-checks `scratch_path_is_clean()` *after* mkdir: a race between the
+        initial check and mkdir could let the shell plant a symlink on a
+        sibling directory. The post-mkdir check catches that.
         """
         d = self.scratch_dir()
         try:
@@ -146,6 +159,12 @@ class Policy:
                 return None
             d.mkdir(parents=True, exist_ok=True)
             os.chmod(d, 0o700)
+            # Post-mkdir re-check: a race between the initial check and mkdir
+            # could let the shell plant a symlink on a sibling directory.
+            if not self.scratch_path_is_clean():
+                logger.error("scratch: %s became untrustworthy after mkdir — "
+                             "refusing to use it", d)
+                return None
         except OSError as e:
             logger.warning("scratch: cannot create %s: %s", d, e)
             return None
