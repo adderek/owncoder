@@ -621,7 +621,7 @@ class Agent:
             self.messages = await compact(
                 self.messages,
                 self.config,
-                self._client,
+                self._live_client(),
                 facts_store=self._facts_store,
                 project_memory_store=self._project_memory_store,
                 session_id=self._session_id,
@@ -629,6 +629,23 @@ class Agent:
             logger.debug("idle compaction: %d tokens after compact", self.token_estimate())
         except Exception:
             logger.debug("idle compaction failed", exc_info=True)
+
+    def _live_client(self):
+        """``self._client``, rebuilt when ``config.llm`` points elsewhere.
+
+        Failover (``model_routing.switch_to_entry``) repoints ``config.llm`` at
+        another entry and hands the new client only to the turn that failed.
+        Reusing the old client next turn sent the new model id to the old
+        endpoint — e.g. a LAN model name to OpenRouter ("not a valid model ID").
+        """
+        want = (self.config.llm.base_url or "").rstrip("/")
+        have = str(getattr(self._client, "base_url", "") or "").rstrip("/")
+        if want and want != have:
+            from agent.core.llm_client import make_llm_client
+            logger.info("llm client: endpoint changed %s -> %s — rebuilding client",
+                        have or "?", want)
+            self._client = make_llm_client(self.config)
+        return self._client
 
     async def compact_messages(self) -> None:
         from agent.memory.compactor import compact
@@ -638,7 +655,7 @@ class Agent:
         self.messages = await compact(
             self.messages,
             self.config,
-            self._client,
+            self._live_client(),
             facts_store=self._facts_store,
             project_memory_store=self._project_memory_store,
             session_id=self._session_id,
@@ -1108,7 +1125,7 @@ class Agent:
             response, self.messages = await _run_turn_fn(
                 self.messages,
                 self.config,
-                self._client,
+                self._live_client(),
                 on_token=on_token,
                 on_tool_call=_tracking_on_tool_call,
                 on_tool_result=on_tool_result,

@@ -504,7 +504,7 @@ class TestCompactMessagesForwarding:
         monkeypatch.setattr(comp, "compact", fake_compact)
 
         stub = types.SimpleNamespace(
-            messages=["m"], config=None, _client=None,
+            messages=["m"], config=None, _client=None, _live_client=lambda: None,
             _facts_store="FS", _project_memory_store="PMS", _session_id="sid",
         )
         await Agent.compact_messages(stub)
