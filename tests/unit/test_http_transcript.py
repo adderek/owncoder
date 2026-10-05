@@ -68,7 +68,9 @@ class TestShape:
         out = _transcript([{"role": "assistant", "content": "", "tool_calls": [TC()]}])
         assert out[0]["tool_calls"][0] == {
             "id": "c9", "name": "grep", "args": "q='x'",
-            "args_full": '{\n  "q": "x"\n}'}
+            "args_full": '{\n  "q": "x"\n}',
+            "summary": {"hide_name": 50,
+                        "segs": [{"t": "x", "w": 1.0, "min": 1, "k": "q"}]}}
 
 
 class TestBothEndpointsUseIt:

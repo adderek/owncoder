@@ -55,6 +55,19 @@ def _working_dir() -> Path:
     return Path.cwd()
 
 
+def _rel_path(fpath: Path) -> str:
+    """*fpath* relative to the working dir, for the rules checks.
+
+    A path grant can put a resolved path outside the root; that one stays
+    absolute (``pol.root / abs`` is the abs path, so the security checks
+    still see the real location) instead of ``relative_to`` raising.
+    """
+    try:
+        return str(fpath.relative_to(_working_dir()))
+    except ValueError:
+        return str(fpath)
+
+
 def _resolve(path: str) -> Path:
     """Resolve *path* inside the working directory, rejecting escapes and
     symlink traversal. Delegates to the security.fs gate when the security

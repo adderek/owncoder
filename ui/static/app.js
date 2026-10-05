@@ -647,14 +647,68 @@ function renderChangeset(cs) {
   return wrap;
 }
 
-function toolCall(name, args, argsFull) {
+// Folded tool row: the server's segments (ui/tool_summary.py) laid out as
+// flex items sharing the row by weight w (w:1 + w:1 = half each). A segment
+// is capped at its own text width (max-content), so a short one shows whole
+// and its unused share goes to the others; min (ch) = floor before ellipsis.
+// Old servers send only the args string.
+function toolArgsHTML(args, summary) {
+  const segs = summary && summary.segs;
+  if (!segs) return '<span class="toolargs">' + esc(args || '') + '</span>';
+  return '<span class="toolargs segs">' + segs.map(s => {
+    const style = 'flex-grow:' + (s.w || 1) + ';min-width:' + (s.min || 0) + 'ch';
+    const cls = 'seg' + (s.st ? ' seg-' + s.st : '') + (s.fmt === 'path' ? ' seg-path' : '');
+    const label = s.k ? '<span class="seg-k">' + esc(s.k) + '=</span>' : '';
+    // seg-path: rtl ellipsis cuts the left end; the inner bdi keeps the text order.
+    const text = s.fmt === 'path' ? '<bdi>' + esc(s.t) + '</bdi>' : esc(s.t);
+    return '<span class="' + cls + '" style="' + style + '" title="' + esc(s.t) +
+           '">' + label + text + '</span>';
+  }).join('') + '</span>';
+}
+
+function toolSummaryHTML(name, args, summary) {
+  const hide = summary && summary.hide_name ? ' data-hide-below="' + (summary.hide_name | 0) + '"' : '';
+  return '<summary><span class="toolname"' + hide + '>⚙ <span class="toolname-t">' + esc(name) +
+    '</span></span>' + toolArgsHTML(args, summary) +
+    '<span class="mark pend">●</span></summary>';
+}
+
+// Tool name drops (icon stays) once the row is narrower than hide_below ch.
+// One observer for all folds; a fold inside a closed parent measures 0 and is
+// re-measured when it becomes visible.
+let _chPx = 0;
+const toolRowObserver = typeof ResizeObserver === 'undefined' ? null :
+  new ResizeObserver(entries => {
+    for (const e of entries) {
+      const tn = e.target.querySelector('.toolname[data-hide-below]');
+      if (!tn) continue;
+      const w = e.contentRect.width;
+      if (!w) continue;
+      if (!_chPx) {
+        const probe = document.createElement('span');
+        probe.style.cssText = 'position:absolute;visibility:hidden;width:10ch';
+        e.target.appendChild(probe);
+        _chPx = probe.getBoundingClientRect().width / 10 || 7;
+        probe.remove();
+      }
+      tn.classList.toggle('narrow', w / _chPx < Number(tn.dataset.hideBelow));
+    }
+  });
+
+function toolFold(name, args, argsFull, summary) {
   const d = document.createElement('details');
   d.className = 'tool';
   const full = argsFull || args || '';
-  d.innerHTML = '<summary><span class="toolname">⚙ ' + esc(name) +
-    '</span><span class="toolargs">' + esc(args || '') + '</span>' +
-    '<span class="mark pend">●</span></summary>' +
+  d.innerHTML = toolSummaryHTML(name, args, summary) +
     (full ? '<div class="body">' + esc(full) + '</div>' : '');
+  if (toolRowObserver && summary && summary.hide_name) {
+    toolRowObserver.observe(d.querySelector('summary'));
+  }
+  return d;
+}
+
+function toolCall(name, args, argsFull, summary) {
+  const d = toolFold(name, args, argsFull, summary);
   stamp(metaMount(d));   // stamp after mount: the fold (turn.t0) may start here
   if (turn) turn.tools++;
   (pendingTools[name] = pendingTools[name] || []).push(d);
@@ -881,14 +935,8 @@ function toolOutput(name, ok, text, ms, cls, toModel) {
 
 // Replay counterparts of toolCall/toolResult: same fold, but the outcome is
 // already known, so nothing is left pending.
-function replayToolCall(name, args, argsFull) {
-  const d = document.createElement('details');
-  d.className = 'tool';
-  const full = argsFull || args || '';
-  d.innerHTML = '<summary><span class="toolname">⚙ ' + esc(name) +
-    '</span><span class="toolargs">' + esc(args || '') + '</span>' +
-    '<span class="mark pend">●</span></summary>' +
-    (full ? '<div class="body">' + esc(full) + '</div>' : '');
+function replayToolCall(name, args, argsFull, summary) {
+  const d = toolFold(name, args, argsFull, summary);
   // Not metaMount: that routes by busyFlag, which is false while replaying, so
   // the fold would land beside the work fold instead of inside it.
   if (turn) { turn.body.appendChild(d); turn.tools++; } else { mount(d); }
@@ -1222,7 +1270,7 @@ function handle(ev) {
   } else if (ev.type === 'tool_call') {
     endStream();
     setActivity('tool');
-    toolCall(ev.name, ev.args, ev.args_full);
+    toolCall(ev.name, ev.args, ev.args_full, ev.summary);
   } else if (ev.type === 'tool_result') {
     toolResult(ev.name, ev.ok);
     // Back to the model unless other calls of this batch are still running.
@@ -3398,7 +3446,7 @@ function replayTranscriptInner(messages) {
       }
       for (const c of (m.tool_calls || [])) {
         if (!work) { work = beginTurn(); work.replay = true; }
-        folds[c.id] = replayToolCall(c.name, c.args, c.args_full);
+        folds[c.id] = replayToolCall(c.name, c.args, c.args_full, c.summary);
       }
       if (m.content) {
         // The server hangs the round's changeset on the assistant message that

@@ -3,7 +3,7 @@ from __future__ import annotations
 from agent.core import revisions
 from agent.tools import register
 from agent.tools.rules import get_rules
-from .paths import _resolve, _working_dir, _undo_stack, _log_edit, _read_text, _write_text
+from .paths import _gated, _resolve, _rel_path, _working_dir, _undo_stack, _log_edit, _read_text, _write_text
 
 
 @register(
@@ -28,7 +28,7 @@ def write_file(path: str, content: str, expect_rev: str | None = None,
     fpath = _resolve(path)
 
     rules = get_rules()
-    rel = str(fpath.relative_to(_working_dir()))
+    rel = _rel_path(fpath)
     is_new = not fpath.exists()
     allowed, msg = rules.check_write(rel, is_new=is_new)
     if not allowed:
@@ -45,7 +45,11 @@ def write_file(path: str, content: str, expect_rev: str | None = None,
     if is_new and rules.config.confirm_create and not _confirmed:
         return {"error": f"Creating new files requires confirmation: {path}", "requires_confirm": True}
 
-    fpath.parent.mkdir(parents=True, exist_ok=True)
+    if _gated():
+        from agent.security import fs as _sec_fs
+        _sec_fs.safe_mkdir(fpath.parent, parents=True)   # refuses in a read-only grant
+    else:
+        fpath.parent.mkdir(parents=True, exist_ok=True)
 
     replaced_lines = 0
     if fpath.exists():

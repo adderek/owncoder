@@ -319,6 +319,9 @@ class UIConfig:
     spinner_animation: str = "box"  # preset name or custom chars; see ui/spinner.py SPINNER_PRESETS
     show_active_models: str = "auto"  # status-bar model breakdown: "auto" (when >1 model or subagents live) | "always" | "off"
     chat_restore_expand_last: int = 3  # on resume, render last N turns in full; older turns fold to one line (0 = fold all)
+    # HTTP UI folded tool-call row: which args to show, at what weight. Keys:
+    # "default" + optional per-tool names. See ui/tool_summary.py, docs/tool_summary.md.
+    tool_summary: dict = field(default_factory=dict)
     tilix_folds: bool = False  # emit OSC-777 fold escapes around each round (patched tilix only; simple/readline UI)
     theme: ThemeConfig = field(default_factory=ThemeConfig)
     changeset: ChangesetConfig = field(default_factory=ChangesetConfig)

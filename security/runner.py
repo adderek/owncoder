@@ -640,6 +640,25 @@ def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool, seccomp_fd: int | 
         "--bind", str(root), str(root),
         "--chdir", str(cwd),
     ]
+    # Bind external path grants into the sandbox. Grants inside the project
+    # root are already visible (the root bind covers them); only external
+    # grants need an explicit mount. ro grants get --ro-bind, rw get --bind.
+    try:
+        from . import path_grants as _pg
+        for g in _pg.get_all():
+            if g.state != "granted":
+                continue
+            gp = g.path
+            if _under_root(gp, root):
+                continue  # already inside the project bind
+            if not gp.exists():
+                continue  # bwrap needs a real mountpoint
+            if g.mode == "rw":
+                a += ["--bind", str(gp), str(gp)]
+            else:
+                a += ["--ro-bind", str(gp), str(gp)]
+    except Exception:
+        pass  # grants are best-effort; don't break the sandbox
     for p in _interpreter_paths(root):
         a += ["--ro-bind-try", p, p]
     own = _own_interpreter_under_root(root)

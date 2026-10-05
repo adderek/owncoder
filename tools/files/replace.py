@@ -4,7 +4,7 @@ import re
 
 from agent.tools import register
 from agent.tools.rules import get_rules
-from .paths import _resolve, _working_dir, _undo_stack, _log_edit, _read_text, _write_text
+from .paths import _resolve, _rel_path, _working_dir, _undo_stack, _log_edit, _read_text, _write_text
 
 
 def _find_matches_fuzzy(haystack: str, needle: str) -> list[tuple[int, int]]:
@@ -31,7 +31,7 @@ def replace_text(path: str, search_block: str, replace_block: str, match_index: 
     fpath = _resolve(path)
 
     rules = get_rules()
-    rel = str(fpath.relative_to(_working_dir()))
+    rel = _rel_path(fpath)
     allowed, msg = rules.check_write(rel)
     if not allowed:
         _log_edit("replace_text", path, "blocked", reason=msg)
@@ -112,7 +112,7 @@ def replace_symbol(path: str, symbol: str, new_source: str) -> dict:
 
     fpath = _resolve(path)
     rules = get_rules()
-    rel = str(fpath.relative_to(_working_dir()))
+    rel = _rel_path(fpath)
     allowed, msg = rules.check_write(rel)
     if not allowed:
         _log_edit("replace_symbol", path, "blocked", reason=msg)

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from agent.tools import register
 from agent.tools.rules import get_rules
-from .paths import _resolve, _working_dir, _undo_stack, _read_text
+from .paths import _resolve, _rel_path, _working_dir, _undo_stack, _read_text
 
 # Default window (lines) served for an unbounded read of a large file. The
 # loop-guard auto-advance in core/turn.py pages through files in this same
@@ -159,7 +159,7 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
     if char_offset and start_line is None:
         start_line = 1
 
-    rel = str(fpath.relative_to(_working_dir()))
+    rel = _rel_path(fpath)
     allowed, _ = get_rules().check_read(rel)
     if not allowed:
         return {"error": f"File not found: {path}"}

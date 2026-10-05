@@ -768,6 +768,24 @@ details.tool[open] summary::before { transform: rotate(90deg); }
 details.tool .toolname { color: #b8a1e3; }
 details.tool .toolargs { color: var(--dimmer); overflow: hidden; text-overflow: ellipsis;
                          white-space: nowrap; max-width: 60ch; }
+/* Segmented row (ui/tool_summary.py): segs grow from 0 by weight (inline
+   flex-grow), each capped at its text width; flexbox hands a capped seg's
+   leftover share to the rest. */
+details.tool .toolargs.segs { flex: 1 1 auto; min-width: 0; max-width: none; display: flex;
+                              gap: 10px; overflow: hidden; }
+details.tool .seg { flex: 1 1 0; max-width: max-content; overflow: hidden; text-overflow: ellipsis;
+                    white-space: nowrap; }
+details.tool .seg-k { color: var(--dimmer); opacity: .75; }
+details.tool .seg-main { color: var(--dim); }
+details.tool .seg-accent { color: var(--accent); }
+details.tool .seg-path { direction: rtl; text-align: left; }
+details.tool .toolname { flex: none; white-space: nowrap; }
+details.tool .toolname.narrow .toolname-t { display: none; }
+details.tool .mark { flex: none; }
+/* Opened fold: nothing truncated, segments wrap onto more lines. */
+details.tool[open] .toolargs.segs { flex-wrap: wrap; }
+details.tool[open] .seg { white-space: normal; overflow-wrap: anywhere; flex: 0 1 auto !important;
+                          max-width: 100%; }
 details.tool .mark { margin-left: 4px; }
 details.tool .mark.ok { color: var(--ok); } details.tool .mark.fail { color: var(--err); }
 details.tool .body { padding: 6px 0 2px 16px; white-space: pre-wrap; color: var(--dim); }

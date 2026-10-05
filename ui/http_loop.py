@@ -21,6 +21,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from agent.ui import tool_summary as _tool_summary
+
 if TYPE_CHECKING:
     from agent.core.agent import Agent
     from agent.ui_server import UIServerProtocol
@@ -433,7 +435,9 @@ def _unfold_round(m: dict, records: dict, result_limit: int) -> list[dict] | Non
             raw_args = json.dumps(rec.get("arguments"), ensure_ascii=False)
             calls.append({"id": cid, "name": rec.get("tool") or block.group(1),
                           "args": _args_preview(raw_args),
-                          "args_full": _args_full(raw_args)})
+                          "args_full": _args_full(raw_args),
+                          "summary": _tool_summary.summary(
+                              rec.get("tool") or block.group(1), rec.get("arguments"))})
             results.append({"role": "tool", "id": cid,
                             "content": _result_preview(rec.get("result"), result_limit),
                             "ok": _tool_ok(rec.get("result"))})
@@ -548,6 +552,9 @@ def _transcript(messages, result_limit: int = 2000, sid: str = "") -> list[dict]
                     "name": _tc_field(tc, "function", "name") or "",
                     "args": _args_preview(_tc_field(tc, "function", "arguments")),
                     "args_full": _args_full(_tc_field(tc, "function", "arguments")),
+                    "summary": _tool_summary.summary(
+                        _tc_field(tc, "function", "name") or "",
+                        _tc_field(tc, "function", "arguments")),
                 })
             entry = {"role": "assistant", "content": m.get("content") or ""}
             if calls:
@@ -3083,6 +3090,14 @@ def _agent_config(server):
     return None if a is None else a.config
 
 
+def _configure_tool_summary(server) -> None:
+    """Point the fold summary builder at the live `[ui] tool_summary` config."""
+    def _spec():
+        cfg = _agent_config(server)
+        return getattr(getattr(cfg, "ui", None), "tool_summary", None)
+    _tool_summary.configure(_spec)
+
+
 # Commands the browser cannot run: they act on the terminal itself (tabs,
 # wrapping, the readline prompt) or end the process. `_handle_slash` still
 # answers them with an explanation — they just have no business being offered
@@ -3768,6 +3783,7 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
 
     loop = asyncio.get_running_loop()
     ui = _HttpUI(server, session, loop)
+    _configure_tool_summary(server)
     # Route voice / remote-delegated prompts through the same queue as typed
     # ones (starts a turn when idle, injects mid-turn) — parity with the TUIs.
     _set_ext = getattr(server, "set_external_prompt_handler", None)
@@ -3982,7 +3998,8 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
                 on_token=lambda tok: pub({"type": "token", "text": tok}),
                 on_tool_call=lambda name, args: pub(
                     {"type": "tool_call", "name": name,
-                     "args": _args_preview(args), "args_full": _args_full(args)}),
+                     "args": _args_preview(args), "args_full": _args_full(args),
+                     "summary": _tool_summary.summary(name, args)}),
                 on_tool_result=lambda name, ok: pub(
                     {"type": "tool_result", "name": name, "ok": ok}),
                 on_tool_record=lambda rec: pub(

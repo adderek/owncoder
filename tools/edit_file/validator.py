@@ -132,11 +132,8 @@ def _validate_chunk(
         return None, err("bad_input", str(e))
 
     rules = get_rules()
-    try:
-        from agent.tools.files import _working_dir
-        rel = str(fpath.relative_to(_working_dir()))
-    except Exception:
-        rel = path
+    from agent.tools.files.paths import _rel_path
+    rel = _rel_path(fpath)
 
     allowed, msg = rules.check_write(rel)
     if not allowed:

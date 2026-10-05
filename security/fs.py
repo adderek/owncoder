@@ -364,14 +364,12 @@ def safe_open(path: str | os.PathLike, mode: str = "r", *, encoding: str | None 
     writing = "w" in mode or "a" in mode or "+" in mode
     # Built-in rules first: they hold wherever the path sits, so a grant
     # outside the project root no longer changes which list applies.
-    _enforce_policy(real, grant, _pp.Access.WRITE if writing else _pp.Access.READ)
     if writing:
-        if grant is not None and grant.mode != "rw":
-            raise WriteProtected(f"write denied: path is in a read-only grant: {real}")
-        if _is_write_protected(_guard_base(real, grant), real):
-            raise WriteProtected(f"write to protected path denied: {real}")
-    elif _is_read_protected(_guard_base(real, grant), real):
-        raise ReadProtected(f"secret file read blocked: {real}")
+        _assert_writable(real, grant)
+    else:
+        _enforce_policy(real, grant, _pp.Access.READ)
+        if _is_read_protected(_guard_base(real, grant), real):
+            raise ReadProtected(f"secret file read blocked: {real}")
     flags = _flags_for_mode(mode)
     # O_CLOEXEC on the resulting fd so it doesn't leak into child processes.
     flags |= getattr(os, "O_CLOEXEC", 0)
@@ -418,10 +416,37 @@ def _open_beneath(base: Path, real: Path, flags: int, mode: int) -> int:
         os.close(dfd)
 
 
-def safe_mkdir(path: str | os.PathLike, *, parents: bool = False, exist_ok: bool = True) -> Path:
+def _assert_writable(real: Path, grant) -> None:
+    """Raise unless *real* may be modified: built-in rules, the grant's mode
+    (a read-only grant stays read-only — no file, dir or delete in it) and
+    the write-deny globs."""
+    from . import path_policy as _pp
+    _enforce_policy(real, grant, _pp.Access.WRITE)
+    if grant is not None and grant.mode != "rw":
+        raise WriteProtected(f"write denied: path is in a read-only grant: {real}")
+    if _is_write_protected(_guard_base(real, grant), real):
+        raise WriteProtected(f"write to protected path denied: {real}")
+
+
+def check_writable(path: str | os.PathLike) -> Path:
+    """Resolve *path* and raise unless it may be modified. For callers that
+    must refuse before any side effect (mkdir of parents, temp files)."""
+    from . import path_grants as _pg
     real = safe_resolve(path)
+    _assert_writable(real, _pg.grant_for(real))
+    return real
+
+
+def safe_mkdir(path: str | os.PathLike, *, parents: bool = False, exist_ok: bool = True) -> Path:
+    real = check_writable(path)
     real.mkdir(parents=parents, exist_ok=exist_ok)
     return real
+
+
+def safe_unlink(path: str | os.PathLike) -> None:
+    """Delete *path* with the write gate enforced (no symlink follow)."""
+    real = check_writable(path)
+    os.unlink(real)
 
 
 def _flags_for_mode(mode: str) -> int:

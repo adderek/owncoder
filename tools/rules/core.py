@@ -109,7 +109,8 @@ class Rules:
             if _sec_policy.is_configured():
                 pol = _sec_policy.get()
                 from pathlib import Path as _Path
-                resolved = pol.root / rel_path
+                import os as _os
+                resolved = _Path(_os.path.normpath(pol.root / rel_path))
                 if _sec_fs._is_write_protected(pol.root, resolved):
                     return False, f"write to protected path denied: {rel_path}"
                 # …and the built-in rules, which apply wherever the path sits.
@@ -118,6 +119,14 @@ class Rules:
                 if decision.max < _pp.Access.WRITE:
                     why = f" ({decision.why})" if decision.why else ""
                     return False, f"write to protected path denied: {rel_path}{why}"
+                # Grant mode + deny globs relative to the grant: a path outside
+                # the root reaches here only through a grant, and a read-only
+                # grant must refuse before any side effect (parent mkdir).
+                from agent.security import path_grants as _pg
+                try:
+                    _sec_fs._assert_writable(resolved, _pg.grant_for(resolved))
+                except (_sec_fs.WriteProtected, _sec_fs.PathEscape) as e:
+                    return False, str(e)
         except Exception as e:
             # Fail closed: an error here means the protected-path check did not
             # run, and allowing the write would skip it silently.

@@ -291,14 +291,26 @@ def rollback_to(checkpoint_id: str) -> dict:
         before = entry["before"]
         try:
             fpath = _resolve_path(path)
+            # Through the write gate: the grant that allowed the edit may
+            # since have been narrowed to read-only.
+            from agent.tools.files.paths import _gated, _write_text
+            gated = _gated()
+            if gated:
+                from agent.security import fs as _sec_fs
             if before is None:
                 # File was created after the checkpoint → remove it.
                 if fpath.exists():
-                    fpath.unlink()
+                    if gated:
+                        _sec_fs.safe_unlink(fpath)
+                    else:
+                        fpath.unlink()
                 deleted.append(path)
             else:
-                fpath.parent.mkdir(parents=True, exist_ok=True)
-                fpath.write_text(before, encoding="utf-8")
+                if gated:
+                    _sec_fs.safe_mkdir(fpath.parent, parents=True)
+                else:
+                    fpath.parent.mkdir(parents=True, exist_ok=True)
+                _write_text(fpath, before)
                 restored.append(path)
         except Exception as e:  # keep going; report at end
             errors.append(f"{path}: {e}")

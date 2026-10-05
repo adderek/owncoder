@@ -25,7 +25,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agent.ui.http_loop import (
-    _agent_config, _EventBus, _args_full, _args_preview, _bind_server,
+    _agent_config, _configure_tool_summary, _EventBus, _args_full, _args_preview,
+    _bind_server, _tool_summary,
 )
 
 if TYPE_CHECKING:
@@ -352,7 +353,8 @@ class _SidecarServer:
                 on_token=_fanout(on_token, lambda tok: pub({"type": "token", "text": tok})),
                 on_tool_call=_fanout(on_tool_call, lambda name, args: pub(
                     {"type": "tool_call", "name": name, "args": _args_preview(args),
-                     "args_full": _args_full(args)})),
+                     "args_full": _args_full(args),
+                     "summary": _tool_summary.summary(name, args)})),
                 on_tool_result=_fanout(on_tool_result, lambda name, ok: pub(
                     {"type": "tool_result", "name": name, "ok": ok})),
                 on_usage=on_usage,
@@ -559,6 +561,7 @@ def start_http_sidecar(server: "UIServerProtocol", host: str, port: int) -> "tup
     wrapped server (pass this to the primary UI in place of `server`) plus
     the bound httpd (for logging the actual port / shutdown on exit)."""
     wrapped = _SidecarServer(server)
+    _configure_tool_summary(server)
     register_permission_asker(wrapped)
     httpd = _bind_server(_make_sidecar_handler(wrapped), host, port)
     threading.Thread(target=httpd.serve_forever, daemon=True, name="http-sidecar").start()

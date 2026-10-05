@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 
 from agent.tools.rules import get_rules
-from .paths import _resolve, _working_dir, _undo_stack, _log_edit, _read_text, _write_text
+from .paths import _resolve, _rel_path, _working_dir, _undo_stack, _log_edit, _read_text, _write_text
 
 
 def _apply_unified_diff(original: str, patch: str) -> str:
@@ -57,7 +57,7 @@ def patch_file(path: str, unified_diff: str, expect_rev: str | None = None) -> d
     fpath = _resolve(path)
 
     rules = get_rules()
-    rel = str(fpath.relative_to(_working_dir()))
+    rel = _rel_path(fpath)
     allowed, msg = rules.check_write(rel)
     if not allowed:
         return {"error": msg or f"Cannot write to: {path}"}
