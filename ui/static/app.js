@@ -817,11 +817,18 @@ function loopGuardPrompt(ev) {
 function resolveLoopGuard(choice) {
   if (lgTimer) { clearInterval(lgTimer); lgTimer = null; }
   if (!lgEl) return;
-  const acts = lgEl.querySelector('.lg-acts');
-  if (acts) acts.innerHTML = '<span class="lg-note">→ ' +
+  settlePrompt(lgEl, '⚠ loop guard → ' +
     (choice === 'continue' ? 'continuing' :
-     choice === 'kill' ? 'hard kill' : 'stopped') + '</span>';
+     choice === 'kill' ? 'hard kill' : 'stopped'));
   lgEl = null;
+}
+
+// An answered prompt has done its job: drop the box and leave a one-line
+// record in the turn's work fold. A 100-iteration round with a prompt per
+// iteration otherwise stacks 100 boxes under the conversation.
+function settlePrompt(box, summary) {
+  (box.closest('.row') || box).remove();
+  metaRow('phase', summary);
 }
 
 // Permission prompt ([permissions] ask verdict): the tool call is held
@@ -873,9 +880,11 @@ function permissionPrompt(ev) {
   }));
   mount(d);
   permEl = d;
+  d.dataset.q = (ev.question || 'permission required').split('\n')[0];
   armPromptKeys(d);
-  let left = Math.round(ev.timeout || 300);
   const note = d.querySelector('.lg-note');
+  if (ev.timeout == null) { note.textContent = 'no timeout'; return; }
+  let left = Math.round(ev.timeout);
   const tick = () => {
     note.textContent = 'denies in ' + left + 's';
     if (left-- <= 0) resolvePermission('');
@@ -886,9 +895,8 @@ function permissionPrompt(ev) {
 function resolvePermission(choice) {
   if (permTimer) { clearInterval(permTimer); permTimer = null; }
   if (!permEl) return;
-  const acts = permEl.querySelector('.lg-acts');
-  if (acts) acts.innerHTML = '<span class="lg-note">→ ' +
-    esc(choice ? choice : 'denied (no answer)') + '</span>';
+  settlePrompt(permEl, '🔒 ' + permEl.dataset.q.replace(/^Permission:\s*/, '') + ' → ' +
+    (choice ? choice : 'denied (no answer)'));
   permEl = null;
 }
 
@@ -3623,12 +3631,40 @@ async function resend(text) {
   } catch (e) { row('sys error', null, 'retry failed to send: ' + e); }
 }
 
+// SLASHCHECK_START — pure, so the tests can run it under node.
+// A message starting with '/' is always a command, never model input. Returns
+// null when it may be sent, else the warning to show (the draft stays put).
+// An empty catalogue (failed to load) blocks nothing — the server rejects too.
+function slashReject(text, known) {
+  if (!text.startsWith('/') || !known || !known.length) return null;
+  const cmd = text.split(/\s+/, 1)[0].toLowerCase();
+  if (known.indexOf(cmd) >= 0) return null;
+  return 'not sent: ' + cmd + ' is not a command \u2014 input starting with / ' +
+         'must be a command (/help lists them); reword to send it as a message';
+}
+// SLASHCHECK_END
+
+let slashKnown = null;
+async function loadSlashKnown() {
+  if (slashKnown) return slashKnown;
+  try {
+    const d = await (await fetch('/api/slash')).json();
+    slashKnown = d.known || [];
+    if (!slashCmds) slashCmds = d.commands || [];
+  } catch (e) { return []; }   // retry next time; server still validates
+  return slashKnown;
+}
+
 async function send() {
   const text = input.value.trim();
   if (!text) return;
+  clearAttention();   // they are here and typing
+  if (text.startsWith('/') && !previewing) {
+    const warn = slashReject(text, await loadSlashKnown());
+    if (warn) { row('sys error', null, warn); input.focus(); return; }
+  }
   clearAsk();
   clearRetry();
-  clearAttention();   // they are here and typing
   histPush(text);
   if (text === '/clear') {   // purely visual — handled client-side
     input.value = ''; input.style.height = 'auto';
@@ -3650,7 +3686,13 @@ async function send() {
       body: JSON.stringify(body),
     });
     const res = await r.json();
-    if (res.injected) row('sys', null, '↑ injected mid-turn: ' + text);
+    if (res.slash === 'live') row('sys', null, '▸ ' + text + ' (applied mid-turn)');
+    else if (res.slash === 'queued')
+      row('sys', null, '⧗ ' + text + ' — runs after the current turn');
+    else if (res.slash === 'unknown') {   // stale catalogue: give the draft back
+      input.value = text; autoGrow(); saveDraft();
+    }
+    else if (res.injected) row('sys', null, '↑ injected mid-turn: ' + text);
     else if (res.status === 'queued')
       row('sys', null, '⧗ queued — switches to this session after the running turn ends');
     // status 'switching': the switched event resyncs the view shortly.

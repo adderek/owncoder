@@ -285,10 +285,10 @@ class _SidecarServer:
         """
         loop = asyncio.get_running_loop()
         fut: asyncio.Future = loop.create_future()
-        timeout = 300.0
+        timeout: float | None = 300.0
         try:
-            perms = getattr(_agent_config(self._inner), "permissions", None)
-            timeout = float(getattr(perms, "ask_timeout_s", 300.0) or 300.0)
+            from agent.security.permissions import ask_timeout
+            timeout = ask_timeout(_agent_config(self._inner))
         except Exception:
             logger.debug("sidecar: permission timeout unreadable", exc_info=True)
         self.permission_loop = loop

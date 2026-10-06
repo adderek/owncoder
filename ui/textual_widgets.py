@@ -1012,11 +1012,13 @@ def build_widget_classes(t) -> SimpleNamespace:
         }
         """
 
-        def __init__(self, question: str, options: list[str], timeout: float = 300.0) -> None:
+        def __init__(self, question: str, options: list[str],
+                     timeout: float | None = 300.0) -> None:
             super().__init__()
             self._question = question
             self._options = list(options)
-            self._timeout = max(1.0, float(timeout))
+            # None = no deadline (ask_timeout_s <= 0, or the user chose Wait).
+            self._timeout = None if timeout is None else max(1.0, float(timeout))
             self._remaining = self._timeout
             self._answered = False
 
@@ -1039,11 +1041,14 @@ def build_widget_classes(t) -> SimpleNamespace:
             return "\n".join(rows)
 
         def _render_hint(self) -> str:
+            deadline = ("no timeout" if self._remaining is None
+                        else f"denies in {int(self._remaining)}s")
             return (f"[{t.text_dim}]press 1–{len(self._options)} to choose · "
-                    f"Esc denies · denies in {int(self._remaining)}s[/{t.text_dim}]")
+                    f"Esc denies · {deadline}[/{t.text_dim}]")
 
         def on_mount(self) -> None:
-            self.set_interval(1.0, self._tick)
+            if self._remaining is not None:
+                self.set_interval(1.0, self._tick)
 
         def _tick(self) -> None:
             self._remaining -= 1.0

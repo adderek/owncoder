@@ -83,7 +83,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/schedule", ["/sched"], "scheduled jobs: list | add <spec> :: <prompt> [:: <name>] | rm <id|name> | on/off <id|name> | runs | run", True),
     ("/watch", [], "event watches: list | add <file|url|cmd|pid> <target> :: <prompt> [:: <name>] | rm | on/off", True),
     ("/credpool", ["/creds"], "credential pool: list|status | add <service> <domain> <username> <password> | remove <service>", True),
-    ("/permissions", ["/perms"], "tool permissions: list | add <allow|ask|deny> <tool> [match] | default <verdict> | clear", True),
+    ("/permissions", ["/perms"], "tool permissions: list | add <allow|ask|deny> <tool> [match] | default <verdict> | clear | timeout <s|off|default> | auto <on|off> | yolo [off]", True),
     ("/hooks", [], "shell hooks: list | approve <n> | revoke <n|digest>", True),
     ("/classify", [], "action classifier: status | accept | test <cmd> | preview <cmd> | mode <off|advisory|enforce>", True),
     ("/notify", [], "notification channels  [on | off | status]", True),

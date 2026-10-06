@@ -981,13 +981,13 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
             loop = asyncio.get_running_loop()
             try:
                 answer = await loop.run_in_executor(
-                    None, lambda: input("  Choose [1-4, default deny]: ").strip()
+                    None, lambda: input(f"  Choose [1-{len(options)}, default deny]: ").strip()
                 )
             except (EOFError, KeyboardInterrupt):
-                return options[2] if len(options) > 2 else "Deny"
+                return "Deny"
             if answer.isdigit() and 1 <= int(answer) <= len(options):
                 return options[int(answer) - 1]
-            return options[2] if len(options) > 2 else "Deny"
+            return "Deny"
 
         from agent.security import permissions as _permissions
         _permissions.set_asker(_on_permission_ask)

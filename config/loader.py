@@ -374,6 +374,7 @@ def _merge_permissions(config: Config, layers: list[tuple[dict, bool]]) -> None:
     config.permissions.default = fresh.default
     config.permissions.ask_timeout_s = fresh.ask_timeout_s
     config.permissions.builtin_rules = fresh.builtin_rules
+    config.permissions.allow_approve_all = fresh.allow_approve_all
 
     collected: list[list[PermissionRule]] = []
     for data, is_project in layers:
@@ -391,6 +392,14 @@ def _merge_permissions(config: Config, layers: list[tuple[dict, bool]]) -> None:
         timeout = section.get("ask_timeout_s")
         if isinstance(timeout, (int, float)) and not is_project:
             config.permissions.ask_timeout_s = float(timeout)
+        approve_all = section.get("allow_approve_all")
+        if isinstance(approve_all, bool):
+            if is_project and approve_all:
+                _config_problem(
+                    "[permissions] allow_approve_all from a project config is "
+                    "ignored — project rules may only narrow")
+            elif not is_project:
+                config.permissions.allow_approve_all = approve_all
         builtin = section.get("builtin_rules")
         if isinstance(builtin, bool):
             # Narrowing only: a cloned repo may turn the baseline on, never off.

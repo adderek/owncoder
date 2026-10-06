@@ -706,7 +706,12 @@ class PermissionsConfig:
     default: str = "allow"      # allow | ask | deny — "allow" keeps today's behavior
     rules: list = field(default_factory=list)   # [[permissions.rules]] entries
     # Seconds to wait for an answer to an ask prompt before failing closed (deny).
+    # 0 (or negative) = wait forever. Session override: /permissions timeout.
     ask_timeout_s: float = 300.0
+    # Permit `/permissions yolo` (auto-approve every ask for this session, after a
+    # two-phase confirmation). For harness/sandbox testing only. User-layer only:
+    # a project config cannot set it.
+    allow_approve_all: bool = False
     # Append security.permissions.builtin_rules() at the LOWEST precedence: a
     # short `ask` list covering actions that cannot be undone or that leave this
     # machine (force-push, remote branch deletion, publish, raw egress, sudo,

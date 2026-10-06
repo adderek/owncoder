@@ -894,6 +894,10 @@ class _HttpUI:
 
     def submit(self, text: str) -> bool:
         """Called from handler threads. Returns True if injected mid-turn."""
+        if text.startswith("/"):
+            # A slash command is never model input — not even mid-turn.
+            self.submit_slash(text)
+            return False
         if self.pending_ask is not None:
             self.pending_ask = None
             # A turn blocked in notify ask (remote_answers + on_timeout=wait)
@@ -912,6 +916,28 @@ class _HttpUI:
             return True
         self.loop.call_soon_threadsafe(self.prompt_queue.put_nowait, text)
         return False
+
+    def submit_slash(self, text: str) -> str:
+        """Route a typed slash command; never injected into a running turn.
+
+        Returns 'unknown' (rejected, nothing runs), 'live' (runs now beside
+        the running turn — settings/read-only commands only), 'queued' (runs
+        once the turn ends) or 'started'. Leaves pending_ask alone: the next
+        plain text is still the answer.
+        """
+        parts = text.split(None, 1)
+        cmd = parts[0].lower()
+        if cmd not in _known_slash():
+            self.bus.publish({"type": "sys", "error": True,
+                              "text": f"unknown command {cmd} — /help for the list"})
+            return "unknown"
+        if self.busy and cmd in _LIVE_SLASH:
+            arg = parts[1] if len(parts) > 1 else ""
+            asyncio.run_coroutine_threadsafe(_run_live_slash(self, cmd, arg), self.loop)
+            return "live"
+        busy = self.busy
+        self.loop.call_soon_threadsafe(self.prompt_queue.put_nowait, text)
+        return "queued" if busy else "started"
 
     def _try_answer_ask(self, text: str) -> bool:
         """Resolve a broker-pending question from a handler thread.
@@ -2718,7 +2744,8 @@ def _make_handler(ui: _HttpUI):
             elif self.path == "/api/models":
                 self._json(ui.models_info())
             elif self.path == "/api/slash":
-                self._json({"commands": _slash_catalog()})
+                self._json({"commands": _slash_catalog(),
+                            "known": sorted(_known_slash())})
             elif self.path == "/api/heal":
                 self._json(ui.heal_info())
             elif self.path == "/api/grants":
@@ -2810,7 +2837,10 @@ def _make_handler(ui: _HttpUI):
                     self._json({"error": "empty"}, 400)
                     return
                 sid = str(payload.get("session_id") or "")
-                if sid:
+                if text.startswith("/") and not sid:
+                    self._json({"ok": True, "injected": False,
+                                "slash": ui.submit_slash(text)})
+                elif sid:
                     self._json({"ok": True, "status": ui.submit_to(sid, text)})
                 else:
                     self._json({"ok": True, "injected": ui.submit(text)})
@@ -3106,6 +3136,38 @@ _TERMINAL_ONLY = frozenset({
     "/a", "/q", "/sparse", "/wrap", "/round-summary", "/speech", "/exec",
     "/apply", "/quit",
 })
+
+
+#: Handled by _handle_slash but absent from the shared catalogue.
+_EXTRA_SLASH = frozenset({"/stop", "/stats", "/clear"})
+
+#: Safe to run while a turn is in flight: settings toggles and read-only
+#: views. Anything touching history, sessions or the model is queued instead.
+_LIVE_SLASH = frozenset({
+    "/help", "/?", "/tokens", "/stop", "/stats", "/think",
+    "/autonomy", "/auto", "/verbose", "/temp", "/temperature",
+    "/maxtokens", "/max_tokens", "/maxiter", "/max_iter", "/unlimited", "/nomax",
+    "/context", "/ctx", "/legend", "/modelcalls", "/mc", "/perf", "/timing",
+    "/who", "/agents", "/tools", "/permissions", "/perms", "/tokwatch", "/paths",
+})
+
+
+def _known_slash() -> frozenset:
+    """Every command name or alias the browser may send."""
+    from agent.ui.slash import _SLASH_COMMANDS
+    names = set(_EXTRA_SLASH)
+    for primary, aliases, _desc, _arg in _SLASH_COMMANDS:
+        names.add(primary)
+        names.update(aliases)
+    return frozenset(names)
+
+
+async def _run_live_slash(ui: "_HttpUI", cmd: str, arg: str) -> None:
+    """A mid-turn slash command; leaves ui.busy to the running turn."""
+    try:
+        await _handle_slash(ui, cmd, arg)
+    except Exception as exc:
+        ui.bus.publish({"type": "sys", "error": True, "text": f"command failed: {exc}"})
 
 
 def _slash_catalog() -> list[dict]:
@@ -3931,15 +3993,14 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
                     ui.pending_ask = payload
                     pub({"type": "ask", "kind": kind, "text": payload})
 
+            from agent.security import permissions as _permissions
+
             async def _on_permission_ask(question: str, options: list) -> str:
                 """Permission prompt over SSE. No answer = deny (fail closed)."""
                 fut: asyncio.Future = loop.create_future()
                 ui.permission_fut = fut
                 ui.permission_options = list(options)
-                timeout = float(getattr(
-                    getattr(_agent_config(ui.server), "permissions", None),
-                    "ask_timeout_s", 300.0,
-                ) or 300.0)
+                timeout = _permissions.ask_timeout(_agent_config(ui.server))
                 pub({"type": "permission", "question": question,
                      "options": list(options), "timeout": timeout})
                 try:
@@ -3953,7 +4014,6 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
                 return choice
 
             try:
-                from agent.security import permissions as _permissions
                 _permissions.set_asker(_on_permission_ask)
             except Exception:
                 logger.debug("http ui: permission asker not registered", exc_info=True)

@@ -203,6 +203,31 @@ Reuses the existing `ask_user` signal path end-to-end:
   `/permissions` command — a one-keystroke path from "the agent wants X" to
   "X is allowed forever" is how users train themselves to grant everything.
 
+### Ask modes (session-only, set by `/permissions`, cleared on session switch)
+
+- **Timeout**: `ask_timeout_s <= 0` = no deadline. `/permissions timeout <s|off|default>`
+  overrides for the session. Every prompt also offers **Wait (no timeout)**:
+  re-asks the same call with no deadline (contextvar, that prompt only).
+  `security.permissions.ask_timeout()` is the one source for the engine and
+  every UI countdown.
+- **Allow program for session: `<argv0>`** (run_argv/run_argv_bg): session rule
+  `re:^<argv0>(\s|$)`. For dynamic commands (`python -c '<new code>'`) where
+  the exact-match grant never repeats. `bash`/`python` = effectively everything.
+- **Auto (classifier decides)**: offered when a classifier endpoint is usable
+  (`classify.check_endpoint`, any `classify.mode`). Allows only label `safe`
+  with confidence ≥ `classify.review_below_confidence`; anything else or
+  classifier down = deny. `/permissions auto on`: classifier answers first for
+  every ask; non-safe/unavailable falls through to the human prompt.
+- **Approve-all** (`/permissions yolo`): every `ask` and every
+  `confirm_action` tripwire → allow, logged at WARNING. `deny` rules and all
+  enforcement layers still apply. Requires `[permissions] allow_approve_all =
+  true` from a non-project config layer (project layer ignored with warning),
+  then two-phase: `/permissions yolo` prints a random code, `/permissions yolo
+  <code>` within 60s arms it; a wrong code burns the pending confirmation.
+  `/permissions yolo off` disarms. Intended for harness/sandbox testing.
+- HTTP UI: an answered prompt box is removed and replaced by a one-line record
+  in the turn's work fold (same for loop-guard prompts).
+
 ## Persistence
 
 - **Session grants**: in-memory only, front of the rule list, die with the

@@ -21,10 +21,13 @@ See docs/permissions-design.md for the full design.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import fnmatch
 import json
 import logging
 import re
+import secrets
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable, TYPE_CHECKING
@@ -179,11 +182,47 @@ _session_rules: list["PermissionRule"] = []
 _file_rules: list["PermissionRule"] = []
 _asker: "Callable[[str, list[str]], Awaitable[str]] | None" = None
 
+# Session-scoped ask behaviour, all set only by `/permissions` (a human typing
+# in a UI — the model has no path to slash commands). Cleared by reset().
+_timeout_override: float | None = None   # /permissions timeout; <=0 = forever
+_auto_session = False                    # /permissions auto: classifier first
+_approve_all = False                     # /permissions yolo: every ask → allow
+_approve_all_pending: tuple[str, float] | None = None   # (code, expiry)
+_APPROVE_ALL_WINDOW_S = 60.0
+# Set while re-asking after "Wait": that one prompt has no deadline. A
+# contextvar so askers read it through ask_timeout() without a new parameter.
+_no_deadline: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "permissions_no_deadline", default=False)
+
 
 def reset() -> None:
-    """Drop session grants and loaded file rules (tests, session switch)."""
+    """Drop session grants, loaded file rules and session ask modes (tests,
+    session switch)."""
+    global _timeout_override, _auto_session, _approve_all, _approve_all_pending
     _session_rules.clear()
     _file_rules.clear()
+    _timeout_override = None
+    _auto_session = False
+    _approve_all = False
+    _approve_all_pending = None
+
+
+def ask_timeout(config: "Config") -> float | None:
+    """Seconds an ask prompt waits before denying; None = no deadline.
+
+    Every asker and both engine entry points read this, so the UI countdown and
+    the engine deadline cannot disagree.
+    """
+    if _no_deadline.get():
+        return None
+    raw = _timeout_override
+    if raw is None:
+        raw = getattr(getattr(config, "permissions", None), "ask_timeout_s", 300.0)
+    try:
+        value = 300.0 if raw is None else float(raw)
+    except (TypeError, ValueError):
+        value = 300.0
+    return None if value <= 0 else value
 
 
 def set_asker(fn: "Callable[[str, list[str]], Awaitable[str]] | None") -> None:
@@ -457,7 +496,95 @@ _ALLOW_ONCE = "Allow once"
 _ALLOW_SESSION = "Allow for session"
 _DENY_ONCE = "Deny"
 _DENY_SESSION = "Deny for session"
+# Deny stays at index 2: the readline asker falls back to it.
 _ASK_OPTIONS = [_ALLOW_ONCE, _ALLOW_SESSION, _DENY_ONCE, _DENY_SESSION]
+_WAIT = "Wait (no timeout)"
+_AUTO = "Auto (classifier decides)"
+_PROGRAM_PREFIX = "Allow program for session: "
+
+# Tools whose argv[0] can back an "allow this program" session grant. Exact
+# "Allow for session" is useless for `python -c '<new code every time>'`.
+_ARGV_TOOLS = ("run_argv", "run_argv_bg")
+
+
+def _program_of(tool: str, args: dict) -> str:
+    if tool not in _ARGV_TOOLS:
+        return ""
+    argv = args.get("argv")
+    if isinstance(argv, (list, tuple)) and argv:
+        return str(argv[0]).strip()
+    if isinstance(argv, str) and argv.strip():
+        return argv.split()[0]
+    return ""
+
+
+def _classifier_ready(config: "Config") -> bool:
+    """A classifier endpoint is usable — mode may be off; this is on demand."""
+    if getattr(config, "classify", None) is None:
+        return False
+    try:
+        from agent.classify.client import check_endpoint
+        check_endpoint(config)
+        return True
+    except Exception:
+        return False
+
+
+def _ask_options(tool: str, args: dict, config: "Config", waiting: bool) -> list[str]:
+    opts = list(_ASK_OPTIONS)
+    prog = _program_of(tool, args)
+    if prog:
+        opts.append(_PROGRAM_PREFIX + prog)
+    if _classifier_ready(config):
+        opts.append(_AUTO)
+    if not waiting and ask_timeout(config) is not None:
+        opts.append(_WAIT)
+    return opts
+
+
+async def _ask(question: str, options: list[str], config: "Config") -> str:
+    """One prompt round; "Wait" re-asks the same question with no deadline.
+
+    Raises asyncio.TimeoutError when the deadline passes unanswered.
+    """
+    token = None
+    try:
+        while True:
+            answer = await asyncio.wait_for(_asker(question, options), ask_timeout(config))
+            answer = (answer or "").strip()
+            if answer != _WAIT or token is not None:
+                return answer
+            token = _no_deadline.set(True)
+            options = [o for o in options if o != _WAIT]
+    finally:
+        if token is not None:
+            _no_deadline.reset(token)
+
+
+async def _auto_decide(tool: str, args: dict, config: "Config", decision: Decision,
+                       final: bool) -> Decision | None:
+    """Ask the action classifier instead of the human.
+
+    Allows only a confident ``safe``. Anything else is a deny when *final*
+    (the user delegated this one decision), or None — "ask the human" — in
+    session auto mode.
+    """
+    from agent.classify.client import ClassifierUnavailable
+    from agent.classify.guard import _args_text, verdict_for
+    try:
+        v = await verdict_for(config, tool, _args_text(config, args))
+    except ClassifierUnavailable as e:
+        return Decision(DENY, f"auto: classifier unavailable ({e})", decision.rule) if final else None
+    except Exception:
+        logger.exception("permissions: auto decision failed for %s", tool)
+        return Decision(DENY, "auto: classifier failed", decision.rule) if final else None
+    floor = float(getattr(config.classify, "review_below_confidence", 0.0) or 0.0)
+    summary = f"{v.label} p={v.p:.2f} conf={v.confidence:.2f}"
+    if v.label == "safe" and v.confidence >= floor:
+        return Decision(ALLOW, f"auto-approved by classifier ({summary})", decision.rule)
+    if final:
+        return Decision(DENY, f"auto-denied by classifier ({summary})", decision.rule)
+    return None
 
 
 def format_question(tool: str, args: dict, decision: Decision, config: "Config") -> str:
@@ -487,28 +614,44 @@ async def check(tool: str, args: dict, config: "Config",
     """Resolve a call to a final allow/deny, prompting the user when needed.
 
     An ``ask`` with no asker, a timeout, or an unrecognised answer all resolve to
-    deny: fail closed.
+    deny: fail closed. Session modes (``/permissions yolo|auto``) only ever
+    answer an ``ask`` — a ``deny`` rule is never consulted out of.
     """
     decision = evaluate(tool, args, config, internal_security=internal_security)
     if decision.verdict != ASK:
         return decision
+    if _approve_all:
+        logger.warning("permissions: approve-all session allowed %s: %s",
+                       tool, _primary_value(tool, args))
+        return Decision(ALLOW, "auto-approved (approve-all session)", decision.rule)
+    if _auto_session:
+        auto = await _auto_decide(tool, args, config, decision, final=False)
+        if auto is not None:
+            return auto
     if _asker is None:
         return Decision(DENY, decision.reason or "approval required, no interactive UI",
                         decision.rule)
 
     question = format_question(tool, args, decision, config)
-    timeout = float(getattr(config.permissions, "ask_timeout_s", 300.0) or 300.0)
     try:
-        answer = await asyncio.wait_for(_asker(question, list(_ASK_OPTIONS)), timeout)
+        answer = await _ask(question, _ask_options(tool, args, config, False), config)
     except asyncio.TimeoutError:
         return Decision(DENY, "no answer before timeout", decision.rule)
     except Exception:
         logger.exception("permissions: ask failed for %s", tool)
         return Decision(DENY, "approval prompt failed", decision.rule)
 
-    answer = (answer or "").strip()
     match_value = _primary_value(tool, args)
     sticky = match_value if match_value is not None else ""
+    if answer == _AUTO:
+        return await _auto_decide(tool, args, config, decision, final=True)
+    if answer.startswith(_PROGRAM_PREFIX):
+        prog = _program_of(tool, args)
+        if prog and answer == _PROGRAM_PREFIX + prog:
+            reason = f"allowed program {prog!r} for session"
+            add_session_rule(tool, "re:^" + re.escape(prog) + r"(?:\s|$)", ALLOW, reason)
+            return Decision(ALLOW, reason, decision.rule)
+        return Decision(DENY, "denied by user", decision.rule)
     if answer == _ALLOW_SESSION:
         add_session_rule(tool, sticky, ALLOW, "allowed for session")
         return Decision(ALLOW, "allowed for session", decision.rule)
@@ -523,7 +666,13 @@ async def check(tool: str, args: dict, config: "Config",
 def _render_rules(config: "Config") -> str:
     rules = active_rules(config)
     lines = [f"Permission policy — default: {config.permissions.default}",
-             f"Interactive asker: {'yes' if has_asker() else 'no (ask → deny)'}"]
+             f"Interactive asker: {'yes' if has_asker() else 'no (ask → deny)'}",
+             f"Ask timeout: {_fmt_timeout(ask_timeout(config))}"
+             + ("  (session override)" if _timeout_override is not None else "")]
+    if _auto_session:
+        lines.append("Auto mode: ON — classifier approves confident 'safe' asks, rest prompt")
+    if _approve_all:
+        lines.append("APPROVE-ALL: ON — every ask is auto-allowed (/permissions yolo off)")
     if not rules:
         lines.append("(no rules; default applies to every call)")
         return "\n".join(lines)
@@ -535,6 +684,81 @@ def _render_rules(config: "Config") -> str:
         if r.reason:
             lines.append(f"{'':<20} — {r.reason}")
     return "\n".join(lines)
+
+
+def _fmt_timeout(t: float | None) -> str:
+    return "none (waits forever)" if t is None else f"{t:g}s"
+
+
+def _timeout_command(config: "Config", parts: list[str]) -> str:
+    global _timeout_override
+    if len(parts) < 2:
+        return f"Ask timeout: {_fmt_timeout(ask_timeout(config))}"
+    value = parts[1].lower()
+    if value == "default":
+        _timeout_override = None
+    elif value in ("off", "none", "inf", "never"):
+        _timeout_override = 0.0
+    else:
+        try:
+            _timeout_override = float(value.rstrip("s"))
+        except ValueError:
+            return "Usage: /permissions timeout <seconds|off|default>"
+    return f"Ask timeout for this session: {_fmt_timeout(ask_timeout(config))}"
+
+
+def _auto_command(config: "Config", parts: list[str]) -> str:
+    global _auto_session
+    value = parts[1].lower() if len(parts) > 1 else ""
+    if value not in ("on", "off"):
+        return f"Auto mode: {'on' if _auto_session else 'off'}. Usage: /permissions auto <on|off>"
+    if value == "on" and not _classifier_ready(config):
+        return "Auto mode needs a usable classifier endpoint ([classify] endpoint; see /classify)."
+    _auto_session = value == "on"
+    if not _auto_session:
+        return "Auto mode off: every ask prompts again."
+    return ("Auto mode on: the action classifier approves asks it labels 'safe' "
+            "(confidence ≥ classify.review_below_confidence); everything else "
+            "still prompts you. Deny rules are unaffected.")
+
+
+def _yolo_command(config: "Config", parts: list[str]) -> str:
+    """Two-phase: `/permissions yolo` issues a code, `/permissions yolo <code>`
+    within the window turns it on. A typed code, not a button, so one stray
+    click or keypress cannot arm it."""
+    global _approve_all, _approve_all_pending
+    value = parts[1] if len(parts) > 1 else ""
+    if value.lower() == "off":
+        was = _approve_all
+        _approve_all, _approve_all_pending = False, None
+        return "Approve-all off." if was else "Approve-all was not on."
+    if not getattr(config.permissions, "allow_approve_all", False):
+        return ("Approve-all is disabled. Enable it in your user config "
+                "(~/.config/agent/agent.toml, not the project's):\n"
+                "  [permissions]\n  allow_approve_all = true")
+    if _approve_all:
+        return "Approve-all is already ON. /permissions yolo off to stop."
+    now = time.monotonic()
+    if value:
+        pending = _approve_all_pending
+        _approve_all_pending = None
+        if pending is None or now > pending[1]:
+            return "No pending confirmation (or it expired). Run /permissions yolo again."
+        if not secrets.compare_digest(value.lower(), pending[0]):
+            return "Wrong code — approve-all NOT enabled. Run /permissions yolo again."
+        _approve_all = True
+        logger.warning("permissions: approve-all enabled for this session")
+        return ("APPROVE-ALL ON for this session: every 'ask' (and destructive-action "
+                "confirmation) is auto-allowed without prompting. Deny rules, the "
+                "sandbox, fs gate and other enforcement layers still apply. "
+                "/permissions yolo off to stop.")
+    code = secrets.token_hex(3)
+    _approve_all_pending = (code, now + _APPROVE_ALL_WINDOW_S)
+    return ("WARNING: approve-all lets the agent run every command that would "
+            "otherwise ask you, with no prompt, until you turn it off or the "
+            "session ends. Only enforcement layers (sandbox, fs gate, deny rules) "
+            "remain between the model and your machine.\n"
+            f"To confirm, type within {_APPROVE_ALL_WINDOW_S:.0f}s:  /permissions yolo {code}")
 
 
 def run_permissions_command(config: "Config", arg: str) -> str:
@@ -559,6 +783,15 @@ def run_permissions_command(config: "Config", arg: str) -> str:
     if sub == "clear":
         return f"Dropped {clear_session_rules()} session rule(s)."
 
+    if sub == "timeout":
+        return _timeout_command(config, parts)
+
+    if sub == "auto":
+        return _auto_command(config, parts)
+
+    if sub == "yolo":
+        return _yolo_command(config, parts)
+
     if sub == "add":
         # /permissions add <verdict> <tool> [match...]
         if len(parts) < 3:
@@ -577,7 +810,8 @@ def run_permissions_command(config: "Config", arg: str) -> str:
         return f"Added: {verdict} {tool}{(' ' + match) if match else ''}  →  {path}"
 
     return ("Usage: /permissions [list] | add <allow|ask|deny> <tool-glob> [match] | "
-            "default <allow|ask|deny> | clear")
+            "default <allow|ask|deny> | clear | timeout <seconds|off|default> | "
+            "auto <on|off> | yolo [off]")
 
 
 # ── one-shot confirmation ────────────────────────────────────────────────────
@@ -594,18 +828,23 @@ async def confirm_action(question: str, config: "Config") -> bool:
     session rule is written. No asker, a timeout, or any answer we do not
     recognise means no: fail closed, exactly like `check()`.
     """
+    if _approve_all:
+        logger.warning("confirm: approve-all session allowed: %s", question.splitlines()[0])
+        return True
     if _asker is None:
         return False
-    timeout = float(getattr(config.permissions, "ask_timeout_s", 300.0) or 300.0)
+    options = list(_CONFIRM_OPTIONS)
+    if ask_timeout(config) is not None:
+        options.append(_WAIT)
     try:
-        answer = await asyncio.wait_for(_asker(question, list(_CONFIRM_OPTIONS)), timeout)
+        answer = await _ask(question, options, config)
     except asyncio.TimeoutError:
         logger.warning("confirm: no answer before timeout")
         return False
     except Exception:
         logger.exception("confirm: prompt failed")
         return False
-    return (answer or "").strip() == _ALLOW_ONCE
+    return answer == _ALLOW_ONCE
 
 
 def denial_result(tool: str, decision: Decision) -> dict:

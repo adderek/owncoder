@@ -467,11 +467,9 @@ def _build_textual_app(agent: "Agent", session=None, server=None):
             outer timeout — if that fires first this coroutine is cancelled, and
             the modal must come down with it rather than stranding on screen.
             """
+            from agent.security.permissions import ask_timeout
             from agent.ui.permission_prompt import ask_via_modal
-            timeout = float(getattr(
-                getattr(self._server._agent.config, "permissions", None),
-                "ask_timeout_s", 300.0,
-            ) or 300.0)
+            timeout = ask_timeout(self._server._agent.config)
             screen = self._wt.PermissionScreen(question, list(options), timeout)
             return await ask_via_modal(self.push_screen, screen)
 
