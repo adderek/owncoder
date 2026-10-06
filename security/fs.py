@@ -118,6 +118,11 @@ _DEFAULT_WRITE_DENY_GLOBS: list[str] = [
     ".agent/index.db*",
     ".agent/index-archive.db*",
     ".agent/summaries.db*",
+    # Scheduled jobs and watches: the host scheduler runs their prompts in
+    # unattended sessions and polls their targets. Created only through
+    # /schedule, /watch or the ask-gated schedule_task tool; a file write here
+    # would skip both the approval and the watch access checks.
+    ".agent/schedule/**",
 ]
 
 # The immutable core of the system prompt: human input only, so the agent's own
@@ -434,6 +439,20 @@ def check_writable(path: str | os.PathLike) -> Path:
     from . import path_grants as _pg
     real = safe_resolve(path)
     _assert_writable(real, _pg.grant_for(real))
+    return real
+
+
+def check_readable(path: str | os.PathLike) -> Path:
+    """Resolve *path* and raise unless the file tools could read it. For host
+    code acting on the agent's behalf without opening the file (file watches
+    stat their target)."""
+    from . import path_grants as _pg
+    from . import path_policy as _pp
+    real = safe_resolve(path)
+    grant = _pg.grant_for(real)
+    _enforce_policy(real, grant, _pp.Access.READ)
+    if _is_read_protected(_guard_base(real, grant), real):
+        raise ReadProtected(f"secret file read blocked: {real}")
     return real
 
 

@@ -72,6 +72,11 @@ class Job:
     watch_type: str = ""      # kind == "watch": file | url | cmd | pid
     watch_target: str = ""    # path / url / shell command / pid
     watch_state: str = ""     # last observed signal (mtime/hash/edge); "" = no baseline
+    # Watch access never exceeds the parent (the agent config polling it):
+    # net=True inherits the parent's network access, False drops it. The
+    # effective value is re-derived every poll, so it can fall, never rise.
+    net: bool = True
+    watch_note: str = ""      # why the last poll was blocked/unmet; "" = fine
     enabled: bool = True
     created_at: float = 0.0
     last_run: float = 0.0     # epoch seconds of last claim
@@ -332,11 +337,14 @@ _WATCH_TYPES = ("file", "url", "cmd", "pid")
 
 
 def add_watch(config: "Config", watch_type: str, target: str, prompt: str,
-              name: str = "", one_shot: bool = False) -> Job:
+              name: str = "", one_shot: bool = False,
+              net: bool | None = None) -> Job:
     """Persist an event watch. Raises ValueError on bad input.
 
     watch_type: file (path mtime change) | url (body hash change) |
                 cmd (shell exit becomes 0) | pid (process exits).
+    net: None = inherit the parent's network access, False = none, True =
+         require it (refused when the parent has none — never more access).
     """
     prompt = prompt.strip()
     if not prompt:
@@ -346,10 +354,14 @@ def add_watch(config: "Config", watch_type: str, target: str, prompt: str,
         raise ValueError(f"watch type must be one of {', '.join(_WATCH_TYPES)}")
     if not target.strip():
         raise ValueError("empty watch target")
-    if watch_type == "url":
-        refusal = _url_watch_refusal(config, target.strip())
-        if refusal:
-            raise ValueError(refusal)
+    if net is True and not _parent_net(config):
+        raise ValueError("a watch cannot have more access than its parent: "
+                         + _parent_net_why(config))
+    probe = Job(kind="watch", watch_type=watch_type,
+                watch_target=target.strip(), net=net is not False)
+    refusal = _watch_refusal(probe, config)
+    if refusal:
+        raise ValueError(refusal)
     name = re.sub(r"[^a-zA-Z0-9_-]+", "-", name.strip()).strip("-")[:40]
     job = Job(
         id=secrets.token_hex(3),
@@ -359,6 +371,7 @@ def add_watch(config: "Config", watch_type: str, target: str, prompt: str,
         kind="watch",
         watch_type=watch_type,
         watch_target=target.strip(),
+        net=net is not False,
         one_shot=one_shot or watch_type == "pid",  # a dead pid won't come back
         created_at=time.time(),
     )
@@ -370,69 +383,111 @@ def add_watch(config: "Config", watch_type: str, target: str, prompt: str,
     return job
 
 
-def _url_watch_refusal(config: "Config | None", url: str) -> str | None:
-    """Why a url watch may not poll *url*, or None when allowed.
-
-    A url watch is network egress from the host process, so it follows the
-    same policy as the sandboxed shell: http(s) only (no file:// reads), local
-    targets always, remote ones only with security.network = "on", and never
-    under air-gap.
-    """
-    from urllib.parse import urlparse
+def _parent_net(config: "Config | None") -> bool:
+    """Network access of the parent: the sandboxed shell's policy."""
     from agent.security import airgap
-    if urlparse(url).scheme not in ("http", "https"):
-        return "url watch target must be http(s)"
-    if airgap.is_local_url(url):
-        return None
-    if airgap.is_enabled(config):
-        return f"air-gap: watch egress to {url!r} blocked (non-local)"
     sec = getattr(config, "security", None) if config is not None else None
-    if getattr(sec, "network", "off") != "on":
-        return "remote url watch needs security.network = 'on'"
+    return getattr(sec, "network", "off") == "on" and not airgap.is_enabled(config)
+
+
+def _parent_net_why(config: "Config | None") -> str:
+    from agent.security import airgap
+    if airgap.is_enabled(config):
+        return "air-gap is on"
+    return "security.network is not 'on'"
+
+
+def _watch_net(job: Job, config: "Config | None") -> bool:
+    """Effective network access: the watch's own flag capped by the parent."""
+    return job.net and _parent_net(config)
+
+
+def _watch_refusal(job: Job, config: "Config | None") -> str | None:
+    """Why *job* may not poll its target now, or None when allowed.
+
+    A watch acts for the agent while nobody is looking, so it gets the
+    parent's access or less: file targets pass the file tools' read gate, cmd
+    runs in the shell sandbox (see _watch_signal), url targets are http(s)
+    and reach a remote host only with network access. Local urls are allowed
+    like the local LLM endpoint is.
+    """
+    t, target = job.watch_type, job.watch_target
+    if t == "file":
+        from agent.security import fs, policy
+        if not policy.is_configured():
+            return "blocked: security policy not configured"
+        try:
+            fs.check_readable(target)
+        except Exception as exc:
+            return f"blocked: file tools cannot read target ({exc})"
+        return None
+    if t == "url":
+        from urllib.parse import urlparse
+        from agent.security import airgap
+        if urlparse(target).scheme not in ("http", "https"):
+            return "blocked: url watch target must be http(s)"
+        if airgap.is_local_url(target):
+            return None
+        if not job.net:
+            return "blocked: remote url but watch has no network (--no-net)"
+        if not _parent_net(config):
+            return f"blocked: remote url needs network; {_parent_net_why(config)}"
     return None
 
 
-def _watch_signal(job: Job, config: "Config | None" = None) -> str:
-    """Current observable signal for a watch. Empty string = indeterminate."""
+def _watch_poll(job: Job, config: "Config | None" = None) -> tuple[str, str]:
+    """Poll a watch. Returns (signal, note).
+
+    signal: current observable signal; "" = indeterminate (never fires).
+    note:   why the watch is blocked or unmet, for /watch list; "" = fine.
+    """
     t, target = job.watch_type, job.watch_target
+    refusal = _watch_refusal(job, config)
+    if refusal:
+        return "", refusal
     try:
         if t == "file":
             import os
             st = os.stat(target)
-            return f"{st.st_mtime_ns}:{st.st_size}"
+            return f"{st.st_mtime_ns}:{st.st_size}", ""
         if t == "pid":
             import os
             try:
                 os.kill(int(target), 0)
-                return "alive"
+                return "alive", ""
             except (ProcessLookupError, ValueError):
-                return "dead"
+                return "dead", ""
             except PermissionError:
-                return "alive"  # exists, not ours to signal
+                return "alive", ""  # exists, not ours to signal
         if t == "cmd":
             # Same sandbox as the shell tool: bwrap/firejail + seccomp, scrubbed
             # env, rlimits, cwd confined to the project root.
             from agent.security import runner
-            sec = getattr(config, "security", None) if config is not None else None
-            res = runner.run(["sh", "-c", target], timeout=30,
-                             network=getattr(sec, "network", "off") == "on")
+            net = _watch_net(job, config)
+            res = runner.run(["sh", "-c", target], timeout=30, network=net)
             if res.timed_out:
-                return ""
-            return "met" if res.returncode == 0 else "unmet"
+                return "", "timed out after 30s"
+            if res.returncode == 0:
+                return "met", ""
+            why = "" if net else (
+                "; no network (--no-net)" if not job.net
+                else f"; no network: {_parent_net_why(config)}")
+            return "unmet", f"exit {res.returncode}{why}"
         if t == "url":
-            refusal = _url_watch_refusal(config, target)
-            if refusal:
-                logger.warning("watch %s: %s", job.id, refusal)
-                return ""
             import hashlib
             import urllib.request
             with urllib.request.urlopen(target, timeout=20) as resp:
                 body = resp.read()
-            return hashlib.sha256(body).hexdigest()
+            return hashlib.sha256(body).hexdigest(), ""
     except Exception as exc:
         logger.debug("watch %s signal failed: %s", job.id, exc)
-        return ""
-    return ""
+        return "", f"error: {exc}"[:200]
+    return "", ""
+
+
+def _watch_signal(job: Job, config: "Config | None" = None) -> str:
+    """Current observable signal for a watch. Empty string = indeterminate."""
+    return _watch_poll(job, config)[0]
 
 
 def _watch_should_fire(watch_type: str, prev: str, cur: str) -> bool:
@@ -678,7 +733,13 @@ def claim_fired_watches(config: "Config") -> list[Job]:
         for job in store.jobs:
             if job.kind != "watch" or not job.enabled:
                 continue
-            cur = _watch_signal(job, config)
+            cur, note = _watch_poll(job, config)
+            if note != job.watch_note:
+                if note.startswith("blocked"):
+                    logger.warning("watch %s (%s): %s", job.id,
+                                   job.name or job.spec, note)
+                job.watch_note = note
+                store.dirty = True
             if cur == "":
                 continue  # indeterminate (target missing / net error) — retry next tick
             prev = job.watch_state
@@ -719,6 +780,21 @@ def run_watches(config: "Config",
 # ── In-process ticker ────────────────────────────────────────────────────────
 
 
+def _warn_blocked_watches(config: "Config") -> None:
+    """Once per process: name every enabled watch the current access rules
+    block, so a watch never stops firing without a trace."""
+    try:
+        for j in list_jobs(config):
+            if j.kind != "watch" or not j.enabled:
+                continue
+            why = _watch_refusal(j, config)
+            if why:
+                logger.warning("watch %s (%s) will not fire: %s",
+                               j.id, j.name or j.spec, why)
+    except Exception:
+        logger.debug("watch access check failed", exc_info=True)
+
+
 def start_ticker(config: "Config", agent: "Agent | None" = None) -> threading.Event:
     """Start the scheduler ticker in a daemon thread; returns its stop event.
 
@@ -756,6 +832,7 @@ def start_ticker(config: "Config", agent: "Agent | None" = None) -> threading.Ev
     # while the agent is busy (same as timed jobs), so a transition is caught on
     # the next free tick rather than racing the user for the local model.
     if getattr(config.scheduler, "watch_enabled", True):
+        _warn_blocked_watches(config)
         wtick = max(5.0, float(getattr(config.scheduler, "watch_tick_seconds", 15)))
 
         def _watch_loop() -> None:
@@ -885,10 +962,13 @@ def run_schedule_command(config: "Config", arg: str) -> str:
 
 
 _WATCH_USAGE = (
-    "Usage: /watch add <type> <target> :: <prompt> [:: <name>]\n"
+    "Usage: /watch add [--no-net|--net] <type> <target> :: <prompt> [:: <name>]\n"
     "  types: file <path> | url <url> | cmd <shell> | pid <pid>\n"
     "  file/url fire on change; cmd fires when it starts exiting 0;\n"
     "  pid fires when the process dies (one-shot).\n"
+    "  Access = this agent's or less: file targets must be readable by the\n"
+    "  file tools, cmd runs in the shell sandbox. Network is inherited from\n"
+    "  security.network; --no-net drops it, --net fails if the parent lacks it.\n"
     "  e.g. /watch add file ./build.log :: summarize the new build errors\n"
     "       /watch add cmd 'test -f /tmp/done' :: the job finished, verify output :: done\n"
     "Also: /watch [list] | rm <id|name> | on/off <id|name>"
@@ -910,13 +990,29 @@ def run_watch_command(config: "Config", arg: str) -> str:
         for j in watches:
             state = "on " if j.enabled else "OFF"
             base = j.watch_state or "(no baseline yet)"
+            net = ("" if j.watch_type not in ("url", "cmd")
+                   else "net:off" if not j.net
+                   else f"net:inherit({'on' if _parent_net(config) else 'off'})")
             lines.append(
                 f"  {j.id} {state} {j.name or '-':<14} {j.watch_type}:{j.watch_target}"
+                + (f"  {net}" if net else "")
                 + (f"  last: {j.last_status} {_fmt_ts(j.last_run)}" if j.last_run else ""))
             lines.append(f"      → {j.prompt[:90]}   [{base[:24]}]")
+            if j.watch_note:
+                lines.append(f"      ! {j.watch_note[:160]}")
         return "\n".join(lines)
 
     if sub == "add":
+        net: bool | None = None
+        while rest.startswith("--"):
+            flag, _, rest = rest.partition(" ")
+            rest = rest.strip()
+            if flag == "--net":
+                net = True
+            elif flag == "--no-net":
+                net = False
+            else:
+                return f"Unknown flag {flag}\n{_WATCH_USAGE}"
         wparts = rest.split(None, 1)
         if len(wparts) < 2:
             return _WATCH_USAGE
@@ -928,7 +1024,7 @@ def run_watch_command(config: "Config", arg: str) -> str:
         target, prompt = pieces[0], pieces[1]
         name = pieces[2] if len(pieces) > 2 else ""
         try:
-            job = add_watch(config, wtype, target, prompt, name=name)
+            job = add_watch(config, wtype, target, prompt, name=name, net=net)
         except ValueError as exc:
             return f"Cannot add watch: {exc}\n{_WATCH_USAGE}"
         return (f"Watching {job.watch_type}:{job.watch_target} "

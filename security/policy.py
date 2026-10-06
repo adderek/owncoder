@@ -311,6 +311,16 @@ def _session_record_globs(root: Path, agent_dir: Path) -> list[str]:
     return [f"{rel.as_posix()}/**/session.json"]
 
 
+def _schedule_globs(root: Path, agent_dir: Path) -> list[str]:
+    """Write-deny glob for the scheduler's job store under a relocated
+    agent_dir. fs.py covers the default `.agent/schedule/**`."""
+    try:
+        rel = agent_dir.resolve().relative_to(root.resolve())
+    except (OSError, ValueError):
+        return []
+    return [f"{rel.as_posix()}/schedule/**"]
+
+
 def setup(config: "Config") -> Policy:
     global _policy
     root = Path(config.tools.working_dir).resolve()
@@ -320,7 +330,8 @@ def setup(config: "Config") -> Policy:
     _policy = Policy(root=root, agent_dir=agent_dir, cfg=config.security,
                      extra_write_deny=(_prompt_input_globs(config, root)
                                        + _state_db_globs(config, root, agent_dir)
-                                       + _session_record_globs(root, agent_dir)))
+                                       + _session_record_globs(root, agent_dir)
+                                       + _schedule_globs(root, agent_dir)))
     from . import path_grants as _pg
     _pg.setup(config)
     # Before anything can run a command: every protected path must exist, or

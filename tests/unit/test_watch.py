@@ -128,17 +128,73 @@ def test_cmd_watch_env_scrubbed(monkeypatch):
     assert _watch_signal(j) == "met"
 
 
+def _url(target, net=True):
+    return Job(id="u", kind="watch", watch_type="url", watch_target=target, net=net)
+
+
 def test_url_watch_policy():
     c = Config()
-    assert S._url_watch_refusal(c, "file:///etc/passwd")
-    assert S._url_watch_refusal(c, "http://127.0.0.1:9/x") is None
-    assert "security.network" in S._url_watch_refusal(c, "https://example.com/")
+    assert S._watch_refusal(_url("file:///etc/passwd"), c)
+    assert S._watch_refusal(_url("http://127.0.0.1:9/x"), c) is None
+    assert "security.network" in S._watch_refusal(_url("https://example.com/"), c)
     c.security.network = "on"
-    assert S._url_watch_refusal(c, "https://example.com/") is None
+    assert S._watch_refusal(_url("https://example.com/"), c) is None
+    assert "--no-net" in S._watch_refusal(_url("https://example.com/", net=False), c)
     c.security.airgap = True
-    assert "air-gap" in S._url_watch_refusal(c, "https://example.com/")
-    j = Job(id="u", kind="watch", watch_type="url", watch_target="https://example.com/")
-    assert _watch_signal(j, Config()) == ""
+    assert "air-gap" in S._watch_refusal(_url("https://example.com/"), c)
+    sig, note = S._watch_poll(_url("https://example.com/"), Config())
+    assert sig == "" and note.startswith("blocked")
+
+
+def test_net_flag_never_exceeds_parent(cfg):
+    with pytest.raises(ValueError, match="more access than its parent"):
+        S.add_watch(cfg, "cmd", "true", "p", net=True)
+    cfg.security.network = "on"
+    assert S.add_watch(cfg, "cmd", "true", "p", net=True).net
+    assert not S.add_watch(cfg, "cmd", "true", "p", net=False).net
+    assert S.add_watch(cfg, "cmd", "true", "p").net          # inherit
+    cfg.security.network = "off"                              # parent drops it
+    assert not S._watch_net(Job(kind="watch", watch_type="cmd", net=True), cfg)
+
+
+def test_cmd_unmet_note_names_missing_network():
+    j = Job(kind="watch", watch_type="cmd", watch_target="exit 7")
+    sig, note = S._watch_poll(j, Config())
+    assert sig == "unmet" and "exit 7" in note and "network" in note
+
+
+def test_file_watch_needs_file_tool_read_access(sandbox_policy, tmp_path_factory):
+    outside = tmp_path_factory.mktemp("outside") / "log"
+    outside.write_text("x")
+    j = Job(kind="watch", watch_type="file", watch_target=str(outside))
+    sig, note = S._watch_poll(j, Config())
+    assert sig == "" and note.startswith("blocked")
+    secret = sandbox_policy / ".env"
+    secret.write_text("K=v")
+    assert S._watch_refusal(
+        Job(kind="watch", watch_type="file", watch_target=str(secret)), Config())
+
+
+def test_blocked_note_persisted_and_listed(cfg, monkeypatch):
+    j = S.add_watch(cfg, "cmd", "true", "p", name="w")
+    monkeypatch.setattr(S, "_watch_poll", lambda job, c=None: ("", "blocked: test"))
+    assert S.claim_fired_watches(cfg) == []
+    assert S._find(S.list_jobs(cfg), j.id).watch_note == "blocked: test"
+    assert "! blocked: test" in S.run_watch_command(cfg, "list")
+
+
+def test_slash_flags(cfg):
+    out = S.run_watch_command(cfg, "add --net cmd true :: p")
+    assert "more access than its parent" in out
+    out = S.run_watch_command(cfg, "add --no-net cmd true :: p :: nn")
+    assert "Watching" in out
+    assert not S._find(S.list_jobs(cfg), "nn").net
+
+
+def test_job_store_write_protected(sandbox_policy):
+    from agent.security import fs
+    with pytest.raises(fs.WriteProtected):
+        fs.check_writable(sandbox_policy / ".agent" / "schedule" / "jobs.json")
 
 
 def test_add_url_watch_refused_without_network(cfg):
