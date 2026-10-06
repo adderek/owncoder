@@ -64,3 +64,25 @@ def _isolated_token_watch_calibration(monkeypatch, tmp_path_factory):
     token_watch_calib.reset_cache()
     yield
     token_watch_calib.reset_cache()
+
+
+@pytest.fixture
+def sandbox_policy(tmp_path, monkeypatch):
+    """Configured security policy rooted at tmp_path, for code that runs
+    commands through security.runner (hooks, cmd watches)."""
+    from agent.config.models import Config
+    from agent.security import fs as sec_fs, path_grants, policy
+    monkeypatch.setattr(sec_fs, "_root_dev", None)
+    monkeypatch.setattr(sec_fs, "_root_ino", None)
+    c = Config()
+    c.tools.working_dir = str(tmp_path)
+    c.tools.agent_dir = str(tmp_path / ".agent")
+    c.security.require_sandbox = False  # allow "none" backend in CI
+    policy.setup(c)
+    sec_fs.init_root_pin()
+    yield tmp_path
+    path_grants._ceiling = []
+    path_grants._reported_drops.clear()
+    policy._policy = None
+    sec_fs._root_dev = None
+    sec_fs._root_ino = None

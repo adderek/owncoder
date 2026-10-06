@@ -49,6 +49,16 @@ def flatten_tool_result(result: dict) -> Any:
     return {"content": content}
 
 
+
+def _child_env() -> dict[str, str]:
+    """Host env scrubbed by the security policy (allowlist + secret deny
+    patterns). An MCP server is third-party code; it gets API keys/tokens only
+    when the server config names them in ``env``."""
+    from agent.security import policy
+    from agent.config.models import SecurityConfig
+    cfg = policy.get().cfg if policy.is_configured() else SecurityConfig()
+    return policy.scrub_env(dict(os.environ), cfg)
+
 class MCPClient:
     def __init__(self, server: "MCPServerConfig") -> None:
         self._server = server
@@ -68,7 +78,8 @@ class MCPClient:
         s = self._server
         if not s.command:
             raise MCPError(f"mcp server {s.name!r}: no command configured")
-        env = dict(os.environ)
+        env = _child_env()
+        # Explicit per-server env is the opt-in channel for credentials.
         env.update({k: str(v) for k, v in (s.env or {}).items()})
         argv = [s.command, *[str(a) for a in (s.args or [])]]
         logger.debug("mcp[%s]: spawning %s", s.name, argv)

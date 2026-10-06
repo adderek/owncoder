@@ -798,8 +798,12 @@ def run(
     timeout: int | None = None,
     stdin: bytes | str | None = None,
     on_spawn=None,
+    extra_env: dict[str, str] | None = None,
 ) -> RunResult:
     """Run *argv* (list, not shell string) inside the configured sandbox.
+
+    extra_env: variables added after the env scrub (caller-supplied context,
+    e.g. hook TOOL_ARGS). Not filtered — never pass host secrets here.
 
     on_spawn(proc): optional callback invoked with the live Popen right after
     launch — lets a background caller capture the process so it can terminate
@@ -826,6 +830,8 @@ def run(
         wrapped = list(argv)
     wall = timeout or pol.cfg.wall_seconds
     env = pol.env_for_child(dict(os.environ))
+    if extra_env:
+        env.update(extra_env)
     stdin_bytes: bytes | None
     if isinstance(stdin, str):
         stdin_bytes = stdin.encode("utf-8")

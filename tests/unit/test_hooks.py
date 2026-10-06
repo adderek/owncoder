@@ -7,6 +7,9 @@ from agent.config.models import Config, HookConfig
 from agent.core import hooks
 
 
+pytestmark = pytest.mark.usefixtures("sandbox_policy")
+
+
 def _cfg(*entries):
     c = Config()
     c.hooks.entries = list(entries)
@@ -103,3 +106,11 @@ async def test_end_to_end_through_execute_tool():
                                   command="echo RAN; exit 2", name="pn")]
     res2 = await execute_tool(_Call("hooktest_echo", {"path": "p"}), c)
     assert "[hook notes]" in res2 and "RAN" in res2
+
+
+async def test_hook_env_scrubbed(monkeypatch):
+    monkeypatch.setenv("HOOKTEST_API_TOKEN", "s3cret")
+    c = _cfg(HookConfig(event="pre_tool", tools=["*"], block=True,
+                        command='test -z "$HOOKTEST_API_TOKEN"'))
+    allow, msg = await hooks.run_pre_tool(c, "edit_file", {})
+    assert allow, msg

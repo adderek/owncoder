@@ -92,6 +92,16 @@ trigger privileged-side shell would tunnel straight through the boundary.
 skip permission rules — the broker's fixed tool surface is the whole
 policy there.)
 
+### D5 — Execution: **hooks run in the shell-tool sandbox** (2026-10-06)
+
+Source audit finding (MEDIUM): `create_subprocess_shell` ran hooks on the host
+with the full agent env. Hooks now go through `security.runner.run(["sh","-c",
+cmd])`: bwrap/firejail + seccomp, rlimits, cwd = project root, env scrubbed by
+`security.env_allow`/`env_deny_patterns` plus the HOOK_*/TOOL_* context vars.
+Network only when `security.network = "on"`. No sandbox available → launch
+fails → a blocking hook denies (fail closed). Hooks needing host paths outside
+the project or secrets in env no longer work; that is the point.
+
 ## Implementation hand-off (mechanical)
 
 1. `security/` or `core/hooks.py`: fingerprint function + origin tagging.

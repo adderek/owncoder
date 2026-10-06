@@ -12,6 +12,8 @@ from agent.config.models import Config, HookConfig
 from agent.core import hooks
 from agent.security import hook_trust
 
+pytestmark = pytest.mark.usefixtures("sandbox_policy")
+
 
 @pytest.fixture(autouse=True)
 def _isolated_store(tmp_path, monkeypatch):

@@ -10,6 +10,9 @@ from agent.core import scheduler as S
 from agent.core.scheduler import Job, _watch_signal, _watch_should_fire
 
 
+pytestmark = pytest.mark.usefixtures("sandbox_policy")
+
+
 @pytest.fixture
 def cfg(tmp_path, monkeypatch):
     monkeypatch.setattr(S, "_schedule_dir", lambda c: tmp_path)
@@ -117,3 +120,27 @@ def test_watch_command_add_and_rm(cfg, tmp_path):
     assert any(j.name == "bl" for j in S.list_jobs(cfg))
     assert "Removed watch" in S.run_watch_command(cfg, "rm bl")
     assert not any(j.name == "bl" for j in S.list_jobs(cfg))
+
+
+def test_cmd_watch_env_scrubbed(monkeypatch):
+    monkeypatch.setenv("WATCHTEST_API_TOKEN", "s3cret")
+    j = Job(kind="watch", watch_type="cmd", watch_target='test -z "$WATCHTEST_API_TOKEN"')
+    assert _watch_signal(j) == "met"
+
+
+def test_url_watch_policy():
+    c = Config()
+    assert S._url_watch_refusal(c, "file:///etc/passwd")
+    assert S._url_watch_refusal(c, "http://127.0.0.1:9/x") is None
+    assert "security.network" in S._url_watch_refusal(c, "https://example.com/")
+    c.security.network = "on"
+    assert S._url_watch_refusal(c, "https://example.com/") is None
+    c.security.airgap = True
+    assert "air-gap" in S._url_watch_refusal(c, "https://example.com/")
+    j = Job(id="u", kind="watch", watch_type="url", watch_target="https://example.com/")
+    assert _watch_signal(j, Config()) == ""
+
+
+def test_add_url_watch_refused_without_network(cfg):
+    with pytest.raises(ValueError, match="security.network"):
+        S.add_watch(cfg, "url", "https://example.com/", "check it")

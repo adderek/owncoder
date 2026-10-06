@@ -1,7 +1,8 @@
 """Shell hooks around tool execution — pre_tool (can block) and post_tool.
 
 Configured under [[hooks.entries]] (see HookConfig). Hooks are user-authored
-shell, run in the project directory with tool context in the environment:
+shell, run in the shell-tool sandbox (security/runner.py: scrubbed env, project
+root cwd, network only with security.network = "on") with tool context in env:
 
   HOOK_EVENT   pre_tool | post_tool
   TOOL_NAME    the tool being called
@@ -26,7 +27,6 @@ import asyncio
 import fnmatch
 import json
 import logging
-import os
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -67,7 +67,8 @@ def _matching(config: "Config | None", event: str, tool: str) -> list["HookConfi
 
 
 def _env(event: str, tool: str, args: dict, result: str | None) -> dict:
-    env = dict(os.environ)
+    """Hook context vars. The sandbox runner adds the scrubbed host env."""
+    env: dict[str, str] = {}
     env["HOOK_EVENT"] = event
     env["TOOL_NAME"] = tool
     try:
@@ -84,34 +85,39 @@ def _env(event: str, tool: str, args: dict, result: str | None) -> dict:
 
 def _cwd(config: "Config | None") -> str | None:
     # The agent process runs in the project directory; inheriting its cwd
-    # (None) is correct. Kept as a hook point for a future per-session root.
+    # (None → sandbox runner uses the project root) is correct. Kept as a hook
+    # point for a future per-session root.
     return None
 
 
-async def _run(hook: "HookConfig", env: dict, cwd: str | None) -> tuple[int, str]:
-    """Run one hook; return (exit_code, combined_output). -1 = failed to launch."""
+async def _run(hook: "HookConfig", env: dict, cwd: str | None,
+               network: bool = False) -> tuple[int, str]:
+    """Run one hook; return (exit_code, combined_output). -1 = failed to launch.
+
+    Runs through the same sandbox as the shell tool (bwrap/firejail + seccomp,
+    scrubbed env, rlimits, project-root cwd). No sandbox → launch fails, so a
+    blocking hook denies (fail closed).
+    """
+    from agent.security import runner
     timeout = float(getattr(hook, "timeout_s", 30.0) or 30.0)
     try:
-        proc = await asyncio.create_subprocess_shell(
-            hook.command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            env=env,
-            cwd=cwd,
+        res = await asyncio.to_thread(
+            runner.run, ["sh", "-c", hook.command],
+            cwd=cwd, network=network, timeout=max(1, int(round(timeout))),
+            extra_env=env,
         )
     except Exception as exc:
         logger.warning("hook %r failed to launch: %s", hook.command, exc)
         return -1, f"hook failed to launch: {exc}"
-    try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
-        try:
-            proc.kill()
-        except Exception:
-            pass
+    if res.timed_out:
         return -1, f"hook timed out after {timeout:.0f}s"
-    text = (out or b"").decode("utf-8", "replace").strip()
-    return proc.returncode if proc.returncode is not None else -1, text
+    text = "\n".join(p for p in (res.stdout.strip(), res.stderr.strip()) if p)
+    return res.returncode, text
+
+
+def _network(config: "Config | None") -> bool:
+    sec = getattr(config, "security", None) if config is not None else None
+    return getattr(sec, "network", "off") == "on"
 
 
 def _attribute(config: "Config | None", event: str, hook: "HookConfig", out: str) -> str:
@@ -146,7 +152,7 @@ async def run_pre_tool(config: "Config | None", tool: str, args: dict) -> tuple[
     env = _env("pre_tool", tool, args, None)
     cwd = _cwd(config)
     for h in hooks:
-        code, out = await _run(h, env, cwd)
+        code, out = await _run(h, env, cwd, _network(config))
         label = getattr(h, "name", "") or h.command[:40]
         if code != 0 and getattr(h, "block", False):
             msg = out or f"pre_tool hook '{label}' exited {code}"
@@ -169,7 +175,7 @@ async def run_post_tool(config: "Config | None", tool: str, args: dict,
     cwd = _cwd(config)
     notes: list[str] = []
     for h in hooks:
-        code, out = await _run(h, env, cwd)
+        code, out = await _run(h, env, cwd, _network(config))
         if code != 0:
             notes.append(_attribute(config, "post_tool", h,
                                     f"exit {code}: {out[:300]}"))

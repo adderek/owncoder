@@ -161,3 +161,12 @@ class TestMcpCommand:
         manager.load_mcp_tools(cfg)
         out = manager.run_mcp_command(cfg, "")
         assert "bad" in out and "FAILED" in out
+
+
+def test_child_env_scrubs_secrets(monkeypatch):
+    from agent.mcp import client as mc
+    monkeypatch.setenv("MCPTEST_API_KEY", "s3cret")
+    monkeypatch.setenv("PATH", "/usr/bin")
+    env = mc._child_env()
+    assert "MCPTEST_API_KEY" not in env
+    assert env.get("PATH") == "/usr/bin"

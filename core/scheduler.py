@@ -346,6 +346,10 @@ def add_watch(config: "Config", watch_type: str, target: str, prompt: str,
         raise ValueError(f"watch type must be one of {', '.join(_WATCH_TYPES)}")
     if not target.strip():
         raise ValueError("empty watch target")
+    if watch_type == "url":
+        refusal = _url_watch_refusal(config, target.strip())
+        if refusal:
+            raise ValueError(refusal)
     name = re.sub(r"[^a-zA-Z0-9_-]+", "-", name.strip()).strip("-")[:40]
     job = Job(
         id=secrets.token_hex(3),
@@ -366,7 +370,29 @@ def add_watch(config: "Config", watch_type: str, target: str, prompt: str,
     return job
 
 
-def _watch_signal(job: Job) -> str:
+def _url_watch_refusal(config: "Config | None", url: str) -> str | None:
+    """Why a url watch may not poll *url*, or None when allowed.
+
+    A url watch is network egress from the host process, so it follows the
+    same policy as the sandboxed shell: http(s) only (no file:// reads), local
+    targets always, remote ones only with security.network = "on", and never
+    under air-gap.
+    """
+    from urllib.parse import urlparse
+    from agent.security import airgap
+    if urlparse(url).scheme not in ("http", "https"):
+        return "url watch target must be http(s)"
+    if airgap.is_local_url(url):
+        return None
+    if airgap.is_enabled(config):
+        return f"air-gap: watch egress to {url!r} blocked (non-local)"
+    sec = getattr(config, "security", None) if config is not None else None
+    if getattr(sec, "network", "off") != "on":
+        return "remote url watch needs security.network = 'on'"
+    return None
+
+
+def _watch_signal(job: Job, config: "Config | None" = None) -> str:
     """Current observable signal for a watch. Empty string = indeterminate."""
     t, target = job.watch_type, job.watch_target
     try:
@@ -384,11 +410,20 @@ def _watch_signal(job: Job) -> str:
             except PermissionError:
                 return "alive"  # exists, not ours to signal
         if t == "cmd":
-            import subprocess
-            rc = subprocess.run(target, shell=True, capture_output=True,
-                                timeout=30).returncode
-            return "met" if rc == 0 else "unmet"
+            # Same sandbox as the shell tool: bwrap/firejail + seccomp, scrubbed
+            # env, rlimits, cwd confined to the project root.
+            from agent.security import runner
+            sec = getattr(config, "security", None) if config is not None else None
+            res = runner.run(["sh", "-c", target], timeout=30,
+                             network=getattr(sec, "network", "off") == "on")
+            if res.timed_out:
+                return ""
+            return "met" if res.returncode == 0 else "unmet"
         if t == "url":
+            refusal = _url_watch_refusal(config, target)
+            if refusal:
+                logger.warning("watch %s: %s", job.id, refusal)
+                return ""
             import hashlib
             import urllib.request
             with urllib.request.urlopen(target, timeout=20) as resp:
@@ -643,7 +678,7 @@ def claim_fired_watches(config: "Config") -> list[Job]:
         for job in store.jobs:
             if job.kind != "watch" or not job.enabled:
                 continue
-            cur = _watch_signal(job)
+            cur = _watch_signal(job, config)
             if cur == "":
                 continue  # indeterminate (target missing / net error) — retry next tick
             prev = job.watch_state

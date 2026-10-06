@@ -1131,7 +1131,7 @@ class MCPServerConfig:
     # stdio transport
     command: str = ""                           # executable, e.g. "npx" or "python"
     args: list = field(default_factory=list)    # argv after command
-    env: dict = field(default_factory=dict)     # extra env vars for the subprocess
+    env: dict = field(default_factory=dict)     # extra env vars; host env is scrubbed (security.env_allow/env_deny_patterns), pass tokens here
     cwd: str = ""                               # working dir ("" = inherit)
     # http transport
     url: str = ""                               # endpoint, e.g. https://host/mcp
@@ -1406,7 +1406,8 @@ class HookConfig:
       ["edit_file", "replace_symbol"].
     command: shell command. Receives context in env: HOOK_EVENT, TOOL_NAME,
       TOOL_ARGS (JSON), TOOL_PATH (args.path if present), and for post_tool
-      TOOL_RESULT (JSON, truncated). Runs in the project directory.
+      TOOL_RESULT (JSON, truncated). Runs in the shell-tool sandbox (scrubbed
+      env, project-root cwd, network only with security.network = "on").
     block: pre_tool only — a non-zero exit denies the tool call and the hook's
       stdout/stderr is returned to the model as the error. Ignored for post_tool
       (post hooks are advisory; their output surfaces as a note).

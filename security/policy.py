@@ -18,6 +18,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def scrub_env(host_env: dict[str, str], cfg) -> dict[str, str]:
+    """Drop env vars matching cfg.env_deny_patterns, keep only cfg.env_allow
+    (when non-empty). Shared by the sandbox runner and unsandboxed children
+    (MCP stdio servers) so host secrets never reach either."""
+    deny = [re.compile(p) for p in cfg.env_deny_patterns]
+    allow = set(cfg.env_allow)
+    return {k: v for k, v in host_env.items()
+            if not any(d.match(k) for d in deny) and (not allow or k in allow)}
+
+
 @dataclass
 class Policy:
     root: Path
@@ -30,15 +40,7 @@ class Policy:
     extra_write_deny: list = field(default_factory=list)
 
     def env_for_child(self, host_env: dict[str, str]) -> dict[str, str]:
-        deny = [re.compile(p) for p in self.cfg.env_deny_patterns]
-        allow = set(self.cfg.env_allow)
-        out: dict[str, str] = {}
-        for k, v in host_env.items():
-            if any(d.match(k) for d in deny):
-                continue
-            if allow and k not in allow:
-                continue
-            out[k] = v
+        out = scrub_env(host_env, self.cfg)
         # HOME inside sandbox points to project root so tools that use ~
         # don't leak into the host home.
         out.setdefault("HOME", str(self.root))
