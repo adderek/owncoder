@@ -32,7 +32,7 @@ from . import vision as _vision
 from .turn_setup import normalize_api_messages, select_tools
 from .loop_detector import LoopDetector
 from .confidence import ConfidenceMonitor
-from .context_budget import compaction_trigger_budget, effective_ctx_window
+from .context_budget import compaction_message_cap, compaction_trigger_budget, effective_ctx_window
 from . import context_state
 
 if TYPE_CHECKING:
@@ -1376,10 +1376,7 @@ async def run_turn(
             # at a different number depending on where in the turn it is tested.
             token_threshold = compaction_trigger_budget(
                 config, confidence_monitor.signal() if confidence_monitor else None)
-            msg_threshold = config.llm.compaction_message_threshold
-            if msg_threshold <= 0:
-                # Auto: ~1 message per 1000 tokens at the compaction threshold.
-                msg_threshold = max(40, config.llm.ctx_window // 1000)
+            msg_threshold = compaction_message_cap(config)
 
             if token_est > token_threshold or len(messages) > msg_threshold:
                 _phase("compact", f"post-tool at {token_est} tokens")

@@ -600,9 +600,8 @@ async def compact(
                              int(_ctx(config) * config.llm.compaction_threshold))
             except Exception:
                 budget = int(_ctx(config) * config.llm.compaction_threshold)
-            msg_cap = config.llm.compaction_message_threshold
-            if msg_cap <= 0:
-                msg_cap = max(40, config.llm.ctx_window // 1000)
+            from agent.core.context_budget import compaction_message_cap
+            msg_cap = compaction_message_cap(config)
             token_est = _count_tokens_approx(messages)
             logger.info("compact: released stale reads, %d chars freed, ~%d tokens left (budget %d)",
                         freed, token_est, budget)

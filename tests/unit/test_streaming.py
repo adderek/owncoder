@@ -359,6 +359,25 @@ class TestStreamStallWatchdog:
         assert beats[0][2] == 3
 
 
+    async def test_ttft_fuse_covers_create(self):
+        # llama-server holds headers until the first token, so a request queued
+        # behind a wedged slot hangs inside create(); the TTFT fuse must cover it
+        # instead of leaving it to the 600s client timeout.
+        c = Config()
+        c.llm.think_level = "off"
+        c.llm.stream_stall_seconds = 100
+        c.llm.stream_ttft_seconds = 1
+        c.llm.stream_heartbeat_seconds = 0
+
+        async def _hang(**kw):
+            await asyncio.Event().wait()
+        client = MagicMock()
+        client.chat.completions.create = _hang
+        t0 = asyncio.get_running_loop().time()
+        with pytest.raises(StreamStalledError):
+            await _stream_response(client, c, [], [], on_token=lambda t: None)
+        assert asyncio.get_running_loop().time() - t0 < 5
+
 # ── narration-pattern coverage ──────────────────────────────────────────────
 # Two hand-maintained copies of the tool-name list had drifted out of sync with
 # the registry: explore, find_symbol, find_tools and grep_code were in

@@ -99,3 +99,24 @@ def compaction_trigger_budget(config, signal=None) -> int:
     threshold = float(getattr(getattr(config, "llm", None), "compaction_threshold", 0.75) or 0.75)
     configured = int(ctx * threshold)
     return max(1024, min(health_adjusted_budget(config, signal), configured))
+
+
+#: Assumed floor on tokens per message for the auto message cap. Tool results
+#: shrunk by tool_compaction average ~300 tokens; 250 keeps the cap a backstop
+#: for runaway message counts rather than a trigger that beats the token one.
+_MIN_TOKENS_PER_MSG = 250
+
+
+def compaction_message_cap(config) -> int:
+    """Message count above which compaction fires regardless of tokens.
+
+    llm.compaction_message_threshold > 0 is used as-is. Auto (0) derives it
+    from the token trigger: the old ctx_window // 1000 assumed ~1000 tokens per
+    message, so a 64k window compacted at ~65 messages (~20k tokens).
+    """
+    explicit = int(getattr(getattr(config, "llm", None), "compaction_message_threshold", 0) or 0)
+    if explicit > 0:
+        return explicit
+    ctx = effective_ctx_window(config)
+    threshold = float(getattr(getattr(config, "llm", None), "compaction_threshold", 0.75) or 0.75)
+    return max(40, int(ctx * threshold) // _MIN_TOKENS_PER_MSG)

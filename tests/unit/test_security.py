@@ -260,6 +260,46 @@ class TestRunnerSandboxed:
         if not _sys.prefix.startswith("/usr"):
             assert paths
 
+    def test_interpreter_alias_recreated_not_mounted(self, project, tmp_path_factory, monkeypatch):
+        """uv's versioned-alias dir is a symlink. Mounting onto it fails once a
+        ro grant of its parent exposes it ("Can't mount on symlink
+        destination"), so it must be recreated with --symlink, never bound."""
+        base = tmp_path_factory.mktemp("uvpy")
+        real = base / "cpython-3.11.15"
+        (real / "bin").mkdir(parents=True)
+        (real / "bin" / "python3.11").touch()
+        alias = base / "cpython-3.11"
+        alias.symlink_to(real)
+        monkeypatch.setattr(sec_runner.sys, "executable", str(alias / "bin" / "python3.11"))
+        monkeypatch.setattr(sec_runner.sys, "prefix", str(real))
+        monkeypatch.setattr(sec_runner.sys, "base_prefix", str(real))
+        argv = sec_runner._bwrap_argv(["true"], cwd=project, network=False)
+        dests = [argv[i + 2] for i, t in enumerate(argv)
+                 if t in ("--ro-bind", "--ro-bind-try", "--bind")]
+        assert str(alias) not in dests
+        assert str(real) in dests
+        i = argv.index(str(alias))
+        assert argv[i - 2] == "--symlink" and argv[i - 1] == str(real)
+
+    def test_run_under_ro_grant_of_interpreter_parent(self, project):
+        """Regression: ro grant of the dir holding a uv alias broke every run."""
+        import sys as _sys
+        if sec_runner.select_backend() != "bwrap":
+            pytest.skip("bwrap-specific mount behaviour")
+        aliases = sec_runner._interpreter_aliases(project)
+        if not aliases:
+            pytest.skip("interpreter not reached through a symlinked dir")
+        from agent.security import path_grants as pg
+        parent = Path(aliases[0][0]).parent
+        _pre_approve(parent, "ro")
+        pg.add_grant(parent, "ro")
+        try:
+            r = sec_runner.run([_sys.executable, "-c", "print('ok')"], timeout=15)
+        finally:
+            pg.remove_grant(parent)
+        assert r.returncode == 0, r.stderr
+        assert "ok" in r.stdout
+
     def test_network_off_by_default(self, project):
         if sec_runner.select_backend() == "none":
             pytest.skip("no functional sandbox backend — network test requires real isolation")

@@ -475,16 +475,26 @@ async def _safe_close(stream) -> None:
 
 
 async def _next_chunk(stream_it, *, budget_s: int, heartbeat_s: int, waiting_for: str,
-                      stop_event=None, on_heartbeat=None):
-    """Await the next stream chunk while keeping the wait observable and interruptible.
+                      stop_event=None, on_heartbeat=None, waited: float = 0.0):
+    """Await the next stream chunk while keeping the wait observable and interruptible."""
+    return await _await_budgeted(
+        stream_it.__anext__(), budget_s=budget_s, heartbeat_s=heartbeat_s,
+        waiting_for=waiting_for, stop_event=stop_event, on_heartbeat=on_heartbeat,
+        waited=waited)
+
+
+async def _await_budgeted(aw, *, budget_s: int, heartbeat_s: int, waiting_for: str,
+                          stop_event=None, on_heartbeat=None, waited: float = 0.0):
+    """Await ``aw`` while keeping the wait observable and interruptible.
 
     Unlike a flat ``wait_for``, this distinguishes a slow-but-alive backend from a
     wedged one: it polls in ``heartbeat_s`` slices, emits a heartbeat on each slice
     (so a long prefill never looks frozen), honours ``stop_event`` mid-wait, and only
     declares a stall (``TimeoutError``) once the whole ``budget_s`` elapses with no chunk.
     ``budget_s``/``heartbeat_s`` of 0 disable the limit / the heartbeat respectively.
+    ``waited`` is time already spent on the same fuse, so a budget can span calls.
     """
-    pending = asyncio.ensure_future(stream_it.__anext__())
+    pending = asyncio.ensure_future(aw)
 
     def _abandon() -> None:
         # Cancel and retrieve any late exception, otherwise asyncio logs
@@ -494,7 +504,6 @@ async def _next_chunk(stream_it, *, budget_s: int, heartbeat_s: int, waiting_for
         pending.add_done_callback(
             lambda t: t.cancelled() or t.exception())
 
-    waited = 0.0
     while True:
         if budget_s <= 0 and heartbeat_s <= 0:
             return await pending
@@ -553,61 +562,82 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
     _ts_utf8 = token_stats.utf8_decoder()
     _watch = (token_watch.LiveWatch(config, allow_cut=watch_cut_ok, model=_model, ctx=watch_ctx)
               if _ts_rows is not None and token_watch.enabled(config) else None)
-    try:
-        async with _gpu_slot(config):
-            call_kwargs = _build_call_kwargs(config)
-            if _ts_rows is not None:
-                ts_kw = token_stats.request_kwargs(config)
-                extra = {**(call_kwargs.get("extra_body") or {}), **ts_kw.pop("extra_body", {})}
-                ts_call = {**call_kwargs, **ts_kw, **({"extra_body": extra} if extra else {})}
-                try:
-                    stream = await client.chat.completions.create(
-                        messages=api_messages,
-                        tools=tools if tools else None,
-                        stream=True,
-                        stream_options={"include_usage": True},
-                        **ts_call,
-                    )
-                except openai.BadRequestError as e:
-                    # Capture is optional; never let it cost the turn.
-                    if not token_stats.is_rejection(e):
-                        raise
-                    token_stats.mark_unsupported(_base_url, e)
-                    _ts_rows = None
-            if _ts_rows is None:
-                stream = await client.chat.completions.create(
+    # Two distinct fuses: prefill (no first token yet) emits no chunks while the
+    # backend chews a big prompt — that is slow, not wedged, so it gets a generous
+    # TTFT budget. Once tokens flow, a gap means the backend actually stalled, so
+    # the tighter inter-chunk budget applies. Conflating them false-trips on long
+    # prefills, and the retry then doubles backend load.
+    ttft_s = int(getattr(config.llm, "stream_ttft_seconds", 0) or 0)
+    stall_s = int(getattr(config.llm, "stream_stall_seconds", 0) or 0)
+    heartbeat_s = int(getattr(config.llm, "stream_heartbeat_seconds", 0) or 0)
+    # Prefill budget from this model's own measured history, scaled to the
+    # prompt actually being sent: the fixed setting has to cover a cold box
+    # chewing 200k tokens, which makes it far too loose for a normal turn.
+    # Only tightens/loosens the FIRST-token fuse — once tokens flow, a gap
+    # is a wedge regardless of how big the prompt was.
+    if ttft_s > 0 and getattr(config.llm, "stream_ttft_adaptive", True):
+        try:
+            from agent.metrics.ttft_expect import expect_for_config
+            exp = expect_for_config(config, _count_tokens_approx(api_messages))
+            if exp.adaptive:
+                logger.debug("ttft budget %.0fs (was %ds) from %d samples",
+                             exp.budget_s, ttft_s, exp.samples)
+                ttft_s = int(exp.budget_s)
+        except Exception:
+            logger.debug("adaptive ttft budget unavailable", exc_info=True)
+    t_request: float | None = None
+
+    async def _open_stream(**kw):
+        # llama-server (and its router proxy) holds the response headers until
+        # the first token, so create() itself is the prefill wait. Left outside
+        # the TTFT fuse, a request queued behind a wedged slot hangs for the
+        # whole client timeout (600s) instead of the TTFT budget.
+        nonlocal t_request
+        t_request = time.monotonic()
+        try:
+            return await _await_budgeted(
+                client.chat.completions.create(
                     messages=api_messages,
                     tools=tools if tools else None,
                     stream=True,
                     stream_options={"include_usage": True},
-                    **call_kwargs,
-                )
+                    **kw,
+                ),
+                budget_s=ttft_s, heartbeat_s=heartbeat_s,
+                waiting_for="first token (prefill)",
+                stop_event=stop_event, on_heartbeat=on_stall_progress,
+            )
+        except asyncio.TimeoutError:
+            raise StreamStalledError(
+                f"LLM stream stalled: no response for {ttft_s}s "
+                "(no first token — prefill exceeded budget or backend wedged)"
+            ) from None
 
-        # Two distinct fuses: prefill (no first token yet) emits no chunks while the
-        # backend chews a big prompt — that is slow, not wedged, so it gets a generous
-        # TTFT budget. Once tokens flow, a gap means the backend actually stalled, so
-        # the tighter inter-chunk budget applies. Conflating them false-trips on long
-        # prefills, and the retry then doubles backend load.
-        ttft_s = int(getattr(config.llm, "stream_ttft_seconds", 0) or 0)
-        stall_s = int(getattr(config.llm, "stream_stall_seconds", 0) or 0)
-        heartbeat_s = int(getattr(config.llm, "stream_heartbeat_seconds", 0) or 0)
-        # Prefill budget from this model's own measured history, scaled to the
-        # prompt actually being sent: the fixed setting has to cover a cold box
-        # chewing 200k tokens, which makes it far too loose for a normal turn.
-        # Only tightens/loosens the FIRST-token fuse — once tokens flow, a gap
-        # is a wedge regardless of how big the prompt was.
-        if ttft_s > 0 and getattr(config.llm, "stream_ttft_adaptive", True):
-            try:
-                from agent.metrics.ttft_expect import expect_for_config
-                exp = expect_for_config(config, _count_tokens_approx(api_messages))
-                if exp.adaptive:
-                    logger.debug("ttft budget %.0fs (was %ds) from %d samples",
-                                 exp.budget_s, ttft_s, exp.samples)
-                    ttft_s = int(exp.budget_s)
-            except Exception:
-                logger.debug("adaptive ttft budget unavailable", exc_info=True)
-        stream_it = stream.__aiter__()
-        while True:
+    try:
+        stream = None
+        try:
+            async with _gpu_slot(config):
+                call_kwargs = _build_call_kwargs(config)
+                if _ts_rows is not None:
+                    ts_kw = token_stats.request_kwargs(config)
+                    extra = {**(call_kwargs.get("extra_body") or {}), **ts_kw.pop("extra_body", {})}
+                    ts_call = {**call_kwargs, **ts_kw, **({"extra_body": extra} if extra else {})}
+                    try:
+                        stream = await _open_stream(**ts_call)
+                    except openai.BadRequestError as e:
+                        # Capture is optional; never let it cost the turn.
+                        if not token_stats.is_rejection(e):
+                            raise
+                        token_stats.mark_unsupported(_base_url, e)
+                        _ts_rows = None
+                if _ts_rows is None:
+                    stream = await _open_stream(**call_kwargs)
+        except _StreamStopped:
+            logger.info("stream: stop_event set while waiting for response")
+            finish_reason = "stop"
+
+        stream_it = stream.__aiter__() if stream is not None else None
+        while stream_it is not None:
             # Cooperative interrupt: a hung `async for` never yields back to the
             # turn loop, so check the stop flag on every chunk boundary.
             if stop_event is not None and stop_event.is_set():
@@ -618,6 +648,8 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
             before_first = t_first_token is None
             budget_s = ttft_s if before_first else stall_s
             waiting_for = "first token (prefill)" if before_first else "next token"
+            # The TTFT fuse already started ticking inside create().
+            waited = (time.monotonic() - t_request) if before_first and t_request else 0.0
             try:
                 chunk = await _next_chunk(
                     stream_it,
@@ -626,6 +658,7 @@ async def _stream_response(client, config: "Config", api_messages, tools, on_tok
                     waiting_for=waiting_for,
                     stop_event=stop_event,
                     on_heartbeat=on_stall_progress,
+                    waited=waited,
                 )
             except StopAsyncIteration:
                 break

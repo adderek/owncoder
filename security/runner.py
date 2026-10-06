@@ -553,6 +553,25 @@ def _interpreter_paths(root: Path) -> list[str]:
     return out
 
 
+def _interpreter_aliases(root: Path) -> list[tuple[str, str]]:
+    """Symlinked dirs among `_interpreter_paths`, as (path, link text).
+
+    bwrap follows a symlink *source*, but refuses a mount whose *destination*
+    is already a symlink inside the sandbox ("Can't mount on symlink
+    destination"). A read-only grant of the parent (e.g.
+    ``~/.local/share/uv/python``) makes uv's alias dir exactly that, so every
+    command failed. Only the real dir is bound; the alias is recreated with
+    ``--symlink`` using the host link text, which bwrap accepts even when the
+    identical link already exists via the grant.
+    """
+    out: list[tuple[str, str]] = []
+    for c in _interpreter_paths(root):
+        cp = Path(c)
+        if cp.is_symlink():
+            out.append((c, os.readlink(cp)))
+    return out
+
+
 def _under_root(p: Path, root: Path) -> bool:
     try:
         p.relative_to(root)
@@ -659,8 +678,16 @@ def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool, seccomp_fd: int | 
                 a += ["--ro-bind", str(gp), str(gp)]
     except Exception:
         pass  # grants are best-effort; don't break the sandbox
+    # Real dirs only, re-bound read-only even under a grant (an rw grant must
+    # not make the interpreter writable); symlinked aliases are recreated as
+    # links — mounting onto one fails (see _interpreter_aliases).
+    aliases = _interpreter_aliases(root)
+    alias_paths = {p for p, _ in aliases}
     for p in _interpreter_paths(root):
-        a += ["--ro-bind-try", p, p]
+        if p not in alias_paths:
+            a += ["--ro-bind-try", p, p]
+    for p, link in aliases:
+        a += ["--symlink", link, p]
     own = _own_interpreter_under_root(root)
     if own is not None:
         a += ["--ro-bind", str(own), str(own)]

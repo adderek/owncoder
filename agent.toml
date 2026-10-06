@@ -5,7 +5,7 @@
 [agent]
 max_iterations            = 0     # 0/null = unlimited; set positive int to cap per-turn tool rounds
 compaction_threshold      = 0.75
-compaction_message_threshold = 0    # 0 = auto (ctx_window/1000, min 40)
+compaction_message_threshold = 0    # 0 = auto (ctx_window*compaction_threshold/250, min 40)
 narration_fallback        = true
 auto_detect_ctx           = true
 think_level               = "normal"

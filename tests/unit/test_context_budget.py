@@ -103,3 +103,32 @@ def test_budget_is_below_the_window_it_derives_from():
     for ctx in (2048, 8192, 32768, 200_000):
         cfg = _cfg(ctx_window=ctx, max_output_tokens=4096)
         assert input_token_budget(cfg) < effective_ctx_window(cfg)
+
+
+# --- compaction_message_cap ---------------------------------------------------
+# Regression: auto cap was ctx_window // 1000 (65 for a 64k window), which fired
+# at ~20k tokens in tool-heavy turns, far below the 75% token trigger.
+
+def test_message_cap_explicit_wins():
+    cfg = _cfg(ctx_window=65536)
+    cfg.llm.compaction_message_threshold = 123
+    assert cb.compaction_message_cap(cfg) == 123
+
+
+def test_message_cap_auto_does_not_beat_token_trigger():
+    cfg = _cfg(ctx_window=65536, max_output_tokens=8192)
+    cfg.llm.compaction_threshold = 0.75
+    cap = cb.compaction_message_cap(cfg)
+    # 300-token messages (typical compacted tool round) must reach the token
+    # trigger before the message cap.
+    assert cap * 300 > cb.compaction_trigger_budget(cfg)
+
+
+def test_message_cap_auto_ctx_uses_default_window():
+    cfg = _cfg(ctx_window=0)
+    assert cb.compaction_message_cap(cfg) == max(
+        40, int(DEFAULT_CTX_WINDOW * cfg.llm.compaction_threshold) // 250)
+
+
+def test_message_cap_floor():
+    assert cb.compaction_message_cap(_cfg(ctx_window=2048)) == 40
