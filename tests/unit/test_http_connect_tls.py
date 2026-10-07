@@ -33,6 +33,11 @@ class TestApprovalFlow:
         assert reg.validate(token) is not None
         assert not (reg.store).exists()                  # session-only: not persisted
 
+    def test_host_recorded_and_sanitised(self, reg):
+        p, _, _ = reg.request("10.0.0.7", "x", "evil.example:8180\r\n<b>")
+        assert p.host == "evil.example:8180b" and p.public()["host"] == p.host
+        assert reg.request("10.0.0.8", "x")[0].host == ""
+
     def test_deny(self, reg):
         p, claim, _ = reg.request("10.0.0.5", "x")
         reg.decide(p.id, False)
@@ -133,6 +138,15 @@ class TestSelfSignedTls:
             with socket.create_connection(("127.0.0.1", port), timeout=5) as s:
                 s.sendall(b"GET / HTTP/1.1\r\nHost: evil.example\r\n\r\n")
                 assert s.recv(4096).startswith(b"HTTP/1.1 400")
+            # --allow-any-host: well-formed foreign Host redirects, malformed still refused
+            srv.any_host = True
+            with socket.create_connection(("127.0.0.1", port), timeout=5) as s:
+                s.sendall(b"GET / HTTP/1.1\r\nHost: box.lan:8180\r\n\r\n")
+                assert f"Location: https://box.lan:{port}/".encode() in s.recv(4096)
+            with socket.create_connection(("127.0.0.1", port), timeout=5) as s:
+                s.sendall(b"GET / HTTP/1.1\r\nHost: a/b@c\r\n\r\n")
+                assert s.recv(4096).startswith(b"HTTP/1.1 400")
+            srv.any_host = False
             # HTTPS works
             ctx = ssl.create_default_context(cafile=str(cert))
             with socket.create_connection(("127.0.0.1", port), timeout=5) as raw:

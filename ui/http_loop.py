@@ -891,6 +891,8 @@ class _HttpUI:
         # None = only the startup token admits a browser. Set in http_loop().
         self.clients = None
         self.tls = False
+        # [ui] http_allow_any_host: skip the Origin/Host allow-list (token still required).
+        self.any_host = False
 
     def submit(self, text: str) -> bool:
         """Called from handler threads. Returns True if injected mid-turn."""
@@ -2547,7 +2549,7 @@ def _make_handler(ui: _HttpUI):
             Returns True if the request is allowed, False if it should be rejected.
             """
             from agent.ui_server.auth import constant_time_compare, origin_host_error, validate_origin_host
-            if not validate_origin_host(self):
+            if not getattr(ui, "any_host", False) and not validate_origin_host(self):
                 self._json(origin_host_error(self), 403)
                 return False
             # Project secret (s5): if running under a router, reject unproxied requests.
@@ -2593,14 +2595,16 @@ def _make_handler(ui: _HttpUI):
             if _clients() is None or path not in ("/api/connect", "/api/connect/status"):
                 return False
             from agent.ui_server.auth import origin_host_error, validate_origin_host
-            if not validate_origin_host(self):
+            if not getattr(ui, "any_host", False) and not validate_origin_host(self):
                 self._json(origin_host_error(self), 403)
                 return True
             if os.environ.get("AGENT_PROJECT_SECRET", ""):
                 return False   # router-managed: the router authenticates
             if path == "/api/connect" and self.command == "POST":
                 p, claim, err = _clients().request(self.client_address[0],
-                                                   self.headers.get("User-Agent", ""))
+                                                   self.headers.get("User-Agent", ""),
+                                                   # Host only matters once any name is admitted.
+                                                   self.headers.get("Host", "") if ui.any_host else "")
                 self._json({"error": err} if err else
                            {"id": p.id, "code": p.code, "claim": claim}, 429 if err else 200)
                 return True
@@ -2971,7 +2975,9 @@ def _start_connect_approvers(ui, console) -> None:
 
     def _prompt(p) -> None:
         console.print(f"\n[bold yellow]⚠ Connection attempt[/bold yellow] from [bold]{p.ip}[/bold] "
-                      f"— code [bold cyan]{p.code}[/bold cyan]\n  [dim]{p.agent or 'unknown browser'}[/dim]\n"
+                      f"— code [bold cyan]{p.code}[/bold cyan]"
+                      + (f" via Host [bold]{p.host}[/bold]" if p.host else "")
+                      + f"\n  [dim]{p.agent or 'unknown browser'}[/dim]\n"
                       "  Allow? [bold]s[/bold] = this session · [bold]r[/bold] = remember "
                       f"{ui.clients.remember_days} days · [bold]d[/bold] = deny  (then Enter)")
 
@@ -3893,11 +3899,13 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
     if not (tls_cert and tls_key):
         tls_cert, tls_key, tls_fp = _auto_tls(cfg, host, _extra_hosts)
     ui.tls = bool(tls_cert and tls_key)
+    ui.any_host = bool(getattr(cfg, "http_allow_any_host", False))
     if getattr(cfg, "connect_approval", True):
         from agent.ui_server.client_auth import ClientRegistry
         ui.clients = ClientRegistry(remember_days=int(getattr(cfg, "connect_remember_days", 30)))
         _start_connect_approvers(ui, console)
     httpd = _bind_server(_make_handler(ui), host, port, tls_cert, tls_key)
+    httpd.any_host = ui.any_host   # http→https redirect (DualProtocolServer)
     actual_port = httpd.server_address[1]
 
     # Write a project pidfile so the router can discover this project process.
@@ -3923,6 +3931,9 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
         if scheme == "http":
             console.print("[yellow]Plain HTTP: the token and your prompts cross the LAN unencrypted "
                           "([ui] http_tls_auto = \"lan\" needs the 'cryptography' package).[/yellow]")
+    if ui.any_host:
+        console.print("[yellow]Any Host/Origin accepted (--allow-any-host) — the token or an "
+                      "approved browser is still required; check the Host on each approval.[/yellow]")
     console.print("[dim]Ctrl+C here to quit.[/dim]\n")
 
     pub = ui.bus.publish

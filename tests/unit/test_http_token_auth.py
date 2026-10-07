@@ -102,3 +102,13 @@ def test_project_secret_still_authorises_router_proxied_requests(ui_server, monk
     assert status == 403
     status, _, _ = _get(port, "/api/state", headers={"X-Project-Secret": "wrong"})
     assert status == 403
+
+
+def test_foreign_host_refused_unless_any_host(ui_server):
+    port, ui = ui_server
+    tok = f"/?token={ui.auth.token}"
+    assert _get(port, tok, headers={"Host": "box.lan:8180"})[0] == 403
+    ui.any_host = True
+    assert _get(port, tok, headers={"Host": "box.lan:8180"})[0] == 200
+    # any-host lifts only the Host check — the token is still required
+    assert _get(port, "/", headers={"Host": "box.lan:8180"})[0] == 403

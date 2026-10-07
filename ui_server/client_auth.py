@@ -56,9 +56,11 @@ class Pending:
     state: str = "pending"          # pending | approved | denied | expired
     remember: bool = False
     token: str = ""                 # plaintext only until the requester claims it
+    host: str = ""                  # Host header as sent; shown to the approver
 
     def public(self) -> dict:
         return {"id": self.id, "code": self.code, "ip": self.ip, "agent": self.agent,
+                "host": self.host,
                 "age_s": int(time.time() - self.created)}
 
 
@@ -152,7 +154,7 @@ class ClientRegistry:
         for k in [k for k, p in self._pending.items() if now - p.created > PENDING_TTL_S * 3]:
             del self._pending[k]
 
-    def request(self, ip: str, agent: str) -> tuple[Pending | None, str, str]:
+    def request(self, ip: str, agent: str, host: str = "") -> tuple[Pending | None, str, str]:
         """New connect request → (pending, claim_secret, error)."""
         now = time.time()
         with self._lock:
@@ -168,9 +170,10 @@ class ClientRegistry:
                 return None, "", "too many pending requests — try again shortly"
             claim = secrets.token_urlsafe(24)
             p = Pending(id=secrets.token_hex(6), code=f"{secrets.randbelow(1000):03d}",
-                        ip=ip, agent=agent[:160], created=now, claim_hash=_hash(claim))
+                        ip=ip, agent=agent[:160], created=now, claim_hash=_hash(claim),
+                        host="".join(c for c in host if c.isalnum() or c in ".-:[]")[:80])
             self._pending[p.id] = p
-        logger.info("http ui: connection request %s from %s (%s)", p.id, ip, p.agent)
+        logger.info("http ui: connection request %s from %s host=%s (%s)", p.id, ip, p.host, p.agent)
         self._notify(p)
         return p, claim, ""
 

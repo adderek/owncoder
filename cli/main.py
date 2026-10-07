@@ -207,6 +207,11 @@ def build_parser() -> argparse.ArgumentParser:
                              "E.g. the agent runs on 192.168.2.64 and you browse to "
                              "http://192.168.2.64:8180 → --allow-host 192.168.2.64. "
                              "Same as [ui] allowed_hosts in agent.toml/agent.yaml.")
+    chat_p.add_argument("--allow-any-host", action="store_true",
+                        help="HTTP UI: accept any Host/Origin (any IP or name that "
+                             "reaches the port) instead of the --allow-host list. "
+                             "The startup token or an operator-approved browser "
+                             "is still required. Same as [ui] http_allow_any_host.")
     chat_p.add_argument("--incognito", action="store_true",
                         help="Don't persist this session or any notes it produces")
     chat_p.add_argument("--private", action="store_true",

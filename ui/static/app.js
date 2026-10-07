@@ -844,7 +844,7 @@ function connectPrompt(ev) {
   const d = document.createElement('div');
   d.className = 'loopguard';
   d.innerHTML = '🔌 Connection attempt from <b>' + esc(ev.ip) + '</b> — code <b>' + esc(ev.code) +
-    '</b><div class="dim">' + esc(ev.agent || 'unknown browser') + '</div><div class="lg-acts">' +
+    '</b>' + (ev.host ? ' via Host <b>' + esc(ev.host) + '</b>' : '') + '<div class="dim">' + esc(ev.agent || 'unknown browser') + '</div><div class="lg-acts">' +
     '<button class="sbtn" data-c="session">allow this session</button>' +
     '<button class="sbtn" data-c="remember">allow &amp; remember</button>' +
     '<button class="sbtn" data-c="deny">deny</button></div>';

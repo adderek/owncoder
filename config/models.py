@@ -303,6 +303,10 @@ class UIConfig:
     # the agent's terminal or an open tab. Approved browsers get their own cookie token.
     connect_approval: bool = True
     connect_remember_days: int = 30   # lifetime of a "remember" approval
+    # Skip the Origin/Host allow-list: the UI answers under any IP/name that reaches the
+    # port. The token / approved-browser cookie still gate every request; approval
+    # prompts show the Host so a DNS-rebinding page stands out. Also --allow-any-host.
+    http_allow_any_host: bool = False
     http_sidecar: bool = False  # run a companion browser view alongside textual/simple mode (see ui/http_sidecar.py)
     allowed_hosts: list = field(default_factory=list)  # extra Origin/Host names accepted by the HTTP UI beyond loopback (e.g. ["192.168.31.42"] for LAN access); also settable via --allow-host
     q_summaries: bool = False

@@ -228,6 +228,8 @@ def cmd_chat(args, config):
         config.ui.mode = _pick_ui_mode(config.ui.mode)
     if getattr(args, "http_sidecar", False):
         config.ui.http_sidecar = True
+    if getattr(args, "allow_any_host", False):
+        config.ui.http_allow_any_host = True
 
     # Extra Origin/Host allow-list hosts: config (agent.toml/agent.yaml) plus
     # any --allow-host flags. Published to the environment so validate_origin_host

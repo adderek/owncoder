@@ -153,6 +153,7 @@ class DualProtocolServer(QuietThreadingHTTPServer):
 
     ssl_context: ssl.SSLContext | None = None
     peek_timeout = 10.0
+    any_host = False   # [ui] http_allow_any_host: redirect under any well-formed Host
 
     def finish_request(self, request, client_address):  # noqa: D102
         try:
@@ -173,10 +174,10 @@ class DualProtocolServer(QuietThreadingHTTPServer):
                 return
             self.RequestHandlerClass(tls, client_address, self)
             return
-        _redirect_to_https(request, self.server_address[1])
+        _redirect_to_https(request, self.server_address[1], self.any_host)
 
 
-def _redirect_to_https(sock, port: int) -> None:
+def _redirect_to_https(sock, port: int, any_host: bool = False) -> None:
     """Answer one plain-HTTP request with 308 → https:// on the same host:port."""
     from agent.ui_server.auth import _extra_allowed_hosts
     try:
@@ -192,7 +193,9 @@ def _redirect_to_https(sock, port: int) -> None:
         host = next((ln.split(":", 1)[1].strip() for ln in head[1:] if ln.lower().startswith("host:")), "")
         name = host.rsplit(":", 1)[0].strip("[]") if host.count(":") <= 1 or host.startswith("[") else host
         allowed = {"127.0.0.1", "localhost", "::1"} | _extra_allowed_hosts()
-        if not path.startswith("/") or (name not in allowed and not name.startswith("127.")):
+        ok_name = (name in allowed or name.startswith("127.")
+                   or (any_host and name and all(c.isalnum() or c in ".-:" for c in name)))
+        if not path.startswith("/") or not ok_name:
             body = (b"This owncoder UI only speaks HTTPS. Open https:// with this server's "
                     b"address (add it with --allow-host if it is rejected).\n")
             sock.sendall(b"HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\n"
