@@ -783,6 +783,7 @@ _PAGE = r"""<!DOCTYPE html>
   <button type="button" id="turnprev" title="Previous question ( [ )" aria-label="Previous question">↑</button>
   <button type="button" id="turnnext" title="Next question ( ] )" aria-label="Next question">↓</button>
 </div>
+<button type="button" id="tobottom" class="at-end" title="Scroll to bottom" aria-label="Scroll to bottom">⤓</button>
 <div id="inputrow"><div class="row">
   <input type="file" id="attachfile" multiple style="display:none">
   <button class="icon" id="attach" title="Attach a file — saved under .agent/uploads, a reference is inserted into your message">📎</button>
@@ -797,11 +798,13 @@ _PAGE = r"""<!DOCTYPE html>
     <option value="uk">uk</option>
   </select>
   <textarea id="input" rows="1" placeholder="Message… (Enter to send, Shift+Enter for newline, / for commands)"></textarea>
-  <button id="send">Send</button>
-  <button id="continue" class="inert" title="Nudge the agent to keep going (sends 'continue')">▶ Continue</button>
-  <button id="heal" title="Something is going wrong? Have the agent stop and diagnose itself: root cause, fix, durable rule. Runs in this session.">⚕ Heal</button>
-  <button id="stop" title="Soft stop: finish current iteration, then stop">Stop</button>
-  <button id="kill" title="Hard stop: abort the turn immediately (may leave the last exchange incomplete)">Kill</button>
+  <button id="send" class="ctl" title="Send (Enter)">Send</button>
+  <div class="ctlgroup" role="group" aria-label="Turn controls">
+    <button id="continue" class="ctl inert" title="Nudge the agent to keep going (sends 'continue')" aria-label="Continue"><span class="ci">▶</span><span class="cl">Continue</span></button>
+    <button id="heal" class="ctl" title="Something is going wrong? Have the agent stop and diagnose itself: root cause, fix, durable rule. Runs in this session." aria-label="Heal"><span class="ci">⚕</span><span class="cl">Heal</span></button>
+    <button id="stop" class="ctl" title="Soft stop: finish current iteration, then stop" aria-label="Stop"><span class="ci">■</span><span class="cl">Stop</span></button>
+    <button id="kill" class="ctl" title="Hard stop: abort the turn immediately (may leave the last exchange incomplete)" aria-label="Kill"><span class="ci">✕</span><span class="cl">Kill</span></button>
+  </div>
 </div></div>
 </div>
 <div class="resizer hidden" id="resize-right" title="Drag to resize; drag past the edge to close"></div>

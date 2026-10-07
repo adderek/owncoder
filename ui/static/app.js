@@ -6,21 +6,37 @@ const input = document.getElementById('input');
 // they're reading scrollback. When it doesn't, surface a "jump to latest"
 // button instead so new output isn't silently missed.
 const jumpBtn = document.getElementById('jumpdown');
+const bottomBtn = document.getElementById('tobottom');
+function atEnd() { return log.scrollHeight - log.scrollTop - log.clientHeight < 80; }
 function stickScroll() {
-  if (log.scrollHeight - log.scrollTop - log.clientHeight < 80) {
+  followWork();
+  if (atEnd()) {
     log.scrollTop = log.scrollHeight;
     jumpBtn.classList.add('hidden');
   } else {
     jumpBtn.classList.remove('hidden');
   }
+  if (bottomBtn) bottomBtn.classList.toggle('at-end', atEnd());
 }
-jumpBtn.addEventListener('click', () => {
+function toBottom() {
   log.scrollTop = log.scrollHeight;
   jumpBtn.classList.add('hidden');
-});
+}
+jumpBtn.addEventListener('click', toBottom);
+if (bottomBtn) bottomBtn.addEventListener('click', toBottom);
 log.addEventListener('scroll', () => {
-  if (log.scrollHeight - log.scrollTop - log.clientHeight < 80) jumpBtn.classList.add('hidden');
+  const end = atEnd();
+  if (end) jumpBtn.classList.add('hidden');
+  if (bottomBtn) bottomBtn.classList.toggle('at-end', end);
 });
+// Floating controls sit just above the input row, whose height changes (the
+// textarea grows, buttons wrap on a phone): publish it as --inputh.
+if (window.ResizeObserver) {
+  const inputRow = document.getElementById('inputrow');
+  new ResizeObserver(() => {
+    document.getElementById('center').style.setProperty('--inputh', inputRow.offsetHeight + 'px');
+  }).observe(inputRow);
+}
 const statusEl = document.getElementById('status');
 const dot = document.getElementById('dot');
 let streamEl = null;      // assistant bubble being streamed into
@@ -446,6 +462,11 @@ function mount(el) {
 
 // While a turn runs, meta-steps mount inside the turn's work fold so the
 // whole "agent working" phase collapses to one line when the answer lands.
+const WORK_VIEWS_HTML = '<span class="wviews">' +
+  '<button type="button" data-v="scroll" title="Scrollable pane that follows the agent">⇕</button>' +
+  '<button type="button" data-v="full" title="Show full height">⤢</button>' +
+  '<button type="button" data-v="fold" title="Fold">▸</button></span>';
+
 function beginTurn() {
   if (turn) return turn;
   foldLastAnswer();   // rounds without a user message (scheduled, injected)
@@ -459,10 +480,11 @@ function beginTurn() {
   d.open = true;
   d.innerHTML = '<summary><span class="wspin"></span>' +
     '<span class="wlabel working">working</span>' +
-    '<span class="wmeta"></span><span class="wwatch"></span></summary>' +
+    '<span class="wmeta"></span><span class="wwatch"></span>' +
+    WORK_VIEWS_HTML + '</summary>' +
     '<div class="wbody"></div>';
   mount(d);
-  turn = {details: d, body: d.querySelector('.wbody'),
+  turn = {details: d, body: d.querySelector('.wbody'), follow: true,
           tools: 0, steps: 0, changeset: null, t0: Date.now(), userToggled: false};
   // Bound to the turn record, not to whichever turn happens to be active: the
   // old handler compared against the live `turn`, so a click on an already
@@ -472,7 +494,59 @@ function beginTurn() {
     rec.userToggled = true;
   });
   d.querySelector('summary').title = 'started ' + fmtClock(turn.t0);
+  d.querySelector('.wviews').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-v]');
+    if (!b) return;
+    e.preventDefault();      // not a summary click: don't toggle the fold
+    e.stopPropagation();
+    rec.userToggled = true;
+    setWorkView(rec, b.dataset.v, true);
+  });
+  // Scrolled up inside the pane to read: stop following until back at its end.
+  rec.body.addEventListener('scroll', () => {
+    const b = rec.body;
+    rec.follow = b.scrollHeight - b.scrollTop - b.clientHeight < 40;
+  });
+  d.addEventListener('toggle', () => syncWorkView(rec));
+  setWorkView(rec, workViewDefault, false);
   return turn;
+}
+
+// Work fold view: scroll (bounded pane, follows the agent) | full | fold.
+// The last scroll/full picked becomes the default for new rounds; fold is a
+// per-round choice and the auto-fold (foldJournal) stays in charge of it.
+let workViewDefault = 'scroll';
+try {
+  const v = localStorage.getItem('oc-workview');
+  if (v === 'scroll' || v === 'full') workViewDefault = v;
+} catch (e) {}
+
+function setWorkView(rec, view, chosen) {
+  if (view === 'fold') {
+    rec.details.open = false;
+  } else {
+    rec.details.dataset.view = view;
+    rec.details.open = true;
+    if (chosen) {
+      workViewDefault = view;
+      try { localStorage.setItem('oc-workview', view); } catch (e) {}
+    }
+    if (view === 'scroll') { rec.follow = true; rec.body.scrollTop = rec.body.scrollHeight; }
+  }
+  syncWorkView(rec);
+}
+
+function syncWorkView(rec) {
+  const cur = rec.details.open ? (rec.details.dataset.view || 'scroll') : 'fold';
+  rec.details.querySelectorAll('.wviews button').forEach(b =>
+    b.classList.toggle('on', b.dataset.v === cur));
+}
+
+// Keep the live round's pane pinned to its newest line (called from stickScroll).
+function followWork() {
+  const t = turn;
+  if (!t || !t.follow || !t.details.open || t.details.dataset.view !== 'scroll') return;
+  t.body.scrollTop = t.body.scrollHeight;
 }
 
 function metaMount(el) {

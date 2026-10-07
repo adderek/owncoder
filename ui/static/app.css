@@ -156,15 +156,23 @@ body[data-mode]:not([data-mode="standard"]) #input:focus { border-color: var(--p
 /* Layout shell: header / [left drawer | chat column | right drawer] */
 #main { flex: 1; display: flex; min-height: 0; }
 #center { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; }
-#jumpdown { position: absolute; bottom: 76px; left: 50%; transform: translateX(-50%);
+#jumpdown { position: absolute; bottom: calc(var(--inputh, 64px) + 12px); left: 50%; transform: translateX(-50%);
             padding: 5px 14px; font-size: 12px; border-radius: 14px;
             background: var(--panel2); color: var(--fg); border: 1px solid var(--border);
             box-shadow: 0 2px 10px rgba(0,0,0,.3); z-index: 5; }
 #jumpdown.hidden { display: none; }
 /* Step between questions — the landmarks of a long session. */
-#turnnav { position: absolute; right: 14px; bottom: 84px; z-index: 5;
+#turnnav { position: absolute; right: 14px; bottom: calc(var(--inputh, 64px) + 50px); z-index: 5;
            display: flex; flex-direction: column; gap: 4px; }
 #turnnav.hidden { display: none; }
+#tobottom { position: absolute; right: 14px; bottom: calc(var(--inputh, 64px) + 12px); z-index: 5;
+            width: 32px; height: 30px; padding: 0; font-size: 15px; line-height: 1;
+            border-radius: 15px; background: var(--panel2); color: var(--fg);
+            border: 1px solid var(--border); box-shadow: 0 2px 10px rgba(0,0,0,.3);
+            transition: opacity .15s; }
+#tobottom:hover { border-color: var(--accent); filter: none; }
+#tobottom.at-end { opacity: .35; }
+#log.hidden ~ #tobottom, #log.hidden ~ #turnnav { display: none; }
 #turnnav button { background: var(--panel2); color: var(--dim);
                   border: 1px solid var(--border); border-radius: 6px;
                   padding: 2px 8px; font-size: 12px; line-height: 1.4; }
@@ -713,6 +721,11 @@ details.tool .toolreply { white-space: pre-wrap; font-family: var(--mono);
 .user { background: var(--user-bg); border: 1px solid var(--user-border); margin-left: 12%;
         white-space: pre-wrap; }
 .assistant { background: var(--panel); border: 1px solid var(--border); margin-right: 6%; }
+/* The round's answer (a top-level row, not text inside the work fold) is what
+   the user came for: a size up from the journal and the question. */
+#log > .row > .msg.assistant { font-size: 15.5px; line-height: 1.6; }
+#log > .row > .msg.assistant .md code,
+#log > .row > .msg.assistant .md pre code { font-size: 13.5px; }
 /* The bubble renders markdown as it streams, so the block elements bring
    their own spacing; pre-wrap survives only for the oversized-answer path,
    where the raw text is shown instead. */
@@ -848,6 +861,16 @@ details.work > summary::-webkit-details-marker { display: none; }
 details.work > summary:hover { color: var(--fg); }
 details.work .wmeta { color: var(--dimmer); margin-left: auto; }
 details.work .wbody { padding: 8px 12px 4px; border-top: 1px solid var(--border); }
+/* View modes (data-view, app.js setWorkView): scroll = a bounded pane that
+   follows the agent while it works; full = natural height; fold = closed. */
+details.work[data-view="scroll"] .wbody { max-height: 42vh; overflow-y: auto;
+                                          overscroll-behavior: contain; }
+details.work .wviews { display: inline-flex; gap: 2px; margin-left: 6px; }
+details.work .wviews button { background: none; border: 1px solid transparent;
+  color: var(--dimmer); font-size: 11px; line-height: 1; padding: 2px 5px;
+  border-radius: 4px; height: auto; }
+details.work .wviews button:hover { color: var(--fg); border-color: var(--border); filter: none; }
+details.work .wviews button.on { color: var(--fg); border-color: var(--accent); }
 details.work .wbody .msg { font-size: 13px; opacity: .85; }
 .wspin { width: 11px; height: 11px; border: 2px solid var(--dimmer); flex-shrink: 0;
          border-top-color: var(--act, var(--warn)); border-radius: 50%;
@@ -929,7 +952,8 @@ details.usage .body { padding: 4px 0 2px 14px; white-space: pre; overflow-x: aut
 }
 #inputrow { display: flex; gap: 8px; padding: 12px 16px; background: var(--panel);
             border-top: 1px solid var(--border); flex-shrink: 0; }
-#inputrow .row { display: flex; gap: 8px; flex: 1; animation: none; }
+/* flex-end: the textarea grows to 180px; the buttons must not grow with it. */
+#inputrow .row { display: flex; gap: 8px; flex: 1; animation: none; align-items: flex-end; }
 #input { flex: 1; background: var(--bg); border: 1px solid var(--border); color: var(--fg);
          padding: 9px 12px; border-radius: 8px; font-size: 14px; font-family: inherit;
          resize: none; min-height: 40px; max-height: 180px; }
@@ -940,10 +964,27 @@ button:hover { filter: brightness(1.15); }
 /* Interrupt controls stay visible at all times (QA rounds and delegated
    turns must be stoppable even when this UI didn't start them); they are
    merely disabled while nothing runs. */
+/* One height for every control, matching the one-line textarea, so the row
+   reads as a single strip. Turn controls form one segmented group: four
+   actions on one target, not four peers of Send. */
+#inputrow .row > button, .ctl { height: 40px; flex-shrink: 0; white-space: nowrap; }
+#inputrow .row > button.icon { width: 36px; padding: 0; }
+#send { min-width: 72px; padding: 0 16px; font-weight: 600; }
+.ctlgroup { display: flex; flex-shrink: 0; border-radius: 8px; overflow: hidden; }
+.ctlgroup .ctl { border-radius: 0; padding: 0 10px; font-size: 13px;
+                 display: inline-flex; align-items: center; gap: 5px; }
+.ctlgroup .ctl + .ctl { border-left: 1px solid rgba(0,0,0,.3); }
+.ctl .ci { font-size: 12px; line-height: 1; }
+#heal { background: #3d5a7a; }
 #stop { background: #7a5a20; }
-#kill { background: #7a3030; padding: 0 12px; }
-#continue { background: #2f6b3a; padding: 0 12px; }
+#kill { background: #7a3030; }
+#continue { background: #2f6b3a; }
 #stop.inert, #kill.inert, #continue.inert { opacity: .4; pointer-events: none; }
+/* Narrow column: icons only (titles + aria-labels still say what they do). */
+@media (max-width: 1100px) {
+  .ctlgroup .ctl .cl { display: none; }
+  .ctlgroup .ctl { width: 36px; padding: 0; justify-content: center; }
+}
 
 /* Touch devices have no hover: hover-revealed affordances need to default
    visible instead, or they're effectively unreachable. */
@@ -970,9 +1011,8 @@ button:hover { filter: brightness(1.15); }
   /* 16px avoids iOS Safari's auto-zoom-on-focus for inputs under that size. */
   #input { font-size: 16px; }
   /* 44px is the standard minimum comfortable touch target. */
-  #inputrow button { min-height: 40px; }
   button { padding: 0 14px; font-size: 13px; }
-  #kill, #continue { padding: 0 10px; }
+  #inputrow .row > button, .ctl { height: 40px; }
   .resizer { display: none !important; }
   #main { position: relative; overflow: hidden; }
   aside { position: fixed; top: 0; bottom: 0; z-index: 40; width: 86vw; max-width: 340px;
@@ -985,7 +1025,6 @@ button:hover { filter: brightness(1.15); }
                box-shadow: 0 0 24px rgba(0,0,0,.4); }
   #backdrop.open { display: block; position: fixed; inset: 0; background: rgba(0,0,0,.45);
                    z-index: 30; }
-  #jumpdown { bottom: calc(76px + env(safe-area-inset-bottom)); }
 }
 /* Simple model choice popover (core/simple_select.py): one row per knob. */
 .sess-menu.simple-menu { right: auto; min-width: 300px; padding: 6px; }
