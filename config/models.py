@@ -667,8 +667,8 @@ class SecurityConfig:
     airgap: bool = False
     # Scan output of UNTRUSTED tools (MCP servers, web fetch) for prompt-injection
     # attempts and prepend a "this is data, not instructions" banner before it
-    # enters context. MCP servers run outside the sandbox, so their output is the
-    # likeliest injection vector. See docs/MYTHOS_security_suite.md #12.
+    # enters context. MCP servers (unless jailed via mcp sandbox) run outside the
+    # sandbox, so their output is the likeliest injection vector. See docs/MYTHOS_security_suite.md #12.
     guard_tool_injection: bool = True
     # `/security review deep` (hot-explore + cold-judge): how many high-temperature
     # generation passes per window, and the base temperature. More passes = higher
@@ -1148,16 +1148,29 @@ class MCPServerConfig:
     enabled: bool = True
     init_timeout_s: int = 20                     # handshake/list deadline
     call_timeout_s: int = 120                    # per tool-call deadline
+    # stdio jail (agent/mcp/sandbox.py). "none" = host rights; "bwrap" = no
+    # $HOME/project/network, private home, seccomp. Fail-closed.
+    sandbox: str = "none"                       # "none" | "bwrap"
+    sandbox_network: bool = False
+    sandbox_ro: list = field(default_factory=list)  # extra read-only binds (install dir, targets)
+    sandbox_rw: list = field(default_factory=list)  # extra writable binds (output dir)
+    sandbox_home: str = ""                      # private $HOME; "" = ~/.local/state/agent/mcp/<name>/home
+    sandbox_seccomp: bool = True
+    # fnmatch globs on the server's own tool names; deny wins. Empty allow = all.
+    tools_allow: list = field(default_factory=list)
+    tools_deny: list = field(default_factory=list)
+    origin: str = "user"                        # "project" = from a repo config; loader forces the jail
 
 
 @dataclass
 class MCPConfig:
     """Model Context Protocol client. Off by default.
 
-    SECURITY: MCP servers run as ordinary subprocesses OUTSIDE the tool
-    sandbox — they are trusted integrations the user configured, not agent
-    output. Only enable servers you trust; their tools can do whatever the
-    server process can.
+    SECURITY: by default MCP servers run as ordinary subprocesses OUTSIDE the
+    tool sandbox with the user's rights. Set ``sandbox = "bwrap"`` per stdio
+    server to jail it (see agent/mcp/sandbox.py); http servers are remote and
+    unaffected. Servers from a project (repo) config are always jailed and
+    http ones dropped — see loader._clamp_project_mcp.
     """
     enabled: bool = False
     servers: list = field(default_factory=list)  # list[MCPServerConfig]

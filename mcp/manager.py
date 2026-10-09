@@ -7,6 +7,7 @@ crashing agent startup.
 """
 from __future__ import annotations
 
+import fnmatch
 import logging
 import re
 from typing import TYPE_CHECKING
@@ -31,6 +32,14 @@ def _safe(part: str) -> str:
 
 def _make_tool_name(server: str, tool: str) -> str:
     return f"mcp__{_safe(server)}__{_safe(tool)}"
+
+
+def _tool_allowed(server, tool: str) -> bool:
+    """tools_deny wins; empty tools_allow admits everything else."""
+    if any(fnmatch.fnmatchcase(tool, g) for g in (getattr(server, "tools_deny", None) or [])):
+        return False
+    allow = getattr(server, "tools_allow", None) or []
+    return not allow or any(fnmatch.fnmatchcase(tool, g) for g in allow)
 
 
 def _wrap(client, server_name: str, tool_name: str):
@@ -63,6 +72,10 @@ def load_mcp_tools(config: "Config | None") -> int:
         name = server.name or server.command or server.url
         if transport == "stdio":
             client = MCPClient(server)
+        elif transport == "http" and getattr(server, "origin", "user") == "project":
+            logger.warning("mcp[%s]: http server from a project config refused", name)
+            _status[name] = {"ok": False, "tools": [], "error": "http server from project config refused"}
+            continue
         elif transport == "http":
             from agent.security import airgap
             if airgap.is_enabled(config) and not airgap.is_local_url(getattr(server, "url", "")):
@@ -90,7 +103,7 @@ def load_mcp_tools(config: "Config | None") -> int:
         tool_names: list[str] = []
         for tool in tools:
             tname = tool.get("name")
-            if not tname:
+            if not tname or not _tool_allowed(server, tname):
                 continue
             schema = {
                 "description": (tool.get("description") or f"MCP tool {tname} from server {name}.")[:1024],
@@ -101,7 +114,7 @@ def load_mcp_tools(config: "Config | None") -> int:
             tool_names.append(full)
             registered += 1
         _status[name] = {"ok": True, "tools": tool_names, "error": None}
-        logger.info("mcp[%s]: registered %d tool(s)", name, len(tools))
+        logger.info("mcp[%s]: registered %d of %d tool(s)", name, len(tool_names), len(tools))
 
     return registered
 
@@ -135,7 +148,8 @@ def run_mcp_command(config, arg: str) -> str:
             lines.append(f"  {name}: not loaded")
         elif st["ok"]:
             tools = ", ".join(t.split("__", 2)[-1] for t in st["tools"]) or "(none)"
-            lines.append(f"  {name}: ok — {len(st['tools'])} tools: {tools}")
+            from agent.mcp.sandbox import describe
+            lines.append(f"  {name}: ok — {describe(s)} — {len(st['tools'])} tools: {tools}")
         else:
             lines.append(f"  {name}: FAILED — {st['error']}")
     return "\n".join(lines)

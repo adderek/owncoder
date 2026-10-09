@@ -545,6 +545,91 @@ def _clamp_project_security(config: Config, data: dict) -> list[str]:
     return issues
 
 
+def _clamp_project_mcp(data: dict, project_root: Path) -> tuple[list[dict], list[str]]:
+    """Take [[mcp.servers]] out of a project layer and jail what is left.
+
+    Same trust boundary as _clamp_project_security: a repo config ships with a
+    clone, and an MCP server is a command spawned at agent startup — unclamped
+    that is code execution on the host just by running the agent in the tree.
+
+    Project stdio servers survive only as a bwrap jail that sees /usr and the
+    project root read-only: no network, no writable binds, no $HOME, seccomp
+    on, private state dir. Http servers are dropped (they would receive tool
+    arguments, i.e. a data channel out of the machine).
+
+    The servers are removed from *data* so the ordinary list-replace merge
+    cannot wipe the user's servers; the caller appends them after the user's.
+    Mutates *data*. Returns (clamped server dicts, issues).
+    """
+    section = data.get("mcp")
+    if not isinstance(section, dict) or "servers" not in section:
+        return [], []
+    raw = section.pop("servers") or []
+    import hashlib
+    root = project_root.resolve()
+    tag = hashlib.sha256(str(root).encode()).hexdigest()[:8]
+    kept: list[dict] = []
+    issues: list[str] = []
+    for srv in raw:
+        if not isinstance(srv, dict):
+            issues.append("[mcp] servers entry from a project config is not a mapping — ignored")
+            continue
+        if srv.get("enabled", True) is False:
+            continue  # never spawned; no point warning about it every start
+        name = str(srv.get("name") or srv.get("command") or "?")
+        if (srv.get("transport") or "stdio") != "stdio":
+            issues.append(f"[mcp] server {name!r} from a project config ignored — "
+                          f"only jailed stdio servers may come from a repo; put http servers "
+                          f"in ~/.config/agent/agent.yaml")
+            continue
+        jailed = dict(srv)
+        cwd = srv.get("cwd") or ""
+        cwd_path = (root / os.path.expanduser(str(cwd))).resolve() if cwd else root
+        cwd_val = str(cwd_path) if cwd_path != root and root in cwd_path.parents else "{project}"
+        changed = [k for k in ("sandbox", "sandbox_network", "sandbox_rw", "sandbox_ro",
+                               "sandbox_home", "sandbox_seccomp")
+                   if k in srv]
+        jailed.update(
+            sandbox="bwrap", sandbox_network=False, sandbox_seccomp=True,
+            # {project} = live policy root, so the shell sandbox's secret
+            # masks (agent dir, .env, keys, .git/config) always apply.
+            sandbox_ro=["{project}"], sandbox_rw=[],
+            sandbox_home=str(_mcp_project_home(tag, name)),
+            cwd=cwd_val, origin="project",
+        )
+        if changed:
+            issues.append(f"[mcp] server {name!r} from a project config: "
+                          f"{', '.join(changed)} overridden — repo servers always run "
+                          f"jailed (project read-only, no network)")
+        kept.append(jailed)
+    return kept, issues
+
+
+def _mcp_project_home(tag: str, name: str) -> Path:
+    from agent.mcp.sandbox import default_home
+    return default_home(f"project-{tag}-{name}")
+
+
+def _append_project_mcp(config: Config, servers: list[dict]) -> list[str]:
+    """Add clamped project servers after the user's; a name clash keeps the user's."""
+    if not servers:
+        return []
+    def _n(s):
+        return (s.get("name") if isinstance(s, dict) else getattr(s, "name", "")) or ""
+    taken = {_n(s) for s in (config.mcp.servers or [])}
+    issues = []
+    out = list(config.mcp.servers or [])
+    for s in servers:
+        if _n(s) in taken:
+            issues.append(f"[mcp] server {_n(s)!r} from a project config ignored — "
+                          f"a user config already defines that name")
+            continue
+        taken.add(_n(s))
+        out.append(s)
+    config.mcp.servers = out
+    return issues
+
+
 def _coerce_diagnostics_checkers(config: Config) -> None:
     """Convert diagnostics.checkers dicts ([[diagnostics.checkers]]) to dataclasses."""
     from agent.config.models import DiagnosticsCheckerConfig
@@ -857,6 +942,7 @@ def load_config(extra_path: Path | list[Path] | None = None) -> Config:
 
     raw_data: list[dict] = []
     security_issues: list[str] = []
+    project_mcp: list[dict] = []
     perm_layers: list[tuple[dict, bool]] = []
     loaded_layers: list[str] = []
     for p in search_paths:
@@ -881,12 +967,17 @@ def load_config(extra_path: Path | list[Path] | None = None) -> Config:
                 # Clamp before merging: surviving keys then merge normally, and
                 # env overrides (applied after the loop) still get the last word.
                 security_issues.extend(_clamp_project_security(config, data))
+                _srv, _iss = _clamp_project_mcp(data, p.parent)
+                project_mcp.extend(_srv)
+                security_issues.extend(_iss)
             raw_data.append(data)
             perm_layers.append((data, p in project_paths))
             loaded_layers.append(str(p))
             config.loaded_config_layers.append((str(p), _is_project))
             _check_unknown_sections(data)
             _merge(config, data)
+
+    security_issues.extend(_append_project_mcp(config, project_mcp))
 
     if loaded_layers:
         logger.info("config layers (later overrides earlier): %s", " -> ".join(loaded_layers))

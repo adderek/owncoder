@@ -79,20 +79,38 @@ class MCPClient:
         if not s.command:
             raise MCPError(f"mcp server {s.name!r}: no command configured")
         env = _child_env()
-        # Explicit per-server env is the opt-in channel for credentials.
-        env.update({k: str(v) for k, v in (s.env or {}).items()})
-        argv = [s.command, *[str(a) for a in (s.args or [])]]
+        # No shell: expand a leading ~ ourselves so configs stay portable.
+        argv = [os.path.expanduser(str(a)) for a in (s.command, *(s.args or []))]
+        mode = getattr(s, "sandbox", "none") or "none"
+        seccomp_fd: int | None = None
+        cwd = s.cwd or None
+        if mode == "bwrap":
+            from agent.mcp import sandbox
+            argv, seccomp_fd = sandbox.wrap_argv(s, argv, env)
+            cwd = None  # bwrap --chdir handles it inside the jail
+        elif mode == "none":
+            if getattr(s, "origin", "user") == "project":
+                raise MCPError(f"mcp server {s.name!r}: project server without sandbox refused")
+            # Explicit per-server env is the opt-in channel for credentials.
+            env.update({k: str(v) for k, v in (s.env or {}).items()})
+        else:
+            raise MCPError(f"mcp server {s.name!r}: unknown sandbox {mode!r} (none|bwrap)")
         logger.debug("mcp[%s]: spawning %s", s.name, argv)
-        self._proc = subprocess.Popen(
-            argv,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=s.cwd or None,
-            env=env,
-            text=True,
-            bufsize=1,
-        )
+        try:
+            self._proc = subprocess.Popen(
+                argv,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=cwd,
+                env=env,
+                text=True,
+                bufsize=1,
+                pass_fds=(seccomp_fd,) if seccomp_fd is not None else (),
+            )
+        finally:
+            if seccomp_fd is not None:
+                os.close(seccomp_fd)
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
         self._reader.start()
         self._stderr_reader = threading.Thread(target=self._drain_stderr, daemon=True)
