@@ -108,6 +108,10 @@ def test_model_not_found_classification():
     observed = _FakeBadRequest({"error": {"code": 400, "type": "invalid_request_error",
                                           "message": "model 'ornith-10-35B' not found"}})
     assert _is_model_not_found(observed) is True
+    # OpenRouter's wording (3/3 crash reports of a weak-model run).
+    openrouter = _FakeBadRequest({"error": {"code": 400,
+                                            "message": "qwen3.8-27B-mtp is not a valid model ID"}})
+    assert _is_model_not_found(openrouter) is True
     # A context-window rejection is the same status but not a missing model.
     ctx = _FakeBadRequest({"error": {"code": 400, "type": "exceed_context_size_error",
                                      "message": "the request exceeds the available context size"}})

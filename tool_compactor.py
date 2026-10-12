@@ -194,8 +194,18 @@ async def compact_result(
         return result_str, info
 
 
-def inject_purpose_into_schemas(schemas: list[dict]) -> list[dict]:
-    """Return schemas with a required `purpose` field added and description note."""
+# Repeated in every tool schema of the request: keep it short.
+_SCAFFOLD_PURPOSE = "Goal of this call, one short sentence. Echoed back if you repeat the call."
+
+
+def inject_purpose_into_schemas(schemas: list[dict], for_compaction: bool = True) -> list[dict]:
+    """Return schemas with a required `purpose` field added and description note.
+
+    *for_compaction* False is the reasoning scaffold (loop_guard.purpose_scaffold):
+    same field, explained as a progress note instead of a compaction input.
+    """
+    if not for_compaction:
+        return _inject_scaffold(schemas)
     out = []
     for s in schemas:
         s2 = json.loads(json.dumps(s))  # deep copy
@@ -221,5 +231,21 @@ def inject_purpose_into_schemas(schemas: list[dict]) -> list[dict]:
         )
         if note.strip() not in desc:
             fn["description"] = desc + note
+        out.append(s2)
+    return out
+
+
+def _inject_scaffold(schemas: list[dict]) -> list[dict]:
+    out = []
+    for s in schemas:
+        s2 = json.loads(json.dumps(s))  # deep copy
+        fn = s2.get("function", {})
+        params = fn.setdefault("parameters", {})
+        params.setdefault("type", "object")
+        props = params.setdefault("properties", {})
+        if "purpose" not in props:
+            props["purpose"] = {"type": "string", "description": _SCAFFOLD_PURPOSE}
+            req = params.setdefault("required", [])
+            req.append("purpose")
         out.append(s2)
     return out

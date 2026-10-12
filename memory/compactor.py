@@ -488,6 +488,59 @@ def _file_ledger(messages: list[dict], config) -> str:
     )
 
 
+def _attempt_ledger(config) -> str:
+    """Actions repeated this session and how they ended, or "".
+
+    Read from the session ledger, not from the messages being compacted, so
+    it still covers what earlier compaction rounds already summarised away.
+    """
+    from agent.core import attempt_ledger
+    body = attempt_ledger.render()
+    if not body:
+        return ""
+    if config is None or getattr(getattr(config, "security", None), "redact_tool_output", True):
+        from agent.security.redaction import redact
+        body = redact(body, config)
+    return (
+        "\n\n[ALREADY TRIED — these actions were run more than once; their results "
+        "will not change by re-running. Act on them or try something else.]\n" + body
+    )
+
+
+#: Tokens one tail message is assumed to cost at most — verbatim tool results
+#: are truncated to 2000 chars after the split.
+_TAIL_MSG_TOKEN_CAP = 600
+
+
+def _tail_start(conversation: list[dict], start: int, config) -> int:
+    """Pull the verbatim tail's start back while it stays small.
+
+    Bounded by llm.compaction_tail_fraction of the compaction budget and by a
+    third of the message cap, so the next trigger is still far away and there
+    is always something left to compact.
+    """
+    frac = float(getattr(getattr(config, "llm", None), "compaction_tail_fraction", 0.0) or 0.0)
+    if frac <= 0 or start <= 0:
+        return start
+    try:
+        from agent.core.context_budget import compaction_message_cap, compaction_trigger_budget
+        token_cap = int(compaction_trigger_budget(config, None) * frac)
+        msg_cap = compaction_message_cap(config) // 3
+    except Exception:
+        return start
+    tail = conversation[start:]
+    used = sum(min(_count_tokens_approx([m]), _TAIL_MSG_TOKEN_CAP) for m in tail)
+    count = len(tail)
+    while start > 1 and count < msg_cap:
+        cost = min(_count_tokens_approx([conversation[start - 1]]), _TAIL_MSG_TOKEN_CAP)
+        if used + cost > token_cap:
+            break
+        start -= 1
+        used += cost
+        count += 1
+    return start
+
+
 # ── Public entry point ──────────────────────────────────────────────────────
 
 
@@ -635,7 +688,7 @@ async def compact(
             leading = False
             conversation.append(m)
 
-    verbatim_start = max(len(conversation) - keep_last * 2, 0)
+    verbatim_start = _tail_start(conversation, max(len(conversation) - keep_last * 2, 0), config)
     # Always preserve the most recent user message verbatim, even if a long
     # tool-call burst has scrolled it out of the keep_last window. Otherwise the
     # user's question survives only via q_view and is lost if Stage 2 fails.
@@ -799,6 +852,10 @@ async def compact(
         compacted_content += _file_ledger(to_compact, config)
     except Exception:
         logger.debug("compact: file ledger failed (ignored)", exc_info=True)
+    try:
+        compacted_content += _attempt_ledger(config)
+    except Exception:
+        logger.debug("compact: attempt ledger failed (ignored)", exc_info=True)
 
     # Marked so a replayed session can say where history was compacted rather
     # than silently showing fewer rounds than the live view had.
