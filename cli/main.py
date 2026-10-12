@@ -235,6 +235,15 @@ def build_parser() -> argparse.ArgumentParser:
     vault_log.add_argument("--tail", type=int, default=0, help="Last N lines only")
 
     # run
+    # remote
+    rem_p = sub.add_parser("remote", help="SSH hosts the agent may use ([remote]): list / check / trust")
+    rem_sub = rem_p.add_subparsers(dest="remote_action")
+    rem_sub.add_parser("list", help="List configured hosts and readiness (default)")
+    rem_check = rem_sub.add_parser("check", help="Validate key/host key and test-connect")
+    rem_check.add_argument("name", nargs="?", default=None, help="Host name (default: all)")
+    rem_trust = rem_sub.add_parser("trust", help="Fetch, show and pin a host's SSH key")
+    rem_trust.add_argument("name", help="Host name")
+
     run_p = sub.add_parser("run", help="Run a single prompt non-interactively")
     run_p.add_argument("prompt", type=str, nargs="?", default=None,
                        help="Prompt to run (reads stdin if omitted)")
@@ -534,6 +543,9 @@ def main() -> None:
         elif args.command == "vault":
             from agent.cli.vault_cli import cmd_vault
             sys.exit(cmd_vault(args, config))
+        elif args.command == "remote":
+            from agent.cli.remote import cmd_remote
+            sys.exit(cmd_remote(args, config))
         elif args.command == "run":
             from agent.cli.run import cmd_run
             from agent.cli import warmup

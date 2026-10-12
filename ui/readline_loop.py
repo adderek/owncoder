@@ -149,6 +149,7 @@ def _make_help_text(theme: "ThemeConfig") -> str:  # type: ignore[name-defined]
   [{c}]/credpool[/{c}] [list | add <service> <domain> <username> <password> | remove <service>]  authenticated internet accounts (alias [{c}]/creds[/{c}])
   [{c}]/memory[/{c}] [index | notes [n]]  memory tiers + index overview (alias [{c}]/mem[/{c}])
   [{c}]/mcp[/{c}]                MCP server status + tools
+  [{c}]/remote[/{c}] [status | revoke [name] | check [name]]  SSH lab hosts
   [{c}]/speech[/{c}]             speech-to-text input status
   [{c}]/security[/{c}] [scan|diff|triage|selfaudit|report|baseline|airgap|integrity|weights|sbom|taint|evolve|knowledge|verify|full|review] [path]  local security audit
   [{c}]/exec <command>[/{c}]      run an OS command and show output
@@ -479,6 +480,10 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
             elif cmd == "/mcp":
                 from agent.mcp import run_mcp_command
                 console.print(run_mcp_command(agent.config, arg))
+
+            elif cmd == "/remote":
+                from agent.tools.remote import run_remote_command
+                console.print(run_remote_command(agent.config, arg), markup=False)
 
             elif cmd == "/sandbox":
                 from agent.security.sandbox_status import run_sandbox_command

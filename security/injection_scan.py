@@ -55,14 +55,15 @@ _BANNER = (
 def is_untrusted_tool(name: str, args: dict | None = None) -> bool:
     """True for tools whose output is externally controlled.
 
-    Name prefixes catch the dedicated web/MCP tools. They do not catch a shell
+    Name prefixes catch the dedicated web/MCP/remote-SSH tools. They do not catch a shell
     command that fetches the network itself — `run_argv(["curl", ...],
     network=True)` returns remote bytes under a local tool's name — so an
     explicit network grant in the arguments marks the output untrusted too,
     whatever the tool is called.
     """
     n = (name or "").lower()
-    if n.startswith("mcp__") or n.startswith("web") or n in ("fetch", "http_get", "browse"):
+    if (n.startswith("mcp__") or n.startswith("web") or n.startswith("remote_")
+            or n in ("fetch", "http_get", "browse")):
         return True
     return bool(args) and args.get("network") is True
 

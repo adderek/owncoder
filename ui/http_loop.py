@@ -714,6 +714,10 @@ _PAGE = r"""<!DOCTYPE html>
       <button class="sbtn" id="accadd">add</button>
     </div>
   </details>
+  <details id="remotefold" class="dfold">
+    <summary class="dhead">remote — SSH hosts <span id="remotecount" class="chip"></span><span id="d-remote" class="dhead-refresh" title="Refresh">⟳</span></summary>
+    <div id="remotebody">—</div>
+  </details>
   <details id="planfold" class="dfold">
     <summary class="dhead">plan &amp; goal <span id="plancount" class="chip"></span><span id="d-plan" class="dhead-refresh" title="Refresh">⟳</span></summary>
     <div id="planbody">—</div>
@@ -1208,6 +1212,36 @@ class _HttpUI:
             logger.exception("http ui: grant action failed")
             return {"ok": False, "msg": f"failed: {exc}"}
         return {"ok": bool(ok), "msg": msg}
+
+    def remote_info(self, check: str | None = None) -> dict:
+        """[remote] SSH hosts — backs the Remote panel. Hosts come from the
+        user config only; the panel can narrow (off, revoke) or answer the
+        session prompt ahead (approve), never add hosts or pin keys."""
+        cfg = _agent_config(self.server)
+        if cfg is None:
+            return {"enabled": False, "hosts": [], "error": _NEEDS_LOCAL}
+        from agent.tools.remote import hosts_info
+        return hosts_info(cfg, check=check)
+
+    def remote_action(self, payload: dict) -> dict:
+        cfg = _agent_config(self.server)
+        if cfg is None:
+            return {"ok": False, "msg": _NEEDS_LOCAL}
+        action = str(payload.get("action") or "")
+        name = str(payload.get("name") or "")
+        if action == "check":
+            info = self.remote_info(check=name)
+            h = next((x for x in info["hosts"] if x["name"] == name), None)
+            if h is None:
+                return {"ok": False, "msg": f"no host {name!r}"}
+            if h["problems"]:
+                return {"ok": False, "msg": f"{name}: not ready — " + "; ".join(h["problems"])}
+            res = h.get("check", "not checked")
+            return {"ok": res == "ok",
+                    "msg": f"{name}: connect OK" if res == "ok" else f"{name}: connect failed — {res}"}
+        from agent.tools.remote import host_action
+        ok, msg = host_action(cfg, action, name)
+        return {"ok": ok, "msg": msg}
 
     # ── backlog (.agent/ideas.db) ─────────────────────────────────────────
     # Same store as `agent todo` and /idea. Configured against the *session's*
@@ -2757,6 +2791,8 @@ def _make_handler(ui: _HttpUI):
                 self._json(ui.heal_info())
             elif self.path == "/api/grants":
                 self._json(ui.grants_info())
+            elif self.path == "/api/remote":
+                self._json(ui.remote_info())
             elif self.path.startswith("/api/todos"):
                 from urllib.parse import parse_qs, urlparse
                 q = parse_qs(urlparse(self.path).query)
@@ -2903,6 +2939,8 @@ def _make_handler(ui: _HttpUI):
                 self._json(ui.heal_action(payload))
             elif self.path == "/api/grants":
                 self._json(ui.grant_action(payload))
+            elif self.path == "/api/remote":
+                self._json(ui.remote_action(payload))
             elif self.path == "/api/todo":
                 self._json(ui.todo_action(payload))
             else:
@@ -3158,6 +3196,7 @@ _LIVE_SLASH = frozenset({
     "/maxtokens", "/max_tokens", "/maxiter", "/max_iter", "/unlimited", "/nomax",
     "/context", "/ctx", "/legend", "/modelcalls", "/mc", "/perf", "/timing",
     "/who", "/agents", "/tools", "/permissions", "/perms", "/tokwatch", "/paths",
+    "/remote",
 })
 
 
@@ -3317,6 +3356,7 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
              "  /tools list tools          /skills list|show|rm skills\n"
              "  /commands project cmds     /mcp MCP server status\n"
              "  /memory tiers + indexes    /memory index|notes\n"
+             "  /remote status|revoke|check  SSH lab hosts\n"
              "  /undo [file] restore snapshot   /checkpoint list|new|rollback\n"
              "  /plan …  /plans            /schedule jobs   /notify channels\n"
              "  /watch event triggers      /bg background jobs\n"
@@ -3553,6 +3593,13 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
         else:
             from agent.mcp import run_mcp_command
             pub({"type": "sys", "text": await asyncio.to_thread(run_mcp_command, cfg, arg)})
+    elif cmd == "/remote":
+        cfg = _agent_config(server)
+        if cfg is None:
+            pub({"type": "sys", "error": True, "text": _NEEDS_LOCAL})
+        else:
+            from agent.tools.remote import run_remote_command
+            pub({"type": "sys", "text": await asyncio.to_thread(run_remote_command, cfg, arg)})
     elif cmd == "/sandbox":
         cfg = _agent_config(server)
         if cfg is None:

@@ -2312,6 +2312,79 @@ document.getElementById('d-access').addEventListener('click', (e) => {
   e.preventDefault(); e.stopPropagation(); loadGrants();
 });
 
+// Remote panel: [remote] SSH hosts from the user config. Buttons only narrow
+// (off, revoke) or answer the per-host prompt ahead of time (approve); adding
+// hosts and pinning host keys stay in the CLI (`agent remote trust`).
+async function remoteAction(payload) {
+  try {
+    const r = await (await fetch('/api/remote', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    })).json();
+    row('sys' + (r.ok ? '' : ' error'), null, r.msg || (r.ok ? 'ok' : 'failed'));
+  } catch (e) {
+    row('sys error', null, 'remote change failed: ' + e);
+  }
+  loadRemote();
+}
+
+async function loadRemote() {
+  const el = document.getElementById('remotebody');
+  const cnt = document.getElementById('remotecount');
+  el.textContent = '…';
+  try {
+    const d = await (await fetch('/api/remote')).json();
+    const hosts = d.hosts || [];
+    const live = hosts.filter(h => d.enabled && h.configured && !h.off && !h.problems.length);
+    cnt.textContent = hosts.length ? (live.length + '/' + hosts.length) : '';
+    if (d.error) { el.textContent = d.error; return; }
+    if (!hosts.length) {
+      el.innerHTML = '<div class="grow">no hosts — add them in ~/.config/agent/agent.yaml (see agent/docs/remote.md)</div>';
+      return;
+    }
+    const btn = (a, n, label, title) =>
+      '<button class="sbtn" data-ra="' + a + '" data-n="' + esc(n) + '" title="' + esc(title) + '">' + label + '</button>';
+    el.innerHTML = (d.enabled ? '<div class="rwarn">commands run on these hosts outside the local sandbox</div>'
+                              : '<div class="rwarn">[remote] enabled = false in config — agent sees no hosts</div>') +
+      hosts.map(h => {
+        let state, cls = '', acts = '';
+        if (!d.enabled || !h.configured) { state = 'disabled'; cls = ' off'; }
+        else if (h.off) { state = 'off'; cls = ' off'; acts = btn('on', h.name, '▶', 'Switch on for this session'); }
+        else if (h.problems.length) { state = 'not ready'; cls = ' pending'; }
+        else {
+          if (h.confirm === 'never') state = 'no prompt';
+          else if (h.confirm === 'always') state = 'asks each time';
+          else state = h.approved ? 'approved' : 'will ask';
+          if (h.confirm === 'session')
+            acts += h.approved ? btn('revoke', h.name, '✗', 'Revoke approval — next command asks again')
+                               : btn('approve', h.name, '✓', 'Approve for this session (no further prompts)');
+          acts += btn('check', h.name, '⇄', 'Test-connect') +
+                  btn('off', h.name, '⏸', 'Switch off for this session');
+        }
+        const tip = h.target + (h.jump ? ' via ' + h.jump : '') +
+          (h.description ? ' — ' + h.description : '');
+        return '<div class="grow rhost' + cls + '" title="' + esc(tip) + '">' +
+          '<span class="rstate' + (h.approved ? ' ok' : '') + '">' + esc(state) + '</span>' +
+          '<span class="gpath">' + esc(h.name) + '<span class="greason">' + esc(h.target +
+            (h.jump ? ' via ' + h.jump : '')) + '</span></span>' + acts + '</div>' +
+          (h.problems.length ? '<div class="rprob">' + h.problems.map(esc).join('<br>') + '</div>' : '');
+      }).join('');
+    el.querySelectorAll('[data-ra]').forEach(b => b.addEventListener('click', () => {
+      if (b.dataset.ra === 'approve' && !confirm(
+          'Approve ' + b.dataset.n + ' for this session?\nThe agent will run commands there ' +
+          'without asking again, outside the local sandbox.')) return;
+      remoteAction({action: b.dataset.ra, name: b.dataset.n});
+    }));
+  } catch (e) { el.textContent = 'failed: ' + e; }
+}
+document.getElementById('d-remote').addEventListener('click', (e) => {
+  e.preventDefault(); e.stopPropagation(); loadRemote();
+});
+document.getElementById('remotefold').addEventListener('toggle', (e) => {
+  if (e.target.open) loadRemote();
+});
+
 // Backlog panel: the same store as `agent todo` and /idea. A row is one line;
 // clicking it opens the task in the centre column. Nothing destructive is one
 // click away — status changes live behind the ⋯ menu, because ✓/✗ sitting in a

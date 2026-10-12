@@ -336,6 +336,11 @@ class SlashHandlerMixin:
             from agent.mcp import run_mcp_command
             self._write_sys(_escape(run_mcp_command(self._server._agent.config, arg)))
 
+        elif cmd == "/remote":
+            from agent.tools.remote import run_remote_command
+            _cfg = self._server._agent.config
+            self._write_sys(_escape(await asyncio.to_thread(run_remote_command, _cfg, arg)))
+
         elif cmd == "/sandbox":
             from agent.security.sandbox_status import run_sandbox_command
             self._write_sys(_escape(run_sandbox_command(self._server._agent.config, arg)))

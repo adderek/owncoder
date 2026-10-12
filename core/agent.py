@@ -1118,6 +1118,10 @@ class Agent:
             _excluded.update({"web_search", "web_fetch"})
         else:
             _excluded.add("ask_internet")
+        # Remote SSH tools exist only for hosts the user declared ([remote]).
+        from agent.tools.remote import active_hosts as _remote_hosts, TOOL_NAMES as _remote_tools
+        if not _remote_hosts(self.config):
+            _excluded.update(_remote_tools)
         self._turn_busy = True
         # Somewhere for the turn to leave its work if it never returns.
         _partial: list[dict] = []

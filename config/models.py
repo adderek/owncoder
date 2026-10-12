@@ -1177,6 +1177,38 @@ class MCPConfig:
 
 
 @dataclass
+class RemoteHostConfig:
+    """One SSH target the agent may run commands on. See docs/remote.md."""
+    name: str = ""                 # what the model calls it; the only handle it gets
+    host: str = ""                 # address/hostname
+    user: str = "root"
+    port: int = 22
+    identity_file: str = ""        # dedicated, passphrase-less key the USER generated
+    jump: str = ""                 # name of another [[remote.hosts]] entry to hop through
+    description: str = ""          # shown to the model (role, interfaces, what's attached)
+    confirm: str = "session"       # session (ask once per host per process) | always | never
+    ssh_options: list = field(default_factory=list)  # extra `-o K=V` (legacy algos); can't override hardened ones
+    enabled: bool = True
+
+
+@dataclass
+class RemoteConfig:
+    """SSH to user-declared hosts. Off by default; user config layer only —
+    a project (repo) layer may only set enabled=false (loader._clamp_project_remote).
+
+    SECURITY: commands run on the remote machine with that account's rights,
+    outside the local sandbox. Only list lab devices you accept the agent fully
+    controlling.
+    """
+    enabled: bool = False
+    hosts: list = field(default_factory=list)   # list[RemoteHostConfig]
+    known_hosts: str = "~/.config/agent/remote_known_hosts"  # pinned via `agent remote trust`
+    connect_timeout_s: int = 10
+    command_timeout_s: int = 120
+    max_copy_bytes: int = 256 * 1024 * 1024
+
+
+@dataclass
 class KbConfig:
     """Knowledge-base integration. Off by default."""
     enabled: bool = False
@@ -1604,6 +1636,7 @@ class Config:
     aei: AEIConfig = field(default_factory=AEIConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
     mcp: MCPConfig = field(default_factory=MCPConfig)
+    remote: RemoteConfig = field(default_factory=RemoteConfig)
     speech: SpeechConfig = field(default_factory=SpeechConfig)
     classify: ClassifyConfig = field(default_factory=ClassifyConfig)
     auto_tier: AutoTierConfig = field(default_factory=AutoTierConfig)

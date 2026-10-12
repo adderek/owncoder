@@ -268,6 +268,7 @@ def _merge(config: Config, data: dict) -> None:
         ("aei", config.aei),
         ("notify", config.notify),
         ("mcp", config.mcp),
+        ("remote", config.remote),
         ("speech", config.speech),
         ("classify", config.classify),
         ("auto_tier", config.auto_tier),
@@ -296,7 +297,7 @@ _KNOWN_SECTIONS = {
     "agent", "rag", "tools", "ui", "asm_analysis", "logs", "loop_guard",
     "verify", "diagnostics", "checkpoints", "tests", "confidence_guard", "compile_prompts", "token_limits",
     "tool_compaction", "security", "planning", "recovery", "parallel",
-    "explore", "web_search", "concurrency", "kb", "aei", "notify", "mcp",
+    "explore", "web_search", "concurrency", "kb", "aei", "notify", "mcp", "remote",
     "speech", "classify", "auto_tier", "failover", "privacy", "scheduler", "hooks",
     "credpool", "permissions", "tool_discovery", "summarization", "output_store",
     "turn_signals", "ui_server", "models", "vision", "token_stats", "token_watch",
@@ -350,6 +351,34 @@ def _coerce_mcp_servers(config: Config) -> None:
     config.mcp.servers = _coerce_dataclass_list(
         config.mcp.servers, MCPServerConfig, "mcp.servers"
     )
+
+
+def _coerce_remote_hosts(config: Config) -> None:
+    """Convert remote.hosts dicts (TOML [[remote.hosts]] / YAML list) to RemoteHostConfig."""
+    from agent.config.models import RemoteHostConfig
+    config.remote.hosts = _coerce_dataclass_list(
+        config.remote.hosts, RemoteHostConfig, "remote.hosts"
+    )
+
+
+def _clamp_project_remote(data: dict) -> list[str]:
+    """Drop [remote] from a project layer except `enabled = false`.
+
+    A remote host is shell access to another machine; a repo that could list
+    hosts (or swap the key/known_hosts of the user's) would pick where the
+    agent runs commands. Only the user decides that. Mutates *data*.
+    """
+    section = data.get("remote")
+    if not isinstance(section, dict):
+        return []
+    data.pop("remote")
+    if section.get("enabled") is False:
+        data["remote"] = {"enabled": False}
+    dropped = sorted(k for k in section if not (k == "enabled" and section[k] is False))
+    if not dropped:
+        return []
+    return [f"[remote] {', '.join(dropped)} from a project config ignored — "
+            f"remote hosts come only from ~/.config/agent/agent.yaml"]
 
 
 def _merge_permissions(config: Config, layers: list[tuple[dict, bool]]) -> None:
@@ -967,6 +996,7 @@ def load_config(extra_path: Path | list[Path] | None = None) -> Config:
                 # Clamp before merging: surviving keys then merge normally, and
                 # env overrides (applied after the loop) still get the last word.
                 security_issues.extend(_clamp_project_security(config, data))
+                security_issues.extend(_clamp_project_remote(data))
                 _srv, _iss = _clamp_project_mcp(data, p.parent)
                 project_mcp.extend(_srv)
                 security_issues.extend(_iss)
@@ -1011,6 +1041,7 @@ def load_config(extra_path: Path | list[Path] | None = None) -> Config:
     _ensure_model_registry_keys(config)
     _coerce_notify_channels(config)
     _coerce_mcp_servers(config)
+    _coerce_remote_hosts(config)
     _coerce_test_suites(config)
     _coerce_hooks(config)
     _coerce_diagnostics_checkers(config)

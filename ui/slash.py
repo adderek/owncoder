@@ -72,6 +72,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/checkpoint", ["/cp"], "checkpoint: list | new [label] | rollback <id> | prune", True),
     ("/memory", ["/mem"], "memory + index overview  [index | notes [n]]", True),
     ("/mcp", [], "show MCP server status + their tools", False),
+    ("/remote", [], "SSH lab hosts: status | check [name] | revoke [name] | approve|off|on <name>", True),
     ("/sandbox", [], "sandbox mask scan: limits + last scan cost  [status | scan]", True),
     ("/speech", [], "speech-to-text input status  [status]", True),
     ("/security", ["/sec", "/audit"], "security: scan|diff|triage|selfaudit|report [path] | baseline [...] | airgap [...] | integrity [seal|check] | weights [pin|verify|list] | sbom [path] | taint [path] | evolve | knowledge | verify [<i>|run] | full [path] | review [path]", True),
@@ -120,7 +121,8 @@ _GROUPS: dict[str, tuple[str, ...]] = {
     "code & safety": ("/security", "/analyze-asm", "/undo", "/checkpoint",
                       "/apply", "/heal", "/recoveries"),
     "privacy & access": ("/incognito", "/private", "/vault", "/paths",
-                         "/permissions", "/hooks", "/classify", "/credpool", "/notify"),
+                         "/permissions", "/hooks", "/classify", "/credpool", "/notify",
+                         "/remote"),
     "automation": ("/schedule", "/watch"),
     "diagnostics": ("/perf", "/modelcalls", "/tokwatch", "/output", "/speech", "/sandbox", "/wrap",
                     "/round-summary", "/tools", "/help"),
@@ -157,6 +159,8 @@ _PRESETS: dict[str, tuple[tuple[str, str], ...]] = {
                ("check", "why a path is (not) reachable")),
     "/vault": (("lock", "lock the vault"),),
     "/sandbox": (("status", "limits + last scan"), ("scan", "scan the tree now")),
+    "/remote": (("status", "hosts + readiness"), ("revoke", "drop session approvals"),
+                ("check", "test-connect")),
 }
 
 
