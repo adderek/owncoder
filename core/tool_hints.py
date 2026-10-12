@@ -44,13 +44,51 @@ _STRUCTURAL_PATTERN_RE = re.compile(
 )
 
 
+# Shell commands that only inspect files — what read_file/grep_code/list_files
+# do with bounded output and the index behind them.
+_SHELL_NAV_CMDS = frozenset({"cat", "head", "tail", "sed", "grep", "egrep", "rg",
+                             "find", "ls", "nl", "awk", "wc", "less", "more"})
+# run_argv file-inspection calls before the first hint, then between repeats.
+# Repeats because a weak model loses the first hint to compaction.
+_SHELL_NAV_EVERY = 10
+_shell_nav_calls = 0
+# A call already made this many times session-wide gets its earlier outcomes.
+_ATTEMPT_REPEAT_HINT = 3
+
+
 def reset_tool_hints() -> None:
     """Clear per-session state (session start, tests)."""
-    global _grep_calls
+    global _grep_calls, _shell_nav_calls
     _read_counts.clear()
     _read_compactions.clear()
     _fired.clear()
     _grep_calls = 0
+    _shell_nav_calls = 0
+    from agent.core import attempt_ledger
+    attempt_ledger.reset()
+
+
+def _shell_nav_command(args: dict) -> str:
+    """The file-inspection command a shell call starts with, or ""."""
+    from agent.core.attempt_ledger import shell_text
+    words = shell_text(args).split()
+    while words and "=" in words[0] and not words[0].startswith("-"):
+        words = words[1:]   # leading VAR=value assignments
+    if not words:
+        return ""
+    cmd = words[0].rsplit("/", 1)[-1]
+    return cmd if cmd in _SHELL_NAV_CMDS else ""
+
+
+def attempt_hint(entry) -> str:
+    """Reminder that this exact action was already run, with its outcomes."""
+    from agent.core.attempt_ledger import describe, outcome_repeated
+    if entry is None or entry.count < _ATTEMPT_REPEAT_HINT or not outcome_repeated(entry):
+        return ""
+    return (
+        f"[tool-hint] Already tried this session: {describe(entry)}. Repeating it will "
+        "not change the result — act on it or try something different."
+    )
 
 
 def _compacted_since_read(path: str) -> bool:
@@ -177,6 +215,19 @@ def tool_hints(tool_name: str, args: dict, result: dict) -> list[str]:
                 "locating code rather than confirming known text, search_code and find_symbol "
                 "answer 'where is X' in one call."
             )
+
+    elif tool_name == "run_argv":
+        global _shell_nav_calls
+        cmd = _shell_nav_command(args)
+        if cmd:
+            _shell_nav_calls += 1
+            if _shell_nav_calls % _SHELL_NAV_EVERY == 1:
+                hints.append(
+                    f"[tool-hint] `{cmd}` through the shell returns unbounded output that "
+                    "fills context. read_file (line ranges, outline), grep_code (exact text) "
+                    "and list_files do the same with bounded output; search_code/find_symbol "
+                    "use the index."
+                )
 
     elif tool_name == "write_file":
         path = str(args.get("path") or "")

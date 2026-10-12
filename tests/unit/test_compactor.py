@@ -144,6 +144,7 @@ class TestTwoStageCompact:
     async def test_single_round_persists_tier2(self, cfg, tmp_path):
         """First compaction writes round-0001 with a knowledge draft,
         and the compacted message carries the stage-2 summary."""
+        cfg.llm.compaction_tail_fraction = 0.0  # fixed tail: stage-1 input is what's asserted
         store = FactsStore("sess-1", base_dir=tmp_path)
 
         stage1_draft = "### Intent\nUser wants foo.\n### Files\nedited foo.py."
@@ -183,6 +184,7 @@ class TestTwoStageCompact:
     async def test_incremental_round_feeds_previous_forward(self, cfg, tmp_path):
         """Second compaction round sees the prior draft + summary in the
         Stage-1 prompt, so facts accumulate instead of being re-derived (and gradually lost) each time."""
+        cfg.llm.compaction_tail_fraction = 0.0  # fixed tail: stage-1 input is what's asserted
         store = FactsStore("sess-2", base_dir=tmp_path)
 
         # Seed a prior round manually.
@@ -403,6 +405,15 @@ class TestCompactionRobustness:
             messages.append({"role": "tool", "tool_call_id": f"t{i}",
                              "content": f"body {i} " + "x" * 300})
 
+        # Adaptive tail (default) keeps more, but well under the message cap so
+        # the count trigger does not re-fire on the next request.
+        from agent.core.context_budget import compaction_message_cap
+        adaptive = await compact(list(messages), cfg, _client_returning("draft", stage2),
+                                 keep_last=2, facts_store=store, turn_index=40)
+        assert 8 < len(adaptive) <= 3 + compaction_message_cap(cfg) // 3 + 1
+        assert len(adaptive) < len(messages) // 2
+
+        cfg.llm.compaction_tail_fraction = 0.0
         result = await compact(messages, cfg, client, keep_last=2,
                                facts_store=store, turn_index=40)
 

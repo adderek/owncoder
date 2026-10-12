@@ -469,8 +469,9 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
         }, config=config)
         return json.dumps({"error": f"Invalid JSON arguments: {e}"})
 
+    _purpose = ""
     if isinstance(args, dict):
-        args.pop("purpose", None)
+        _purpose = str(args.pop("purpose", "") or "")
         # Harness-only: set by the post-approval retry, never by the model.
         args.pop("_confirmed", None)
 
@@ -547,6 +548,7 @@ async def execute_tool(tool_call, config: "Config | None" = None) -> str:
             rules.log_action(name, args, result)
             result = _maybe_add_refactor_hints(name, result, config)
             result = _maybe_add_tool_hints(name, args, result)
+            result = _record_attempt(name, args, result, _purpose)
 
         serialised = json.dumps(result, ensure_ascii=False)
 
@@ -665,6 +667,25 @@ def _maybe_add_tool_hints(tool_name: str, args: dict, result: dict) -> dict:
         # Advisory only — a bug here must never fail the call, but log it so it
         # does not become a silent permanent no-op.
         logger.debug("tool-hint generation failed for %s (ignored)", tool_name, exc_info=True)
+    return result
+
+
+def _record_attempt(tool_name: str, args: dict, result: dict, purpose: str) -> dict:
+    """Log the call in the session attempt ledger; remind the model of repeats.
+
+    The reminder carries the earlier outcomes, so a model that lost them to
+    compaction learns the result without needing a different call to find out.
+    """
+    try:
+        from agent.core import attempt_ledger
+        from agent.core.tool_hints import attempt_hint
+        entry = attempt_ledger.record(tool_name, args, result, purpose)
+        hint = attempt_hint(entry)
+        if hint:
+            result = dict(result)
+            result["_hints"] = list(result.get("_hints") or []) + [hint]
+    except Exception:
+        logger.debug("attempt ledger failed for %s (ignored)", tool_name, exc_info=True)
     return result
 
 

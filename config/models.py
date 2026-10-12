@@ -15,6 +15,11 @@ class LLMConfig:
     auto_detect_ctx: bool = True  # query server for actual context size on startup
     compaction_threshold: float = 0.75
     compaction_message_threshold: int = 0
+    # Share of the compaction token budget kept verbatim as the recent tail
+    # (also at most a third of the message cap). A tool-heavy model fills the
+    # fixed 4-turn tail with 8 tiny messages, so compaction left it 5-9
+    # messages and wiped its working memory every few rounds. 0 = fixed tail.
+    compaction_tail_fraction: float = 0.25
     # Hold a due compaction back while the endpoint's prompt cache is still warm
     # and intact (core/prompt_cache.py defer_for_cache). Compaction rewrites the
     # message prefix, so doing it while the cache is live throws that cache away
@@ -363,7 +368,20 @@ class LoopGuardConfig:
     per_tool_call_cap: dict = field(default_factory=lambda: {
         "web_search": 15,
         "web_fetch": 30,
+        # Generous backstop: shell is most of a weak model's traffic, and the
+        # near-duplicate check below is what catches reworded repeats.
+        "run_argv": 80,
     })
+    # Shell near-duplicates (same command modulo numbers/hex/quotes/spacing,
+    # see core/attempt_ledger.py) within the last near_window calls. Wider than
+    # `window` because a model making ~1 call per round spreads its repeats out.
+    # 0 threshold disables.
+    near_window: int = 40
+    near_repeat_threshold: int = 5
+    # Add a `purpose` arg to every tool: "on" | "off" | "auto" (after a few
+    # requests in which the model showed no reasoning). Gives a reasoning-free
+    # model a visible statement of intent that the attempt ledger keeps.
+    purpose_scaffold: str = "auto"
     # Consecutive iterations in which EVERY tool call errored before the turn is
     # hard-stopped (0 = off). Catches dead/rate-limited backends.
     error_streak_threshold: int = 4

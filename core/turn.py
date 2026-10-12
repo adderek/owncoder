@@ -30,6 +30,7 @@ from .turn_errors import NoUsableModelError  # re-exported: run_turn raises it
 from .turn_guards import MUTATING_TOOLS
 from . import vision as _vision
 from .turn_setup import normalize_api_messages, select_tools
+from . import attempt_ledger
 from .loop_detector import LoopDetector
 from .confidence import ConfidenceMonitor
 from .context_budget import compaction_message_cap, compaction_trigger_budget, effective_ctx_window
@@ -186,7 +187,17 @@ def _is_model_not_found(exc: BaseException) -> bool:
     if not msg:
         msg = str(exc)
     low = msg.lower()
-    return "not found" in low and ("model" in low or "no such model" in low)
+    if "model" not in low:
+        return False
+    # llama.cpp/vLLM: "model X not found"; OpenRouter: "X is not a valid model
+    # ID"; OpenAI: code "model_not_found" / "does not exist".
+    return any(p in low for p in _MODEL_NOT_FOUND_PHRASES)
+
+
+_MODEL_NOT_FOUND_PHRASES = (
+    "not found", "no such model", "not a valid model", "invalid model",
+    "unknown model", "model_not_found", "does not exist",
+)
 
 
 def _active_entry_ctx(config: "Config") -> int:
@@ -410,6 +421,8 @@ async def run_turn(
             threshold=int(loop_cfg.repeat_threshold),
             per_tool_threshold=loop_cfg.per_tool_threshold,
             per_tool_call_cap=getattr(loop_cfg, "per_tool_call_cap", None),
+            near_window=int(getattr(loop_cfg, "near_window", 0) or 0),
+            near_threshold=int(getattr(loop_cfg, "near_repeat_threshold", 0) or 0),
         )
     verify_cfg = config.verify
     _dirty = False           # a mutating tool call succeeded this turn
@@ -724,6 +737,7 @@ async def run_turn(
                 if config.llm.cache_ttl > 0:
                     mark_request(config.llm.base_url, config.llm.model)
             turn_errors.record_model_outcome(config, "success")
+            attempt_ledger.note_round(str(config.llm.model), len(turn_reasoning or ""))
             _repeat_temperature = None   # the bump buys one answered request
             _watch_temperature = None
         except StreamStalledError as e:

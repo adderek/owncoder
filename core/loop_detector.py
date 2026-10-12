@@ -18,6 +18,8 @@ class LoopDetector:
         threshold: int,
         per_tool_threshold: dict | None = None,
         per_tool_call_cap: dict | None = None,
+        near_window: int = 0,
+        near_threshold: int = 0,
     ) -> None:
         self.window = max(1, window)
         self.threshold = max(2, threshold)
@@ -31,6 +33,14 @@ class LoopDetector:
         self.per_tool_call_cap = {
             k: max(1, int(v)) for k, v in (per_tool_call_cap or {}).items()
         }
+        # Shell near-duplicates: same command modulo numbers/hex/quotes/spacing
+        # (attempt_ledger.normalize_action). A weak model rewrites the same probe
+        # each round, so it never repeats an exact signature; it also makes ~1
+        # call per round, so the repeats are spread wider than `window`.
+        # near_threshold 0 disables.
+        self.near_window = max(1, near_window or window)
+        self.near_threshold = max(2, near_threshold) if near_threshold else 0
+        self._near_buf: list[str] = []
         self._buf: list[str] = []
         self._suppressed: set[str] = set()
         self._name_counts: dict[str, int] = {}
@@ -48,7 +58,20 @@ class LoopDetector:
         canonical = json.dumps(args, sort_keys=True, default=str)
         return f"{name}:{hashlib.sha256(canonical.encode('utf-8', errors='replace')).hexdigest()[:12]}"
 
+    @staticmethod
+    def near_signature(name: str, args_json: str) -> str | None:
+        """Signature for a shell call that ignores how the command is spelled.
+
+        None for non-shell tools — their exact signature is already the action.
+        """
+        from .attempt_ledger import SHELL_TOOLS, action_key
+        if name not in SHELL_TOOLS:
+            return None
+        return f"{name}~{action_key(name, args_json)}"
+
     def _threshold_for(self, sig: str) -> int:
+        if "~" in sig.split(":", 1)[0]:
+            return self.near_threshold or 10**9
         name = sig.split(":", 1)[0]
         return self.per_tool_threshold.get(name, self.threshold)
 
@@ -57,6 +80,12 @@ class LoopDetector:
         if len(self._buf) > self.window:
             del self._buf[: len(self._buf) - self.window]
         return self._buf.count(sig)
+
+    def observe_near(self, sig: str) -> int:
+        self._near_buf.append(sig)
+        if len(self._near_buf) > self.near_window:
+            del self._near_buf[: len(self._near_buf) - self.near_window]
+        return self._near_buf.count(sig)
 
     def triggered(self, sig: str, count: int) -> bool:
         return count >= self._threshold_for(sig) and sig not in self._suppressed

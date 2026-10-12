@@ -47,7 +47,21 @@ def loop_guard_stop_note(summary: str, triggered: list[tuple[str, str, int, str]
     if "read_file" in tool_names:
         parts.append(" The same file range was read repeatedly without progress. Use search_files to locate the target or specify a different start_line/end_line range.")
 
-    if not tool_names & {"edit_file", "read_file"}:
+    shell_hits = [(n, a) for n, sig, _, a in triggered if "~" in sig.split(":", 1)[0]]
+    if shell_hits:
+        from . import attempt_ledger
+        lines = []
+        for n, a in shell_hits:
+            entry = attempt_ledger.get(n, a)
+            if entry is not None:
+                lines.append(attempt_ledger.describe(entry))
+        parts.append(" The same shell command was re-run with only quoting/numbers/spacing changed")
+        if lines:
+            parts.append(": " + " | ".join(lines))
+        parts.append(". Its result will not change. To inspect files use read_file/grep_code"
+                     " (bounded, indexed); otherwise act on the result you have or say what blocks you.")
+
+    if not tool_names & {"edit_file", "read_file"} and not shell_hits:
         parts.append(" Redirect: describe what you are trying to accomplish or ask the user for guidance.")
 
     parts.append("]")
@@ -228,18 +242,47 @@ def observe_tool_calls(loop_detector, tool_calls) -> list[tuple[str, str, int, s
     tripped either the per-signature repeat threshold or the per-name call cap.
     Empty list means the batch looks like progress.
     """
+    from . import attempt_ledger
     from .loop_detector import LoopDetector
 
     triggered: list[tuple[str, str, int, str]] = []
     for tc in tool_calls:
         sig = LoopDetector.signature(tc.function.name, tc.function.arguments)
         cnt = loop_detector.observe(sig)
-        if loop_detector.triggered(sig, cnt):
+        exact_hit = loop_detector.triggered(sig, cnt)
+        if exact_hit:
             triggered.append((tc.function.name, sig, cnt, tc.function.arguments or "{}"))
+        near = LoopDetector.near_signature(tc.function.name, tc.function.arguments)
+        if near is not None and loop_detector.near_threshold:
+            near_cnt = loop_detector.observe_near(near)
+            # Only once it has been answering the same thing: paging through
+            # a file is the same normalized command with different output.
+            if (not exact_hit and loop_detector.triggered(near, near_cnt)
+                    and attempt_ledger.outcome_repeated(
+                        attempt_ledger.get(tc.function.name, tc.function.arguments))):
+                triggered.append((tc.function.name, near, near_cnt, tc.function.arguments or "{}"))
         name_cnt = loop_detector.observe_name(tc.function.name)
         if loop_detector.name_capped(tc.function.name, name_cnt):
             triggered.append((tc.function.name, f"name:{tc.function.name}", name_cnt, tc.function.arguments or "{}"))
     return triggered
+
+
+#: Result fields that differ between runs of the same command without saying
+#: anything new — comparing them would hide a repeat.
+_VOLATILE_RESULT_FIELDS = ("duration_ms", "_hints")
+
+
+def _result_key(result: str) -> str:
+    """*result* with timing fields dropped, for same-result comparison."""
+    try:
+        parsed = json.loads(result)
+    except (TypeError, ValueError):
+        return result
+    if not isinstance(parsed, dict) or not any(f in parsed for f in _VOLATILE_RESULT_FIELDS):
+        return result
+    for f in _VOLATILE_RESULT_FIELDS:
+        parsed.pop(f, None)
+    return json.dumps(parsed, sort_keys=True)
 
 
 def flag_identical_repeats(tool_calls, results: list[str],
@@ -253,7 +296,7 @@ def flag_identical_repeats(tool_calls, results: list[str],
     its result back — it gets an error saying the repeat was aborted, which is new
     input the model must react to.
 
-    *previous* maps call signature -> result of the prior round. Returns
+    *previous* maps call signature -> result key of the prior round. Returns
     ``(results, repeated_tool_names, this_round)``; pass *this_round* as
     *previous* next time. Only a result that differs breaks the chain, so a poll
     whose output changed (a build finishing) is never flagged.
@@ -268,9 +311,13 @@ def flag_identical_repeats(tool_calls, results: list[str],
     this_round: dict[str, str] = {}
     for tc, result in zip(tool_calls, results):
         name = tc.function.name
-        sig = LoopDetector.signature(name, tc.function.arguments)
-        this_round[sig] = result
-        if previous.get(sig) == result:
+        # Shell calls compare on the normalized command: a probe re-spelled with
+        # new quoting/numbers is the same probe when it returns the same thing.
+        sig = (LoopDetector.near_signature(name, tc.function.arguments)
+               or LoopDetector.signature(name, tc.function.arguments))
+        key = _result_key(result)
+        this_round[sig] = key
+        if previous.get(sig) == key:
             repeated.append(name)
             out.append(json.dumps({
                 "error": (

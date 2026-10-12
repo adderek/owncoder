@@ -21,6 +21,22 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _purpose_scaffold_on(config) -> bool:
+    """Ask for a per-call `purpose` when the model keeps no visible reasoning.
+
+    "auto" turns it on (from the next turn) once the active model has answered
+    a few requests without any reasoning: its stated purpose is then the only
+    record of intent the attempt ledger and compaction can keep.
+    """
+    mode = str(getattr(getattr(config, "loop_guard", None), "purpose_scaffold", "off") or "off")
+    if mode == "on":
+        return True
+    if mode != "auto":
+        return False
+    from agent.core import attempt_ledger
+    return attempt_ledger.reasoning_free(str(config.llm.model))
+
+
 def select_tools(all_schemas: list[dict], config: "Config",
                  excluded_tools: set[str] | None = None,
                  ) -> tuple[list[dict], Callable[[], list[dict]] | None, bool]:
@@ -45,6 +61,9 @@ def select_tools(all_schemas: list[dict], config: "Config",
     if compaction_on:
         from agent.tool_compactor import inject_purpose_into_schemas
         tools = inject_purpose_into_schemas(tools)
+    elif _purpose_scaffold_on(config):
+        from agent.tool_compactor import inject_purpose_into_schemas
+        tools = inject_purpose_into_schemas(tools, for_compaction=False)
 
     _discovery_on = bool(getattr(getattr(config, "tool_discovery", None), "enabled", False))
     if not _discovery_on:
