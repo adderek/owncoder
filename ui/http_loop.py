@@ -2538,7 +2538,7 @@ def _make_handler(ui: _HttpUI):
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):  # silence per-request stderr noise
-            logger.debug("http ui: " + fmt, *args)
+            logger.debug("http ui: %s " + fmt, self.client_address[0], *args)
 
         def _check_auth(self) -> bool:
             """Origin/Host + per-process token on every request.

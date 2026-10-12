@@ -260,16 +260,21 @@ min-height:100vh;align-items:center;justify-content:center;margin:0}
 .box{max-width:30em;padding:2em;text-align:center}.code{font:700 3em ui-monospace,monospace;
 letter-spacing:.2em;color:#4f8cc9;margin:.3em 0}.dim{color:#8b91a0;font-size:.9em}
 button{font:inherit;padding:.4em 1.2em;margin-top:1em}</style></head><body><div class="box">
-<div>Asking the owncoder operator to let this browser in.</div>
+<div id="lead">JavaScript is blocked for this address, so this browser cannot ask the
+owncoder operator for access. Allow scripts for this site and reload.</div>
 <div class="code" id="code">…</div>
 <div class="dim">Check that the same code is shown where you approve it
 (the agent's terminal or an open owncoder tab).</div>
 <p id="msg" class="dim"></p><button id="retry" hidden>Ask again</button></div>
 <script>
+document.getElementById('lead').textContent =
+  'Asking the owncoder operator to let this browser in.';
 const msg = document.getElementById('msg'), retry = document.getElementById('retry');
 async function ask() {
   retry.hidden = true; msg.textContent = '';
-  const r = await (await fetch('/api/connect', {method: 'POST'})).json();
+  let r;
+  try { r = await (await fetch('/api/connect', {method: 'POST'})).json(); }
+  catch (e) { msg.textContent = 'Could not reach the agent: ' + e; retry.hidden = false; return; }
   if (r.error) { msg.textContent = r.error; retry.hidden = false; return; }
   document.getElementById('code').textContent = r.code;
   const t0 = Date.now();
