@@ -40,6 +40,17 @@ conversation. Module: `agent/core/scheduler.py`. Store:
   work ("remind me", "check this again in 20m"); `list_scheduled()`;
   `cancel_scheduled(id_or_name)`.
 
+- Agent tools: `sleep_until(note, after, until)` / `cancel_wake(id|all)` —
+  pause the **current** conversation instead (`core/wake.py`). Wakes on the
+  first of: `after` (`10m`, `in 2h`, `at 07:00`), `until` event (`job:<id>` of
+  `run_argv_bg`, `pid:<n>`, `file:<path>`, `url:<url>`, `cmd:<shell>` — same
+  semantics as `/watch`), or the user's next message (supersedes all pending
+  waits; the model gets a note listing them). Delivered as a `[wake <id>] ...`
+  turn through `LocalUIServer.submit_external_prompt`, only while no turn runs.
+  In-process: lost on exit. Readline UI has no prompt handler → wake waits for
+  next input. `cmd:` is ask-gated (builtin permission rule) and needs
+  `tools.allow_shell`.
+
 The scheduled prompt must be **self-contained** — the future run is a fresh
 agent with no memory of the conversation that created the job.
 

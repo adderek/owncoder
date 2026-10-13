@@ -76,6 +76,7 @@ PERMISSION_MATCH_ARG: dict[str, str] = {
     "save_command": "name",
     "delete_command": "name",
     "schedule_task": "spec",
+    "sleep_until": "until",
 }
 
 # Tools whose primary argument is a filesystem path: regex matchers are refused
@@ -150,6 +151,8 @@ _BUILTIN: tuple[tuple[str, str, str], ...] = (
      "run_argv", "changes live infrastructure"),
     ("", "schedule_task",
      "schedules work that runs when nobody is watching"),
+    (r"re:^\s*cmd:", "sleep_until",
+     "polls a shell command repeatedly while nobody is watching"),
     ("", "delete_command",
      "removes a saved command; nothing restores it"),
 )

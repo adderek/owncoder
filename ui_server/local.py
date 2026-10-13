@@ -51,6 +51,9 @@ class LocalUIServer:
                 self._intake = None
                 on_voice = None
         self._notify = NotifyBroker(agent.config, on_voice=on_voice)
+        # sleep_until wakes re-enter this conversation the same way dictation does.
+        from agent.core import wake
+        wake.bind(agent, lambda text: self.submit_external_prompt(text, source="wake"))
 
     def start_notify(self) -> None:
         """Open notify channel connections proactively (so inbound answers/voice

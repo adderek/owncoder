@@ -3,4 +3,6 @@ from .main import (  # noqa: F401
     schedule_task,
     list_scheduled,
     cancel_scheduled,
+    sleep_until,
+    cancel_wake,
 )

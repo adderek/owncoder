@@ -4,6 +4,7 @@ The agent can schedule a prompt for later ("in 20m", "at 07:00"), on a
 recurring basis ("every 6h", "@daily", 5-field cron), or for the next idle
 sweep ("idle"). Jobs run unattended in a fresh agent with their own session;
 results are visible via /schedule runs and the sched-<name> sessions.
+sleep_until/cancel_wake instead pause *this* conversation (core/wake.py).
 """
 from __future__ import annotations
 
@@ -123,3 +124,78 @@ def cancel_scheduled(id_or_name: str) -> dict[str, Any]:
         return {"error": "scheduler not configured"}
     from agent.core.scheduler import remove_job
     return {"removed": remove_job(_config, id_or_name), "id_or_name": id_or_name}
+
+
+@register(
+    "sleep_until",
+    {
+        "description": (
+            "Pause this conversation and resume it later, in this same session with "
+            "full context. After calling, end your turn. You are woken by the first "
+            "of: the `after` time, the `until` event, or the user's next message "
+            "(which cancels the wait). Use to check back on long work ('after: 10m', "
+            "'until: job:3'). For unattended work in a separate session use "
+            "schedule_task instead."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "after": {
+                    "type": "string",
+                    "description": "Wake at this time: '10m' | 'in 2h' | 'at 07:00'. "
+                                   "With `until`, acts as a timeout.",
+                },
+                "until": {
+                    "type": "string",
+                    "description": (
+                        "Wake on an event: 'job:<id>' (run_argv_bg job finished) | "
+                        "'pid:<n>' (process exited) | 'file:<path>' (file changed) | "
+                        "'url:<url>' (content changed) | 'cmd:<shell>' (command exits 0)."
+                    ),
+                },
+                "note": {
+                    "type": "string",
+                    "description": "What to do when woken; shown back to you on wake-up.",
+                },
+            },
+            "required": ["note"],
+        },
+    },
+)
+async def sleep_until(note: str, after: str = "", until: str = "") -> dict[str, Any]:
+    import asyncio
+    from agent.core import wake
+    agent = wake.current_agent.get()
+    try:
+        # Arming polls the target once for a baseline (url/cmd can block).
+        w = await asyncio.to_thread(wake.arm, agent, after, until, note)
+    except ValueError as exc:
+        return {"error": str(exc)}
+    return {
+        "armed": True,
+        "id": w.id,
+        "wakes_on": w.describe() + " or user message",
+        "pending": [{"id": p.id, "on": p.describe(), "note": p.note}
+                    for p in wake.pending(agent)],
+        "next": "End your turn now.",
+    }
+
+
+@register(
+    "cancel_wake",
+    {
+        "description": "Cancel a pending sleep_until wake by id, or 'all'.",
+        "parameters": {
+            "type": "object",
+            "properties": {"id": {"type": "string", "description": "Wake id or 'all'."}},
+            "required": ["id"],
+        },
+    },
+)
+async def cancel_wake(id: str) -> dict[str, Any]:
+    from agent.core import wake
+    agent = wake.current_agent.get()
+    if agent is None:
+        return {"error": "no active conversation"}
+    return {"removed": wake.cancel(agent, id.strip()),
+            "pending": [p.id for p in wake.pending(agent)]}

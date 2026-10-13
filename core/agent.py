@@ -938,6 +938,9 @@ class Agent:
     ) -> str:
         self._turn_id += 1
         turn_id = self._turn_id
+        # Async tools (sleep_until) find the agent whose turn they run in.
+        from agent.core.wake import current_agent as _wake_agent
+        _wake_agent.set(self)
 
         # Startup probing runs in the background so the prompts and the session
         # setup do not wait behind it. This is the point where its results are
@@ -1012,6 +1015,15 @@ class Agent:
         pre_turn_len = len(self.messages)
         _is_continue = user_input.strip().lower() in ("continue", "/continue", "/c")
         if not _is_continue:
+            # A user turn supersedes pending sleep_until wakes; tell the model
+            # which, so it can re-arm. Also binds the agent for async tools.
+            try:
+                from agent.core import wake as _wake
+                _superseded = _wake.begin_turn(self, user_input, source)
+                if _superseded:
+                    self.messages.append({"role": "system", "content": _superseded})
+            except Exception:
+                logger.debug("wake turn hook failed", exc_info=True)
             # Deliver results of scheduled runs that finished since the last
             # turn — they land in detached sched-<name> sessions, so without
             # this the interactive conversation never learns their outcome.
