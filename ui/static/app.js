@@ -8,17 +8,26 @@ const input = document.getElementById('input');
 const jumpBtn = document.getElementById('jumpdown');
 const bottomBtn = document.getElementById('tobottom');
 function atEnd() { return log.scrollHeight - log.scrollTop - log.clientHeight < 80; }
+// Follow state lives in the scroll listener, not in a check at append time: a
+// whole answer bubble mounted at once grows the log by far more than the 80px
+// slack, so measuring after the append read "user scrolled away" and left the
+// final answer below the fold. Growth fires no scroll event, so this only
+// changes when someone (or a clamp) actually moves the view.
+let following = true;
 function stickScroll() {
   followWork();
-  if (atEnd()) {
-    log.scrollTop = log.scrollHeight;
+  if (following) {
+    // Instant, not the log's smooth behaviour: mid-animation scroll events
+    // would read as "scrolled away" and drop following.
+    log.scrollTo({top: log.scrollHeight, behavior: 'instant'});
     jumpBtn.classList.add('hidden');
   } else {
     jumpBtn.classList.remove('hidden');
   }
-  if (bottomBtn) bottomBtn.classList.toggle('at-end', atEnd());
+  if (bottomBtn) bottomBtn.classList.toggle('at-end', following);
 }
 function toBottom() {
+  following = true;
   log.scrollTop = log.scrollHeight;
   jumpBtn.classList.add('hidden');
 }
@@ -26,6 +35,7 @@ jumpBtn.addEventListener('click', toBottom);
 if (bottomBtn) bottomBtn.addEventListener('click', toBottom);
 log.addEventListener('scroll', () => {
   const end = atEnd();
+  following = end;
   if (end) jumpBtn.classList.add('hidden');
   if (bottomBtn) bottomBtn.classList.toggle('at-end', end);
 });
