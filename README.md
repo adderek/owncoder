@@ -213,12 +213,7 @@ or `AGENT_UI_MODE=readline agent chat`
 
 ## My local setup
 
-I have a worktree with stable version, although I would probably prefer claude/hermes/gemini cli if I broke master branch
-
-```
-git -C ~/src/owncoder-stable/agent fetch ~/src/owncoder/agent master
-git -C ~/src/owncoder-stable/agent merge FETCH_HEAD
-```
+I develop on master; if I break it I fall back to claude/hermes/gemini cli. A stable build is planned as a container image (the old stable worktree is retired).
 
 ## To test terminal caps
 
