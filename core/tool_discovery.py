@@ -52,6 +52,8 @@ CORE_TOOLS: frozenset[str] = frozenset({
     # find_tools the model never saw it and ran local ssh/ls ~/.ssh instead.
     "remote_exec",
     "remote_copy",
+    "remote_start",
+    "remote_job",
     # Same for [serial] consoles: port names live in the schema enum.
     "serial_send",
     "serial_read",

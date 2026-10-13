@@ -1089,6 +1089,22 @@ class Agent:
                             pass
             except Exception:
                 logger.debug("bg shell delivery failed", exc_info=True)
+            try:
+                from agent.tools.remote import drain_finished as _remote_drain
+                _rj = _remote_drain()
+                if _rj:
+                    self.messages.append({
+                        "role": "system",
+                        "content": "[remote jobs finished since last turn — rest of output "
+                                   "via remote_job(job_id)]\n" + "\n".join(
+                                       f"- job {j['job_id']} on {j['host']} ({j['status']}"
+                                       + (f", exit {j['returncode']}" if j['returncode'] is not None else "")
+                                       + f"): {j['cmd'][:80]}"
+                                       + (f" — {j['tail']}" if j['tail'] else "")
+                                       for j in _rj),
+                    })
+            except Exception:
+                logger.debug("remote job delivery failed", exc_info=True)
             self.messages.append({"role": "user", "content": user_input})
             if self._facts_store is not None:
                 self._facts_store.set_original_request(user_input)

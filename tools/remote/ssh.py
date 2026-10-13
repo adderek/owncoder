@@ -206,8 +206,8 @@ def ssh_opts(rcfg, h) -> list[str]:
     return opts
 
 
-def build_argv(rcfg, h, remote_cmd: str) -> list[str]:
-    return ["ssh", *ssh_opts(rcfg, h), "-T", "--", _bare_host(h), remote_cmd]
+def build_argv(rcfg, h, remote_cmd: str, tty: bool = False) -> list[str]:
+    return ["ssh", *ssh_opts(rcfg, h), "-tt" if tty else "-T", "--", _bare_host(h), remote_cmd]
 
 
 def _env() -> dict[str, str]:

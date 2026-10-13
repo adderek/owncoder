@@ -647,8 +647,8 @@ def _inject_remote_hint(api_messages: list[dict], config: "Config") -> list[dict
         return api_messages
     if not names:
         return api_messages
-    hint = (f"Remote hosts: {', '.join(names)}. Run commands there with remote_exec, "
-            "move files with remote_copy. Never ssh/scp via run_argv: the sandbox "
+    hint = (f"Remote hosts: {', '.join(names)}. Run commands there with remote_exec "
+            "(long-running/background: remote_start + remote_job), move files with remote_copy. Never ssh/scp via run_argv: the sandbox "
             "has no SSH keys, it fails.")
     for i, msg in enumerate(api_messages):
         if msg.get("role") == "system":

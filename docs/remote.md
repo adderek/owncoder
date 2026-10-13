@@ -94,7 +94,7 @@ reusing them outside the lab.
   so it follows `/remote on|off|reload` and a resumed session. With
   `tool_discovery` on, both tools are always in the core set.
 - Tools: `remote_exec(host, cmd, timeout)`, `remote_copy(host, direction,
-  remote_path, local_path)`. The model only picks a host name (schema enum
+  remote_path, local_path)`, `remote_start`/`remote_job` (below). The model only picks a host name (schema enum
   with your `description`s); it never supplies address, user, key or options.
 - `confirm`: `session` warns and asks once per host per agent process;
   `always` asks for every call; `never` skips the prompt (needed for
@@ -112,6 +112,25 @@ reusing them outside the lab.
 - Long captures: bound them on the device, e.g.
   `timeout 20 tcpdump -i br-lan -nn -c 500 -w /tmp/c.pcap`, then
   `remote_copy(get)` and analyse locally.
+- Background jobs: `remote_start(host, cmd, wait_for, timeout, tty)` returns
+  a `job_id` without waiting for the command; each job is its own ssh
+  connection, so `remote_exec` (and calls in one tool batch) run beside it.
+  `remote_job(job_id, action=read|send|stop, data, key, wait_for, timeout,
+  from_start)`: `read` returns output since the last read (≤16 kB per call,
+  `more` flags the rest; `lost_bytes` when the ring of `job_buffer_bytes`
+  dropped some); `send` types `data` (+newline) or a key (`ctrl-c`, `ctrl-d`,
+  `ctrl-z`, `ctrl-\`, `eof` closes stdin); `stop` sends ctrl-c, then kills
+  ssh. No `job_id` lists jobs. Example: `remote_start(lab, "tcpdump -i
+  br-lan -nn icmp", wait_for="listening on")` → `remote_exec(lab, "ping -c3
+  10.0.0.2")` → `remote_job(1)`.
+  `tty=true` (default, `ssh -tt`) gives the command a pty: ctrl-c works,
+  stderr is merged, and ending the job hangs up the remote process tree, so
+  nothing is left running. `tty=false` keeps stdin raw, but a remote process
+  that ignores its closed pipes may outlive the job.
+  Start and `send` go through the same confirm/air-gap/off gates as
+  `remote_exec`; `read`/`stop` don't ask. A job ends at `job_timeout_s`;
+  `/remote off <host>`, `/remote reload` (removed/changed host) and agent
+  exit kill its jobs. Finished jobs are announced at the next turn.
 
 ## In the UI (TUI, readline, HTTP)
 
@@ -146,6 +165,9 @@ user config.
 | `remote.connect_timeout_s` | `10` | |
 | `remote.command_timeout_s` | `120` | per call unless `timeout` given |
 | `remote.max_copy_bytes` | `268435456` | `remote_copy` cap |
+| `remote.job_buffer_bytes` | `1048576` | ring per `remote_start` job |
+| `remote.job_timeout_s` | `3600` | job killed after |
+| `remote.max_jobs` | `8` | concurrent jobs |
 | `hosts[].name/host/user/port` | `—/—/root/22` | |
 | `hosts[].identity_file` | required | dedicated key |
 | `hosts[].jump` | `""` | another host's `name` |

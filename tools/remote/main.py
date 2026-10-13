@@ -13,6 +13,7 @@ import threading
 from agent.tools import register, _schemas
 from agent.security import audit as _audit
 from . import ssh as _ssh
+from . import jobs as _jobs
 
 logger = logging.getLogger(__name__)
 
@@ -21,12 +22,13 @@ _approved: set[str] = set()     # hosts approved with confirm=session, this proc
 _disabled: set[str] = set()     # hosts switched off from a UI, this process
 _lock = threading.Lock()
 
-TOOL_NAMES = ("remote_exec", "remote_copy")
+TOOL_NAMES = ("remote_exec", "remote_copy", "remote_start", "remote_job")
 
 
 def setup(config) -> None:
     global _config
     _config = config
+    _jobs.reset()
     with _lock:
         _approved.clear()
         _disabled.clear()
@@ -52,7 +54,7 @@ def _refresh_schemas(hosts: list) -> None:
                         for h in hosts)
     for s in _schemas:
         fn = s["function"]
-        if fn["name"] not in TOOL_NAMES:
+        if fn["name"] not in TOOL_NAMES or "host" not in fn["parameters"]["properties"]:
             continue
         prop = fn["parameters"]["properties"]["host"]
         if names:
@@ -289,6 +291,8 @@ def reload_config(config) -> tuple[bool, str]:
         _approved.intersection_update(
             set(new_by) - set(changed) if keep_approvals else set())
         _disabled.intersection_update(new_by)
+    for n in removed + changed:
+        _jobs.kill_host(n)
     hosts = active_hosts(config)
     _refresh_schemas(hosts)
     try:
@@ -420,6 +424,8 @@ def host_action(config, action: str, name: str) -> tuple[bool, str]:
                    f"WITHOUT further prompts, outside the local sandbox")
         else:
             return False, f"unknown action {action!r}"
+    if action == "off":
+        _jobs.kill_host(name)
     _refresh_schemas(active_hosts(config))
     try:
         _audit.record("remote_ui", host=name, action=action)

@@ -241,6 +241,42 @@ def test_round_trip_with_jump_and_trust(sshd, tmp_path, monkeypatch):
         rmain.setup(Config())
 
 
+def test_background_job_over_real_ssh_with_tty(sshd, tmp_path, monkeypatch):
+    """remote_start keeps a pty session open while remote_exec runs beside it;
+    stop (ctrl-c / disconnect) leaves no remote process behind."""
+    from agent.tools.remote import jobs
+    port, key = sshd
+    user = os.environ.get("USER") or subprocess.run(["id", "-un"], capture_output=True,
+                                                    text=True).stdout.strip()
+    lab = RemoteHostConfig(name="lab", host="127.0.0.1", port=port, user=user,
+                           identity_file=str(key), confirm="never")
+    c = _cfg(lab, known_hosts=str(tmp_path / "kh"))
+    rmain.setup(c)
+    try:
+        from agent.cli import remote as cli
+        monkeypatch.setattr("builtins.input", lambda *_: "y")
+        assert cli.cmd_trust(c, "lab") == 0
+        marker = f"sleep {40000 + port}"
+        # ignores ctrl-c → stop falls back to killing ssh; the pty hangup ends it
+        r = jobs.remote_start("lab", f"trap '' INT; echo ready; {marker}",
+                              wait_for="ready", timeout=15)
+        assert r["matched"], r
+        assert rmain.remote_exec("lab", f"pgrep -f '[s]{marker[1:]}'")["returncode"] == 0
+        cat = jobs.remote_start("lab", "cat", timeout=15)
+        got = jobs.remote_job(cat["job_id"], action="send", data="hello pty", wait_for="hello pty")
+        assert "hello pty" in got["output"] and "\r" not in got["output"]
+        jobs.remote_job(cat["job_id"], action="stop")
+        assert jobs.remote_job(r["job_id"], action="stop")["status"] == "stopped"
+        for _ in range(50):
+            if rmain.remote_exec("lab", f"pgrep -f '[s]{marker[1:]}'")["returncode"] != 0:
+                break
+            time.sleep(0.1)
+        else:
+            pytest.fail("remote process survived the job")
+    finally:
+        rmain.setup(Config())
+
+
 # ── /remote slash ─────────────────────────────────────────────────────────
 
 def test_slash_status_and_revoke(wired):

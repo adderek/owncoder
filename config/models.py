@@ -1224,6 +1224,9 @@ class RemoteConfig:
     connect_timeout_s: int = 10
     command_timeout_s: int = 120
     max_copy_bytes: int = 256 * 1024 * 1024
+    job_buffer_bytes: int = 1024 * 1024    # per remote_start job; ring drops oldest
+    job_timeout_s: int = 3600              # remote_start job killed after this
+    max_jobs: int = 8                      # concurrent remote_start jobs
 
 
 @dataclass
