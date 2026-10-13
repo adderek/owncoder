@@ -72,9 +72,13 @@ class TestRestore:
     def test_a_restored_right_drawer_loads_its_sections(self):
         """Its loaders early-return while closed, so nothing fetched them."""
         body = _fn("restoreDrawers", "// Last:")
-        for loader in ("loadModels()", "loadStats()", "loadModelCalls()",
-                       "loadContext()", "loadBg()"):
-            assert loader in body, loader
+        assert "loadDrawer('right')" in body
+        loaders = _fn("loadDrawer", "\nconst HDR")
+        assert "FOLD_LOADERS[f.id]" in loaders
+        table = APP_JS[APP_JS.index("const FOLD_LOADERS"):APP_JS.index("function loadDrawer(")]
+        for loader in ("loadModels", "loadStats", "loadModelCalls",
+                       "loadContext", "loadBg"):
+            assert loader in table, loader
 
     def test_overlay_drawers_are_not_restored_open(self):
         """On narrow screens a drawer covers the chat: worse than a re-tap."""

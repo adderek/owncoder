@@ -97,7 +97,7 @@ class TestPanel:
     def test_the_panel_is_not_rendered_into_a_closed_drawer(self):
         i = APP_JS.index("async function loadPlan()")
         body = APP_JS[i:i + 1400]
-        assert "foldOpen('planfold')" in body
+        assert "foldShown('planfold')" in body
 
     def test_it_refreshes_when_a_turn_ends(self):
         """Steps advance while the agent works, not while you watch."""

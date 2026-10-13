@@ -1480,14 +1480,14 @@ function handle(ev) {
   } else if (ev.type === 'switched') {
     clearPreview();
     resyncView().then(() => row('sys', null, '⇄ switched to session ' + ev.session));
-    if (document.getElementById('left').classList.contains('open')) loadSessions();
+    if (drawerOpenFor('sessfold')) loadSessions();
   } else if (ev.type === 'openview') {
     // A slash command asked for a centre-column view (e.g. /memory).
     if (ev.view === 'memory') openMemoryView();
   } else if (ev.type === 'stats') {
     setIoChip(ev.in, ev.out, ev.cost_usd);
     // refresh the drawer section if it's visible
-    if (document.getElementById('right').classList.contains('open')) loadStats();
+    if (drawerOpenFor('statsfold')) loadStats();
   } else if (ev.type === 'tokens') {
     document.getElementById('tokens').textContent =
       ev.used.toLocaleString() + ' / ' + ev.ctx.toLocaleString();
@@ -2224,6 +2224,17 @@ function foldOpen(id) {
   const f = document.getElementById(id);
   return !f || f.open;   // no fold element → treat as visible
 }
+// Sections can be dragged between drawers (layout edit mode), so "is this
+// visible" asks the drawer the fold sits in now, never a fixed side.
+function drawerOf(id) {
+  const f = document.getElementById(id);
+  const a = f && f.closest('aside');
+  return a ? a.id : 'right';
+}
+function drawerOpenFor(id) {
+  return document.getElementById(drawerOf(id)).classList.contains('open');
+}
+function foldShown(id) { return foldOpen(id) && drawerOpenFor(id); }
 
 function restoreFolds() {
   document.querySelectorAll('details.dfold').forEach(f => {
@@ -2248,7 +2259,8 @@ function wireRefresh(id, loader) {
 }
 
 function openDetails(loader, foldId) {
-  toggleDrawer('right', 'righttoggle', true);
+  const side = foldId ? drawerOf(foldId) : 'right';
+  toggleDrawer(side, side + 'toggle', true);
   const f = foldId ? document.getElementById(foldId) : null;
   if (f && !f.open) { f.open = true; return; }   // toggle → the fold's loader
   loader();
@@ -2675,13 +2687,9 @@ document.getElementById('workdir').addEventListener('click', () => {
   else loadGrants();
 });
 document.getElementById('lefttoggle').addEventListener('click', () => {
-  if (toggleDrawer('left', 'lefttoggle')) {
-    // Mirror the right drawer: refresh the sections (and their count chips)
-    // when the panel opens, rather than waiting for each fold's toggle.
-    loadSessions();
-    loadTriggers();
-    loadPlan();
-  }
+  // Refresh the sections (and their count chips) when the panel opens,
+  // rather than waiting for each fold's toggle.
+  if (toggleDrawer('left', 'lefttoggle')) loadDrawer('left');
 });
 document.getElementById('session').addEventListener('click', () => {
   toggleDrawer('left', 'lefttoggle', true);
@@ -2690,9 +2698,7 @@ document.getElementById('session').addEventListener('click', () => {
   else loadSessions();
 });
 document.getElementById('righttoggle').addEventListener('click', () => {
-  if (toggleDrawer('right', 'righttoggle')) {
-    loadModels(); loadStats(); loadModelCalls(); loadContext(); loadMemory(); loadBg();
-  }
+  if (toggleDrawer('right', 'righttoggle')) loadDrawer('right');
 });
 document.getElementById('model').addEventListener('click', () => openDetails(loadModels, 'modelsfold'));
 document.getElementById('tokenwrap').addEventListener('click', () => openDetails(loadContext, 'ctxfold'));
@@ -2764,8 +2770,7 @@ async function loadGitLog(subArg) {
   const wrap = document.getElementById('gitsubwrap');
   const sel = document.getElementById('gitsub');
   try {
-    if (!document.getElementById('right').classList.contains('open') ||
-        !foldOpen('gitfold')) return;
+    if (!foldShown('gitfold')) return;
     const sub = (subArg !== undefined) ? subArg : (sel ? sel.value : '');
     const d = await (await fetch('/api/gitlog' + (sub ? '?sub=' + encodeURIComponent(sub) : ''))).json();
     const subs = d.submodules || [];
@@ -2801,8 +2806,7 @@ async function loadBg() {
     const chip = document.getElementById('bgchip');
     chip.textContent = '⚙' + jobs.length;
     chip.style.display = jobs.length ? '' : 'none';
-    if (!document.getElementById('right').classList.contains('open') ||
-        !foldOpen('bgfold')) return;
+    if (!foldShown('bgfold')) return;
     if (!jobs.length) { el.textContent = 'none running'; return; }
     el.innerHTML = jobs.map(j =>
       '<div class="grow"><span class="gpath">[' + j.id + '] ' + esc(j.kind) + ' · ' +
@@ -2826,8 +2830,7 @@ setInterval(loadBg, 5000);
 // Live model activity (running/completed counts) only matters while the
 // Details drawer is open — no point polling into a hidden panel.
 setInterval(() => {
-  if (document.getElementById('right').classList.contains('open') &&
-      foldOpen('modelsfold')) loadModels(true);
+  if (foldShown('modelsfold')) loadModels(true);
 }, 2000);
 document.getElementById('bgchip').addEventListener('click', () => openDetails(loadBg, 'bgfold'));
 // Compacting rewrites the history the running turn is reading from, so it
@@ -4032,8 +4035,7 @@ async function loadTriggers() {
   const jobs = d.jobs || [], watches = d.watches || [];
   const tc = document.getElementById('trigcount');
   if (tc) tc.textContent = d.error ? '!' : (jobs.length + watches.length) || '';
-  if (!el || !foldOpen('trigfold') ||
-      !document.getElementById('left').classList.contains('open')) return;
+  if (!el || !foldShown('trigfold')) return;
   if (d.error) { el.textContent = d.error; return; }
   if (!jobs.length && !watches.length) {
     el.innerHTML = '<div class="plan-none">none — <code>/schedule</code> and ' +
@@ -4100,8 +4102,7 @@ async function loadPlan() {
     if (pc) pc.textContent = '';
   }
   const el = document.getElementById('planbody');
-  if (!el || !foldOpen('planfold') ||
-      !document.getElementById('left').classList.contains('open')) return;
+  if (!el || !foldShown('planfold')) return;
   let html = '';
   if (d.goal) {
     html += '<div class="plan-goal"><span class="pg-label">goal</span> ' +
@@ -4845,13 +4846,229 @@ function restoreDrawers() {
   try { open = localStorage.getItem('oc-drawer-open-right'); } catch (e) {}
   if (open === '1') {
     toggleDrawer('right', 'righttoggle', true, false);
-    loadModels(); loadStats(); loadModelCalls(); loadContext(); loadMemory(); loadBg();
+    loadDrawer('right');
   }
+}
+
+// ── Layout: header overflow menu, edit mode, movable drawer sections ───────
+// The header never wraps. Items that do not fit move into the ⋯ overlay menu
+// (lowest data-hprio first, rightmost first among equals) and return when
+// there is room again. Layout edit mode, entered from that menu, lets the
+// user tuck header items into the menu for good (click an item) and drag
+// drawer sections by their ⠿ grip, also between drawers. Outside edit mode
+// clicks act normally and nothing drags. Both choices persist per browser.
+const FOLD_LOADERS = {
+  sessfold: loadSessions, accessfold: loadGrants, remotefold: loadRemote,
+  planfold: loadPlan, trigfold: loadTriggers, todofold: loadTodos,
+  modelsfold: loadModels, statsfold: loadStats, mcfold: loadModelCalls,
+  ctxfold: loadContext, memfold: loadMemory, bgfold: loadBg,
+  gitfold: () => loadGitLog(),
+};
+// Refresh a drawer's sections on open. A folded section still refreshes when
+// its summary carries a count chip — the count is visible while folded.
+function loadDrawer(side) {
+  document.querySelectorAll('#' + side + ' details.dfold').forEach(f => {
+    const fn = FOLD_LOADERS[f.id];
+    if (fn && (f.open || f.querySelector('summary .chip'))) fn();
+  });
+}
+
+const HDR = document.getElementById('header');
+const HDR_PANEL = document.getElementById('hdrpanel');
+const HDR_BOX = document.getElementById('hdritems');
+const HDR_BTN = document.getElementById('hdrmenu');
+const HDR_PINNED = new Set(['lefttoggle', 'righttoggle', 'hdrmenu', 'editdone']);
+// Original order: an item goes back to its own slot, whatever moved it.
+const HDR_ITEMS = [...HDR.children].filter(el => el.id && !HDR_PINNED.has(el.id));
+HDR_ITEMS.forEach(el => el.classList.add('hitem'));
+let hdrTucked = new Set();
+try { hdrTucked = new Set(JSON.parse(localStorage.getItem('oc-hdr-tucked') || '[]')); } catch (e) {}
+
+function layoutEditing() { return document.body.classList.contains('layout-edit'); }
+
+function hdrPlace(el, parent, tail) {
+  if (el.parentNode === parent) return;
+  const i = HDR_ITEMS.indexOf(el);
+  const next = HDR_ITEMS.slice(i + 1).find(n => n.parentNode === parent);
+  parent.insertBefore(el, next || tail);
+}
+// Measured at the last pinned button rather than scrollWidth: chip popovers
+// are absolutely positioned inside the header and would count as overflow.
+function hdrOverflows() {
+  const hr = HDR.getBoundingClientRect();
+  const pad = parseFloat(getComputedStyle(HDR).paddingRight) || 0;
+  return document.getElementById('righttoggle').getBoundingClientRect().right >
+         hr.right - pad + 0.5;
+}
+const isShown = el => getComputedStyle(el).display !== 'none';
+
+let hdrBusy = false;
+function layoutHeader() {
+  hdrBusy = true;
+  const tail = document.getElementById('editdone');
+  // Only items that are on the wrong side move, so a focused or hovered chip
+  // on the bar is not re-inserted on every status update.
+  HDR_ITEMS.forEach(el => {
+    if (hdrTucked.has(el.id)) hdrPlace(el, HDR_BOX, null);
+    else hdrPlace(el, HDR, tail);
+    el.classList.toggle('hdr-tucked', hdrTucked.has(el.id));
+  });
+  if (hdrOverflows()) {
+    const cands = HDR_ITEMS.filter(el => el.parentNode === HDR && isShown(el))
+      .sort((a, b) => (+(a.dataset.hprio || 1) - +(b.dataset.hprio || 1)) ||
+                      HDR_ITEMS.indexOf(b) - HDR_ITEMS.indexOf(a));
+    for (const el of cands) {
+      if (!hdrOverflows()) break;
+      hdrPlace(el, HDR_BOX, null);
+    }
+  }
+  const any = [...HDR_BOX.children].some(isShown);
+  document.getElementById('hdrempty').style.display = any ? 'none' : '';
+  HDR_BTN.classList.toggle('has', any);
+  if (!HDR_PANEL.classList.contains('hidden')) placeHdrPanel();
+  hdrObs.takeRecords();
+  hdrBusy = false;
+}
+let hdrPending = false;
+function scheduleHeader() {
+  if (hdrPending) return;
+  hdrPending = true;
+  requestAnimationFrame(() => { hdrPending = false; layoutHeader(); });
+}
+// Chips show/hide and change text all the time (status, token count, bg jobs).
+const hdrObs = new MutationObserver(() => { if (!hdrBusy) scheduleHeader(); });
+
+function placeHdrPanel() {
+  HDR_PANEL.style.top = HDR.getBoundingClientRect().bottom + 'px';
+}
+function hdrMenuOpen(open) {
+  HDR_PANEL.classList.toggle('hidden', !open);
+  HDR_BTN.setAttribute('aria-expanded', open ? 'true' : 'false');
+  HDR_BTN.classList.toggle('active', open);
+  if (open) placeHdrPanel();
+}
+function setLayoutEdit(on) {
+  document.body.classList.toggle('layout-edit', on);
+  document.getElementById('editlayout').textContent = on ? '✓ done editing' : '✎ edit layout';
+  layoutHeader();   // the pinned "done" button changes the bar's width
+}
+// Edit mode: a click on a header item tucks it away / puts it back instead
+// of doing what it normally does. Capture phase, so the item never sees it.
+function hdrEditClick(e) {
+  if (!layoutEditing()) return;
+  const el = HDR_ITEMS.find(it => it.contains(e.target));
+  if (!el) return;
+  e.preventDefault(); e.stopPropagation();
+  if (hdrTucked.has(el.id)) hdrTucked.delete(el.id); else hdrTucked.add(el.id);
+  try { localStorage.setItem('oc-hdr-tucked', JSON.stringify([...hdrTucked])); } catch (err) {}
+  layoutHeader();
+}
+
+function initHeaderLayout() {
+  HDR.addEventListener('click', hdrEditClick, true);
+  HDR_PANEL.addEventListener('click', hdrEditClick, true);
+  HDR_BTN.addEventListener('click', () => hdrMenuOpen(HDR_PANEL.classList.contains('hidden')));
+  document.getElementById('editlayout').addEventListener('click', () => setLayoutEdit(!layoutEditing()));
+  document.getElementById('editdone').addEventListener('click', () => setLayoutEdit(false));
+  // A chip used from the menu closes it after its own handler ran; its
+  // popover was positioned while the chip was still visible.
+  HDR_PANEL.addEventListener('click', (e) => {
+    if (!layoutEditing() && HDR_BOX.contains(e.target)) setTimeout(() => hdrMenuOpen(false));
+  });
+  document.addEventListener('click', (e) => {
+    if (HDR_PANEL.classList.contains('hidden') || HDR_PANEL.contains(e.target) ||
+        HDR_BTN.contains(e.target)) return;
+    hdrMenuOpen(false);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || e.target.closest('input, textarea, select')) return;
+    if (!HDR_PANEL.classList.contains('hidden')) hdrMenuOpen(false);
+    else if (layoutEditing()) setLayoutEdit(false);
+    else return;
+    e.stopPropagation();
+  }, true);
+  window.addEventListener('resize', scheduleHeader);
+  hdrObs.observe(HDR, {childList: true, subtree: true, characterData: true,
+                       attributes: true, attributeFilter: ['style', 'class', 'hidden']});
+  hdrObs.observe(HDR_BOX, {childList: true, subtree: true, characterData: true,
+                           attributes: true, attributeFilter: ['style', 'class', 'hidden']});
+  layoutHeader();
+  if (document.fonts) document.fonts.ready.then(scheduleHeader);
+}
+
+// Drawer sections live in one .foldzone per drawer; order saved as
+// {left: [ids], right: [ids]}. A section not in the saved order (new in a
+// later version) keeps its built-in place.
+function saveFoldOrder() {
+  const o = {};
+  document.querySelectorAll('.foldzone').forEach(z => {
+    o[z.dataset.zone] = [...z.querySelectorAll(':scope > details.dfold')].map(f => f.id);
+  });
+  try { localStorage.setItem('oc-fold-order', JSON.stringify(o)); } catch (e) {}
+}
+function restoreFoldOrder() {
+  let o = null;
+  try { o = JSON.parse(localStorage.getItem('oc-fold-order') || 'null'); } catch (e) {}
+  if (!o) return;
+  document.querySelectorAll('.foldzone').forEach(z => {
+    (o[z.dataset.zone] || []).forEach(id => {
+      const f = document.getElementById(id);
+      if (f && f.matches('details.dfold')) z.appendChild(f);
+    });
+  });
+}
+// Pointer events rather than HTML5 drag-and-drop: the latter does nothing on
+// touch screens. The section moves live under the pointer; every section's
+// body is hidden for the duration so tall open ones do not make it jump.
+function startFoldDrag(e, fold, grip) {
+  if (!layoutEditing() || e.button > 0) return;
+  e.preventDefault();
+  grip.setPointerCapture(e.pointerId);
+  document.body.classList.add('fold-dragging');
+  fold.classList.add('dragging');
+  const move = (ev) => {
+    const under = document.elementFromPoint(ev.clientX, ev.clientY);
+    const zone = under && under.closest('.foldzone');
+    if (!zone) return;
+    const before = [...zone.querySelectorAll(':scope > details.dfold')]
+      .filter(f => f !== fold)
+      .find(f => { const r = f.getBoundingClientRect(); return ev.clientY < r.top + r.height / 2; });
+    if (fold.parentNode !== zone || fold.nextElementSibling !== (before || null))
+      zone.insertBefore(fold, before || null);
+  };
+  const end = () => {
+    grip.removeEventListener('pointermove', move);
+    grip.removeEventListener('pointerup', end);
+    grip.removeEventListener('pointercancel', end);
+    document.body.classList.remove('fold-dragging');
+    fold.classList.remove('dragging');
+    saveFoldOrder();
+    // Its loader may have skipped it while it sat in a closed drawer.
+    const fn = FOLD_LOADERS[fold.id];
+    if (fn && foldShown(fold.id)) fn();
+  };
+  grip.addEventListener('pointermove', move);
+  grip.addEventListener('pointerup', end);
+  grip.addEventListener('pointercancel', end);
+}
+function initFoldDrag() {
+  document.querySelectorAll('.foldzone > details.dfold > summary').forEach(s => {
+    const g = document.createElement('span');
+    g.className = 'fgrip';
+    g.textContent = '⠿';
+    g.title = 'Drag to move this section — also into the other drawer';
+    g.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); });
+    g.addEventListener('pointerdown', (e) => startFoldDrag(e, s.parentElement, g));
+    s.prepend(g);
+  });
 }
 
 // Last: every fold's lazy-load toggle handler is wired by now, so a fold
 // restored to open fires toggle → loads its content.
+restoreFoldOrder();
+initFoldDrag();
 restoreFolds();
+initHeaderLayout();
 restoreDrawers();
 loadPlan();   // the chip must be right before anything happens   // after restoreFolds: the loaders check fold state
 init();

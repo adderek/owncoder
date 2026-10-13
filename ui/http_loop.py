@@ -652,13 +652,13 @@ _PAGE = r"""<!DOCTYPE html>
 <body data-layout="center">
 <div id="header">
   <button class="icon" id="lefttoggle" title="Sessions panel — Ctrl+B toggles, Alt+↑/↓ switches session" aria-label="Toggle sessions panel">☰</button>
-  <b>owncoder</b>
-  <button type="button" class="chip btn" id="model" title="Click to manage models"></button>
-  <button type="button" class="chip btn" id="simplechip" title="Model choice: where · model · effort — click to change" aria-haspopup="menu" aria-expanded="false" style="display:none"></button>
-  <button type="button" class="chip btn" id="session" title="Current session — click for the sessions panel"></button>
+  <b id="brand" data-hprio="0">owncoder</b>
+  <button type="button" class="chip btn" id="model" data-hprio="3" title="Click to manage models"></button>
+  <button type="button" class="chip btn" id="simplechip" data-hprio="3" title="Model choice: where · model · effort — click to change" aria-haspopup="menu" aria-expanded="false" style="display:none"></button>
+  <button type="button" class="chip btn" id="session" data-hprio="2" title="Current session — click for the sessions panel"></button>
   <button type="button" class="chip btn" id="workdir" title="Project directory (session-scoped) — click to manage access"></button>
-  <button type="button" class="chip btn" id="privchip" title="Session privacy mode — click for off-the-record options" aria-haspopup="menu" aria-expanded="false">▪ standard ▾</button>
-  <div id="statuswrap"><span id="dot"></span><span id="status" role="status" aria-live="polite">idle</span></div>
+  <button type="button" class="chip btn" id="privchip" data-hprio="2" title="Session privacy mode — click for off-the-record options" aria-haspopup="menu" aria-expanded="false">▪ standard ▾</button>
+  <div id="statuswrap" data-hprio="3"><span id="dot"></span><span id="status" role="status" aria-live="polite">idle</span></div>
   <button type="button" class="chip btn" id="layout" title="Cycle chat width: centered / wide / full">center</button>
   <button type="button" class="chip btn" id="cmdmenu" title="All commands, grouped — no need to know the names (Ctrl+K)">☰ commands</button>
   <button type="button" class="chip btn" id="viewchip" title="What the main panel is showing — click to go back to the conversation" style="display:none"></button>
@@ -666,12 +666,22 @@ _PAGE = r"""<!DOCTYPE html>
   <button type="button" class="chip btn" id="iostats" title="Session totals: prompt in / completion out / est. USD cost (paid-tier only). Click for per-model split">↑0 ↓0</button>
   <button type="button" class="chip btn" id="bgchip" title="Background jobs running — click to review / kill" style="display:none">⚙0</button>
   <button type="button" class="chip btn" id="planchip" title="Active plan — click for the steps" style="display:none">◑</button>
-  <button type="button" id="tokenwrap" title="Click for context buffer breakdown" aria-label="Context buffer usage — click for the breakdown"><div id="tokenbar"><div id="tokenfill"></div></div><span id="tokens"></span></button>
+  <button type="button" id="tokenwrap" data-hprio="2" title="Click for context buffer breakdown" aria-label="Context buffer usage — click for the breakdown"><div id="tokenbar"><div id="tokenfill"></div></div><span id="tokens"></span></button>
   <button type="button" class="chip btn" id="compact" title="Summarise the oldest messages to free context" style="display:none">⇘ compact</button>
   <button class="icon on" id="tokstatstoggle" title="Token confidence overlay: off — click to capture per-token logprobs (perplexity, entropy) for new model calls" aria-label="Toggle token confidence overlay">ppl</button>
   <button class="icon" id="notifytoggle" title="Notify me when the agent needs an answer or finishes" aria-label="Toggle desktop notifications">🔕</button>
   <button class="icon" id="themetoggle" title="Theme: dark (click to cycle)" aria-label="Cycle theme">◐</button>
+  <button type="button" class="chip btn" id="editdone" title="Leave layout edit mode (Esc)">✓ done editing</button>
+  <button class="icon" id="hdrmenu" title="More — header items that did not fit or were tucked away; layout editing" aria-label="More header items" aria-haspopup="menu" aria-expanded="false">⋯</button>
   <button class="icon" id="righttoggle" title="Details panel" aria-label="Toggle details panel">☰</button>
+</div>
+<!-- Header overflow menu. Holds header items that did not fit the bar (moved
+     here automatically, back when there is room) and the ones tucked away in
+     layout edit mode. The items are the real elements, moved — not copies. -->
+<div id="hdrpanel" class="hidden" role="menu" aria-label="More header items">
+  <button type="button" class="sbtn" id="editlayout" title="Edit layout: drag drawer sections by ⠿ (also between drawers); click a header item to tuck it into this menu or put it back">✎ edit layout</button>
+  <div id="hdritems"></div>
+  <div id="hdrempty" class="dim">nothing tucked away</div>
 </div>
 <!-- Command menu. The slash palette only helps someone who already knows the
      name; this is the same catalogue arranged by what each command is for. -->
@@ -689,6 +699,7 @@ _PAGE = r"""<!DOCTYPE html>
 <aside id="left"><div class="aside-inner">
   <div class="ptitle">Sessions <button class="sbtn" id="sessnew" title="Start a fresh session">＋ new</button><button class="sbtn" id="sesscopyid" title="Copy the current session ID to the clipboard">⧉ id</button></div>
   <div class="dsec"><pre id="sessinfo">—</pre></div>
+  <div class="foldzone" data-zone="left">
   <details id="sessfold" class="dfold">
     <summary class="dhead">recent sessions <span id="sesscount" class="chip"></span></summary>
     <input id="sessfilter" placeholder="search sessions — name, topic, tags…" class="sess-filter">
@@ -740,6 +751,7 @@ _PAGE = r"""<!DOCTYPE html>
       <button class="sbtn" id="todoadd">add</button>
     </div>
   </details>
+  </div>
   <div class="placeholder">Attach files with the 📎 button by the message box.</div>
 </div></aside>
 <div class="resizer hidden" id="resize-left" title="Drag to resize; drag past the edge to close"></div>
@@ -814,6 +826,7 @@ _PAGE = r"""<!DOCTYPE html>
 <div class="resizer hidden" id="resize-right" title="Drag to resize; drag past the edge to close"></div>
 <aside id="right"><div class="aside-inner">
   <div class="ptitle">Details</div>
+  <div class="foldzone" data-zone="right">
   <details id="modelsfold" class="dfold" open>
     <summary class="dhead">Models <span id="d-models" class="dhead-refresh" title="Refresh">⟳</span></summary>
     <div id="modelsbody">—</div>
@@ -848,6 +861,7 @@ _PAGE = r"""<!DOCTYPE html>
     </div>
     <div id="gitbody" class="gittree">—</div>
   </details>
+  </div>
 </div></aside>
 </div>
 <script src="/static/md.js" defer></script>

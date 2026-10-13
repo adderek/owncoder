@@ -39,10 +39,13 @@ body[data-theme="solarized-light"] {
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; }
 body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg);
-       color: var(--fg); display: flex; flex-direction: column; }
+       color: var(--fg); display: flex; flex-direction: column; min-width: 320px; }
+/* Never wraps: what does not fit moves into the ⋯ menu (app.js layoutHeader). */
 #header { padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--border);
-          display: flex; gap: 10px; align-items: center; flex-shrink: 0; flex-wrap: wrap;
+          display: flex; gap: 10px; align-items: center; flex-shrink: 0; flex-wrap: nowrap;
           position: relative; }
+#header > * { flex-shrink: 0; }
+#header > #statuswrap { flex-shrink: 1; min-width: 0; }
 /* ── Activity bar ──────────────────────────────────────────────────────────
    The header's bottom edge doubles as the "agent is working" indicator: a
    shuttle of light sweeps it while a turn runs. `body[data-activity]` (set in
@@ -83,7 +86,27 @@ body[data-activity="stalled"] #header::after {
   animation: actbreathe 1.4s ease-in-out infinite; height: 3px;
 }
 @keyframes actbreathe { 0%, 100% { opacity: .25; } 50% { opacity: .9; } }
-#header b { color: var(--head-fg); font-size: 15px; letter-spacing: .3px; }
+#header b, #hdritems b { color: var(--head-fg); font-size: 15px; letter-spacing: .3px; }
+/* ── Header overflow menu + layout edit mode ─────────────────────────────── */
+#hdrmenu.has { color: var(--fg); }
+#hdrpanel { position: fixed; right: 8px; z-index: 50; min-width: 200px;
+            max-width: calc(100vw - 16px); max-height: 70vh; overflow-y: auto;
+            background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+            padding: 8px; box-shadow: 0 4px 14px rgba(0,0,0,.35);
+            display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+#hdrpanel.hidden { display: none; }
+#hdritems { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+#hdrempty { font-size: 11px; color: var(--dimmer); }
+#editdone { display: none; }
+body.layout-edit #editdone { display: inline-block; color: var(--accent); border-color: var(--accent); }
+body.layout-edit .hitem { outline: 1px dashed var(--dimmer); outline-offset: 2px; cursor: copy; }
+body.layout-edit .hitem.hdr-tucked { outline-color: var(--warn); }
+.fgrip { display: none; margin-right: 4px; color: var(--accent); cursor: grab; touch-action: none; }
+body.layout-edit .fgrip { display: inline; }
+body.layout-edit .foldzone { outline: 1px dashed var(--border); outline-offset: 3px; min-height: 28px; }
+body.fold-dragging, body.fold-dragging .fgrip { cursor: grabbing; user-select: none; }
+body.fold-dragging details.dfold > :not(summary) { display: none; }
+details.dfold.dragging { opacity: .6; outline: 1px solid var(--accent); }
 /* Chips are <button>: they were spans with click handlers, which no keyboard
    could reach. font/line-height are reset because a button does not inherit
    them. */
@@ -1005,10 +1028,8 @@ button:hover { filter: brightness(1.15); }
 #backdrop { display: none; }
 @media (max-width: 720px) {
   #header { padding: calc(6px + env(safe-area-inset-top)) 8px 6px; gap: 6px; }
-  #header b { display: none; }
   #status { max-width: 34vw; }
   #tokenbar { width: 50px; }
-  #workdir, #iostats { display: none; }
   body[data-layout="wide"] .row, body[data-layout="full"] .row { max-width: none; }
   .user { margin-left: 6%; }
   .assistant { margin-right: 3%; }
