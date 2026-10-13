@@ -652,6 +652,15 @@ def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool, seccomp_fd: int | 
         "--ro-bind-try", "/etc/ssl", "/etc/ssl",
         "--ro-bind-try", "/etc/ca-certificates", "/etc/ca-certificates",
         "--ro-bind-try", "/etc/resolv.conf", "/etc/resolv.conf",
+        # User/name resolution: without passwd+group inside the jail, getpwuid()
+        # fails, so `whoami` errors and OpenSSH aborts pre-connect with
+        # "No user exists for uid N". hosts+nsswitch keep name lookups sane.
+        # All world-readable; the MCP jail already binds the same set
+        # (mcp/sandbox.py _ETC_FILES).
+        "--ro-bind-try", "/etc/passwd", "/etc/passwd",
+        "--ro-bind-try", "/etc/group", "/etc/group",
+        "--ro-bind-try", "/etc/nsswitch.conf", "/etc/nsswitch.conf",
+        "--ro-bind-try", "/etc/hosts", "/etc/hosts",
         "--symlink", "usr/lib", "/lib",
         "--symlink", "usr/lib64", "/lib64",
         "--symlink", "usr/bin", "/bin",
