@@ -1227,6 +1227,39 @@ class RemoteConfig:
 
 
 @dataclass
+class SerialPortConfig:
+    """One serial console (USB-UART) the agent may use. See docs/serial.md."""
+    name: str = ""                 # what the model calls it; the only handle it gets
+    url: str = ""                  # /dev/serial/by-id/..., /dev/ttyUSB0, socket://h:p, rfc2217://h:p
+    baud: int = 115200
+    bytesize: int = 8
+    parity: str = "N"              # N | E | O | M | S
+    stopbits: float = 1
+    rtscts: bool = False
+    xonxoff: bool = False
+    line_ending: str = "\r"       # appended by serial_send newline=true (Enter in picocom = CR)
+    description: str = ""          # shown to the model (device, login, bootloader prompt)
+    confirm: str = "session"       # session | always | never
+    enabled: bool = True
+
+
+@dataclass
+class SerialConfig:
+    """Serial consoles of lab devices. Off by default; user config layer only —
+    a project layer may only set enabled=false (loader._clamp_project_serial).
+
+    SECURITY: a UART console is usually a root shell / bootloader with no auth.
+    """
+    enabled: bool = False
+    ports: list = field(default_factory=list)   # list[SerialPortConfig]
+    log: bool = True               # <agent_dir>/serial/<name>/{console.log,actions.jsonl}
+    buffer_bytes: int = 1024 * 1024
+    idle_ms: int = 500             # no expect: return once the line is quiet this long
+    command_timeout_s: int = 30
+    max_output_chars: int = 16000
+
+
+@dataclass
 class KbConfig:
     """Knowledge-base integration. Off by default."""
     enabled: bool = False
@@ -1655,6 +1688,7 @@ class Config:
     notify: NotifyConfig = field(default_factory=NotifyConfig)
     mcp: MCPConfig = field(default_factory=MCPConfig)
     remote: RemoteConfig = field(default_factory=RemoteConfig)
+    serial: SerialConfig = field(default_factory=SerialConfig)
     speech: SpeechConfig = field(default_factory=SpeechConfig)
     classify: ClassifyConfig = field(default_factory=ClassifyConfig)
     auto_tier: AutoTierConfig = field(default_factory=AutoTierConfig)

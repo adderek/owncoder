@@ -609,7 +609,27 @@ def apply_prompt_hints(api_messages: list[dict], config: "Config") -> list[dict]
     api_messages = _inject_think_hint(api_messages, config)
     api_messages = _inject_autonomy_hint(api_messages, config)
     api_messages = _inject_remote_hint(api_messages, config)
+    api_messages = _inject_serial_hint(api_messages, config)
     return _inject_aei_hint(api_messages, config)
+
+
+def _inject_serial_hint(api_messages: list[dict], config: "Config") -> list[dict]:
+    """Point the model at serial_* while [serial] ports are live (see remote hint)."""
+    try:
+        from agent.tools.serial_console import active_ports
+        names = [p.name for p in active_ports(config)]
+    except Exception:
+        return api_messages
+    if not names:
+        return api_messages
+    hint = (f"Serial consoles: {', '.join(names)}. Use serial_send/serial_read/serial_arm. "
+            "Never picocom/screen/cat /dev/tty* via run_argv: the sandbox has no devices.")
+    for i, msg in enumerate(api_messages):
+        if msg.get("role") == "system":
+            updated = dict(msg)
+            updated["content"] = msg["content"] + "\n" + hint
+            return api_messages[:i] + [updated] + api_messages[i + 1:]
+    return [{"role": "system", "content": hint}] + api_messages
 
 
 def _inject_remote_hint(api_messages: list[dict], config: "Config") -> list[dict]:

@@ -1134,6 +1134,9 @@ class Agent:
         from agent.tools.remote import active_hosts as _remote_hosts, TOOL_NAMES as _remote_tools
         if not _remote_hosts(self.config):
             _excluded.update(_remote_tools)
+        from agent.tools.serial_console import active_ports as _serial_ports, TOOL_NAMES as _serial_tools
+        if not _serial_ports(self.config):
+            _excluded.update(_serial_tools)
         self._turn_busy = True
         # Somewhere for the turn to leave its work if it never returns.
         _partial: list[dict] = []

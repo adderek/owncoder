@@ -269,6 +269,7 @@ def _merge(config: Config, data: dict) -> None:
         ("notify", config.notify),
         ("mcp", config.mcp),
         ("remote", config.remote),
+        ("serial", config.serial),
         ("speech", config.speech),
         ("classify", config.classify),
         ("auto_tier", config.auto_tier),
@@ -298,7 +299,7 @@ _KNOWN_SECTIONS = {
     "verify", "diagnostics", "checkpoints", "tests", "confidence_guard", "compile_prompts", "token_limits",
     "tool_compaction", "security", "planning", "recovery", "parallel",
     "explore", "web_search", "concurrency", "kb", "aei", "notify", "mcp", "remote",
-    "speech", "classify", "auto_tier", "failover", "privacy", "scheduler", "hooks",
+    "serial", "speech", "classify", "auto_tier", "failover", "privacy", "scheduler", "hooks",
     "credpool", "permissions", "tool_discovery", "summarization", "output_store",
     "turn_signals", "ui_server", "models", "vision", "token_stats", "token_watch",
 }
@@ -359,6 +360,33 @@ def _coerce_remote_hosts(config: Config) -> None:
     config.remote.hosts = _coerce_dataclass_list(
         config.remote.hosts, RemoteHostConfig, "remote.hosts"
     )
+
+
+def _coerce_serial_ports(config: Config) -> None:
+    """Convert serial.ports dicts to SerialPortConfig."""
+    from agent.config.models import SerialPortConfig
+    config.serial.ports = _coerce_dataclass_list(
+        config.serial.ports, SerialPortConfig, "serial.ports"
+    )
+
+
+def _clamp_project_serial(data: dict) -> list[str]:
+    """Drop [serial] from a project layer except `enabled = false`.
+
+    A serial console is usually an unauthenticated root shell on a device;
+    which ports exist is the user's call, not a repo's. Mutates *data*.
+    """
+    section = data.get("serial")
+    if not isinstance(section, dict):
+        return []
+    data.pop("serial")
+    if section.get("enabled") is False:
+        data["serial"] = {"enabled": False}
+    dropped = sorted(k for k in section if not (k == "enabled" and section[k] is False))
+    if not dropped:
+        return []
+    return [f"[serial] {', '.join(dropped)} from a project config ignored — "
+            f"serial ports come only from ~/.config/agent/agent.yaml"]
 
 
 def _clamp_project_remote(data: dict) -> list[str]:
@@ -997,6 +1025,7 @@ def load_config(extra_path: Path | list[Path] | None = None) -> Config:
                 # env overrides (applied after the loop) still get the last word.
                 security_issues.extend(_clamp_project_security(config, data))
                 security_issues.extend(_clamp_project_remote(data))
+                security_issues.extend(_clamp_project_serial(data))
                 _srv, _iss = _clamp_project_mcp(data, p.parent)
                 project_mcp.extend(_srv)
                 security_issues.extend(_iss)
@@ -1042,6 +1071,7 @@ def load_config(extra_path: Path | list[Path] | None = None) -> Config:
     _coerce_notify_channels(config)
     _coerce_mcp_servers(config)
     _coerce_remote_hosts(config)
+    _coerce_serial_ports(config)
     _coerce_test_suites(config)
     _coerce_hooks(config)
     _coerce_diagnostics_checkers(config)
