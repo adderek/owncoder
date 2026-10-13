@@ -47,6 +47,11 @@ CORE_TOOLS: frozenset[str] = frozenset({
     # explore exists precisely so small-context models avoid many raw reads —
     # hiding it behind find_tools would defeat that purpose.
     "explore",
+    # Offered only when the user declared [remote] hosts (Agent.chat excludes
+    # them otherwise). The host list lives in the schema's enum; behind
+    # find_tools the model never saw it and ran local ssh/ls ~/.ssh instead.
+    "remote_exec",
+    "remote_copy",
 })
 
 # ── Categories: (label, "use when" hint, prefix/name matchers) ──────────────
