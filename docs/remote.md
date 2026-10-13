@@ -88,6 +88,11 @@ reusing them outside the lab.
 
 ## Behaviour
 
+- While any host is active, each request carries a one-line system hint
+  naming the hosts and telling the model to use `remote_exec`/`remote_copy`,
+  not `ssh` via `run_argv` (the sandbox hides `~/.ssh`). Computed per request,
+  so it follows `/remote on|off|reload` and a resumed session. With
+  `tool_discovery` on, both tools are always in the core set.
 - Tools: `remote_exec(host, cmd, timeout)`, `remote_copy(host, direction,
   remote_path, local_path)`. The model only picks a host name (schema enum
   with your `description`s); it never supplies address, user, key or options.
@@ -117,7 +122,11 @@ even while a turn is in progress. `/remote check [name]` test-connects.
 `/remote approve <name>` answers the session prompt ahead of time;
 `/remote off|on <name>` switches a host off/on for this agent process (off
 also drops its approval and blocks every host that jumps through it; the
-model's host list shrinks accordingly).
+model's host list shrinks accordingly). `/remote reload` re-reads `[remote]`
+from the config files loaded at startup — add or edit a host without
+restarting. Same layer rules as startup (a project config can only switch
+remote off); a parse error keeps the current hosts; approvals survive only for
+hosts whose entry is unchanged. Slash-only: the model cannot trigger it.
 
 HTTP UI: left drawer → **remote — SSH hosts** (next to *access — allowed
 paths*). Per host: state (`will ask` / `approved` / `asks each time` /

@@ -244,15 +244,78 @@ def revoke(name: str | None = None) -> list[str]:
     return gone
 
 
-def run_remote_command(config, arg: str = "") -> str:
-    """/remote [status | revoke [name] | check [name]] — shared by all UIs.
+def reload_config(config) -> tuple[bool, str]:
+    """Re-read only [remote] from the config layers recorded at startup.
 
-    Read-only apart from revoking session approvals. Pinning host keys and
-    editing the host list stay in the CLI / user config on purpose.
+    Same rules as startup: a project layer may only switch remote off
+    (loader._clamp_project_remote), so hosts still come from the user's own
+    files. Reachable only from the user-typed `/remote reload` — the model has
+    no path to slash commands, so it cannot add a host by writing a config file.
+    A parse error leaves the live hosts untouched. Session approvals survive
+    only for hosts whose entry did not change.
+    """
+    from pathlib import Path
+    from agent.config.loader import (
+        _load_file, _merge, _clamp_project_remote, _coerce_remote_hosts)
+    from agent.config.models import Config
+
+    layers = list(getattr(config, "loaded_config_layers", []) or [])
+    if not layers:
+        return False, "no recorded config layers — restart to pick up [remote] changes"
+    staged = Config()
+    try:
+        for p, is_project in layers:
+            path = Path(p)
+            if not path.exists():
+                continue
+            data = _load_file(path)
+            if is_project:
+                _clamp_project_remote(data)
+            if isinstance(data.get("remote"), dict):
+                _merge(staged, {"remote": data["remote"]})
+        _coerce_remote_hosts(staged)
+    except Exception as exc:
+        return False, f"[remote] not reloaded, hosts unchanged: {exc}"
+
+    old, new = config.remote, staged.remote
+    old_by = {h.name: h for h in old.hosts}
+    new_by = {h.name: h for h in new.hosts}
+    added = sorted(new_by.keys() - old_by.keys())
+    removed = sorted(old_by.keys() - new_by.keys())
+    changed = sorted(n for n in new_by.keys() & old_by.keys() if new_by[n] != old_by[n])
+    keep_approvals = new.known_hosts == old.known_hosts
+    with _lock:
+        config.remote = new
+        _approved.intersection_update(
+            set(new_by) - set(changed) if keep_approvals else set())
+        _disabled.intersection_update(new_by)
+    hosts = active_hosts(config)
+    _refresh_schemas(hosts)
+    try:
+        _audit.record("remote_reload", added=added, removed=removed, changed=changed,
+                      enabled=bool(new.enabled))
+    except Exception:
+        pass
+    diff = "; ".join(f"{k}: {', '.join(v)}" for k, v in
+                     (("added", added), ("removed", removed), ("changed", changed)) if v)
+    msg = f"[remote] reloaded ({diff or 'no host changes'}); active: " + (
+        ", ".join(h.name for h in hosts) or "none")
+    if added:
+        msg += "\nWARNING: the agent can now run ANY command on the added hosts."
+    return True, msg
+
+
+def run_remote_command(config, arg: str = "") -> str:
+    """/remote [status | revoke [name] | check [name] | reload] — shared by all UIs.
+
+    Read-only apart from session approvals/switches and `reload`, which re-reads
+    [remote] from the user's config files. Pinning host keys stays in the CLI.
     """
     parts = (arg or "").split()
     sub = parts[0] if parts else "status"
     name = parts[1] if len(parts) > 1 else None
+    if sub == "reload":
+        return reload_config(config)[1]
     rcfg = config.remote
     if sub == "revoke":
         gone = revoke(name)
@@ -264,7 +327,7 @@ def run_remote_command(config, arg: str = "") -> str:
             return f"usage: /remote {sub} <name>"
         return host_action(config, sub, name)[1]
     if sub not in ("status", "check"):
-        return "usage: /remote [status | check [name] | revoke [name] | approve|off|on <name>]"
+        return "usage: /remote [status | check [name] | revoke [name] | approve|off|on <name> | reload]"
     hosts = [h for h in rcfg.hosts if name is None or h.name == name]
     if name and not hosts:
         return f"no host {name!r} in [remote] hosts"

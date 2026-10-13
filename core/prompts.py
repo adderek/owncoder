@@ -608,7 +608,34 @@ def apply_prompt_hints(api_messages: list[dict], config: "Config") -> list[dict]
     """
     api_messages = _inject_think_hint(api_messages, config)
     api_messages = _inject_autonomy_hint(api_messages, config)
+    api_messages = _inject_remote_hint(api_messages, config)
     return _inject_aei_hint(api_messages, config)
+
+
+def _inject_remote_hint(api_messages: list[dict], config: "Config") -> list[dict]:
+    """Point the model at remote_exec while [remote] hosts are live.
+
+    Per request, not in the stored system prompt: a resumed session carries the
+    prompt it was created with, and hosts change mid-session (/remote on|off|
+    reload). Without it the model reached for `ssh` via run_argv, which cannot
+    work — the sandbox hides ~/.ssh.
+    """
+    try:
+        from agent.tools.remote import active_hosts
+        names = [h.name for h in active_hosts(config)]
+    except Exception:
+        return api_messages
+    if not names:
+        return api_messages
+    hint = (f"Remote hosts: {', '.join(names)}. Run commands there with remote_exec, "
+            "move files with remote_copy. Never ssh/scp via run_argv: the sandbox "
+            "has no SSH keys, it fails.")
+    for i, msg in enumerate(api_messages):
+        if msg.get("role") == "system":
+            updated = dict(msg)
+            updated["content"] = msg["content"] + "\n" + hint
+            return api_messages[:i] + [updated] + api_messages[i + 1:]
+    return [{"role": "system", "content": hint}] + api_messages
 
 
 def _inject_think_hint(api_messages: list[dict], config: "Config") -> list[dict]:

@@ -325,3 +325,71 @@ def test_http_endpoints(wired, monkeypatch):
     r = ui.remote_action({"action": "approve", "name": "lab"})
     assert r["ok"] and "WITHOUT further prompts" in r["msg"]
     assert ui.remote_action({"action": "off", "name": "nope"})["ok"] is False
+
+
+# ── reload + prompt hint ──────────────────────────────────────────────────
+
+def _layer(path: Path, hosts: list[dict], **remote) -> str:
+    import yaml
+    path.write_text(yaml.safe_dump({"remote": {"enabled": True, "hosts": hosts, **remote}}))
+    return str(path)
+
+
+def test_reload_adds_host_and_keeps_unchanged_approval(wired, tmp_path):
+    c, h, _ = wired
+    user = _layer(tmp_path / "agent.yaml", [
+        dict(name="lab", host=h.host, identity_file=h.identity_file,
+             description="router", confirm="session"),
+        dict(name="dut", host="10.0.0.2", identity_file="/k/agent_r")], known_hosts="/kh")
+    c.loaded_config_layers = [(user, False)]
+    rmain.remote_exec("lab", "id", _confirmed=True)
+    ok, msg = rmain.reload_config(c)
+    assert ok and "added: dut" in msg and "WARNING" in msg
+    assert [x.name for x in rmain.active_hosts(c)] == ["lab", "dut"]
+    assert "dut" in next(s for s in get_schemas()
+                         if s["function"]["name"] == "remote_exec"
+                         )["function"]["parameters"]["properties"]["host"]["enum"]
+    assert not rmain.remote_exec("lab", "id").get("requires_confirm")
+
+
+def test_reload_changed_host_drops_approval(wired, tmp_path):
+    c, h, _ = wired
+    user = _layer(tmp_path / "agent.yaml", [
+        dict(name="lab", host="10.9.9.9", identity_file=h.identity_file)], known_hosts="/kh")
+    c.loaded_config_layers = [(user, False)]
+    rmain.remote_exec("lab", "id", _confirmed=True)
+    ok, msg = rmain.reload_config(c)
+    assert ok and "changed: lab" in msg
+    assert rmain.remote_exec("lab", "id").get("requires_confirm")
+
+
+def test_reload_project_layer_cannot_add_hosts(wired, tmp_path):
+    c, _, _ = wired
+    user = _layer(tmp_path / "user.yaml", [])
+    proj = _layer(tmp_path / "proj.yaml", [dict(name="evil", host="1.2.3.4",
+                                                identity_file="/k/agent_e")])
+    c.loaded_config_layers = [(user, False), (proj, True)]
+    ok, _ = rmain.reload_config(c)
+    assert ok and rmain.active_hosts(c) == []
+
+
+def test_reload_parse_error_leaves_hosts(wired, tmp_path):
+    c, _, _ = wired
+    bad = tmp_path / "agent.yaml"
+    bad.write_text("remote: [unclosed")
+    c.loaded_config_layers = [(str(bad), False)]
+    ok, msg = rmain.reload_config(c)
+    assert not ok and "unchanged" in msg
+    assert [x.name for x in rmain.active_hosts(c)] == ["lab"]
+    assert "not reloaded" in rmain.run_remote_command(c, "reload")
+
+
+def test_prompt_hint_follows_active_hosts(wired):
+    from agent.core.prompts import apply_prompt_hints
+    c, _, _ = wired
+    msgs = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
+    out = apply_prompt_hints(msgs, c)
+    assert "remote_exec" in out[0]["content"] and "lab" in out[0]["content"]
+    assert msgs[0]["content"] == "sys"   # stored history untouched
+    rmain.run_remote_command(c, "off lab")
+    assert "remote_exec" not in apply_prompt_hints(msgs, c)[0]["content"]
