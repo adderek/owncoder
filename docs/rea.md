@@ -126,6 +126,10 @@ navigable with `asm_tree`. Needs `asm_analysis.enabled: true` and the REA server
 running (`asm_analysis.rea_server`, default `rea`).
 
 - Budget: `max_functions=N` per call; re-run continues. Same sha256 → cached.
+- Output budget per function: `token_limits.asm_function` (default 1024; the
+  WndProc of moveme.exe needed 735). JSON keys are ordered short-first, so a
+  reply cut at the limit keeps purpose/name/apis/confidence and only the tail
+  of `behaviour` is lost; cut earlier → one retry at double budget.
 - `annotate=true` writes names + comments back into the open Ghidra program;
   add `annotate_native_function` to `tools_allow` (refused otherwise, reported
   as `annotate_error`).

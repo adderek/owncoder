@@ -288,6 +288,57 @@ def test_truncated_reply_is_retried_with_double_budget(tmp_path):
 
     llm = CutLLM()
     d = AsmDescriber(llm, _cfg(), types.SimpleNamespace(model="m"),
-                     token_limits=types.SimpleNamespace(asm_describer=512))
+                     token_limits=types.SimpleNamespace(asm_describer=512, asm_function=700))
     r = d.describe_function({"addr": "0x1", "name": "f", "pseudocode": "x"}, [], [])
-    assert llm.budgets == [512, 1024] and r["description"] == "does 0x1"
+    # cut before the required fields: nothing to keep, retry with double budget
+    assert llm.budgets == [700, 1400] and r["description"] == "does 0x1"
+
+
+def test_truncated_reply_with_required_fields_is_kept_without_retry():
+    budgets = []
+
+    def create(**kw):
+        budgets.append(kw["max_tokens"])
+        text = ('{"purpose": "tray menu", "inferred_name": "wnd_proc", "apis": ["Shell_NotifyIconA"], '
+                '"confidence": "high", "side_effects": "tray icon", "behaviour": "msg 0x405 with 0x204 sh')
+        msg = types.SimpleNamespace(content=text)
+        return types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg, finish_reason="length")])
+
+    llm = types.SimpleNamespace(chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=create)))
+    d = AsmDescriber(llm, _cfg(), types.SimpleNamespace(model="m"),
+                     token_limits=types.SimpleNamespace(asm_describer=512, asm_function=1024))
+    r = d.describe_function({"addr": "0x1", "name": "f", "pseudocode": "x"},
+                            [("USER32.DLL::Shell_NotifyIconA", "import")], [])
+    assert budgets == [1024]
+    assert r["inferred_name"] == "wnd_proc" and r["confidence"] == "high"
+    assert r["key_patterns"].endswith("[...truncated]") and not r["unverified_apis"]
+
+
+def test_chunk_and_group_calls_keep_asm_describer_budget():
+    budgets = []
+    llm = FakeLLM()
+    orig = llm._create
+    llm.chat.completions.create = lambda **kw: (budgets.append(kw["max_tokens"]), orig(**kw))[1]
+    d = AsmDescriber(llm, _cfg(), types.SimpleNamespace(model="m"),
+                     token_limits=types.SimpleNamespace(asm_describer=512, asm_function=1024))
+    d.summarize_group([{"inferred_name": "a", "description": "x", "start_line": 1, "end_line": 2}])
+    d.describe_function({"addr": "0x1", "name": "f", "pseudocode": "x"}, [], [])
+    assert budgets == [512, 1024]
+
+
+def test_list_valued_fields_are_stored_as_text(tmp_path):
+    class ListLLM(FakeLLM):
+        def _create(self, **kw):
+            r = super()._create(**kw)
+            body = json.loads(r.choices[0].message.content)
+            if "behaviour" in body:
+                body["side_effects"] = ["UI: tray icon", "processes: thread"]
+                body["behaviour"] = {"msg 1": "add icon"}
+            r.choices[0].message.content = json.dumps(body)
+            return r
+
+    p, store, _, _ = _pipeline(tmp_path, llm=ListLLM())
+    assert p.analyze("/bin/x.exe")["described"] == 4
+    u = store.get_units_for_file("/bin/x.exe", 0)[0]
+    assert u["side_effects"] == "UI: tray icon; processes: thread"
+    assert json.loads(u["key_patterns"]) == {"msg 1": "add icon"}

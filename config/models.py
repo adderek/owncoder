@@ -529,6 +529,7 @@ class TokenLimitsConfig:
     """Per-call max_tokens limits for non-chat LLM paths."""
     asm_splitter: int = 256
     asm_describer: int = 512
+    asm_function: int = 1024     # analyze_binary per-function description (behaviour for rewrite)
     commit_message: int = 8192
     commit_message_max_tokens: int = 16384
     commit_message_reserved: int = 512

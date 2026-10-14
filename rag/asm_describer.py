@@ -59,16 +59,53 @@ Pseudocode:
 {pseudocode}
 ```
 
-Reply with JSON:
+Reply with JSON, keys in this order:
 {{
   "purpose": "<one sentence: what it does, in domain terms if visible>",
   "inferred_name": "<snake_case name>",
-  "behaviour": "<inputs -> outputs, rules, constants that matter for a rewrite; quote constants exactly as in the code, do not convert>",
-  "side_effects": "<files, registry, network, UI, globals, processes>",
   "apis": ["<each call/import from the list above your description relies on>"],
-  "confidence": "low|medium|high"
+  "confidence": "low|medium|high",
+  "side_effects": "<files, registry, network, UI, globals, processes>",
+  "behaviour": "<inputs -> outputs, rules, constants that matter for a rewrite; quote constants exactly as in the code, do not convert>"
 }}
 """
+
+# Fields a cut-off function description must still carry to be usable;
+# behaviour (last, longest) may be partial.
+_FUNCTION_REQUIRED = ("purpose", "inferred_name", "apis", "confidence")
+_STR_FIELD_RE = re.compile(r'"(\w+)"\s*:\s*"((?:[^"\\]|\\.)*)("?)')
+_LIST_FIELD_RE = re.compile(r'"(\w+)"\s*:\s*\[([^\]]*)\]')
+
+
+def _salvage_json(text: str) -> dict:
+    """Fields recoverable from a JSON object cut off mid-way.
+
+    Complete string and list fields are kept; a string still open at the cut
+    keeps its text with a truncation marker.
+    """
+    out: dict = {}
+    for m in _LIST_FIELD_RE.finditer(text):
+        try:
+            out[m.group(1)] = json.loads(f"[{m.group(2)}]")
+        except json.JSONDecodeError:
+            pass
+    for m in _STR_FIELD_RE.finditer(text):
+        try:
+            val = json.loads(f'"{m.group(2)}"')
+        except json.JSONDecodeError:
+            val = m.group(2)
+        out.setdefault(m.group(1), val if m.group(3) else val + " [...truncated]")
+    return out
+
+
+
+def _text(value) -> str | None:
+    """Models return lists/objects where a string was asked; store text."""
+    if value is None or isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "; ".join(v if isinstance(v, str) else json.dumps(v) for v in value)
+    return json.dumps(value)
 
 
 def _norm_api(name: str) -> str:
@@ -110,6 +147,8 @@ class AsmDescriber:
         # Use token_limits.asm_describer (config-driven); fall back to 512 to
         # preserve the historical hardcoded budget when no limits passed.
         self._max_tokens = token_limits.asm_describer if token_limits else 512
+        # Function descriptions carry behaviour/rules for a rewrite: own budget.
+        self._fn_max_tokens = getattr(token_limits, "asm_function", 1024) if token_limits else 1024
 
     def describe_chunk(
         self, chunk: dict, prev_desc: str | None, next_desc: str | None
@@ -178,7 +217,8 @@ class AsmDescriber:
             strings="\n".join(f"- {s!r}" for s in strings) or "- (none)",
             pseudocode=pseudo,
         )
-        result = self._call_llm(prompt)
+        result = self._call_llm(prompt, max_tokens=self._fn_max_tokens,
+                                required=_FUNCTION_REQUIRED)
         if result is None:
             # No placeholder: the caller leaves the function pending so a
             # re-run retries it instead of keeping a non-description forever.
@@ -190,10 +230,10 @@ class AsmDescriber:
         if unverified:
             confidence = "low"
         return {
-            "description": result.get("purpose", ""),
-            "inferred_name": result.get("inferred_name") or fn["name"],
-            "side_effects": result.get("side_effects"),
-            "key_patterns": result.get("behaviour"),
+            "description": _text(result.get("purpose")) or "",
+            "inferred_name": _text(result.get("inferred_name")) or fn["name"],
+            "side_effects": _text(result.get("side_effects")),
+            "key_patterns": _text(result.get("behaviour")),
             "confidence": confidence,
             "unverified_apis": unverified,
         }
@@ -232,10 +272,15 @@ class AsmDescriber:
             "confidence": result.get("confidence", "low"),
         }
 
-    def _call_llm(self, prompt: str) -> dict | None:
-        # One retry with double budget when the answer was cut off: rich
-        # functions (window procedures, parsers) need more than the default.
-        max_tokens = self._max_tokens
+    def _call_llm(self, prompt: str, max_tokens: int | None = None,
+                  required: tuple[str, ...] = ()) -> dict | None:
+        """JSON reply as a dict, or None.
+
+        Cut off at max_tokens: if `required` fields survive in the partial
+        reply, keep it (no second generation); otherwise retry once with
+        double budget.
+        """
+        max_tokens = max_tokens or self._max_tokens
         for attempt in range(2):
             try:
                 response = self._client.chat.completions.create(
@@ -257,6 +302,11 @@ class AsmDescriber:
             if result is not None:
                 return result
             finish = getattr(choice, "finish_reason", None)
+            if finish == "length" and required:
+                partial = _salvage_json(text)
+                if all(k in partial for k in required):
+                    logger.info("AsmDescriber: kept truncated reply (max_tokens=%d)", max_tokens)
+                    return partial
             if finish == "length" and attempt == 0:
                 max_tokens *= 2
                 continue

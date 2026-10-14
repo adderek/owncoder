@@ -382,6 +382,7 @@ thinking_color = "#404060"
 [token_limits]
 asm_splitter                 = 256
 asm_describer                = 512
+asm_function                 = 1024   # analyze_binary: per-function description incl. behaviour
 commit_message               = 4096
 commit_message_max_tokens    = 16384
 commit_message_reserved      = 512

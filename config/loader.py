@@ -64,6 +64,7 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_COMPILE_PROMPTS_CACHE_DIR": ("compile_prompts", "cache_dir"),
         "AGENT_TOKEN_LIMITS_ASM_SPLITTER": ("token_limits", "asm_splitter"),
         "AGENT_TOKEN_LIMITS_ASM_DESCRIBER": ("token_limits", "asm_describer"),
+        "AGENT_TOKEN_LIMITS_ASM_FUNCTION": ("token_limits", "asm_function"),
         "AGENT_TOKEN_LIMITS_COMMIT_MESSAGE": ("token_limits", "commit_message"),
         "AGENT_TOKEN_LIMITS_COMMIT_MESSAGE_RESERVED": ("token_limits", "commit_message_reserved"),
         "AGENT_TOKEN_LIMITS_COMMIT_CHUNK_CHARS": ("token_limits", "commit_chunk_chars"),
