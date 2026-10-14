@@ -72,6 +72,7 @@ _PARAM_ALIASES: dict[str, dict[str, str]] = {
     "git_blame": {"file_path": "path", "file": "path", "filename": "path"},
     "git_related_files": {"file_path": "path", "file": "path"},
     "analyze_asm": {"file_path": "path", "file": "path"},
+    "analyze_binary": {"file_path": "path", "file": "path", "binary": "path"},
     "search_code": {"q": "query", "pattern": "query", "term": "query", "search_term": "query"},
     "search_archive": {"q": "query", "pattern": "query", "term": "query"},
     "recall_facts": {"q": "query", "term": "query"},

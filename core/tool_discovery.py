@@ -91,7 +91,7 @@ _CATEGORIES: list[tuple[str, str, tuple[str, ...], frozenset[str]]] = [
     ("checkpoints", "session-wide multi-file rollback",
      (), frozenset({"create_checkpoint", "list_checkpoints", "rollback_checkpoint"})),
     ("indexing", "build/refresh/check freshness of code index, graph, asm analysis",
-     ("graph_build", "index_"), frozenset({"index_code", "analyze_asm"})),
+     ("graph_build", "index_"), frozenset({"index_code", "analyze_asm", "analyze_binary", "asm_tree"})),
     ("security audit", "scan code for vulnerabilities",
      (), frozenset({"security_audit", "analyze_dependencies"})),
     ("web", "search/fetch external information",

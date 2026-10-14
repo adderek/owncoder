@@ -65,7 +65,9 @@ class AsmStore:
                 git_hash    TEXT,
                 calls       TEXT,
                 side_effects TEXT,
-                key_patterns TEXT
+                key_patterns TEXT,
+                addr        TEXT,
+                evidence    TEXT
             );
 
             CREATE INDEX IF NOT EXISTS asm_units_path_level
@@ -93,6 +95,15 @@ class AsmStore:
                 analyzed_at REAL
             );
 
+            -- Call graph facts for binaries imported through REA: src is a unit id,
+            -- dst a unit id (internal) or 'import:<DLL::name>' (external).
+            CREATE TABLE IF NOT EXISTS asm_edges (
+                path  TEXT NOT NULL,
+                src   TEXT NOT NULL,
+                dst   TEXT NOT NULL,
+                PRIMARY KEY (path, src, dst)
+            );
+
             CREATE TABLE IF NOT EXISTS asm_split_progress (
                 path         TEXT NOT NULL,
                 window_index INTEGER NOT NULL,
@@ -102,6 +113,12 @@ class AsmStore:
                 PRIMARY KEY (path, window_index)
             );
         """)
+        # Columns added after the first release: CREATE TABLE IF NOT EXISTS
+        # leaves an older table as it was.
+        have = {r[1] for r in conn.execute("PRAGMA table_info(asm_units)")}
+        for col in ("addr", "evidence"):
+            if col not in have:
+                conn.execute(f"ALTER TABLE asm_units ADD COLUMN {col} TEXT")
         conn.commit()
 
     def _setup(self) -> None:
@@ -140,8 +157,8 @@ class AsmStore:
             INSERT OR REPLACE INTO asm_units
             (id, path, level, start_line, end_line, description, inferred_name,
              checksum, revision, parent_id, prev_id, next_id, status, confidence,
-             mtime, git_hash, calls, side_effects, key_patterns)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             mtime, git_hash, calls, side_effects, key_patterns, addr, evidence)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             unit["id"], unit["path"], unit["level"],
             unit["start_line"], unit["end_line"],
@@ -152,6 +169,7 @@ class AsmStore:
             unit.get("status", "pending"), unit.get("confidence"),
             unit.get("mtime"), unit.get("git_hash"),
             unit.get("calls"), unit.get("side_effects"), unit.get("key_patterns"),
+            unit.get("addr"), unit.get("evidence"),
         ))
 
         if unit.get("embedding"):
@@ -250,7 +268,28 @@ class AsmStore:
                 f"DELETE FROM vec_asm_units WHERE unit_id IN ({placeholders})", ids
             )
         self._conn.execute(f"DELETE FROM asm_units WHERE id IN ({placeholders})", ids)
+        self._conn.execute("DELETE FROM asm_edges WHERE path = ?", (path,))
         self._conn.commit()
+
+    def set_edges(self, path: str, edges: list[tuple[str, str]]) -> None:
+        self._conn.execute("DELETE FROM asm_edges WHERE path = ?", (path,))
+        self._conn.executemany(
+            "INSERT OR IGNORE INTO asm_edges(path, src, dst) VALUES (?, ?, ?)",
+            [(path, s, d) for s, d in edges],
+        )
+        self._conn.commit()
+
+    def get_edges(self, path: str) -> list[tuple[str, str]]:
+        rows = self._conn.execute(
+            "SELECT src, dst FROM asm_edges WHERE path = ?", (path,)
+        ).fetchall()
+        return [(r["src"], r["dst"]) for r in rows]
+
+    def list_files(self) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT path, checksum, status, analyzed_at FROM asm_files ORDER BY path"
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def get_pending_units(self, path: str, level: int) -> list[dict]:
         rows = self._conn.execute("""

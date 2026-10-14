@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 # Live clients, kept alive for the session; shut down in teardown.
 _clients: list = []
+# Server name → (client, server config), for in-process callers (analyze_binary).
+_by_name: dict = {}
 # Per-server load outcome for /mcp visibility: name → {ok, tools, error}.
 _status: dict = {}
 _NAME_RE = re.compile(r"[^a-z0-9_]+")
@@ -113,14 +115,30 @@ def load_mcp_tools(config: "Config | None") -> int:
             register(full, schema)(_wrap(client, name, tname))
             tool_names.append(full)
             registered += 1
+        _by_name[name] = (client, server)
         _status[name] = {"ok": True, "tools": tool_names, "error": None}
         logger.info("mcp[%s]: registered %d of %d tool(s)", name, len(tool_names), len(tools))
 
     return registered
 
 
+def get_server(name: str):
+    """(call, allowed) for a live server, or None if it is not running.
+
+    call(tool, args) proxies to the server; allowed(tool) applies the server's
+    tools_allow/tools_deny so in-process callers obey the same policy as the
+    model does.
+    """
+    entry = _by_name.get(name)
+    if entry is None:
+        return None
+    client, server = entry
+    return client.call_tool, lambda tool: _tool_allowed(server, tool)
+
+
 def shutdown_mcp() -> None:
     """Terminate all live MCP server subprocesses."""
+    _by_name.clear()
     while _clients:
         client = _clients.pop()
         try:

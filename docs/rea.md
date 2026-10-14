@@ -115,6 +115,24 @@ call (`inspect_artifact` on a tiny ELF ≈ 6 KB).
 DOS specifics (16-bit, Borland, seed files): REA `docs/ghidra-dos.md`,
 `REA_GHIDRA_LANGUAGE_ID` / `REA_GHIDRA_COMPILER_SPEC_ID` env.
 
+## Indexing a binary (`analyze_binary`)
+
+The chat can drive REA tools directly, but on anything beyond a toy that burns
+tokens per function. `analyze_binary(path)` does the bulk pass offline-style:
+REA/Ghidra facts (procedures, callees, imports, strings, pseudocode) → one LLM
+description per function, callees first → groups along the call graph → one
+root summary. Stored in the asm index (`.agent/` db), searchable with `search`,
+navigable with `asm_tree`. Needs `asm_analysis.enabled: true` and the REA server
+running (`asm_analysis.rea_server`, default `rea`).
+
+- Budget: `max_functions=N` per call; re-run continues. Same sha256 → cached.
+- `annotate=true` writes names + comments back into the open Ghidra program;
+  add `annotate_native_function` to `tools_allow` (refused otherwise, reported
+  as `annotate_error`).
+- Callback functions referenced only as pointers (WndProc, thread procs) are
+  not in Ghidra's callee lists; they stay loners until grouping packs them.
+- Workflow for legacy rewrite: `load_skill legacy-re`.
+
 ## Verified (REA 6.4.0, Ghidra 12.1.2, JDK 21, 2026-10-13)
 
 Through `load_config()` + `security.policy` + `agent.mcp.manager`, bwrap:

@@ -33,7 +33,7 @@ _SUMMARIZE_PROMPT = """\
 Summarize the following {n} assembly routines as a group.
 
 {children_list}
-
+{facts}
 Reply with JSON:
 {{
   "purpose": "<2-3 sentences describing what this group collectively does>",
@@ -42,6 +42,37 @@ Reply with JSON:
   "confidence": "low|medium|high"
 }}
 """
+
+
+_FUNCTION_PROMPT = """\
+Decompiled function from a legacy binary (Ghidra). Facts below are exact; \
+the pseudocode is machine-generated, names like FUN_xxxx/param_1 are placeholders.
+
+Function {name} at {addr}
+Signature: {signature}
+Calls (exact):
+{callees}
+Strings it references:
+{strings}
+Pseudocode:
+```c
+{pseudocode}
+```
+
+Reply with JSON:
+{{
+  "purpose": "<one sentence: what it does, in domain terms if visible>",
+  "inferred_name": "<snake_case name>",
+  "behaviour": "<inputs -> outputs, rules, constants that matter for a rewrite; quote constants exactly as in the code, do not convert>",
+  "side_effects": "<files, registry, network, UI, globals, processes>",
+  "apis": ["<each call/import from the list above your description relies on>"],
+  "confidence": "low|medium|high"
+}}
+"""
+
+
+def _norm_api(name: str) -> str:
+    return name.rsplit("::", 1)[-1].strip().lower()
 
 
 def _extract_json(text: str) -> dict | None:
@@ -128,8 +159,51 @@ class AsmDescriber:
             "confidence": result.get("confidence", "low"),
         }
 
-    def summarize_group(self, children: list[dict]) -> dict:
-        """Given list of described child units, return group-level description fields."""
+    def describe_function(self, fn: dict, callees: list[tuple[str, str]],
+                          strings: list[str]) -> dict:
+        """Describe one REA-imported function.
+
+        fn: {addr, name, signature, pseudocode}. callees: [(name, purpose or
+        "import")]. APIs the model cites that are not among the callees are
+        recorded as unverified and pull confidence down to low — the call
+        list is ground truth, so a mismatch is a hallucination signal.
+        """
+        pseudo = fn.get("pseudocode") or ""
+        max_chars = self._cfg.describer_ctx_tokens * 3
+        if len(pseudo) > max_chars:
+            pseudo = pseudo[:max_chars] + "\n/* [...truncated] */"
+        prompt = _FUNCTION_PROMPT.format(
+            name=fn["name"], addr=fn["addr"], signature=fn.get("signature") or "?",
+            callees="\n".join(f"- {n}: {p}" for n, p in callees) or "- (none)",
+            strings="\n".join(f"- {s!r}" for s in strings) or "- (none)",
+            pseudocode=pseudo,
+        )
+        result = self._call_llm(prompt)
+        if result is None:
+            # No placeholder: the caller leaves the function pending so a
+            # re-run retries it instead of keeping a non-description forever.
+            return {"failed": True}
+        known = {_norm_api(n) for n, _ in callees}
+        cited = [a for a in (result.get("apis") or []) if isinstance(a, str)]
+        unverified = [a for a in cited if _norm_api(a) not in known]
+        confidence = result.get("confidence", "low")
+        if unverified:
+            confidence = "low"
+        return {
+            "description": result.get("purpose", ""),
+            "inferred_name": result.get("inferred_name") or fn["name"],
+            "side_effects": result.get("side_effects"),
+            "key_patterns": result.get("behaviour"),
+            "confidence": confidence,
+            "unverified_apis": unverified,
+        }
+
+    def summarize_group(self, children: list[dict], facts: str = "") -> dict:
+        """Given list of described child units, return group-level description fields.
+
+        facts: optional exact context (e.g. imports the group uses) appended
+        to the prompt.
+        """
         children_list = "\n".join(
             f"- {c.get('inferred_name', '?')}: {c.get('description', '(no description)')}"
             for c in children
@@ -138,6 +212,7 @@ class AsmDescriber:
         prompt = _SUMMARIZE_PROMPT.format(
             n=len(children),
             children_list=children_list,
+            facts=f"\n{facts}\n" if facts else "",
         )
 
         result = self._call_llm(prompt)
@@ -158,19 +233,34 @@ class AsmDescriber:
         }
 
     def _call_llm(self, prompt: str) -> dict | None:
-        try:
-            response = self._client.chat.completions.create(
-                model=self._model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=self._max_tokens,
-                temperature=0,
-                # Reasoning models can consume the 512-token budget entirely
-                # on hidden reasoning_content, leaving content="". This path
-                # wants a compact JSON object — disable chain-of-thought.
-                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-            )
-            text = response.choices[0].message.content or ""
-            return _extract_json(text)
-        except Exception as e:
-            logger.warning("AsmDescriber LLM call failed: %s", e)
+        # One retry with double budget when the answer was cut off: rich
+        # functions (window procedures, parsers) need more than the default.
+        max_tokens = self._max_tokens
+        for attempt in range(2):
+            try:
+                response = self._client.chat.completions.create(
+                    model=self._model,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=max_tokens,
+                    temperature=0,
+                    # Reasoning models can consume the 512-token budget entirely
+                    # on hidden reasoning_content, leaving content="". This path
+                    # wants a compact JSON object — disable chain-of-thought.
+                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                )
+            except Exception as e:
+                logger.warning("AsmDescriber LLM call failed: %s", e)
+                return None
+            choice = response.choices[0]
+            text = choice.message.content or ""
+            result = _extract_json(text)
+            if result is not None:
+                return result
+            finish = getattr(choice, "finish_reason", None)
+            if finish == "length" and attempt == 0:
+                max_tokens *= 2
+                continue
+            logger.warning("AsmDescriber: no JSON in reply (finish=%s, max_tokens=%d, %d chars)",
+                           finish, max_tokens, len(text))
             return None
+        return None

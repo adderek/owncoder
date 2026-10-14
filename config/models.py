@@ -152,6 +152,7 @@ class AsmAnalysisConfig:
     group_size: int = 8
     max_levels: int = 6
     batch_size: int = 4
+    rea_server: str = "rea"            # MCP server name analyze_binary reads facts from
 
 
 @dataclass

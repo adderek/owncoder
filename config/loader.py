@@ -56,6 +56,7 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_ASM_GROUP_SIZE": ("asm", "group_size"),
         "AGENT_ASM_MAX_LEVELS": ("asm", "max_levels"),
         "AGENT_ASM_BATCH_SIZE": ("asm", "batch_size"),
+        "AGENT_ASM_REA_SERVER": ("asm", "rea_server"),
         "AGENT_COMPILE_PROMPTS": ("compile_prompts", "enabled"),
         "AGENT_COMPILE_PROMPTS_AUTO_RECOMPILE": ("compile_prompts", "auto_recompile"),
         "AGENT_COMPILE_PROMPTS_THRESHOLD": ("compile_prompts", "error_rate_threshold"),
