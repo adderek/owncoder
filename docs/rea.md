@@ -136,6 +136,7 @@ running (`asm_analysis.rea_server`, default `rea`).
 - Callback functions referenced only as pointers (WndProc, thread procs) are
   not in Ghidra's callee lists; they stay loners until grouping packs them.
 - Workflow for legacy rewrite: `load_skill legacy-re`.
+- Proposed next steps: `binary-analysis-improvements.md`.
 
 ## Verified (REA 6.4.0, Ghidra 12.1.2, JDK 21, 2026-10-13)
 
