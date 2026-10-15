@@ -297,6 +297,9 @@ aside.resizing { transition: none; }   /* no lag while dragging */
 .sess-item { padding: 5px 8px; border-radius: 6px; margin-bottom: 2px; cursor: pointer; }
 .sess-item:hover { background: var(--panel2); }
 .sess-item.current { border-left: 2px solid var(--accent); background: var(--panel2); }
+.sess-item.last:not(.current) { border-left: 2px dashed var(--warn); }
+.sess-item .slast { color: var(--warn); font-size: 10px; margin-right: 4px; font-family: var(--mono); }
+.sess-item .slive { color: var(--ok); font-size: 10px; margin-right: 4px; font-family: var(--mono); }
 .sess-item.working { animation: sess-pulse 1s ease-in-out infinite;
                      box-shadow: 0 0 0 1px var(--accent) inset; }
 @keyframes sess-pulse { 0%,100% { box-shadow: 0 0 0 1px transparent inset; }

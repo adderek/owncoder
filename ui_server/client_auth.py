@@ -14,6 +14,11 @@ Trust rules:
 - Bounded: few pending requests, one per IP, short expiry, per-IP rate limit.
 - Only token hashes are stored. Remembered clients persist in
   ~/.config/agent/http_clients.json (0600), session clients only in memory.
+- Out-of-band approval: the waiting page shows its request id, and
+  `agent http-clients approve <id>` (run in any shell on the agent's host, e.g.
+  over SSH) drops a decision file next to the store. The running agent applies
+  it on the browser's next status poll. A shell as this user can already edit
+  the store, so this widens nothing.
 """
 from __future__ import annotations
 
@@ -22,6 +27,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import secrets
 import threading
 import time
@@ -43,6 +49,31 @@ def _hash(token: str) -> str:
 
 def default_store() -> Path:
     return Path.home() / ".config" / "agent" / "http_clients.json"
+
+
+_PENDING_ID = re.compile(r"^[0-9a-f]{12}$")
+
+
+def decisions_dir(store: Path | None = None) -> Path:
+    """Where `agent http-clients approve` leaves decisions for a running agent."""
+    return (store or default_store()).parent / "http_decisions"
+
+
+def write_decision(pid: str, allow: bool, remember: bool = False,
+                   store: Path | None = None) -> Path:
+    """Queue a decision on pending request *pid* for whichever agent holds it."""
+    pid = pid.strip().lower()
+    if not _PENDING_ID.match(pid):
+        raise ValueError(f"not a request id: {pid!r} (12 hex characters)")
+    d = decisions_dir(store)
+    d.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = d / pid
+    tmp = d / f".{pid}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump({"allow": bool(allow), "remember": bool(remember)}, f)
+    os.replace(tmp, path)
+    return path
 
 
 @dataclass
@@ -86,6 +117,7 @@ class ClientRegistry:
     _hits: dict = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _listeners: list = field(default_factory=list)
+    _external: list = field(default_factory=list)
     _mtime: float = 0.0
 
     def __post_init__(self) -> None:
@@ -139,6 +171,31 @@ class ClientRegistry:
     def on_request(self, fn) -> None:
         self._listeners.append(fn)
 
+    def on_external_decision(self, fn) -> None:
+        """fn(pending, allow, remember) after a decision file was applied."""
+        self._external.append(fn)
+
+    def _apply_external(self) -> None:
+        """Apply decision files left by `agent http-clients approve|deny`."""
+        d = decisions_dir(self.store)
+        with self._lock:
+            ids = [p.id for p in self._pending.values() if p.state == "pending"]
+        for pid in ids:
+            path = d / pid
+            try:
+                row = json.loads(path.read_text())
+                path.unlink()
+            except (OSError, ValueError):
+                continue
+            allow, remember = bool(row.get("allow")), bool(row.get("remember"))
+            if self.decide(pid, allow, remember=remember):
+                p = self._pending.get(pid)
+                for fn in list(self._external):
+                    try:
+                        fn(p, allow, remember)
+                    except Exception:
+                        logger.debug("http ui: external decision listener failed", exc_info=True)
+
     def _notify(self, p: Pending) -> None:
         for fn in list(self._listeners):
             try:
@@ -178,6 +235,7 @@ class ClientRegistry:
         return p, claim, ""
 
     def pending(self) -> list[Pending]:
+        self._apply_external()
         with self._lock:
             self._expire(time.time())
             return [p for p in self._pending.values() if p.state == "pending"]
@@ -208,6 +266,7 @@ class ClientRegistry:
 
     def status(self, pid: str, claim: str) -> tuple[str, str, bool]:
         """(state, token, remember) — the token is handed out once, to the claim holder."""
+        self._apply_external()
         with self._lock:
             self._expire(time.time())
             p = self._pending.get(pid)
@@ -259,13 +318,20 @@ WAIT_PAGE = """<!doctype html><html><head><meta charset="utf-8">
 min-height:100vh;align-items:center;justify-content:center;margin:0}
 .box{max-width:30em;padding:2em;text-align:center}.code{font:700 3em ui-monospace,monospace;
 letter-spacing:.2em;color:#4f8cc9;margin:.3em 0}.dim{color:#8b91a0;font-size:.9em}
-button{font:inherit;padding:.4em 1.2em;margin-top:1em}</style></head><body><div class="box">
+button{font:inherit;padding:.4em 1.2em;margin-top:1em}details{margin-top:1.5em;text-align:left}
+summary{cursor:pointer}#cmd{width:100%;box-sizing:border-box;margin:.5em 0 0;font:.9em ui-monospace,monospace;
+background:#0e1014;color:#d6d9e0;border:1px solid #333;padding:.4em}</style></head><body><div class="box">
 <div id="lead">JavaScript is blocked for this address, so this browser cannot ask the
 owncoder operator for access. Allow scripts for this site and reload.</div>
 <div class="code" id="code">…</div>
 <div class="dim">Check that the same code is shown where you approve it
 (the agent's terminal or an open owncoder tab).</div>
-<p id="msg" class="dim"></p><button id="retry" hidden>Ask again</button></div>
+<p id="msg" class="dim"></p><button id="retry" hidden>Ask again</button>
+<details id="ssh" hidden><summary class="dim">Approve from a shell on the agent's host (SSH)</summary>
+<div class="dim">Run this on the machine the agent runs on:</div>
+<input id="cmd" readonly><button id="copy">Copy</button>
+<div class="dim">Add <code>--remember</code> to keep this browser for later visits.</div>
+</details></div>
 <script>
 document.getElementById('lead').textContent =
   'Asking the owncoder operator to let this browser in.';
@@ -277,6 +343,8 @@ async function ask() {
   catch (e) { msg.textContent = 'Could not reach the agent: ' + e; retry.hidden = false; return; }
   if (r.error) { msg.textContent = r.error; retry.hidden = false; return; }
   document.getElementById('code').textContent = r.code;
+  document.getElementById('cmd').value = 'agent http-clients approve ' + r.id;
+  document.getElementById('ssh').hidden = false;
   const t0 = Date.now();
   while (Date.now() - t0 < 130000) {
     await new Promise(res => setTimeout(res, 1500));
@@ -293,6 +361,16 @@ async function ask() {
     if (s.state !== 'pending') break;
   }
   msg.textContent = 'No answer — the request expired.'; retry.hidden = false;
+  document.getElementById('ssh').hidden = true;
 }
-retry.onclick = ask; ask();
+retry.onclick = ask;
+const cmd = document.getElementById('cmd');
+cmd.onclick = () => cmd.select();
+// Plain HTTP on a LAN address is not a secure context: no Clipboard API there.
+document.getElementById('copy').onclick = async (e) => {
+  try { await navigator.clipboard.writeText(cmd.value); }
+  catch (err) { cmd.select(); document.execCommand('copy'); }
+  e.target.textContent = 'Copied';
+};
+ask();
 </script></body></html>"""

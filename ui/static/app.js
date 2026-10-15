@@ -1480,6 +1480,9 @@ function handle(ev) {
       if (document.getElementById('askbox')) setAttention('wait', null);
       else if (wasBusy) setAttention('done', 'turn finished');
       if (wasBusy) loadPlan();   // steps advance as the agent works
+      // A new session reaches disk only when its first turn ends; without
+      // this it stayed missing from the drawer until something else reloaded it.
+      if (wasBusy && drawerOpenFor('sessfold')) loadSessions();
     }
     if (ev.state !== 'busy' && document.getElementById('askbox'))
       setBusy(false, 'waiting for your answer');
@@ -1487,6 +1490,9 @@ function handle(ev) {
       setBusy(ev.state === 'busy', ev.state === 'busy' ? 'working…' : ev.state);
   } else if (ev.type === 'mode') {
     setSessionMode(ev.mode, ev.locked);
+  } else if (ev.type === 'live') {
+    // A browser tab attached or left: the drawer's "● N" counts changed.
+    if (drawerOpenFor('sessfold')) loadSessions();
   } else if (ev.type === 'switched') {
     clearPreview();
     resyncView().then(() => row('sys', null, '⇄ switched to session ' + ev.session));
@@ -3506,13 +3512,25 @@ async function loadSessions() {
     el.innerHTML = shown.map(s => {
       const cur = s.id === d.current;
       const when = String(s.updated_at || '').replace('T', ' ').slice(0, 16);
-      return '<div class="sess-item' + (cur ? ' current' : '') +
+      // Open right now: in this agent (cur) or another one on this project,
+      // with how many browser tabs are attached to each.
+      const live = s.live || [];
+      const liveTip = live.map(l => (l.self ? 'this agent' : 'agent on :' + l.port) +
+        ' — ' + l.clients + ' browser' + (l.clients === 1 ? '' : 's')).join('\n');
+      const liveBadge = live.length
+        ? '<span class="slive" title="open now:\n' + esc(liveTip) + '">● ' +
+          live.reduce((n, l) => n + (l.clients || 0), 0) + '</span>'
+        : '';
+      const lastBadge = s.last
+        ? '<span class="slast" title="active when this agent last stopped">↩ last</span>' : '';
+      return '<div class="sess-item' + (cur ? ' current' : '') + (s.last ? ' last' : '') +
+        (live.length ? ' live' : '') +
         (s.id === previewing ? ' previewed' : '') + '" data-id="' +
         esc(s.id) + '" title="' + esc(s.id) +
         (s.status ? ' — ' + esc(s.status + (s.status_reason ? ' (' + s.status_reason + ')' : '')) : '') +
         ' — click to view history">' +
         '<div class="sname">' + (s.pinned ? '<span class="spin" title="pinned">📌</span>' : '') +
-        esc(s.name || s.id) + '</div>' +
+        liveBadge + lastBadge + esc(s.name || s.id) + '</div>' +
         '<div class="smeta">' + esc(when) + ' · ' + (s.messages || 0) + ' msgs' +
         (s.hidden ? ' · hidden' : '') + '</div>' +
         // Why this session matched — a name alone rarely says.
@@ -3690,22 +3708,25 @@ function setUrlSession(id) {
   u.searchParams.delete('token');  // the auth cookie is set by now
   history.replaceState(history.state, '', u);
 }
-// Switch the backend to the URL's session when it is on another one. *always*
-// (page load: the URL is what the user asked for) vs reconnect, where only an
-// untouched backend session is replaced — a reconnect after another client
-// switched sessions must follow that switch, not undo it. Returns true when a
-// switch happened (the caller refetches state).
-async function restoreUrlSession(s, always) {
+// Switch the backend to the URL's session when it sits on an untouched one —
+// the fresh session a restarted agent starts with. A backend session with any
+// user message is somebody's work (another tab switched to it, or the URL came
+// from browser history/autocomplete), so the URL follows the backend instead.
+// Returns true when a switch happened (the caller refetches state).
+async function restoreUrlSession(s) {
   const want = urlSession();
   if (!want || !s || s.busy || s.session === want) return false;
-  if (!always && (s.messages || []).some(m => m.role === 'user')) return false;
+  if ((s.messages || []).some(m => m.role === 'user')) return false;
   try {
     const r = await (await fetch('/api/session', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({action: 'switch', id: want}),
     })).json();
-    if (r.ok) return true;
+    if (r.ok) {
+      row('sys', null, '↩ reopened session ' + want + ' from the page URL');
+      return true;
+    }
     row('sys error', null, 'could not restore session ' + want + ': ' + (r.msg || 'failed'));
   } catch (e) {
     row('sys error', null, 'could not restore session ' + want + ': ' + e);
@@ -3718,7 +3739,7 @@ async function restoreUrlSession(s, always) {
 async function resyncView(restore) {
   try {
     let s = await (await fetch('/api/state')).json();
-    if (restore && await restoreUrlSession(s, false))
+    if (restore && await restoreUrlSession(s))
       s = await (await fetch('/api/state')).json();
     if (s.fold_journal) foldJournal = s.fold_journal;
     if (s.token_stats) { tokStats = s.token_stats; renderTokStatsBtn(); }
@@ -3762,7 +3783,7 @@ function connect() {
 async function init() {
   try {
     let s = await (await fetch('/api/state')).json();
-    if (await restoreUrlSession(s, true))
+    if (await restoreUrlSession(s))
       s = await (await fetch('/api/state')).json();
     if (s.fold_journal) foldJournal = s.fold_journal;
     if (s.token_stats) { tokStats = s.token_stats; renderTokStatsBtn(); }

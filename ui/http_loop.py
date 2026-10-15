@@ -622,6 +622,11 @@ class _EventBus:
             except ValueError:
                 pass
 
+    def count(self) -> int:
+        """Connected SSE clients (browser tabs) right now."""
+        with self._lock:
+            return len(self._clients)
+
     def publish(self, event: dict, *, hold: bool = False) -> None:
         with self._lock:
             clients = list(self._clients)
@@ -914,6 +919,19 @@ class _HttpUI:
         self.tls = False
         # [ui] http_allow_any_host: skip the Origin/Host allow-list (token still required).
         self.any_host = False
+        # Bound port (0 until listening) — names this process in ui/live_sessions.
+        self.port = 0
+        # Session most recently active before this process started: the one a
+        # restart interrupted. Marked at the top of the sessions drawer.
+        self.last_session_id = ""
+
+    def beacon(self) -> None:
+        """Advertise this process's session and browser count (ui/live_sessions)."""
+        if not self.port:
+            return
+        from agent.ui import live_sessions
+        live_sessions.write(self.port, self.session.id if self.session else "",
+                            self.bus.count())
 
     def submit(self, text: str) -> bool:
         """Called from handler threads. Returns True if injected mid-turn."""
@@ -1052,6 +1070,7 @@ class _HttpUI:
         self.server.set_messages(messages)
         self.server.set_session_id(session.id)
         self.session = session
+        self.beacon()
         try:
             from agent.security import path_grants
             from agent.security import policy as _sec_policy
@@ -1092,6 +1111,7 @@ class _HttpUI:
         self.server.reset_messages()
         self.server.set_session_id(session.id)
         self.session = session
+        self.beacon()
         try:
             from agent.security import path_grants
             from agent.security import policy as _sec_policy
@@ -1974,8 +1994,20 @@ class _HttpUI:
             matches = (search_sessions(query, limit=None, sort=sort) if query.strip()
                        else list_sessions(sort=sort))
             # Pinned first, before the row cap cuts anything; sort is stable,
-            # so each group keeps the requested order.
-            matches.sort(key=lambda s: not s.get("pinned"))
+            # so each group keeps the requested order. The session a restart
+            # interrupted goes above them all — it is the likeliest pick.
+            last = self.last_session_id
+            matches.sort(key=lambda s: (not (last and not query.strip() and s.get("id") == last),
+                                        not s.get("pinned")))
+            live: dict = {}
+            try:
+                from agent.ui import live_sessions
+                for r in live_sessions.read():
+                    clients = self.bus.count() if r.get("self") else int(r.get("clients") or 0)
+                    live.setdefault(r.get("session") or "", []).append(
+                        {"port": r.get("port"), "clients": clients, "self": bool(r.get("self"))})
+            except Exception:
+                logger.debug("http ui: live sessions read failed", exc_info=True)
             total = len(matches)
             sessions = [
                 {"id": s.get("id", ""),
@@ -1989,7 +2021,9 @@ class _HttpUI:
                  "hidden": bool(s.get("hidden", False)),
                  "pinned": bool(s.get("pinned", False)),
                  "status": s.get("status") or "",
-                 "status_reason": s.get("status_reason") or ""}
+                 "status_reason": s.get("status_reason") or "",
+                 "last": bool(last) and s.get("id") == last,
+                 "live": live.get(s.get("id") or "", [])}
                 for s in matches[:self._SESSION_ROWS]
             ]
         except Exception:
@@ -2842,6 +2876,8 @@ def _make_handler(ui: _HttpUI):
             self._emit_auth_cookie()
             self.end_headers()
             q = ui.bus.subscribe()
+            ui.beacon()
+            ui.bus.publish({"type": "live"})
             try:
                 while True:
                     try:
@@ -2859,6 +2895,8 @@ def _make_handler(ui: _HttpUI):
                         break
             finally:
                 ui.bus.unsubscribe(q)
+                ui.beacon()
+                ui.bus.publish({"type": "live"})
 
         def do_POST(self):
             if self._connect_api():
@@ -3021,6 +3059,14 @@ def _start_connect_approvers(ui, console) -> None:
         ui.bus.publish({"type": "connect_request", **p.public()})
 
     ui.clients.on_request(_to_browsers)
+
+    def _external(p, allow, remember) -> None:
+        console.print((f"[green]✓ {p.ip} allowed from a shell"
+                       f"{' and remembered' if remember else ' for this session'}[/green]")
+                      if allow else f"[red]✗ {p.ip} denied from a shell[/red]")
+        ui.bus.publish({"type": "connect_done", "id": p.id})
+
+    ui.clients.on_external_decision(_external)
     try:
         interactive = sys.stdin is not None and sys.stdin.isatty()
     except (ValueError, OSError):
@@ -3971,6 +4017,21 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
     httpd = _bind_server(_make_handler(ui), host, port, tls_cert, tls_key)
     httpd.any_host = ui.any_host   # http→https redirect (DualProtocolServer)
     actual_port = httpd.server_address[1]
+    ui.port = actual_port
+    try:
+        from agent.memory.session import list_sessions
+        ui.last_session_id = (list_sessions(limit=1) or [{}])[0].get("id", "")
+    except Exception:
+        logger.debug("http ui: last session lookup failed", exc_info=True)
+    from agent.ui import live_sessions
+    _live_stop = threading.Event()
+
+    def _live_heartbeat() -> None:
+        while not _live_stop.wait(live_sessions.HEARTBEAT_S):
+            ui.beacon()
+
+    ui.beacon()
+    threading.Thread(target=_live_heartbeat, daemon=True, name="http-ui-live").start()
 
     # Write a project pidfile so the router can discover this project process.
     _pidfile = _write_project_pidfile_if_enabled(agent, actual_port)
@@ -4280,6 +4341,8 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
         pub({"type": "sys", "text": "server shutting down"})
         httpd.shutdown()
         httpd.server_close()
+        _live_stop.set()
+        live_sessions.remove()
         # Clean up the project pidfile so the router drops this project.
         try:
             if _pidfile:

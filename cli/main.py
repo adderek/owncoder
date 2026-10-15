@@ -221,9 +221,15 @@ def build_parser() -> argparse.ArgumentParser:
                              "passphrase; lose it and the session is unrecoverable)")
 
     # http-clients
-    hc_p = sub.add_parser("http-clients", help="Browsers approved for the HTTP UI: list / revoke")
-    hc_p.add_argument("action", nargs="?", choices=["list", "revoke", "clear"], default="list")
-    hc_p.add_argument("id", nargs="?", help="Client id (from list) for revoke")
+    hc_p = sub.add_parser("http-clients",
+                          help="Browsers approved for the HTTP UI: list / revoke / approve / deny")
+    hc_p.add_argument("action", nargs="?", choices=["list", "revoke", "clear", "approve", "deny"],
+                      default="list")
+    hc_p.add_argument("id", nargs="?",
+                      help="Client id (from list) for revoke; request id (from the waiting "
+                           "page) for approve/deny")
+    hc_p.add_argument("--remember", action="store_true",
+                      help="approve: keep the browser for later visits, not just this agent run")
 
     # vault
     vault_p = sub.add_parser("vault", help="Read back files sealed by vault mode")
@@ -387,6 +393,8 @@ def _cmd_http_clients(args) -> int:
     """
     import datetime
     from agent.ui_server.client_auth import ClientRegistry
+    if args.action in ("approve", "deny"):
+        return _http_clients_decide(args)
     reg = ClientRegistry()
     if args.action == "revoke":
         if not args.id:
@@ -407,6 +415,41 @@ def _cmd_http_clients(args) -> int:
         ts = lambda t: datetime.datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M") if t else "-"  # noqa: E731
         print(f"{c.id}  {c.ip:<15}  last {ts(c.last_seen)}  expires {ts(c.expires)}  {c.agent[:60]}")
     return 0
+
+
+def _http_clients_decide(args, wait_s: float = 6.0) -> int:
+    """Answer a waiting browser's connect request from a shell (e.g. over SSH).
+
+    The decision file is picked up by the agent holding the request on the
+    browser's next status poll (every 1.5 s); an unclaimed file means no
+    running agent has that request, so it is removed again.
+    """
+    import time
+    from agent.ui_server.client_auth import write_decision
+    if not args.id:
+        print(f"usage: agent http-clients {args.action} <request id from the waiting page>",
+              file=sys.stderr)
+        return 2
+    try:
+        path = write_decision(args.id, args.action == "approve", args.remember)
+    except ValueError as exc:
+        print(exc, file=sys.stderr)
+        return 2
+    deadline = time.monotonic() + wait_s
+    while time.monotonic() < deadline:
+        if not path.exists():
+            what = ("approved" + (" and remembered" if args.remember else " for this agent run")
+                    if args.action == "approve" else "denied")
+            print(f"request {args.id} {what}")
+            return 0
+        time.sleep(0.25)
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    print(f"no running agent picked up request {args.id} — wrong id, expired, "
+          "or the waiting page was closed", file=sys.stderr)
+    return 1
 
 
 def main() -> None:

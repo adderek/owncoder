@@ -67,25 +67,21 @@ class TestUrlTracksSession:
 class TestRestore:
     def test_page_load_switches_to_url_session(self):
         r = _run("http://h:1/?s=OLD",
-                 "return await restoreUrlSession({session: 'FRESH', busy: false, messages: []}, true);")
+                 "return await restoreUrlSession({session: 'FRESH', busy: false, messages: []});")
         assert r["out"] is True
         assert r["posts"] == [{"url": "/api/session",
                                "body": {"action": "switch", "id": "OLD"}}]
 
-    def test_page_load_switches_even_over_a_used_session(self):
-        """The URL is what the user asked for on a load."""
+    def test_never_takes_over_a_used_session(self):
+        """Another tab switched, or the URL came from history/autocomplete:
+        the backend session is somebody's work, the URL follows it instead."""
         r = _run("http://h:1/?s=OLD", "return await restoreUrlSession("
-                 "{session: 'B', busy: false, messages: [{role: 'user'}]}, true);")
-        assert r["out"] is True
-
-    def test_reconnect_does_not_undo_another_clients_switch(self):
-        r = _run("http://h:1/?s=OLD", "return await restoreUrlSession("
-                 "{session: 'B', busy: false, messages: [{role: 'user'}]}, false);")
+                 "{session: 'B', busy: false, messages: [{role: 'user'}]});")
         assert r["out"] is False and r["posts"] == []
 
-    def test_reconnect_to_restarted_backend_restores(self):
+    def test_restarted_backend_is_restored(self):
         r = _run("http://h:1/?s=OLD", "return await restoreUrlSession("
-                 "{session: 'FRESH', busy: false, messages: []}, false);")
+                 "{session: 'FRESH', busy: false, messages: []});")
         assert r["out"] is True
 
     @pytest.mark.parametrize("state", [
@@ -94,17 +90,17 @@ class TestRestore:
     ])
     def test_no_switch_when_already_there_or_busy(self, state):
         r = _run("http://h:1/?s=OLD",
-                 f"return await restoreUrlSession({json.dumps(state)}, true);")
+                 f"return await restoreUrlSession({json.dumps(state)});")
         assert r["out"] is False and r["posts"] == []
 
     def test_no_param_no_switch(self):
         r = _run("http://h:1/", "return await restoreUrlSession("
-                 "{session: 'FRESH', busy: false, messages: []}, true);")
+                 "{session: 'FRESH', busy: false, messages: []});")
         assert r["out"] is False and r["posts"] == []
 
     def test_unknown_session_reports_and_keeps_backend(self):
         r = _run("http://h:1/?s=GONE", "return await restoreUrlSession("
-                 "{session: 'FRESH', busy: false, messages: []}, true);", switch_ok=False)
+                 "{session: 'FRESH', busy: false, messages: []});", switch_ok=False)
         assert r["out"] is False
         assert r["rows"] and "GONE" in r["rows"][0][1]
 
