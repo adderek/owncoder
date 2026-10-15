@@ -1641,6 +1641,7 @@ let currentSessionId = '';
 
 function setSessionChip(id, name) {
   currentSessionId = id || '';
+  setUrlSession(currentSessionId);
   const label = name || (id ? id.slice(0, 8) + '…' : '—');
   const chip = document.getElementById('session');
   chip.textContent = label;
@@ -3676,11 +3677,49 @@ function applyState(s) {
   stateLoaded = true;
 }
 
+// The page URL carries the active session (?s=<id>) so a refresh after a
+// backend restart lands back in it instead of the fresh session the restarted
+// agent starts with. replaceState: switching sessions is not navigation.
+function urlSession() {
+  return new URLSearchParams(location.search).get('s') || '';
+}
+function setUrlSession(id) {
+  if (!id || urlSession() === id) return;
+  const u = new URL(location.href);
+  u.searchParams.set('s', id);
+  u.searchParams.delete('token');  // the auth cookie is set by now
+  history.replaceState(history.state, '', u);
+}
+// Switch the backend to the URL's session when it is on another one. *always*
+// (page load: the URL is what the user asked for) vs reconnect, where only an
+// untouched backend session is replaced — a reconnect after another client
+// switched sessions must follow that switch, not undo it. Returns true when a
+// switch happened (the caller refetches state).
+async function restoreUrlSession(s, always) {
+  const want = urlSession();
+  if (!want || !s || s.busy || s.session === want) return false;
+  if (!always && (s.messages || []).some(m => m.role === 'user')) return false;
+  try {
+    const r = await (await fetch('/api/session', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action: 'switch', id: want}),
+    })).json();
+    if (r.ok) return true;
+    row('sys error', null, 'could not restore session ' + want + ': ' + (r.msg || 'failed'));
+  } catch (e) {
+    row('sys error', null, 'could not restore session ' + want + ': ' + e);
+  }
+  return false;
+}
+
 // Rebuild the whole view from /api/state — used after reconnect and after a
 // session switch (both invalidate the rendered log).
-async function resyncView() {
+async function resyncView(restore) {
   try {
-    const s = await (await fetch('/api/state')).json();
+    let s = await (await fetch('/api/state')).json();
+    if (restore && await restoreUrlSession(s, false))
+      s = await (await fetch('/api/state')).json();
     if (s.fold_journal) foldJournal = s.fold_journal;
     if (s.token_stats) { tokStats = s.token_stats; renderTokStatsBtn(); }
     log.innerHTML = '';
@@ -3707,7 +3746,7 @@ function connect() {
     everConnected = true;
     reconnDelay = 1000;
     if (!wasDown && stateLoaded) return;
-    const ok = await resyncView();
+    const ok = await resyncView(wasDown);
     if (ok && wasDown) row('sys', null, '↻ reconnected — history restored from server');
   };
   es.onmessage = (m) => handle(JSON.parse(m.data));
@@ -3722,7 +3761,9 @@ function connect() {
 
 async function init() {
   try {
-    const s = await (await fetch('/api/state')).json();
+    let s = await (await fetch('/api/state')).json();
+    if (await restoreUrlSession(s, true))
+      s = await (await fetch('/api/state')).json();
     if (s.fold_journal) foldJournal = s.fold_journal;
     if (s.token_stats) { tokStats = s.token_stats; renderTokStatsBtn(); }
     applyState(s);

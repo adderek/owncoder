@@ -283,7 +283,12 @@ async function ask() {
     let s;
     try { s = await (await fetch('/api/connect/status?id=' + r.id + '&claim=' +
                                  encodeURIComponent(r.claim))).json(); } catch (e) { continue; }
-    if (s.state === 'approved') { location.replace('/'); return; }
+    if (s.state === 'approved') {
+      // Keep ?s=<session> so the page reopens the session it was on; a stale
+      // startup token would only be rejected again.
+      const u = new URL(location.href); u.searchParams.delete('token');
+      location.replace('/' + u.search); return;
+    }
     if (s.state === 'denied') { msg.textContent = 'Denied by the operator.'; return; }
     if (s.state !== 'pending') break;
   }
