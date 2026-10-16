@@ -79,3 +79,20 @@ def test_project_under_tmp_not_mapped(env, monkeypatch):
     proj, _, _ = env
     monkeypatch.setattr(sec_policy, "HOST_TMP", proj.parent)
     assert sec_policy.get().map_tmp(proj.parent / "x.py") == proj.parent / "x.py"
+
+
+def test_tmp_write_journaled_at_scratch_not_foreign(env):
+    # The changeset re-reads journaled paths from disk; a host-/tmp path is
+    # missing there and was reported as "changed outside any agent", deleted.
+    from agent.core import changeset, checkpoint
+    proj, host_tmp, _ = env
+    since = checkpoint.current_seq()
+    files.write_file(path=str(host_tmp / "verify.py"), content="print(1)\nprint(2)\n")
+    files.write_file(path=str(host_tmp / "verify.py"), content="print(3)\n")
+    entries = checkpoint.journal_entries(since)
+    scratch = sec_policy.get().scratch_dir()
+    assert {e["path"] for e in entries} == {str(scratch / "verify.py")}
+    cs = changeset.collect(since, working_dir=proj, actor=checkpoint.actor())
+    (fc,) = cs.files
+    assert fc.status == "added"
+    assert not fc.foreign_edit

@@ -165,6 +165,20 @@ def _write_text(fpath: Path, content: str) -> None:
     fpath.write_text(content, encoding="utf-8")
 
 
+def _disk_path(path: str) -> str:
+    """Where *path* actually lives: a literal ``/tmp/...`` was written into the
+    scratch (security.fs maps it), so journal and re-read it there — otherwise
+    the changeset reads the host /tmp, finds nothing and reports a foreign
+    delete, and a rollback would write into the host /tmp."""
+    if not _gated():
+        return path
+    try:
+        from agent.security import policy as _sec_policy
+        return str(_sec_policy.get().map_tmp(Path(path)))
+    except Exception:
+        return path
+
+
 def _post_write_stats(path: str) -> dict:
     """Read the just-written file once for everything downstream needs.
 
@@ -193,14 +207,15 @@ def _post_write_stats(path: str) -> dict:
 def _log_edit(tool: str, path: str, outcome: str, expect_rev: str | None = None,
               **extra) -> None:
     single = outcome == "ok" and path not in ("<multi>",)
-    stats = _post_write_stats(path) if single else {}
+    disk = _disk_path(path) if single else path
+    stats = _post_write_stats(disk) if single else {}
     # Journal successful single-file edits for checkpoint/rollback. The undo
     # stack holds this edit's pre-image (None → file was created).
     if single:
         try:
             from agent.core.checkpoint import journal_record
             from agent.core.revisions import journal_note
-            journal_record(path, _undo_stack.get(path), stats.get("after_sha"),
+            journal_record(disk, _undo_stack.get(path), stats.get("after_sha"),
                            pinned=journal_note(expect_rev))
         except Exception:
             pass
