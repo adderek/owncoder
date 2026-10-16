@@ -107,12 +107,11 @@ function row(cls, html, text, ts) {
     if (t) {
       const sent = cls.indexOf('user') > 0;
       d.dataset.ts = t;
-      d.title = (sent ? 'sent ' : 'answered ') + fmtClock(t) +
-                '  ·  ' + new Date(t).toLocaleDateString();
+      d.title = (sent ? 'sent ' : 'answered ') + isoDate(t) + ' ' + fmtClock(t);
       // Beside the bubble, not in it: copy, reuse and rewind read .msg text.
       const w = document.createElement('div');
       w.className = 'when' + (sent ? ' sent' : '');
-      w.textContent = fmtWhen(t);
+      w.textContent = fmtMsgTime(t);
       wrap.appendChild(w);
     }
     const b = document.createElement('button');
@@ -613,17 +612,25 @@ function endTurn() {
 // into the turn, so a long "backend quiet" line can be placed in time without
 // reading the log. The timestamp is stashed on the element so later updates
 // (a tool result) can extend the same tooltip with a duration.
+// ISO-8601, local time, never the browser locale: a US locale would print
+// m/d/y and AM/PM.
+const pad2 = n => String(n).padStart(2, '0');
+function isoDate(t) {
+  const d = new Date(t);
+  return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+}
+function isoHm(t) {
+  const d = new Date(t);
+  return pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+}
 function fmtClock(t) {
-  return new Date(t).toLocaleTimeString([], {hour12: false});
+  return isoHm(t) + ':' + pad2(new Date(t).getSeconds());
 }
 
 // Message time label: clock only for today, date + clock for anything older —
 // a resumed session spans days.
-function fmtWhen(t, now) {
-  const d = new Date(t), n = new Date(now || Date.now());
-  const hm = d.toLocaleTimeString([], {hour12: false, hour: '2-digit', minute: '2-digit'});
-  if (d.toDateString() === n.toDateString()) return hm;
-  return d.toLocaleDateString([], {day: 'numeric', month: 'short'}) + ' ' + hm;
+function fmtMsgTime(t, now) {
+  return isoDate(t) === isoDate(now || Date.now()) ? isoHm(t) : isoDate(t) + ' ' + isoHm(t);
 }
 
 function stamp(el, t) {
@@ -4090,8 +4097,7 @@ function fmtWhen(t) {
   const d = new Date(t * 1000);
   const soon = t * 1000 - Date.now();
   if (soon > 0 && soon < 86400000) return 'in ' + fmtDur(soon / 1000);
-  return d.toLocaleString([], {month: 'short', day: 'numeric',
-                               hour: '2-digit', minute: '2-digit'});
+  return isoDate(d) + ' ' + isoHm(d);
 }
 
 function fmtDur(secs) {

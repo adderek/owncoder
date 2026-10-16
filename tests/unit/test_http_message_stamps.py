@@ -23,7 +23,7 @@ class TestStamp:
 
     def test_the_date_is_there_for_an_old_session(self):
         """A bare clock time is ambiguous once a session spans days."""
-        assert "toLocaleDateString()" in ROW
+        assert "isoDate(t)" in ROW
 
     def test_only_messages_get_one(self):
         i = ROW.index("if (cls.indexOf('msg') === 0) {")

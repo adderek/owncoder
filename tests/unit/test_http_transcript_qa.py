@@ -90,17 +90,19 @@ class TestAttachQa:
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
-def test_time_label_shows_the_date_only_when_not_today():
-    i = APP_JS.index("function fmtWhen(")
-    src = APP_JS[i:APP_JS.index("\n}\n", i) + 3]
+def test_time_label_is_iso_with_the_date_only_when_not_today():
+    i = APP_JS.index("const pad2 =")
+    src = APP_JS[i:APP_JS.index("\n}\n", APP_JS.index("function fmtMsgTime(")) + 3]
     script = src + """
 const t = new Date(2026, 9, 15, 9, 5).getTime();
-console.log(JSON.stringify([fmtWhen(t, new Date(2026, 9, 15, 23, 0).getTime()),
-                            fmtWhen(t, new Date(2026, 9, 16, 0, 1).getTime())]));
+console.log(JSON.stringify([fmtMsgTime(t, new Date(2026, 9, 15, 23, 0).getTime()),
+                            fmtMsgTime(t, new Date(2026, 9, 16, 0, 1).getTime()),
+                            fmtClock(new Date(2026, 9, 15, 21, 7, 3).getTime())]));
 """
     proc = subprocess.run(["node", "-e", script], capture_output=True, text=True,
                           timeout=30, env={"TZ": "UTC", "LANG": "C", "PATH": "/usr/bin:/bin"})
     assert proc.returncode == 0, proc.stderr
-    today, older = json.loads(proc.stdout)
+    today, older, clock = json.loads(proc.stdout)
     assert today == "09:05"
-    assert older.endswith("09:05") and older != "09:05" and "15" in older
+    assert older == "2026-10-15 09:05"
+    assert clock == "21:07:03"          # 24h, whatever the browser locale
