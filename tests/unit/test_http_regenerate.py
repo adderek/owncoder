@@ -79,7 +79,7 @@ class TestDrop:
 
 class TestButton:
     def test_only_answers_carry_it(self):
-        i = APP_JS.index("function row(cls, html, text)")
+        i = APP_JS.index("function row(cls, html, text, ts)")
         body = APP_JS[i:APP_JS.index("function copyText(")]
         assert "cls.indexOf('assistant') > 0" in body
         assert "'copy regen'" in body
@@ -168,7 +168,7 @@ class TestRewind:
 
 class TestRewindButton:
     def test_only_user_rows_carry_it(self):
-        i = APP_JS.index("function row(cls, html, text)")
+        i = APP_JS.index("function row(cls, html, text, ts)")
         body = APP_JS[i:APP_JS.index("function copyText(")]
         assert "'copy rewind'" in body and "cls.indexOf('user') > 0" in body
 

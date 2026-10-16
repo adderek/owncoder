@@ -8,7 +8,7 @@ from pathlib import Path
 
 APP_JS = (Path(__file__).resolve().parents[2] / "ui" / "static" / "app.js"
           ).read_text(encoding="utf-8")
-ROW = APP_JS[APP_JS.index("function row(cls, html, text)"):
+ROW = APP_JS[APP_JS.index("function row(cls, html, text, ts)"):
              APP_JS.index("function copyText(")]
 
 
@@ -18,7 +18,8 @@ class TestStamp:
         assert "fmtClock(t)" in ROW
 
     def test_the_wording_matches_who_spoke(self):
-        assert "cls.indexOf('user') > 0 ? 'sent ' : 'answered '" in ROW
+        assert "const sent = cls.indexOf('user') > 0;" in ROW
+        assert "(sent ? 'sent ' : 'answered ')" in ROW
 
     def test_the_date_is_there_for_an_old_session(self):
         """A bare clock time is ambiguous once a session spans days."""
@@ -30,9 +31,9 @@ class TestStamp:
 
 
 class TestReplay:
-    def test_replayed_messages_are_not_stamped(self):
-        """The transcript carries no clock; the time of the reload is not it."""
-        assert "if (!replaying) {" in ROW
+    def test_replayed_messages_are_not_stamped_with_the_reload_time(self):
+        """Replay uses the server's Q/A-log time or none; the reload time is a lie."""
+        assert "const t = ts || (replaying ? 0 : Date.now());" in ROW
 
     def test_the_flag_is_cleared_even_if_replay_throws(self):
         i = APP_JS.index("function replayTranscript(")

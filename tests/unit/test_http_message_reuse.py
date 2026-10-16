@@ -9,7 +9,7 @@ APP_JS = (Path(__file__).resolve().parents[2] / "ui" / "static" / "app.js"
           ).read_text(encoding="utf-8")
 APP_CSS = (Path(__file__).resolve().parents[2] / "ui" / "static" / "app.css"
            ).read_text(encoding="utf-8")
-ROW = APP_JS[APP_JS.index("function row(cls, html, text)"):
+ROW = APP_JS[APP_JS.index("function row(cls, html, text, ts)"):
              APP_JS.index("function copyText(")]
 
 

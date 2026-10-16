@@ -91,7 +91,7 @@ function trimLog() {
                        'reload to replay the session, /export for the full record';
 }
 
-function row(cls, html, text) {
+function row(cls, html, text, ts) {
   const wrap = document.createElement('div');
   wrap.className = 'row';
   const d = document.createElement('div');
@@ -100,13 +100,20 @@ function row(cls, html, text) {
   wrap.appendChild(d);
   if (cls === 'msg user') foldLastAnswer();   // a new round starts
   if (cls.indexOf('msg') === 0) {
-    // When it happened. Live only: a replayed transcript carries no clock, and
-    // stamping it with the time of the reload would be a plausible lie.
-    if (!replaying) {
-      const t = Date.now();
+    // When it happened: now when live, the server's Q/A-log time (*ts*) when
+    // replayed. A replayed message without one gets none — stamping it with
+    // the time of the reload would be a plausible lie.
+    const t = ts || (replaying ? 0 : Date.now());
+    if (t) {
+      const sent = cls.indexOf('user') > 0;
       d.dataset.ts = t;
-      d.title = (cls.indexOf('user') > 0 ? 'sent ' : 'answered ') + fmtClock(t) +
+      d.title = (sent ? 'sent ' : 'answered ') + fmtClock(t) +
                 '  ·  ' + new Date(t).toLocaleDateString();
+      // Beside the bubble, not in it: copy, reuse and rewind read .msg text.
+      const w = document.createElement('div');
+      w.className = 'when' + (sent ? ' sent' : '');
+      w.textContent = fmtWhen(t);
+      wrap.appendChild(w);
     }
     const b = document.createElement('button');
     b.className = 'copy'; b.type = 'button'; b.title = 'Copy message';
@@ -277,8 +284,8 @@ function reuseMessage(text) {
   input.setSelectionRange(input.value.length, input.value.length);
 }
 
-function assistantMd(text) {
-  const d = row('msg assistant', '<div class="md">' + renderMd(text) + '</div>', null);
+function assistantMd(text, ts) {
+  const d = row('msg assistant', '<div class="md">' + renderMd(text) + '</div>', null, ts);
   const f = document.createElement('button');
   f.className = 'copy fold'; f.type = 'button';
   d.parentElement.appendChild(f);
@@ -608,6 +615,15 @@ function endTurn() {
 // (a tool result) can extend the same tooltip with a duration.
 function fmtClock(t) {
   return new Date(t).toLocaleTimeString([], {hour12: false});
+}
+
+// Message time label: clock only for today, date + clock for anything older —
+// a resumed session spans days.
+function fmtWhen(t, now) {
+  const d = new Date(t), n = new Date(now || Date.now());
+  const hm = d.toLocaleTimeString([], {hour12: false, hour: '2-digit', minute: '2-digit'});
+  if (d.toDateString() === n.toDateString()) return hm;
+  return d.toLocaleDateString([], {day: 'numeric', month: 'short'}) + ' ' + hm;
 }
 
 function stamp(el, t) {
@@ -3606,7 +3622,7 @@ function replayTranscriptInner(messages) {
     if (m.role === 'user') {
       endTurn();
       work = null;
-      row('msg user', null, m.content);
+      row('msg user', null, m.content, m.ts);
     } else if (m.role === 'injected') {
       // Between rounds, where it happened — metaMount routes by busyFlag,
       // which is false while replaying, so it lands at top level either way.
@@ -3642,7 +3658,7 @@ function replayTranscriptInner(messages) {
         if (turn && m.changeset) turn.changeset = m.changeset;
         endTurn();
         work = null;
-        assistantMd(m.content);
+        assistantMd(m.content, m.ts);
       }
     } else if (m.role === 'tool') {
       const d = folds[m.id];

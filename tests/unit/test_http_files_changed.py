@@ -278,7 +278,7 @@ class TestReplayShowsWhatEachRoundChanged:
         _capture("r1", 1, changeset=_changeset(files=[_file("a.py", added=2)]))
 
         messages = self._messages("unrelated", "done")
-        http_loop._attach_changesets("r1", messages)
+        http_loop._attach_qa("r1", messages)
 
         assert "changeset" not in messages[0]
         assert [f["path"] for f in messages[1]["changeset"]["files"]] == ["a.py"]
@@ -289,7 +289,7 @@ class TestReplayShowsWhatEachRoundChanged:
         _capture("r2", 1, changeset=_changeset(files=[_file("a.py", added=2)]))
 
         messages = self._messages("a summary that replaced the original turns")
-        http_loop._attach_changesets("r2", messages)
+        http_loop._attach_qa("r2", messages)
 
         assert "changeset" not in messages[0]
 
@@ -300,7 +300,7 @@ class TestReplayShowsWhatEachRoundChanged:
         _capture("r3", 2, changeset=_changeset(files=[_file("second.py", added=1)]))
 
         messages = self._messages("done", "done")
-        http_loop._attach_changesets("r3", messages)
+        http_loop._attach_qa("r3", messages)
 
         assert [f["path"] for f in messages[0]["changeset"]["files"]] == ["first.py"]
         assert [f["path"] for f in messages[1]["changeset"]["files"]] == ["second.py"]
@@ -310,14 +310,14 @@ class TestReplayShowsWhatEachRoundChanged:
         _capture("r4", 1)
 
         messages = self._messages("done")
-        http_loop._attach_changesets("r4", messages)
+        http_loop._attach_qa("r4", messages)
 
         assert "changeset" not in messages[0]
 
     def test_a_session_with_no_qa_log_is_left_alone(self, tmp_path, monkeypatch):
         monkeypatch.setattr(session_mod, "_session_dir", tmp_path)
         messages = self._messages("done")
-        http_loop._attach_changesets("nope", messages)
+        http_loop._attach_qa("nope", messages)
 
         assert messages == [{"role": "assistant", "content": "done"}]
 
@@ -406,7 +406,7 @@ class TestReconnectKeepsTheFileLists:
         from agent.ui.http_loop import _HttpUI
 
         src = inspect.getsource(_HttpUI.state)
-        assert "_attach_changesets(self.session.id, messages)" in src
+        assert "_attach_qa(self.session.id, messages)" in src
 
 
 class TestSessionRollup:

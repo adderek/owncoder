@@ -79,76 +79,47 @@ class QALogger:
         vault.write_json(directory / filename, data)
 
     async def read_history(self) -> AsyncIterator[Tuple[int, Dict[str, Any], Dict[str, Any]]]:
-        """
-        Scans the Q/ and A/ directories for a given session and yields 
-        tuples of (turn_id, q_data, a_data).
-        """
-        q_dir = self._get_q_dir()
-        a_dir = self._get_a_dir()
+        """Yield (turn_id, q_data, a_data) in the order the turns happened."""
+        for entry in await asyncio.to_thread(read_history_sync, self.session_id):
+            yield entry
 
-        if not q_dir.is_dir() or not a_dir.is_dir():
-            return
 
-        # Use a dictionary to group by turn_id
-        # turn_id -> {"q": data, "a": data}
-        history: Dict[int, Dict[str, Any]] = {}
-
-        # Read Q files
-        for q_file in vault.glob(q_dir, "Q-*.json"):
-            try:
-                data = vault.read_json(q_file) or {}
-                tid = data.get("turn_id")
-                if tid is not None:
-                    if tid not in history:
-                        history[tid] = {"q": None, "a": None}
-                    history[tid]["q"] = data
-            except Exception:
-                continue
-
-        # Read A files
-        for a_file in vault.glob(a_dir, "A-*.json"):
-            try:
-                data = vault.read_json(a_file) or {}
-                tid = data.get("turn_id")
-                if tid is not None:
-                    if tid not in history:
-                        history[tid] = {"q": None, "a": None}
-                    history[tid]["a"] = data
-            except Exception:
-                continue
-
-        # Yield in order of turn_id
-        for tid in sorted(history.keys()):
-            q_data = history[tid]["q"]
-            a_data = history[tid]["a"]
-            # Only yield if we have both (or if you want to allow partial turns)
-            # The requirement says "yield tuples of (turn_id, q_data, a_data)"
-            # If one is missing, we still yield it as None or empty dict to be resilient.
-            yield tid, q_data or {}, a_data or {}
+def _read_dir(directory: Path, pattern: str) -> List[Dict[str, Any]]:
+    out = []
+    if not directory.exists():
+        return out
+    for f in vault.glob(directory, pattern):
+        try:
+            data = vault.read_json(f) or {}
+        except Exception:
+            continue
+        if data.get("turn_id") is not None:
+            out.append(data)
+    return out
 
 
 def read_history_sync(session_id: str) -> List[Tuple[int, Dict[str, Any], Dict[str, Any]]]:
-    """Synchronous variant of QALogger.read_history for use on UI mount."""
+    """(turn_id, q_data, a_data) per turn, oldest first.
+
+    turn_id restarts at 1 in every process that resumes the session, so it
+    does not identify a turn: grouping by it let a resumed run's turn 1
+    overwrite the original turn 1. Records are paired in time order instead —
+    an A belongs to the latest unanswered Q with the same turn_id.
+    """
     logger = QALogger(session_id)
-    q_dir = logger._get_q_dir()
-    a_dir = logger._get_a_dir()
-    history: Dict[int, Dict[str, Any]] = {}
-    if q_dir.exists():
-        for q_file in vault.glob(q_dir, "Q-*.json"):
-            try:
-                data = vault.read_json(q_file) or {}
-                tid = data.get("turn_id")
-                if tid is not None:
-                    history.setdefault(tid, {"q": None, "a": None})["q"] = data
-            except Exception:
-                continue
-    if a_dir.exists():
-        for a_file in vault.glob(a_dir, "A-*.json"):
-            try:
-                data = vault.read_json(a_file) or {}
-                tid = data.get("turn_id")
-                if tid is not None:
-                    history.setdefault(tid, {"q": None, "a": None})["a"] = data
-            except Exception:
-                continue
-    return [(tid, history[tid]["q"] or {}, history[tid]["a"] or {}) for tid in sorted(history)]
+    events = ([(d.get("timestamp") or "", 0, d) for d in _read_dir(logger._get_q_dir(), "Q-*.json")]
+              + [(d.get("timestamp") or "", 1, d) for d in _read_dir(logger._get_a_dir(), "A-*.json")])
+    events.sort(key=lambda e: (e[0], e[1]))
+    turns: List[List[Any]] = []
+    open_q: Dict[int, List[Any]] = {}
+    for _ts, is_a, data in events:
+        tid = data["turn_id"]
+        if not is_a:
+            turn = [tid, data, {}]
+            turns.append(turn)
+            open_q[tid] = turn
+        elif tid in open_q:
+            open_q.pop(tid)[2] = data
+        else:
+            turns.append([tid, {}, data])
+    return [(tid, q, a) for tid, q, a in turns]

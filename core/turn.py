@@ -926,6 +926,7 @@ async def run_turn(
                         "several smaller calls rather than one long one, and do not repeat "
                         "the same line many times."
                     ),
+                    "_injected_kind": "tool retry",
                 }]
                 continue
             # A dropped socket or a request timeout is not evidence the endpoint
@@ -1103,6 +1104,7 @@ async def run_turn(
                         "several smaller calls rather than one long one, and do not repeat "
                         "the same line many times."
                     ),
+                    "_injected_kind": "tool retry",
                 }]
                 continue
             if loop_detector is not None:

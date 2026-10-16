@@ -754,6 +754,10 @@ details.tool .toolreply { white-space: pre-wrap; font-family: var(--mono);
 .user { background: var(--user-bg); border: 1px solid var(--user-border); margin-left: 12%;
         white-space: pre-wrap; }
 .assistant { background: var(--panel); border: 1px solid var(--border); margin-right: 6%; }
+/* Send / answer time, under the bubble on its own side. */
+.row > .when { font-size: 11px; color: var(--dimmer); margin: -10px 6px 10px;
+               font-variant-numeric: tabular-nums; }
+.row > .when.sent { text-align: right; }
 /* The round's answer (a top-level row, not text inside the work fold) is what
    the user came for: a size up from the journal and the question. */
 #log > .row > .msg.assistant { font-size: 15.5px; line-height: 1.6; }

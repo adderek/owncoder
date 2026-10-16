@@ -206,45 +206,97 @@ def _same_answer(message_text: str, qa_text: str) -> bool:
     return n >= 40 and a[:n] == b[:n]
 
 
-def _attach_changesets(sid: str, messages: list[dict]) -> None:
-    """Hang each round's changeset on the assistant message that ended it.
+def _qa_times(q: dict, a: dict) -> tuple[int | None, int | None]:
+    """(sent, answered) in epoch ms for one Q/A turn; None when unknown.
 
-    A replayed session has to say what each round changed, the same as a live
-    one. The obvious mapping — the Nth user message is turn N — is wrong:
-    history compaction rewrites the message array while QA-log turn ids keep
-    counting, so the two drift apart exactly in the long sessions where replay
-    matters. Instead each A-record is matched to the assistant message carrying
-    its response text, scanning forward so ordering is preserved and a repeated
-    answer cannot bind to an earlier round's message.
+    Both records are written when the turn ends, so the send time is the
+    answer time minus the round's wall-clock duration."""
+    from datetime import datetime
+    try:
+        end = datetime.fromisoformat(a.get("timestamp") or q.get("timestamp") or "").timestamp()
+    except ValueError:
+        return None, None
+    dur = float(a.get("duration") or 0.0) if a else 0.0
+    return int((end - dur) * 1000), (int(end * 1000) if a else None)
 
-    A turn whose message did not survive compaction simply gets no changeset,
-    which is the honest outcome: better a missing file list than one attached
-    to the wrong round.
+
+def _attach_qa(sid: str, messages: list[dict]) -> None:
+    """Fill the replayed transcript in from the session's Q/A log.
+
+    The message array is the model's context, not the conversation: it holds
+    no clock, and compaction folds early turns into one summary. The Q/A log
+    keeps every turn verbatim with its time. From it each round gets:
+
+    - its changeset, on the assistant message that ended it;
+    - ``ts`` (epoch ms) on the user message and on that closing answer;
+    - turns that compaction folded away, put back in front of the compaction
+      card as plain user/assistant pairs.
+
+    Matching is by text, scanning forward. The obvious mapping — the Nth user
+    message is turn N — is wrong: compaction rewrites the message array and
+    turn ids restart in every process. A turn whose message cannot be found
+    gets nothing attached: better a missing file list than one on the wrong
+    round.
     """
     try:
         from agent.memory.qa_log import read_history_sync
         records = list(read_history_sync(sid))
     except Exception:
-        logger.debug("http ui: changeset attach failed to read qa log", exc_info=True)
+        logger.debug("http ui: qa attach failed to read qa log", exc_info=True)
         return
+    from agent.core.changeset import from_a_data, to_json
 
-    cursor = 0
-    for tid, _q, a in records:
+    a_cursor = q_cursor = 0
+    first_found: int | None = None
+    for n, (_tid, q, a) in enumerate(records):
+        sent, answered = _qa_times(q, a)
+        question = (q.get("content") or "").strip()
+        if question:
+            for i in range(q_cursor, len(messages)):
+                entry = messages[i]
+                if entry.get("role") == "user" and (entry.get("content") or "").strip() == question:
+                    if sent is not None:
+                        entry["ts"] = sent
+                    q_cursor = i + 1
+                    first_found = n if first_found is None else first_found
+                    break
         content = (a.get("content") or "").strip()
         if not content:
             continue
-        for i in range(cursor, len(messages)):
+        for i in range(a_cursor, len(messages)):
             entry = messages[i]
             if entry.get("role") != "assistant":
                 continue
             if not _same_answer(entry.get("content") or "", content):
                 continue
-            from agent.core.changeset import from_a_data, to_json
             cs = from_a_data(a)
             if cs:
                 entry["changeset"] = to_json(cs)
-            cursor = i + 1
+            if answered is not None:
+                entry["ts"] = answered
+            a_cursor = i + 1
+            first_found = n if first_found is None else first_found
             break
+
+    # Turns before the first one still in the array are the folded ones —
+    # only when a compaction card says something was folded. A gap later on
+    # is a rewind the user asked for, and must stay gone.
+    boundary = next((i for i, m in enumerate(messages) if m.get("role") == "compaction"), None)
+    folded = records[:first_found if first_found is not None else len(records)]
+    if boundary is None or not folded:
+        return
+    restored: list[dict] = []
+    for _tid, q, a in folded:
+        sent, answered = _qa_times(q, a)
+        if q.get("content"):
+            restored.append({"role": "user", "content": q["content"], "ts": sent})
+        if a.get("content"):
+            entry = {"role": "assistant", "content": a["content"], "ts": answered}
+            cs = from_a_data(a)
+            if cs:
+                entry["changeset"] = to_json(cs)
+            restored.append(entry)
+    messages[boundary:boundary] = restored
 
 
 def _attach_session_rollup(messages: list[dict], rollup: "dict | None") -> None:
@@ -295,6 +347,7 @@ _INJECTED_PREFIXES = (
     ("[goal check]", "goal check"),
     ("[loop guard", "loop guard"),
     ("[mid-turn message from user]", "mid-turn message"),
+    ("Your last tool call could not be executed:", "tool retry"),
 )
 _INJECTED_FLAGS = (("_confidence_guard", "confidence guard"), ("_nudged", "nudge"))
 
@@ -398,7 +451,10 @@ def _unfold_round(m: dict, records: dict, result_limit: int) -> list[dict] | Non
 
     Returns None when the message holds no collapsed round.
     """
-    content = m.get("content") or ""
+    # Collapsed lines carry the harness source marker (`¶ [tool] …`); the
+    # regexes anchor on `[tool]`, so match on the text a human would read.
+    from agent.core import markers as _markers
+    content = _markers.strip(m.get("content") or "")
     blocks = _exec_blocks(content)
     if not blocks:
         return None
@@ -422,7 +478,7 @@ def _unfold_round(m: dict, records: dict, result_limit: int) -> list[dict] | Non
     for i, block in enumerate(blocks):
         # Prose the model wrote before this run of calls. Kept in place rather
         # than hoisted: it is what the live view showed before the tool folds,
-        # and the round's closing chunk has to stay last so _attach_changesets
+        # and the round's closing chunk has to stay last so _attach_qa
         # can match it to the QA log's answer for that turn.
         prose = content[cursor:block.start()].strip()
         cursor = block.end()
@@ -1444,7 +1500,7 @@ class _HttpUI:
         # the transcript exactly as the preview pane does and needs the same
         # per-round file lists.
         if self.session is not None:
-            _attach_changesets(self.session.id, messages)
+            _attach_qa(self.session.id, messages)
             _attach_session_rollup(messages, self.session_rollup())
         models = {}
         try:
@@ -2049,7 +2105,7 @@ class _HttpUI:
             name = getattr(session, "name", "") or session.id
             workdir = getattr(session, "working_dir", "") or str(get_working_dir())
         messages = _transcript(msgs, sid=sid)
-        _attach_changesets(sid, messages)
+        _attach_qa(sid, messages)
         return {"id": sid, "name": name, "workdir": workdir, "messages": messages}
 
     def tokstats_info(self, sid: str, seq: str) -> dict:

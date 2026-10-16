@@ -29,7 +29,7 @@ class TestControls:
         assert "turnAnchors().length < 2" in NAV[i:i + 250]
 
     def test_the_nav_keeps_up_with_the_log(self):
-        i = APP_JS.index("function row(cls, html, text)")
+        i = APP_JS.index("function row(cls, html, text, ts)")
         assert "turnNavSync();" in APP_JS[i:APP_JS.index("function copyText(")]
 
 

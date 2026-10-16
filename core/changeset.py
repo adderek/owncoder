@@ -343,7 +343,9 @@ def stored_diff(session_id: str, turn_id: int, path: str) -> dict:
         return {"error": "invalid turn"}
     try:
         from agent.memory.qa_log import read_history_sync
-        a_data = next((a for tid, _q, a in read_history_sync(session_id) if tid == turn_id), None)
+        # Latest match: turn ids restart in every process that resumes a session.
+        a_data = next((a for tid, _q, a in reversed(read_history_sync(session_id))
+                       if tid == turn_id), None)
     except Exception:
         logger.debug("changeset: stored_diff could not read qa log", exc_info=True)
         return {"error": "session log unreadable"}

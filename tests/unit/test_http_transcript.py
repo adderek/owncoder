@@ -158,6 +158,17 @@ class TestCollapsedRounds:
                  if m["role"] == "assistant" and m["content"]]
         assert texts == ["Looking at the file.", "Done."]
 
+    def test_the_marked_fold_shape_unfolds_too(self):
+        """Collapsed lines carry the harness source marker (`¶ [tool] …`); with
+        it the line regex matched nothing and resumed rounds lost every fold."""
+        from agent.core import markers
+        m = dict(self.FOLDED_LINE, content=markers.mark(self.FOLDED_LINE["content"]))
+        out = _transcript([m])
+        calls = [x for x in out if x.get("tool_calls")]
+        assert calls and calls[0]["tool_calls"][0]["name"] == "read_file"
+        texts = [x["content"] for x in out if x["role"] == "assistant" and x["content"]]
+        assert texts == ["Looking at the file.", "Done."]
+
     def test_an_error_result_is_marked(self):
         out = _transcript([{"role": "assistant", "content":
                             '<agent_exec tool="bash" args="cmd=\'x\'">'
@@ -205,7 +216,9 @@ class TestInjectedContext:
         """Sessions written before the kind was stored still replay right."""
         for content, kind in (("[verify] failed", "verify"),
                               ("[goal check] not done", "goal check"),
-                              ("[loop guard: switching]", "loop guard")):
+                              ("[loop guard: switching]", "loop guard"),
+                              ("Your last tool call could not be executed: its JSON",
+                               "tool retry")):
             out = _transcript([{"role": "user", "content": content}])
             assert out[0]["kind"] == kind
 
