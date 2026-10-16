@@ -10,13 +10,13 @@ class TestHistory:
     def test_it_is_persisted_and_capped(self):
         assert "localStorage.setItem(HIST_KEY" in HIST
         assert "const HIST_MAX = 100" in HIST
-        assert "history.slice(-HIST_MAX)" in HIST
+        assert "sentHistory.slice(-HIST_MAX)" in HIST
 
     def test_repeating_the_same_line_does_not_fill_the_ring(self):
-        assert "text === history[history.length - 1]" in HIST
+        assert "text === sentHistory[sentHistory.length - 1]" in HIST
 
     def test_corrupt_storage_does_not_break_the_prompt(self):
-        assert "if (!Array.isArray(history)) history = [];" in HIST
+        assert "if (!Array.isArray(sentHistory)) sentHistory = [];" in HIST
 
     def test_browsing_stashes_the_unsent_draft(self):
         assert "histDraft = input.value;" in HIST

@@ -114,3 +114,23 @@ def test_wait_page_keeps_session_param():
     """An approved browser reloads its own URL (minus the token), not bare '/'."""
     assert "location.replace('/')" not in WAIT_PAGE_SRC
     assert "u.searchParams.delete('token')" in WAIT_PAGE_SRC
+
+
+def test_url_update_reaches_window_history():
+    """The real page shares one global scope: a top-level `let history` there
+    (the prompt's ↑ recall list once was one) shadows window.history and every
+    session switch threw "history.replaceState is not a function"."""
+    i = APP_JS.index("// ── Message history and draft")
+    recall = APP_JS[i:APP_JS.index("function saveDraft(", i)]
+    script = """
+let loc = new URL('http://h:1/');
+const location = { get href() { return loc.href; }, get search() { return loc.search; } };
+globalThis.history = { state: null, replaceState(_s, _t, u) { loc = new URL(String(u), loc); } };
+const localStorage = { getItem() { return null; }, setItem() {} };
+""" + recall + _src() + """
+setUrlSession('S1');
+console.log(loc.href);
+"""
+    proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "http://h:1/?s=S1"

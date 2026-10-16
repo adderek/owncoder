@@ -4547,18 +4547,18 @@ function atKey(e) {
 const HIST_KEY = 'oc-history';
 const HIST_MAX = 100;
 const DRAFT_KEY = 'oc-draft';
-let history = [];
+let sentHistory = [];   // not `history`: a global let shadows window.history
 let histIdx = -1;         // -1 = editing, not browsing
 let histDraft = '';       // what was typed before browsing started
 
-try { history = JSON.parse(localStorage.getItem(HIST_KEY) || '[]'); } catch (e) {}
-if (!Array.isArray(history)) history = [];
+try { sentHistory = JSON.parse(localStorage.getItem(HIST_KEY) || '[]'); } catch (e) {}
+if (!Array.isArray(sentHistory)) sentHistory = [];
 
 function histPush(text) {
-  if (!text || text === history[history.length - 1]) return;   // no dupe runs
-  history.push(text);
-  if (history.length > HIST_MAX) history = history.slice(-HIST_MAX);
-  try { localStorage.setItem(HIST_KEY, JSON.stringify(history)); } catch (e) {}
+  if (!text || text === sentHistory[sentHistory.length - 1]) return;   // no dupe runs
+  sentHistory.push(text);
+  if (sentHistory.length > HIST_MAX) sentHistory = sentHistory.slice(-HIST_MAX);
+  try { localStorage.setItem(HIST_KEY, JSON.stringify(sentHistory)); } catch (e) {}
   histIdx = -1;
 }
 
@@ -4571,20 +4571,20 @@ function histApply(text) {
 }
 
 function histMove(dir) {          // -1 = older, +1 = newer
-  if (!history.length) return;
+  if (!sentHistory.length) return;
   if (histIdx < 0) {
     if (dir > 0) return;          // already at the newest — nothing to go to
     histDraft = input.value;
-    histIdx = history.length;
+    histIdx = sentHistory.length;
   }
   const next = histIdx + dir;
-  if (next >= history.length) {   // past the newest → back to the draft
+  if (next >= sentHistory.length) {   // past the newest → back to the draft
     histIdx = -1;
     histApply(histDraft);
     return;
   }
   histIdx = Math.max(0, next);
-  histApply(history[histIdx]);
+  histApply(sentHistory[histIdx]);
 }
 
 // ↑/↓ browse only from the first/last line, so they still move the caret
