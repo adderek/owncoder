@@ -164,6 +164,9 @@ class SummarizationConfig:
     max_output_tokens: int = 256
     group_size: int = 10
     max_levels: int = 3
+    # One roll-up unit per file over its top-level units: a file summary and a
+    # navigable file → parts tree. Costs one extra LLM call per changed file.
+    file_rollups: bool = False
 
 
 @dataclass

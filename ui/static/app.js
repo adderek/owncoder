@@ -2266,16 +2266,25 @@ document.getElementById('mempane').addEventListener('keydown', (e) => {
 // ── code-unit explorer ──────────────────────────────────────────────────────
 // Described units of any language (asm and binaries included), navigated the
 // way the code is: file → roll-up → parts, calls / called-by, and the code the
-// description is about beside it. Backend: agent/memory/units_explorer.py.
+// description is about beside it. A reviewer can correct, judge and
+// re-describe a unit. Backend: agent/memory/units_{explorer,review}.py.
 let unitTier = 'unit';
 let unitFile = '';
 let unitSel = '';
 let unitHist = [];
+let unitCur = null;          // last node payload, for the action buttons
 const UNIT_PAGE = 100;
 
 function unitApi(kind, params) {
   const qs = new URLSearchParams(Object.assign({tier: unitTier}, params || {}));
   return fetch('/api/units/' + kind + '?' + qs).then(r => r.json());
+}
+
+function unitPost(kind, body) {
+  return fetch('/api/units/' + kind, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(Object.assign({tier: unitTier}, body)),
+  }).then(r => r.json());
 }
 
 function unitSpan(u) {
@@ -2288,13 +2297,23 @@ function unitSpan(u) {
 
 function unitShortTitle(u) {
   // The list already says which file; repeating ":line" after the name is noise.
-  return (u.title || u.id).replace(/ — .*$/, '');
+  return (u.title || u.id || '').replace(/ — .*$/, '');
+}
+
+// Reviewer state and model confidence as one glyph string: what a reader
+// scanning the tree needs to know before trusting a description.
+function unitFlags(u) {
+  let f = '';
+  if (u.human) f += '✎';
+  if (u.review === 'wrong') f += '✗';
+  else if (u.review === 'ok') f += '✓';
+  return f;
 }
 
 function unitLink(u, label) {
   const a = document.createElement('a');
   a.href = '#';
-  a.className = 'unit-link';
+  a.className = 'unit-link' + (u.confidence === 'low' ? ' unit-low' : '');
   a.textContent = label || unitShortTitle(u);
   a.title = (u.path ? u.path + ' ' + unitSpan(u) : '') + (u.preview ? '\n' + u.preview : '');
   a.addEventListener('click', (e) => { e.preventDefault(); openUnit(u.id); });
@@ -2370,7 +2389,8 @@ function unitRow(u, depth) {
   const wrap = document.createElement('div');
   wrap.className = 'unit-node';
   const r = document.createElement('div');
-  r.className = 'unit-row' + (u.id === unitSel ? ' sel' : '');
+  r.className = 'unit-row' + (u.id === unitSel ? ' sel' : '')
+    + (u.confidence === 'low' ? ' unit-low' : '') + (u.review === 'wrong' ? ' unit-wrong' : '');
   r.dataset.id = u.id;
   r.style.paddingLeft = (6 + depth * 14) + 'px';
   const tog = document.createElement('span');
@@ -2379,11 +2399,15 @@ function unitRow(u, depth) {
   const t = document.createElement('span');
   t.className = 'unit-title';
   t.textContent = unitShortTitle(u);
+  const fl = document.createElement('span');
+  fl.className = 'unit-flags';
+  fl.textContent = unitFlags(u);
   const tags = document.createElement('span');
   tags.className = 'mem-tags';
-  tags.textContent = 'L' + u.level + ' ' + u.status + ' ' + unitSpan(u)
-    + (unitFile ? '' : '  ' + u.path);
-  r.append(tog, t, tags);
+  tags.textContent = (u.score != null ? u.score.toFixed(2) + ' ' : '')
+    + 'L' + u.level + ' ' + u.status + (u.confidence ? ' ' + u.confidence : '')
+    + ' ' + unitSpan(u) + (unitFile ? '' : '  ' + u.path.split('/').slice(-2).join('/'));
+  r.append(tog, t, fl, tags);
   if (u.preview) r.title = u.preview;
   const kids = document.createElement('div');
   kids.className = 'unit-kids hidden';
@@ -2417,7 +2441,7 @@ async function unitFill(box, params, depth, offset) {
       box.appendChild(n);
     }
     (d.items || []).forEach(u => box.appendChild(unitRow(u, depth)));
-    if (!offset && !(d.items || []).length) {
+    if (!offset && !(d.items || []).length && !(d.error || d.note)) {
       const n = document.createElement('div');
       n.className = 'dim'; n.textContent = 'nothing here';
       box.appendChild(n);
@@ -2435,20 +2459,27 @@ async function unitFill(box, params, depth, offset) {
   } catch (e) { pending.textContent = 'failed: ' + e; }
 }
 
+function unitFilters() {
+  const v = id => document.getElementById(id).value;
+  return {q: v('unitsearch').trim(), level: v('unitlevel'), status: v('unitstatus'),
+          confidence: v('unitconf'), review: v('unitreview'),
+          semantic: document.getElementById('unitsem').checked ? '1' : ''};
+}
+
 function loadUnitTree() {
   const tree = document.getElementById('unittree');
   tree.textContent = '';
-  const q = document.getElementById('unitsearch').value.trim();
-  const level = document.getElementById('unitlevel').value;
-  const status = document.getElementById('unitstatus').value;
-  if (!unitFile && !q && !level && !status) {
+  const f = unitFilters();
+  const filtered = f.q || f.level || f.status || f.confidence || f.review;
+  if (!unitFile && !filtered) {
     tree.innerHTML = '<div class="dim">Pick a file, or search.</div>';
     return;
   }
   const head = document.createElement('div');
   head.className = 'unit-treehead';
-  head.textContent = unitFile ? unitFile : 'search: all files';
-  if (unitFile) {
+  head.textContent = f.semantic && f.q ? '≈ nearest by meaning: ' + f.q
+    : (unitFile ? unitFile : 'search: all files');
+  if (unitFile && !(f.semantic && f.q)) {
     const x = document.createElement('button');
     x.className = 'sbtn'; x.textContent = '× all files';
     x.title = 'Search across every file';
@@ -2461,8 +2492,8 @@ function loadUnitTree() {
   }
   tree.appendChild(head);
   // A filtered view is flat (matches lose their place in the tree); a bare
-  // file shows its roots, expandable.
-  unitFill(tree, {path: unitFile, q, level, status}, 0);
+  // file shows its roots, expandable. Semantic search ignores the file.
+  unitFill(tree, Object.assign({path: f.semantic && f.q ? '' : unitFile}, f), 0);
 }
 
 function unitSection(el, label, items, render) {
@@ -2478,26 +2509,223 @@ function unitSection(el, label, items, render) {
 }
 
 function unitCallRender(c) {
+  const suffix = (c.via === 'jump' ? ' ⤳' : '') + (c.count > 1 ? ' ×' + c.count : '');
   if (c.id) {
-    const a = unitLink(c, c.label);
-    if (c.label !== unitShortTitle(c)) a.textContent = c.label + ' → ' + unitShortTitle(c);
-    return a;
+    const name = unitShortTitle(c);
+    return unitLink(c, (c.label && c.label !== name ? c.label + ' → ' : '') + name + suffix);
   }
   const s = document.createElement('span');
   s.className = 'unit-ext';
-  s.textContent = c.label + (c.external ? ' (import)' : '');
+  s.textContent = c.label + (c.external ? ' (outside)' : '') + suffix;
   return s;
+}
+
+const UNIT_EDGES_FROM = {
+  ghidra: 'from Ghidra', code: 'from the code', listing: 'from the code',
+  model: 'model guess — not checked against the code',
+};
+
+// One-hop neighbourhood: callers left, the unit in the middle, callees right.
+// Plain SVG, text in currentColor so both themes work; nodes are links.
+function unitGraph(d) {
+  const ins = (d.callers || []).slice(0, 10), outs = (d.callees || []).slice(0, 10);
+  if (!ins.length && !outs.length) return null;
+  const rowH = 22, n = Math.max(ins.length, outs.length, 1);
+  const H = n * rowH + 10, W = 640, cx = W / 2, cy = H / 2;
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+  svg.setAttribute('class', 'unit-graph');
+  const mk = (tag, attrs, text) => {
+    const e = document.createElementNS(NS, tag);
+    Object.entries(attrs).forEach(([k, v]) => e.setAttribute(k, v));
+    if (text != null) e.textContent = text;
+    svg.appendChild(e);
+    return e;
+  };
+  const cut = (s, k) => s.length > k ? s.slice(0, k - 1) + '…' : s;
+  const side = (list, x, anchor, edgeX) => list.forEach((c, i) => {
+    const y = (H - list.length * rowH) / 2 + i * rowH + rowH / 2;
+    mk('line', {x1: edgeX, y1: y, x2: cx + (anchor === 'end' ? -70 : 70), y2: cy,
+                class: 'ug-edge' + (c.via === 'jump' ? ' ug-jump' : '')});
+    const t = mk('text', {x, y: y + 4, 'text-anchor': anchor,
+                          class: 'ug-node' + (c.id ? ' ug-link' : '')},
+                 cut(c.id ? unitShortTitle(c) : c.label, 30));
+    if (c.id) t.addEventListener('click', () => openUnit(c.id));
+  });
+  side(ins, 230, 'end', 236);
+  side(outs, W - 230, 'start', W - 236);
+  mk('rect', {x: cx - 70, y: cy - 12, width: 140, height: 24, rx: 6, class: 'ug-self'});
+  mk('text', {x: cx, y: cy + 4, 'text-anchor': 'middle', class: 'ug-node ug-me'},
+     cut(unitShortTitle(d.unit), 20));
+  return svg;
+}
+
+function unitSource(el, src) {
+  const sh = document.createElement('div');
+  sh.className = 'unit-sec';
+  sh.textContent = (src.pseudo ? 'pseudocode (Ghidra)' : 'code')
+    + (src.truncated ? ' (first lines — unit is longer)' : '')
+    + (src.stale ? ' — file is shorter than the unit; index is stale' : '');
+  el.appendChild(sh);
+  if (src.text === undefined) {
+    const n = document.createElement('div');
+    n.className = 'dim'; n.textContent = src.note || 'no source';
+    el.appendChild(n);
+    if (src.can_fetch && unitCur && unitCur.unit.addr) {
+      const b = document.createElement('button');
+      b.className = 'sbtn'; b.textContent = 'fetch pseudocode from REA';
+      b.addEventListener('click', async () => {
+        b.disabled = true; b.textContent = '…';
+        const r = await unitApi('pseudo', {path: unitCur.unit.path, addr: unitCur.unit.addr});
+        b.remove(); n.remove();
+        unitSource(el, r.text ? {text: r.text, pseudo: true} : {note: r.error});
+        sh.remove();
+      });
+      el.appendChild(b);
+    }
+    return;
+  }
+  const pre = document.createElement('pre');
+  pre.className = 'unit-src';
+  const lines = src.text.replace(/\n$/, '').split('\n');
+  const start = src.start || 1;
+  const w = String(start + lines.length - 1).length;
+  const tg = src.targets || {};
+  lines.forEach((l, i) => {
+    const n = start + i;
+    const ln = document.createElement('span');
+    ln.className = 'unit-ln';
+    ln.textContent = src.start ? String(n).padStart(w, ' ') + '  ' : '';
+    pre.appendChild(ln);
+    pre.appendChild(document.createTextNode(l));
+    const t = tg[String(n)];
+    // A branch whose target lives in another unit reads as a link to it.
+    if (t && t.unit && t.unit.id !== unitSel) {
+      pre.appendChild(document.createTextNode('  '));
+      const a = unitLink({id: t.unit.id, title: t.unit.title}, (t.call ? '→ ' : '⤳ ')
+        + unitShortTitle(t.unit));
+      a.classList.add('unit-tgt');
+      pre.appendChild(a);
+    }
+    pre.appendChild(document.createTextNode('\n'));
+  });
+  el.appendChild(pre);
+}
+
+function unitButton(label, title, fn) {
+  const b = document.createElement('button');
+  b.className = 'sbtn'; b.textContent = label; b.title = title;
+  b.addEventListener('click', fn);
+  return b;
+}
+
+function unitActions(d) {
+  const bar = document.createElement('div');
+  bar.className = 'unit-actions';
+  const status = document.createElement('span');
+  status.className = 'dim';
+  const run = async (b, kind, body, okText) => {
+    b.disabled = true; status.textContent = '…';
+    const r = await unitPost(kind, Object.assign({id: d.unit.id}, body));
+    b.disabled = false;
+    if (r.error) { status.textContent = '✗ ' + r.error; return; }
+    status.textContent = okText(r);
+    openUnit(d.unit.id, true);
+    // The row's glyphs changed too.
+    const row = document.querySelector('#unittree .unit-row[data-id="' + d.unit.id + '"] .unit-flags');
+    if (row) row.textContent = '…';
+  };
+  bar.appendChild(unitButton('✎ edit', 'Correct the name/description; it wins over the model and survives re-analysis',
+    () => unitEditForm(d)));
+  const v = (d.review || {}).verdict;
+  const ok = unitButton(v === 'ok' ? '✓ ok (undo)' : '✓ ok', 'The description is right', () =>
+    run(ok, 'review', {verdict: v === 'ok' ? '' : 'ok'}, () => 'marked'));
+  const bad = unitButton(v === 'wrong' ? '✗ wrong (undo)' : '✗ wrong',
+    'The description is wrong — say why; the note goes to the next re-description', () => {
+      if (v === 'wrong') { run(bad, 'review', {verdict: ''}, () => 'cleared'); return; }
+      const note = prompt('What is wrong with it? (goes to the next re-description)', '');
+      if (note === null) return;
+      run(bad, 'review', {verdict: 'wrong', note}, () => 'marked wrong');
+    });
+  const re = unitButton('↻ re-describe', 'Describe again with the session\'s current model'
+    + (v === 'wrong' ? ', telling it your note' : ''), () =>
+    run(re, 'redescribe', {}, r => '↻ ' + (r.model || '') + ': ' + (r.inferred_name || '')));
+  const ask = unitButton('💬 ask agent', 'Put a question about this unit into the chat input',
+    () => unitAsk(d));
+  bar.append(ok, bad, re, ask, status);
+  return bar;
+}
+
+function unitEditForm(d) {
+  const el = document.getElementById('unitdetail');
+  if (el.querySelector('.unit-edit')) return;
+  const f = document.createElement('div');
+  f.className = 'unit-edit';
+  const rv = d.review || {};
+  const name = document.createElement('input');
+  name.value = rv.name || d.unit.inferred_name || '';
+  name.placeholder = 'name';
+  const desc = document.createElement('textarea');
+  desc.rows = 5;
+  desc.value = rv.description || d.unit.description || '';
+  desc.placeholder = 'description';
+  const save = unitButton('save', 'Keep this text over the model\'s', async () => {
+    save.disabled = true;
+    const r = await unitPost('edit', {id: d.unit.id, name: name.value, description: desc.value});
+    if (r.error) { save.disabled = false; alert(r.error); return; }
+    openUnit(d.unit.id, true);
+  });
+  const reset = unitButton('back to model text', 'Drop the correction', async () => {
+    await unitPost('edit', {id: d.unit.id, name: '', description: ''});
+    openUnit(d.unit.id, true);
+  });
+  const cancel = unitButton('cancel', '', () => f.remove());
+  const btns = document.createElement('div');
+  btns.className = 'unit-actions';
+  btns.append(save, reset, cancel);
+  f.append(name, desc, btns);
+  const at = el.querySelector('.unit-desc');
+  el.insertBefore(f, at);
+  desc.focus();
+}
+
+function unitAsk(d) {
+  const u = d.unit;
+  const where = u.addr ? u.path + ' @ 0x' + u.addr : u.path + ':' + u.lines[0] + '-' + u.lines[1];
+  const text = 'About ' + (u.inferred_name || u.id) + ' (' + where + ', '
+    + (unitTier === 'asm_unit' ? 'asm unit ' : 'code unit ') + u.id + '): '
+    + (u.description ? 'its description says "' + u.description + '". ' : '')
+    + '\n\n';
+  showView('chat');
+  const inp = document.getElementById('input');
+  inp.value = text;
+  inp.focus();
+  inp.setSelectionRange(text.length, text.length);
+  if (typeof autoGrow === 'function') autoGrow();
+}
+
+function setUrlUnit(id, push) {
+  const u = new URL(location.href);
+  const want = id ? unitTier + ':' + id : null;
+  if ((u.searchParams.get('u') || null) === want) return;
+  if (want) u.searchParams.set('u', want); else u.searchParams.delete('u');
+  u.searchParams.delete('token');
+  // Following a link inside the explorer is navigation: Back returns.
+  (push ? history.pushState : history.replaceState).call(history, {unit: want}, '', u);
 }
 
 async function openUnit(id, fromHist) {
   const el = document.getElementById('unitdetail');
   if (!fromHist && unitSel && unitSel !== id) unitHist.push(unitSel);
+  setUrlUnit(id, !fromHist && unitSel !== id);
   unitSel = id;
   document.querySelectorAll('#unittree .unit-row').forEach(r =>
     r.classList.toggle('sel', r.dataset.id === id));
   el.textContent = '…';
   try {
     const d = await unitApi('node', {id});
+    unitCur = d;
     el.textContent = '';
     el.classList.remove('dim');
     if (d.error) { el.textContent = d.error; return; }
@@ -2505,18 +2733,14 @@ async function openUnit(id, fromHist) {
     const nav = document.createElement('div');
     nav.className = 'unit-crumbs';
     if (unitHist.length) {
-      const back = document.createElement('button');
-      back.className = 'sbtn'; back.textContent = '◀';
-      back.title = 'Previous unit';
-      back.addEventListener('click', () => openUnit(unitHist.pop(), true));
-      nav.appendChild(back);
+      nav.appendChild(unitButton('◀', 'Previous unit', () => openUnit(unitHist.pop(), true)));
     }
     d.breadcrumb.forEach(c => {
       nav.appendChild(unitLink(c));
       nav.appendChild(document.createTextNode(' › '));
     });
     const here = document.createElement('b');
-    here.textContent = unitShortTitle(u);
+    here.textContent = unitShortTitle(u) + ' ' + unitFlags(u);
     nav.appendChild(here);
     el.appendChild(nav);
     const meta = document.createElement('div');
@@ -2524,25 +2748,47 @@ async function openUnit(id, fromHist) {
     meta.textContent = [u.path + ' ' + unitSpan(u), 'L' + u.level, u.status,
       ...Object.entries(d.meta || {}).map(([k, v]) => k + '=' + v)].join('   ');
     el.appendChild(meta);
+    el.appendChild(unitActions(d));
     const sib = document.createElement('div');
     sib.className = 'unit-sib';
     if (d.prev) sib.appendChild(unitLink(d.prev, '← ' + unitShortTitle(d.prev)));
     if (d.next) sib.appendChild(unitLink(d.next, unitShortTitle(d.next) + ' →'));
     if (u.path !== unitFile) {
-      const f = document.createElement('button');
-      f.className = 'sbtn'; f.textContent = 'show file';
-      f.title = 'Open this unit\'s file in the tree';
-      f.addEventListener('click', () => { unitFile = u.path; loadUnitTree(); loadUnitFiles(); });
-      sib.appendChild(f);
+      sib.appendChild(unitButton('show file', 'Open this unit\'s file in the tree',
+        () => { unitFile = u.path; loadUnitTree(); loadUnitFiles(); }));
     }
     if (sib.childNodes.length) el.appendChild(sib);
+    const rv = d.review;
+    if (rv && (rv.name || rv.description || rv.verdict)) {
+      const box = document.createElement('div');
+      box.className = 'unit-review' + (rv.stale ? ' unit-stale' : '');
+      const parts = [];
+      if (rv.name || rv.description) parts.push('✎ reviewer text'
+        + (rv.at ? ' (' + fmtMsgTime(rv.at * 1000) + ')' : ''));
+      if (rv.stale) parts.push('⚠ the code changed since — check it still holds');
+      if (rv.verdict) parts.push((rv.verdict === 'ok' ? '✓ judged right' : '✗ judged wrong')
+        + (rv.note ? ': ' + rv.note : ''));
+      box.textContent = parts.join('   ');
+      el.appendChild(box);
+    }
     const body = document.createElement('div');
     body.className = 'md unit-desc';
     body.innerHTML = u.description ? renderMd(u.description)
       : '<span class="dim">(not described yet)</span>';
     el.appendChild(body);
+    if (d.model && (d.model.description || d.model.inferred_name)) {
+      const det = document.createElement('details');
+      det.className = 'unit-model';
+      const s = document.createElement('summary');
+      s.textContent = 'model\'s text';
+      const p = document.createElement('div');
+      p.textContent = [d.model.inferred_name, d.model.description].filter(Boolean).join(' — ');
+      det.append(s, p);
+      el.appendChild(det);
+    }
     Object.entries(d.extra || {}).forEach(([k, v]) => {
-      if (v === null || v === '' || (Array.isArray(v) && !v.length)) return;
+      if (v === null || v === '' || (Array.isArray(v) && !v.length)
+          || (typeof v === 'object' && !Array.isArray(v) && !Object.keys(v).length)) return;
       const h = document.createElement('div');
       h.className = 'unit-sec'; h.textContent = k.replace(/_/g, ' ');
       const p = document.createElement('pre');
@@ -2552,29 +2798,32 @@ async function openUnit(id, fromHist) {
     });
     unitSection(el, 'parts (' + d.children_total + ')', d.children, c => {
       const a = unitLink(c);
-      a.textContent = unitShortTitle(c) + '  ' + unitSpan(c);
+      a.textContent = unitShortTitle(c) + ' ' + unitFlags(c) + '  ' + unitSpan(c);
       return a;
     });
+    const g = unitGraph(d);
+    if (g) {
+      const h = document.createElement('div');
+      h.className = 'unit-sec';
+      h.textContent = 'neighbourhood — ' + (UNIT_EDGES_FROM[d.edges_from] || '');
+      el.append(h, g);
+    }
     unitSection(el, 'calls (' + (d.callees || []).length + ')', d.callees, unitCallRender);
     unitSection(el, 'called by (' + (d.callers || []).length + ')', d.callers, unitCallRender);
-    const src = d.source || {};
-    const sh = document.createElement('div');
-    sh.className = 'unit-sec';
-    sh.textContent = 'code' + (src.truncated ? ' (first lines — unit is longer)' : '')
-      + (src.stale ? ' — file is shorter than the unit; index is stale' : '');
-    el.appendChild(sh);
-    if (src.text !== undefined) {
-      const pre = document.createElement('pre');
-      pre.className = 'unit-src';
-      const w = String(src.end).length;
-      pre.textContent = src.text.replace(/\n$/, '').split('\n').map((l, i) =>
-        String(src.start + i).padStart(w, ' ') + '  ' + l).join('\n');
-      el.appendChild(pre);
-    } else {
-      const n = document.createElement('div');
-      n.className = 'dim'; n.textContent = src.note || 'no source';
-      el.appendChild(n);
-    }
+    const rel = d.related || {};
+    unitSection(el, 'index chunks over these lines', rel.chunks, c => {
+      const a = document.createElement('a');
+      a.href = '#'; a.className = 'unit-link'; a.textContent = c.title;
+      a.addEventListener('click', e => { e.preventDefault(); openMemoryView('chunk'); openMemItem(c.id); });
+      return a;
+    });
+    unitSection(el, 'kb nodes', rel.kb, c => {
+      const a = document.createElement('a');
+      a.href = '#'; a.className = 'unit-link'; a.textContent = c.title;
+      a.addEventListener('click', e => { e.preventDefault(); openMemoryView('kb'); openMemItem(c.id); });
+      return a;
+    });
+    unitSource(el, d.source || {});
     el.scrollTop = 0;
   } catch (e) { el.textContent = 'failed: ' + e; }
 }
@@ -2588,15 +2837,38 @@ async function openUnitView(tier, id) {
   if (id) {
     unitHist = [];
     unitSel = '';
-    openUnit(id, true);
+    await openUnit(id, true);
+    // Arriving at one unit (deep link, memory view): show where it sits.
+    if (!unitFile && unitCur && unitCur.unit) {
+      unitFile = unitCur.unit.path;
+      loadUnitFiles();
+      loadUnitTree();
+    }
   }
 }
+
+// ?u=<tier>:<id> opens that unit — a link to one function can be shared.
+function openUnitFromUrl() {
+  const v = new URLSearchParams(location.search).get('u');
+  if (!v || v.indexOf(':') < 0) return false;
+  const i = v.indexOf(':');
+  openUnitView(v.slice(0, i), v.slice(i + 1));
+  return true;
+}
+window.addEventListener('popstate', () => {
+  const v = new URLSearchParams(location.search).get('u');
+  if (v) {
+    const i = v.indexOf(':');
+    if (currentView !== 'units') openUnitView(v.slice(0, i), v.slice(i + 1));
+    else { unitTier = v.slice(0, i); openUnit(v.slice(i + 1), true); }
+  } else if (currentView === 'units') showView('chat');
+});
 
 document.getElementById('memunits').addEventListener('click', () =>
   openUnitView(memTier === 'asm_unit' || memTier === 'unit' ? memTier : null));
 document.getElementById('unitback').addEventListener('click', () => showView('chat'));
 document.getElementById('unitpane').addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') showView('chat');
+  if (e.key === 'Escape' && !e.target.closest('.unit-edit')) showView('chat');
 });
 document.getElementById('unittier').addEventListener('change', (e) => {
   unitTier = e.target.value;
@@ -2605,12 +2877,17 @@ document.getElementById('unittier').addEventListener('change', (e) => {
   loadUnitFiles();
   loadUnitTree();
 });
-['unitlevel', 'unitstatus'].forEach(id =>
+['unitlevel', 'unitstatus', 'unitconf', 'unitreview', 'unitsem'].forEach(id =>
   document.getElementById(id).addEventListener('change', loadUnitTree));
 (() => {
-  const deb = (fn) => { let t = null; return () => { clearTimeout(t); t = setTimeout(fn, 250); }; };
-  document.getElementById('unitsearch').addEventListener('input', deb(loadUnitTree));
-  document.getElementById('unitfileq').addEventListener('input', deb(loadUnitFiles));
+  const deb = (fn, ms) => { let t = null; return () => { clearTimeout(t); t = setTimeout(fn, ms); }; };
+  // Semantic search embeds the query server-side: wait for the typing to stop.
+  const search = deb(loadUnitTree, 250);
+  const slow = deb(loadUnitTree, 700);
+  document.getElementById('unitsearch').addEventListener('input', () =>
+    (document.getElementById('unitsem').checked ? slow : search)());
+  document.getElementById('unitfileq').addEventListener('input', deb(loadUnitFiles, 250));
+  setTimeout(openUnitFromUrl, 0);
 })();
 
 // Fold state for every <details class="dfold"> in both drawers, persisted per
@@ -2981,6 +3258,7 @@ let currentView = 'chat';
 
 function showView(name, label) {
   currentView = name;
+  if (name !== 'units' && typeof setUrlUnit === 'function') setUrlUnit(null, false);
   Object.entries(VIEW_PANES).forEach(([view, id]) => {
     const el = document.getElementById(id);
     if (el) el.classList.toggle('hidden', view !== name);

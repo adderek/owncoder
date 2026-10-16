@@ -119,6 +119,11 @@ class AsmStore:
         for col in ("addr", "evidence"):
             if col not in have:
                 conn.execute(f"ALTER TABLE asm_units ADD COLUMN {col} TEXT")
+        from agent.rag.unit_overrides import ensure_schema
+        ensure_schema(conn, "asm_units")
+        if "kind" not in {r[1] for r in conn.execute("PRAGMA table_info(asm_edges)")}:
+            # NULL = call: REA edges predate the column and are all calls.
+            conn.execute("ALTER TABLE asm_edges ADD COLUMN kind TEXT")
         conn.commit()
 
     def _setup(self) -> None:
@@ -153,16 +158,16 @@ class AsmStore:
 
     def upsert_unit(self, unit: dict) -> None:
         conn = self._conn
+        from agent.rag.unit_overrides import lay_over, vector_blob
+        eff = lay_over(conn, "asm_units", unit)
         conn.execute("""
             INSERT OR REPLACE INTO asm_units
-            (id, path, level, start_line, end_line, description, inferred_name,
-             checksum, revision, parent_id, prev_id, next_id, status, confidence,
-             mtime, git_hash, calls, side_effects, key_patterns, addr, evidence)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, path, level, start_line, end_line, description, inferred_name, checksum, revision, parent_id, prev_id, next_id, status, confidence, mtime, git_hash, calls, side_effects, key_patterns, addr, evidence, description_model, name_model)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             unit["id"], unit["path"], unit["level"],
             unit["start_line"], unit["end_line"],
-            unit.get("description"), unit.get("inferred_name"),
+            eff["description"], eff["inferred_name"],
             unit["checksum"],
             unit.get("revision", 1),
             unit.get("parent_id"), unit.get("prev_id"), unit.get("next_id"),
@@ -170,17 +175,17 @@ class AsmStore:
             unit.get("mtime"), unit.get("git_hash"),
             unit.get("calls"), unit.get("side_effects"), unit.get("key_patterns"),
             unit.get("addr"), unit.get("evidence"),
+            eff["description_model"], eff["name_model"],
         ))
 
-        if unit.get("embedding"):
-            import sqlite_vec
-            emb = unit["embedding"]
-            dims = len(emb)
+        # The reviewer's text is what a search should find, not the model's.
+        blob, dims = vector_blob(unit.get("embedding"), eff["embedding"], self._vec_dims)
+        if blob is not None:
             self._ensure_vec_table(dims)
             conn.execute("DELETE FROM vec_asm_units WHERE unit_id = ?", (unit["id"],))
             conn.execute(
                 "INSERT INTO vec_asm_units(unit_id, embedding) VALUES (?, ?)",
-                (unit["id"], sqlite_vec.serialize_float32(emb)),
+                (unit["id"], blob),
             )
 
         conn.commit()
@@ -271,11 +276,12 @@ class AsmStore:
         self._conn.execute("DELETE FROM asm_edges WHERE path = ?", (path,))
         self._conn.commit()
 
-    def set_edges(self, path: str, edges: list[tuple[str, str]]) -> None:
+    def set_edges(self, path: str, edges: list[tuple]) -> None:
+        """Replace the file's edges: (src, dst) or (src, dst, kind)."""
         self._conn.execute("DELETE FROM asm_edges WHERE path = ?", (path,))
         self._conn.executemany(
-            "INSERT OR IGNORE INTO asm_edges(path, src, dst) VALUES (?, ?, ?)",
-            [(path, s, d) for s, d in edges],
+            "INSERT OR IGNORE INTO asm_edges(path, src, dst, kind) VALUES (?, ?, ?, ?)",
+            [(path, e[0], e[1], e[2] if len(e) > 2 else None) for e in edges],
         )
         self._conn.commit()
 

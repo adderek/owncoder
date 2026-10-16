@@ -104,14 +104,14 @@ class BgWorker:
             return True
 
         stale = self._store.get_stale_units(limit=5)
-        if stale:
-            for unit in stale:
-                if self._stop.is_set():
-                    break
-                self._rollup(unit)
-            return True
-
-        return False
+        did = False
+        for unit in stale:
+            if self._stop.is_set():
+                break
+            # A roll-up still waiting for its parts is no work done — counting
+            # it as work would spin this loop without a pause.
+            did = self._rollup(unit) is not False or did
+        return did
 
     def _maybe_embed(self, unit: dict, desc: str, label: str) -> None:
         """Embed *desc* into unit['embedding'] when an embedder is configured.
@@ -214,7 +214,7 @@ class BgWorker:
         described = [c for c in children if c.get("description")]
         # Wait until at least half are described before rolling up
         if len(described) < max(1, len(children) // 2):
-            return
+            return False
 
         language  = unit.get("language") or (described[0].get("language") if described else "code")
         node_type = unit.get("node_type") or "chunk"

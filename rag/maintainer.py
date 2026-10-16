@@ -424,7 +424,8 @@ class IndexMaintainer:
                 code_store = None
                 if cfg.summarization.enabled and not isinstance(embedder, _NoEmbedder):
                     from agent.rag.code_store import CodeStore
-                    code_store = CodeStore(cfg.summarization.db_path)
+                    code_store = CodeStore(cfg.summarization.db_path,
+                                       file_rollups=cfg.summarization.file_rollups)
                 stats = index_directory(
                     root=root, store=store, embedder=embedder, cfg=cfg.rag,
                     languages=self._languages, exclude=self._exclude,
@@ -452,7 +453,8 @@ class IndexMaintainer:
 
             if cfg.summarization.enabled:
                 from agent.rag.code_store import CodeStore
-                code_store = CodeStore(cfg.summarization.db_path)
+                code_store = CodeStore(cfg.summarization.db_path,
+                                       file_rollups=cfg.summarization.file_rollups)
                 try:
                     out["summaries_reused"] = code_store.bulk_dedup_pending(analysis_date=time.time())
                     indexed = {r[0] for r in store._conn().execute("SELECT DISTINCT path FROM chunks")}
@@ -548,7 +550,8 @@ class IndexMaintainer:
         if not (cfg.rag.auto_describe and cfg.summarization.enabled):
             return
         from agent.rag.code_store import CodeStore
-        code_store = CodeStore(cfg.summarization.db_path)
+        code_store = CodeStore(cfg.summarization.db_path,
+                                       file_rollups=cfg.summarization.file_rollups)
         try:
             prefer = usage_ranked_paths(cfg)
             units = code_store.get_pending_units(limit=cfg.rag.auto_describe_max_units, prefer_paths=prefer)

@@ -135,7 +135,8 @@ def _run_indexing(config, console, root: str | None = None, languages=None, excl
 
     store = VectorStore(config.rag)
     embedder = Embedder(config.embeddings)
-    code_store = CodeStore(config.summarization.db_path)
+    code_store = CodeStore(config.summarization.db_path,
+                           file_rollups=config.summarization.file_rollups)
 
     rel_root = Path(index_root).relative_to(working_dir) if index_root != working_dir else None
     label = str(rel_root) if rel_root else Path(working_dir).resolve().name
@@ -384,7 +385,8 @@ def cmd_index_update(args, config):
     # Resume any pending summarization left over from an interrupted run.
     if config.summarization.enabled:
         from agent.rag.code_store import CodeStore
-        code_store = CodeStore(config.summarization.db_path)
+        code_store = CodeStore(config.summarization.db_path,
+                           file_rollups=config.summarization.file_rollups)
         by_status = code_store.stats().get("by_status", {})
         pending = by_status.get("pending", 0) + by_status.get("stale", 0)
         if pending:

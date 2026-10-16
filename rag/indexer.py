@@ -580,6 +580,28 @@ def reembed_all(store, embedder, cfg, progress_cb=None) -> dict:
     return result
 
 
+def _file_rollup(code_store, chunks: list[dict], path: str, mtime: float, git_hash) -> None:
+    """A level-1 unit over the file's top-level units, left 'stale' for the
+    background worker to summarise once its parts are described."""
+    import hashlib
+    tops = [c for c in chunks if not c.get("parent_chunk_id")]
+    if len(tops) < 2:
+        return                       # one part: its own description is the file's
+    fid = hashlib.sha256(f"{path}:file".encode()).hexdigest()[:16]
+    code_store.upsert_unit({
+        "id": fid, "path": path, "language": chunks[0].get("language"),
+        "node_type": "file", "name": Path(path).name, "level": 1,
+        "start_line": min(c.get("start_line") or 1 for c in chunks),
+        "end_line": max(c.get("end_line") or 0 for c in chunks),
+        "object_checksum": hashlib.sha256(
+            "".join(c["id"] for c in tops).encode()).hexdigest()[:16],
+        "status": "stale", "mtime": mtime, "git_hash": git_hash,
+    })
+    ids = [c["id"] for c in sorted(tops, key=lambda c: c.get("start_line") or 0)]
+    code_store.set_parent(ids, fid)
+    code_store.upsert_children(fid, ids)
+
+
 def _enqueue_for_summarization(
     code_store, chunks: list[dict], path: str, mtime: float, git_hash, force: bool,
     abs_path: str | None = None,
@@ -641,6 +663,11 @@ def _enqueue_for_summarization(
                     "object_checksum": obj_cs,
                     "node_checksum": prev.get("node_checksum"),
                     "description": prev.get("description"),
+                    "inferred_name": prev.get("inferred_name"),
+                    "confidence": prev.get("confidence"),
+                    # The model's text, when a reviewer's sits in description.
+                    "description_model": prev.get("description_model"),
+                    "name_model": prev.get("name_model"),
                     "parent_id": chunk.get("parent_chunk_id"),
                     "status": "described",
                     "mtime": mtime,
@@ -692,6 +719,9 @@ def _enqueue_for_summarization(
             "git_hash": git_hash,
         })
         pending += 1
+
+    if getattr(code_store, "file_rollups", False):
+        _file_rollup(code_store, chunks, path, mtime, git_hash)
 
     code_store.set_file_record(
         path, file_checksum,

@@ -107,6 +107,7 @@ class Describer:
         chunk: dict,
         prev_desc: str | None = None,
         next_desc: str | None = None,
+        hint: str = "",
     ) -> dict:
         language = chunk.get("language") or "code"
         node_type = chunk.get("node_type") or "chunk"
@@ -134,6 +135,8 @@ class Describer:
             content=content,
             fallback_name=fallback,
         )
+        if hint:
+            prompt = f"{hint}\n\n{prompt}"
 
         result = self._call_llm(prompt)
         if result is None:
@@ -153,6 +156,7 @@ class Describer:
         children: list[dict],
         language: str = "code",
         node_type: str = "chunk",
+        hint: str = "",
     ) -> dict:
         _, node_plural = _node_labels(node_type)
         children_list = "\n".join(
@@ -165,6 +169,8 @@ class Describer:
             node_plural=node_plural,
             children_list=children_list,
         )
+        if hint:
+            prompt = f"{hint}\n\n{prompt}"
         result = self._call_llm(prompt)
         if result is None:
             names = [c.get("inferred_name") or c.get("name", "?") for c in children[:3]]

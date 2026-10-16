@@ -864,9 +864,17 @@ _PAGE = r"""<!DOCTYPE html>
     <b>🧬 Code units</b>
     <select id="unittier" title="Which unit store"></select>
     <input id="unitsearch" placeholder="search descriptions / names…">
+    <label class="unit-sem" title="Search by meaning (embeds the query) instead of by words">
+      <input type="checkbox" id="unitsem"> ≈ meaning</label>
     <select id="unitlevel" title="Level filter"><option value="">any level</option></select>
     <select id="unitstatus" title="Status filter"><option value="">any status</option>
-      <option>described</option><option>grouped</option><option>pending</option></select>
+      <option>described</option><option>grouped</option><option>pending</option>
+      <option>stale</option></select>
+    <select id="unitconf" title="Model confidence"><option value="">any confidence</option>
+      <option>low</option><option>medium</option><option>high</option></select>
+    <select id="unitreview" title="Reviewer state"><option value="">any review</option>
+      <option value="wrong">✗ judged wrong</option><option value="ok">✓ judged right</option>
+      <option value="human">✎ corrected</option></select>
   </div>
   <div id="unitmain">
     <div id="unitfilescol">
@@ -2654,15 +2662,85 @@ class _HttpUI:
             if kind == "files":
                 return ux.files(config, tier, one("q"), num("limit", 300, 2000))
             if kind == "list":
+                if one("semantic") == "1" and one("q").strip():
+                    return self._units_semantic(config, tier, one("q"))
                 return ux.units(config, tier, path=one("path"), parent=one("parent"),
                                 query=one("q"), level=one("level"), status=one("status"),
+                                confidence=one("confidence"), review=one("review"),
                                 offset=num("offset", 0, 10**9),
                                 limit=max(1, num("limit", 100, 500)))
             if kind == "node":
                 return ux.node(config, tier, one("id"))
+            if kind == "pseudo":
+                text = self._rea_pseudo(one("path"), one("addr"))
+                return {"text": text} if text else {"error": "REA is not running or "
+                                                    "has no pseudocode for this address"}
         except ValueError as exc:
             return {"error": str(exc)}
         return {"error": f"unknown units endpoint '{kind}'"}
+
+    def _embedder(self):
+        a = _agent_of(self.server)
+        try:
+            return a.data_provider.get_embedder() if a is not None else None
+        except Exception:
+            return None
+
+    def _units_semantic(self, config, tier: str, query: str) -> dict:
+        from agent.memory import units_review as ur
+        emb = self._embedder()
+        if emb is None:
+            return {"items": [], "total": 0, "note": "no embedder configured — semantic "
+                    "search needs [embeddings]"}
+        try:
+            vec = emb.embed_one(query)
+        except Exception as exc:
+            return {"items": [], "total": 0, "note": f"embedding the query failed: {exc}"}
+        return ur.semantic(config, tier, vec)
+
+    def _rea_pseudo(self, path: str, addr: str) -> str:
+        """Pseudocode from a running REA server, for units stored without it."""
+        config = _agent_config(self.server)
+        if config is None or not path or not addr:
+            return ""
+        try:
+            from agent.mcp import manager
+            from agent.rag.rea_facts import ReaFacts
+            server = manager.get_server(config.asm.rea_server)
+            if server is None:
+                return ""
+            facts = ReaFacts(*server)
+            facts.open(path)
+            return facts.pseudocode(addr)
+        except Exception:
+            logger.debug("http ui: REA pseudocode fetch failed", exc_info=True)
+            return ""
+
+    def units_action(self, kind: str, payload: dict) -> dict:
+        """Reviewer writes from the explorer (agent/memory/units_review.py)."""
+        from agent.memory import units_review as ur
+        config = _agent_config(self.server)
+        if config is None:
+            return {"error": _NEEDS_LOCAL}
+        tier = str(payload.get("tier") or "unit")
+        uid = str(payload.get("id") or "")
+        try:
+            if kind == "edit":
+                return ur.edit(config, tier, uid, name=payload.get("name"),
+                               description=payload.get("description"),
+                               embedder=self._embedder())
+            if kind == "review":
+                return ur.review(config, tier, uid, payload.get("verdict") or None,
+                                 str(payload.get("note") or ""))
+            if kind == "redescribe":
+                return ur.redescribe(config, tier, uid, embedder=self._embedder(),
+                                     fetch_pseudo=self._rea_pseudo)
+        except (ur.ReviewError, ValueError) as exc:
+            return {"error": str(exc)}
+        except Exception as exc:
+            logger.warning("http ui: units %s failed", kind, exc_info=True)
+            return {"error": f"{type(exc).__name__}: {exc}"}
+        return {"error": f"unknown units action '{kind}'"}
 
     # ── on-demand heal ────────────────────────────────────────────────────
     def _heal_signals(self, focus: str = "") -> tuple[str, dict]:
@@ -3034,6 +3112,9 @@ def _make_handler(ui: _HttpUI):
             if self.path == "/api/clients/revoke":
                 ok = _clients() is not None and _clients().revoke(str(payload.get("id") or ""))
                 self._json({"ok": bool(ok)})
+                return
+            if self.path.startswith("/api/units/"):
+                self._json(ui.units_action(self.path.removeprefix("/api/units/"), payload))
                 return
             if self.path == "/api/chat":
                 text = str(payload.get("text") or "").strip()

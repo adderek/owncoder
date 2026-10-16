@@ -42,6 +42,7 @@ _FUN_RE = re.compile(r"\b(?:FUN|thunk_FUN)_[0-9a-fA-F]{6,16}\b")
 _STR_LABEL_RE = re.compile(r"\bs_\w*?_([0-9a-fA-F]{8,16})\b")
 _MAX_FACT_IMPORTS = 40
 _MAX_LLM_FAILURES = 3
+_MAX_STORED_PSEUDO = 20000
 
 
 def _sha(text: str) -> str:
@@ -261,7 +262,10 @@ class BinaryAnalysisPipeline:
                 "confidence": d["confidence"],
                 "calls": json.dumps([n for n, _ in callee_ctx]),
                 "evidence": json.dumps({"ghidra_name": f["name"], "signature": f["signature"],
-                                        "unverified_apis": d["unverified_apis"]}),
+                                        "unverified_apis": d["unverified_apis"],
+                                        # What the description was made from —
+                                        # the reader checks it against this.
+                                        "pseudocode": pseudo[:_MAX_STORED_PSEUDO]}),
             }
             self._embed(unit)
             self._store.upsert_unit(unit)

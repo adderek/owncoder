@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 _DESCRIBE_PROMPT = """\
 Analyze this assembly routine and describe what it does.
 
-{prev_context}{next_context}\
+{prev_context}{next_context}{calls_context}\
 Assembly (lines {start_line}–{end_line} of {path}):
 ```
 {content}
@@ -151,15 +151,25 @@ class AsmDescriber:
         self._fn_max_tokens = getattr(token_limits, "asm_function", 1024) if token_limits else 1024
 
     def describe_chunk(
-        self, chunk: dict, prev_desc: str | None, next_desc: str | None
+        self, chunk: dict, prev_desc: str | None, next_desc: str | None,
+        callees: list[tuple[str, str]] | None = None, hint: str = "",
     ) -> dict:
-        """Returns description fields to merge into the unit dict."""
+        """Returns description fields to merge into the unit dict.
+
+        callees: [(name, purpose or "")] read off the listing's call
+        instructions — exact, unlike the model's own `calls` guess.
+        """
         prev_context = (
             f'The routine before this one: "{prev_desc}"\n\n' if prev_desc else ""
         )
         next_context = (
             f'The routine after this one: "{next_desc}"\n\n' if next_desc else ""
         )
+
+        calls_context = ""
+        if callees:
+            calls_context = "Routines it calls or jumps to (from the code, exact):\n" + "".join(
+                f"- {n}: {p}\n" if p else f"- {n}\n" for n, p in callees[:30]) + "\n"
 
         content = chunk.get("content", "")
         # Trim content to token budget
@@ -170,11 +180,14 @@ class AsmDescriber:
         prompt = _DESCRIBE_PROMPT.format(
             prev_context=prev_context,
             next_context=next_context,
+            calls_context=calls_context,
             start_line=chunk["start_line"],
             end_line=chunk["end_line"],
             path=chunk["path"],
             content=content,
         )
+        if hint:
+            prompt = f"{hint}\n\n{prompt}"
 
         result = self._call_llm(prompt)
         if result is None:
@@ -199,7 +212,7 @@ class AsmDescriber:
         }
 
     def describe_function(self, fn: dict, callees: list[tuple[str, str]],
-                          strings: list[str]) -> dict:
+                          strings: list[str], hint: str = "") -> dict:
         """Describe one REA-imported function.
 
         fn: {addr, name, signature, pseudocode}. callees: [(name, purpose or
@@ -217,6 +230,8 @@ class AsmDescriber:
             strings="\n".join(f"- {s!r}" for s in strings) or "- (none)",
             pseudocode=pseudo,
         )
+        if hint:
+            prompt = f"{hint}\n\n{prompt}"
         result = self._call_llm(prompt, max_tokens=self._fn_max_tokens,
                                 required=_FUNCTION_REQUIRED)
         if result is None:
@@ -238,7 +253,7 @@ class AsmDescriber:
             "unverified_apis": unverified,
         }
 
-    def summarize_group(self, children: list[dict], facts: str = "") -> dict:
+    def summarize_group(self, children: list[dict], facts: str = "", hint: str = "") -> dict:
         """Given list of described child units, return group-level description fields.
 
         facts: optional exact context (e.g. imports the group uses) appended
@@ -254,6 +269,8 @@ class AsmDescriber:
             children_list=children_list,
             facts=f"\n{facts}\n" if facts else "",
         )
+        if hint:
+            prompt = f"{hint}\n\n{prompt}"
 
         result = self._call_llm(prompt)
         if result is None:

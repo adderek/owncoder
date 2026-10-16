@@ -183,6 +183,15 @@ class AsmAnalysisPipeline:
         # Set prev/next sibling links
         self._link_siblings(new_units)
 
+        # Control-flow edges straight from the instructions: the call graph
+        # the explorer shows and the callee context the describer gets.
+        from agent.rag.asm_xrefs import code_edges
+        edges = code_edges(lines, new_units)
+        self._store.set_edges(path, edges)
+        callees_of: dict[str, list[str]] = {}
+        for src, dst, _kind in edges:
+            callees_of.setdefault(src, []).append(dst)
+
         # ── Phase 2: Embed raw content ──────────────────────────────────────
         if self._embedder:
             embed_targets = [u for u in new_units if u["id"] in changed_ids or force]
@@ -204,6 +213,13 @@ class AsmAnalysisPipeline:
         # Reload all level-0 units for adjacency context
         all_level0 = self._store.get_units_for_file(path, level=0)
         idx_map = {u["id"]: i for i, u in enumerate(all_level0)}
+        known = {u["id"]: (u.get("inferred_name") or "", u.get("description") or "")
+                 for u in all_level0 if u.get("status") == "described"}
+        # Callees first, so each prompt carries what its callees do.
+        from agent.rag.binary_pipeline import callee_first_order
+        by_id = {u["id"]: u for u in pending}
+        pending = [by_id[i] for i in callee_first_order(
+            list(by_id), {k: [d for d in v if d in by_id] for k, v in callees_of.items()})]
 
         described_count = 0
         total_pending = len(pending)
@@ -219,7 +235,17 @@ class AsmAnalysisPipeline:
             start, end = unit["start_line"], unit["end_line"]
             unit["content"] = "".join(lines[start - 1:end])
 
-            desc_fields = self._describer.describe_chunk(unit, prev_desc, next_desc)
+            callees = []
+            for dst in callees_of.get(unit["id"], []):
+                if dst.startswith("addr:"):
+                    callees.append((dst[5:], "outside this listing"))
+                else:
+                    name, purpose = known.get(dst, ("", ""))
+                    u = all_level0[idx_map[dst]] if dst in idx_map else None
+                    where = f"lines {u['start_line']}-{u['end_line']}" if u else dst
+                    callees.append((name or where, purpose))
+            desc_fields = self._describer.describe_chunk(unit, prev_desc, next_desc,
+                                                         callees=callees)
             unit.update(desc_fields)
             unit["status"] = "described"
 
@@ -231,6 +257,7 @@ class AsmAnalysisPipeline:
                     logger.warning("Embed description failed for unit %s: %s", unit["id"], e)
 
             self._store.upsert_unit(unit)
+            known[unit["id"]] = (unit.get("inferred_name") or "", unit.get("description") or "")
             described_count += 1
             unit["_index"] = described_count
             unit["_total"] = total_pending

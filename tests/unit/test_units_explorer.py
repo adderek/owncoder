@@ -101,20 +101,49 @@ def test_asm_children_keep_their_explicit_order(asm):
     assert [k["id"] for k in ux.units(asm, "asm_unit", parent="g")["items"]] == ["boot", "init"]
 
 
-def test_an_address_callee_resolves_through_the_listing(asm):
+def test_listing_branches_become_edges_without_reindexing(asm):
+    """An index from before edges were recorded: read them off the listing."""
     n = ux.node(asm, "asm_unit", "boot")
-    assert n["callees"][0]["id"] == "init" and n["callees"][0]["line"] == 3
+    assert n["edges_from"] == "listing"
+    assert [(c["id"], c["via"]) for c in n["callees"]] == [("init", "jump")]
     assert [c["id"] for c in ux.node(asm, "asm_unit", "init")["callers"]] == ["boot"]
+
+
+def test_branch_operands_in_the_shown_code_link_to_their_unit(asm):
+    targets = ux.node(asm, "asm_unit", "boot")["source"]["targets"]
+    assert targets["1"]["unit"]["id"] == "init" and targets["1"]["line"] == 3
+
+
+def test_a_group_shows_only_edges_that_cross_it(asm):
+    # boot → init is inside g, so the group calls nothing and nothing calls it.
+    n = ux.node(asm, "asm_unit", "g")
+    assert n["callees"] == [] and n["callers"] == []
 
 
 def test_binary_units_use_rea_edges_and_have_no_source_text(asm):
     n = ux.node(asm, "asm_unit", "fn1")
     assert {c.get("id") for c in n["callees"]} == {None, "fn2"}
-    assert {"label": "KERNEL32::ExitProcess", "external": True} in n["callees"]
+    ext = [c for c in n["callees"] if c.get("external")]
+    assert [(c["label"], c["via"]) for c in ext] == [("KERNEL32::ExitProcess", "call")]
+    assert n["edges_from"] == "ghidra"
     assert [c["id"] for c in ux.node(asm, "asm_unit", "fn2")["callers"]] == ["fn1"]
-    assert "binary" in n["source"]["note"]
+    assert "no pseudocode" in n["source"]["note"]
 
 
 def test_unknown_tier_is_an_error(config):
     with pytest.raises(ValueError):
         ux.files(config, "chunk")
+
+
+def test_a_binary_unit_shows_its_stored_pseudocode(asm, config):
+    import json as _json
+    from agent.rag.asm_store import AsmStore
+    store = AsmStore(dataclasses.replace(config.rag, db_path=config.rag.db_path))
+    store.upsert_unit({"id": "fn3", "path": "app.exe", "level": 0, "start_line": 0x401020,
+                       "end_line": 0x40102f, "addr": "401020", "checksum": "x",
+                       "status": "described", "inferred_name": "f", "description": "d",
+                       "evidence": _json.dumps({"signature": "int f(void)",
+                                                "pseudocode": "int f(void) { return 1; }"})})
+    n = ux.node(config, "asm_unit", "fn3")
+    assert n["source"] == {"text": "int f(void) { return 1; }", "lang": "c", "pseudo": True}
+    assert n["extra"]["evidence"] == {"signature": "int f(void)"}

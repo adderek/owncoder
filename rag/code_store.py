@@ -86,7 +86,9 @@ CREATE TABLE IF NOT EXISTS _units_meta (
 
 
 class CodeStore:
-    def __init__(self, db_path: str) -> None:
+    def __init__(self, db_path: str, file_rollups: bool = False) -> None:
+        # Read by the indexer: whether to keep a level-1 roll-up per file.
+        self.file_rollups = file_rollups
         p = Path(db_path)
         p.parent.mkdir(parents=True, exist_ok=True)
         self._db_path = str(p.resolve())
@@ -114,6 +116,8 @@ class CodeStore:
                 conn.execute(stmt)
             except Exception:
                 pass
+        from agent.rag.unit_overrides import ensure_schema
+        ensure_schema(conn, "units")
         conn.commit()
 
     def _setup(self) -> None:
@@ -145,21 +149,18 @@ class CodeStore:
 
     def upsert_unit(self, unit: dict) -> None:
         conn = self._conn
+        from agent.rag.unit_overrides import lay_over, vector_blob
+        eff = lay_over(conn, "units", unit)
         conn.execute("""
             INSERT OR REPLACE INTO units
-            (id, path, language, node_type, name, level,
-             start_line, end_line, description, inferred_name,
-             object_checksum, node_checksum, edge_set_checksum,
-             revision, parent_id, prev_id, next_id,
-             status, confidence, mtime, git_hash,
-             analysis_date, analysis_model, extra_json)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            (id, path, language, node_type, name, level, start_line, end_line, description, inferred_name, object_checksum, node_checksum, edge_set_checksum, revision, parent_id, prev_id, next_id, status, confidence, mtime, git_hash, analysis_date, analysis_model, extra_json, description_model, name_model)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             unit["id"], unit["path"],
             unit.get("language"), unit.get("node_type"), unit.get("name"),
             unit.get("level", 0),
             unit.get("start_line"), unit.get("end_line"),
-            unit.get("description"), unit.get("inferred_name"),
+            eff["description"], eff["inferred_name"],
             unit.get("object_checksum"), unit.get("node_checksum"),
             unit.get("edge_set_checksum"),
             unit.get("revision", 1),
@@ -169,18 +170,23 @@ class CodeStore:
             unit.get("mtime"), unit.get("git_hash"),
             unit.get("analysis_date"), unit.get("analysis_model"),
             unit.get("extra_json"),
+            eff["description_model"], eff["name_model"],
         ))
-        emb = unit.get("embedding")
-        if emb:
-            import sqlite_vec
-            dims = len(emb)
+        # The reviewer's text is what a search should find, not the model's.
+        blob, dims = vector_blob(unit.get("embedding"), eff["embedding"], self._vec_dims)
+        if blob is not None:
             self._ensure_vec_table(dims)
             conn.execute("DELETE FROM vec_units WHERE unit_id = ?", (unit["id"],))
             conn.execute(
                 "INSERT INTO vec_units(unit_id, embedding) VALUES (?, ?)",
-                (unit["id"], sqlite_vec.serialize_float32(emb)),
+                (unit["id"], blob),
             )
         conn.commit()
+
+    def set_parent(self, unit_ids: list[str], parent_id: str) -> None:
+        self._conn.executemany("UPDATE units SET parent_id = ? WHERE id = ?",
+                               [(parent_id, i) for i in unit_ids])
+        self._conn.commit()
 
     def upsert_children(self, parent_id: str, child_ids: list[str]) -> None:
         conn = self._conn
@@ -301,12 +307,18 @@ class CodeStore:
         return [dict(r) for r in rows]
 
     def get_children(self, parent_id: str) -> list[dict]:
+        """Ordered children: unit_children first, then units that only name
+        this one as parent_id (the indexer links chunker parents that way)."""
         rows = self._conn.execute("""
             SELECT u.* FROM units u
             JOIN unit_children c ON c.child_id = u.id
             WHERE c.parent_id = ?
             ORDER BY c.child_order
         """, (parent_id,)).fetchall()
+        seen = {r["id"] for r in rows}
+        rows += [r for r in self._conn.execute(
+            "SELECT * FROM units WHERE parent_id = ? ORDER BY start_line", (parent_id,)
+        ).fetchall() if r["id"] not in seen]
         return [dict(r) for r in rows]
 
     def get_file_record(self, path: str) -> dict | None:
@@ -316,9 +328,14 @@ class CodeStore:
         return dict(row) if row else None
 
     def get_unit_checksums_for_file(self, path: str) -> dict[str, dict]:
-        """Return {unit_id: {object_checksum, status, description}} for a file (level=0 only)."""
+        """Return {unit_id: {object_checksum, status, description, …}} for a file (level=0 only).
+
+        Carries the model's own text beside the effective one, so a re-insert
+        does not mistake a reviewer's correction for model output.
+        """
         rows = self._conn.execute(
-            "SELECT id, object_checksum, status, description FROM units WHERE path = ? AND level = 0",
+            "SELECT id, object_checksum, status, description, inferred_name, confidence, "
+            "node_checksum, description_model, name_model FROM units WHERE path = ? AND level = 0",
             (path,),
         ).fetchall()
         return {r["id"]: dict(r) for r in rows}

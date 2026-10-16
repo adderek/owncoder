@@ -1128,3 +1128,30 @@ button:hover { filter: brightness(1.15); }
                          white-space: pre; overflow-x: auto; padding: 8px;
                          border: 1px solid var(--border); border-radius: 6px; }
 .unit-extra { white-space: pre-wrap; word-break: break-word; }
+.unit-sem { display: flex; gap: 4px; align-items: center; font-size: 12px; color: var(--dim);
+            cursor: pointer; white-space: nowrap; }
+.unit-flags { color: var(--accent); font-size: 12px; flex: none; }
+.unit-row.unit-low .unit-title, .unit-link.unit-low { opacity: .7; font-style: italic; }
+.unit-row.unit-wrong .unit-title { text-decoration: line-through; text-decoration-color: var(--dim); }
+.unit-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+                margin: 4px 0 8px; font-size: 12px; }
+.unit-review { font-size: 12px; padding: 6px 8px; border-radius: 6px; margin-bottom: 8px;
+               border: 1px solid var(--border); }
+.unit-review.unit-stale { border-color: var(--accent); }
+.unit-model { font-size: 12px; color: var(--dim); margin-top: 6px; }
+.unit-model summary { cursor: pointer; }
+.unit-edit { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.unit-edit input, .unit-edit textarea {
+  background: var(--bg); color: var(--fg); font: inherit; border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 8px; resize: vertical; }
+.unit-edit input:focus, .unit-edit textarea:focus { outline: none; border-color: var(--accent); }
+.unit-graph { width: 100%; height: auto; max-height: 260px; display: block; color: var(--fg); }
+.unit-graph .ug-node { font: 11px var(--mono); fill: currentColor; }
+.unit-graph .ug-link { fill: var(--accent); cursor: pointer; }
+.unit-graph .ug-link:hover { text-decoration: underline; }
+.unit-graph .ug-me { font-weight: 600; }
+.unit-graph .ug-self { fill: none; stroke: var(--accent); }
+.unit-graph .ug-edge { stroke: var(--border); stroke-width: 1; }
+.unit-graph .ug-jump { stroke-dasharray: 3 3; }
+.unit-ln { color: var(--dim); user-select: none; }
+.unit-tgt { font-size: 11px; }
