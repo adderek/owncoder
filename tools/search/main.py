@@ -22,6 +22,31 @@ def setup(config, data_provider) -> None:
     _archive_store = None  # lazy-open on first archive search
 
 
+def _mark_stale(results: list[dict]) -> list[str]:
+    """Flag hits whose file changed (or vanished) since indexing; one stat per file."""
+    import os
+    root = getattr(getattr(_config, "tools", None), "working_dir", None) or "."
+    getter = getattr(_data_provider, "indexed_mtime", None)
+    if getter is None:
+        return []
+    seen: dict[str, str] = {}
+    for r in results:
+        path = r.get("path") or ""
+        if not path or r.get("language") == "asm":
+            continue
+        if path not in seen:
+            indexed = getter(path)
+            full = path if os.path.isabs(path) else os.path.join(root, path)
+            try:
+                disk = os.stat(full).st_mtime
+                seen[path] = "changed" if indexed is not None and abs(disk - indexed) > 1.0 else ""
+            except OSError:
+                seen[path] = "deleted"
+        if seen[path]:
+            r["stale"] = seen[path] + " since indexed"
+    return [p for p, v in seen.items() if v]
+
+
 @register(
     "search_code",
     {
@@ -48,31 +73,6 @@ def setup(config, data_provider) -> None:
         },
     },
 )
-def _mark_stale(results: list[dict]) -> list[str]:
-    """Flag hits whose file changed (or vanished) since indexing; one stat per file."""
-    import os
-    root = getattr(getattr(_config, "tools", None), "working_dir", None) or "."
-    getter = getattr(_data_provider, "indexed_mtime", None)
-    if getter is None:
-        return []
-    seen: dict[str, str] = {}
-    for r in results:
-        path = r.get("path") or ""
-        if not path or r.get("language") == "asm":
-            continue
-        if path not in seen:
-            indexed = getter(path)
-            full = path if os.path.isabs(path) else os.path.join(root, path)
-            try:
-                disk = os.stat(full).st_mtime
-                seen[path] = "changed" if indexed is not None and abs(disk - indexed) > 1.0 else ""
-            except OSError:
-                seen[path] = "deleted"
-        if seen[path]:
-            r["stale"] = seen[path] + " since indexed"
-    return [p for p, v in seen.items() if v]
-
-
 def search_code(query: str, top_k: int | None = None) -> dict:
     if _data_provider is None or not _data_provider.is_available():
         from agent.tools.search.grep import grep_code as _grep_code
