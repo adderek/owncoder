@@ -846,12 +846,35 @@ _PAGE = r"""<!DOCTYPE html>
   <div id="membar">
     <button class="sbtn" id="memback" title="Back to the conversation">← chat</button>
     <b>🧠 Memory &amp; indexes</b>
+    <button class="sbtn" id="memunits" title="Navigate described code units: files, parent/children, calls, source">🧬 explore units</button>
     <input id="memsearch" placeholder="search this tier…">
   </div>
   <div id="memmain">
     <div id="memrail">—</div>
     <div id="memlist">—</div>
     <div id="memdetail" class="dim">Pick an entry to read it.</div>
+  </div>
+</div>
+<!-- Code-unit explorer: the AI descriptions of code (any language, asm,
+     binaries) navigated the way the code is — file, roll-up → parts, calls —
+     with the code the description is about beside it. -->
+<div id="unitpane" class="hidden">
+  <div id="unitbar">
+    <button class="sbtn" id="unitback" title="Back to the conversation">← chat</button>
+    <b>🧬 Code units</b>
+    <select id="unittier" title="Which unit store"></select>
+    <input id="unitsearch" placeholder="search descriptions / names…">
+    <select id="unitlevel" title="Level filter"><option value="">any level</option></select>
+    <select id="unitstatus" title="Status filter"><option value="">any status</option>
+      <option>described</option><option>grouped</option><option>pending</option></select>
+  </div>
+  <div id="unitmain">
+    <div id="unitfilescol">
+      <input id="unitfileq" placeholder="filter files…">
+      <div id="unitfiles">—</div>
+    </div>
+    <div id="unittree">Pick a file, or search.</div>
+    <div id="unitdetail" class="dim">Pick a unit to read its description.</div>
   </div>
 </div>
 <div id="log"></div>
@@ -2616,6 +2639,31 @@ class _HttpUI:
             return {"error": _NEEDS_LOCAL}
         return item(config, tier, item_id, session_id=self._sid())
 
+    def units_api(self, kind: str, q: dict) -> dict:
+        """Code-unit explorer (agent/memory/units_explorer.py), read-only."""
+        from agent.memory import units_explorer as ux
+        config = _agent_config(self.server)
+        if config is None:
+            return {"error": _NEEDS_LOCAL}
+        one = lambda k, d="": (q.get(k) or [d])[0]  # noqa: E731
+        num = lambda k, d, hi: max(0, min(hi, int(one(k)) if one(k).isdigit() else d))  # noqa: E731
+        tier = one("tier", "unit")
+        try:
+            if kind == "summary":
+                return ux.summary(config)
+            if kind == "files":
+                return ux.files(config, tier, one("q"), num("limit", 300, 2000))
+            if kind == "list":
+                return ux.units(config, tier, path=one("path"), parent=one("parent"),
+                                query=one("q"), level=one("level"), status=one("status"),
+                                offset=num("offset", 0, 10**9),
+                                limit=max(1, num("limit", 100, 500)))
+            if kind == "node":
+                return ux.node(config, tier, one("id"))
+        except ValueError as exc:
+            return {"error": str(exc)}
+        return {"error": f"unknown units endpoint '{kind}'"}
+
     # ── on-demand heal ────────────────────────────────────────────────────
     def _heal_signals(self, focus: str = "") -> tuple[str, dict]:
         from agent.core.self_heal import heal_request
@@ -2837,6 +2885,11 @@ def _make_handler(ui: _HttpUI):
                     self._json(ui.memory_item(one("tier", "note"), one("id")))
                 else:
                     self._json(ui.memory_info(deep=one("deep", "0") == "1"))
+            elif self.path.startswith("/api/units/"):
+                from urllib.parse import parse_qs, urlparse
+                parsed = urlparse(self.path)
+                self._json(ui.units_api(parsed.path.removeprefix("/api/units/"),
+                                        parse_qs(parsed.query)))
             elif self.path.startswith("/api/sessions"):
                 from urllib.parse import parse_qs, urlparse
                 _qs = parse_qs(urlparse(self.path).query)

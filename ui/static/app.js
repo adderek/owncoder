@@ -2229,6 +2229,13 @@ async function openMemItem(id) {
     body.className = 'mem-detail-body';
     body.textContent = d.body || '';
     el.appendChild(body);
+    if (memTier === 'unit' || memTier === 'asm_unit') {
+      const x = document.createElement('button');
+      x.className = 'sbtn'; x.textContent = '🧬 open in unit explorer';
+      x.title = 'Parent, parts, calls and the code beside the description';
+      x.addEventListener('click', () => openUnitView(memTier, id));
+      el.insertBefore(x, body);
+    }
   } catch (e) { el.textContent = 'failed: ' + e; }
 }
 
@@ -2254,6 +2261,356 @@ document.getElementById('mempane').addEventListener('keydown', (e) => {
     clearTimeout(t);
     t = setTimeout(loadMemList, 200);
   });
+})();
+
+// ── code-unit explorer ──────────────────────────────────────────────────────
+// Described units of any language (asm and binaries included), navigated the
+// way the code is: file → roll-up → parts, calls / called-by, and the code the
+// description is about beside it. Backend: agent/memory/units_explorer.py.
+let unitTier = 'unit';
+let unitFile = '';
+let unitSel = '';
+let unitHist = [];
+const UNIT_PAGE = 100;
+
+function unitApi(kind, params) {
+  const qs = new URLSearchParams(Object.assign({tier: unitTier}, params || {}));
+  return fetch('/api/units/' + kind + '?' + qs).then(r => r.json());
+}
+
+function unitSpan(u) {
+  if (!u.lines) return '';
+  const [a, b] = u.lines;
+  // Binary units keep an address range in the line columns.
+  if (u.addr) return '0x' + a.toString(16) + '–0x' + b.toString(16);
+  return a === b ? 'L' + a : 'L' + a + '–' + b;
+}
+
+function unitShortTitle(u) {
+  // The list already says which file; repeating ":line" after the name is noise.
+  return (u.title || u.id).replace(/ — .*$/, '');
+}
+
+function unitLink(u, label) {
+  const a = document.createElement('a');
+  a.href = '#';
+  a.className = 'unit-link';
+  a.textContent = label || unitShortTitle(u);
+  a.title = (u.path ? u.path + ' ' + unitSpan(u) : '') + (u.preview ? '\n' + u.preview : '');
+  a.addEventListener('click', (e) => { e.preventDefault(); openUnit(u.id); });
+  return a;
+}
+
+async function loadUnitSummary() {
+  const sel = document.getElementById('unittier');
+  try {
+    const d = await unitApi('summary');
+    sel.textContent = '';
+    const tiers = d.tiers || [];
+    // Open on a store that has something, unless the reader chose one.
+    if (!tiers.some(t => t.key === unitTier && t.count))
+      unitTier = (tiers.find(t => t.count) || tiers[0] || {key: unitTier}).key;
+    tiers.forEach(t => {
+      const o = document.createElement('option');
+      o.value = t.key;
+      o.textContent = t.label + ' (' + fmtK(t.described) + '/' + fmtK(t.count) + ')';
+      o.selected = t.key === unitTier;
+      sel.appendChild(o);
+    });
+  } catch (e) { sel.textContent = ''; }
+}
+
+async function loadUnitFiles() {
+  const box = document.getElementById('unitfiles');
+  box.textContent = '…';
+  const q = document.getElementById('unitfileq').value.trim();
+  try {
+    const d = await unitApi('files', {q});
+    box.textContent = '';
+    if (d.note) { box.textContent = d.note; return; }
+    const lv = document.getElementById('unitlevel');
+    const top = Math.max(0, ...(d.files || []).map(f => f.top_level || 0));
+    const keep = lv.value;
+    lv.length = 1;
+    for (let i = 0; i <= top; i++) {
+      const o = document.createElement('option');
+      o.value = String(i); o.textContent = 'L' + i;
+      lv.appendChild(o);
+    }
+    lv.value = keep;
+    (d.files || []).forEach(f => {
+      const b = document.createElement('button');
+      b.className = 'mem-tier' + (f.path === unitFile ? ' sel' : '');
+      b.title = f.path;
+      const name = document.createElement('span');
+      name.className = 'unit-fname';
+      name.textContent = f.path.split('/').slice(-2).join('/');
+      const c = document.createElement('span');
+      c.className = 'mem-count';
+      c.textContent = fmtK(f.described) + '/' + fmtK(f.n);
+      b.append(name, c);
+      b.addEventListener('click', () => {
+        unitFile = f.path;
+        box.querySelectorAll('.sel').forEach(x => x.classList.remove('sel'));
+        b.classList.add('sel');
+        loadUnitTree();
+      });
+      box.appendChild(b);
+    });
+    if (d.total > (d.files || []).length) {
+      const n = document.createElement('div');
+      n.className = 'dim';
+      n.textContent = (d.files || []).length + ' of ' + fmtK(d.total) + ' files — filter to narrow';
+      box.appendChild(n);
+    }
+  } catch (e) { box.textContent = 'failed: ' + e; }
+}
+
+function unitRow(u, depth) {
+  const wrap = document.createElement('div');
+  wrap.className = 'unit-node';
+  const r = document.createElement('div');
+  r.className = 'unit-row' + (u.id === unitSel ? ' sel' : '');
+  r.dataset.id = u.id;
+  r.style.paddingLeft = (6 + depth * 14) + 'px';
+  const tog = document.createElement('span');
+  tog.className = 'unit-tog';
+  tog.textContent = u.has_children ? '▸' : '·';
+  const t = document.createElement('span');
+  t.className = 'unit-title';
+  t.textContent = unitShortTitle(u);
+  const tags = document.createElement('span');
+  tags.className = 'mem-tags';
+  tags.textContent = 'L' + u.level + ' ' + u.status + ' ' + unitSpan(u)
+    + (unitFile ? '' : '  ' + u.path);
+  r.append(tog, t, tags);
+  if (u.preview) r.title = u.preview;
+  const kids = document.createElement('div');
+  kids.className = 'unit-kids hidden';
+  let loaded = false;
+  tog.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (!u.has_children) return;
+    const open = kids.classList.toggle('hidden') === false;
+    tog.textContent = open ? '▾' : '▸';
+    if (open && !loaded) {
+      loaded = true;
+      await unitFill(kids, {parent: u.id}, depth + 1);
+    }
+  });
+  r.addEventListener('click', () => openUnit(u.id));
+  wrap.append(r, kids);
+  return wrap;
+}
+
+async function unitFill(box, params, depth, offset) {
+  offset = offset || 0;
+  const pending = document.createElement('div');
+  pending.className = 'dim'; pending.textContent = '…';
+  box.appendChild(pending);
+  try {
+    const d = await unitApi('list', Object.assign({offset, limit: UNIT_PAGE}, params));
+    pending.remove();
+    if (d.error || d.note) {
+      const n = document.createElement('div');
+      n.className = 'dim'; n.textContent = d.error || d.note;
+      box.appendChild(n);
+    }
+    (d.items || []).forEach(u => box.appendChild(unitRow(u, depth)));
+    if (!offset && !(d.items || []).length) {
+      const n = document.createElement('div');
+      n.className = 'dim'; n.textContent = 'nothing here';
+      box.appendChild(n);
+    }
+    const shown = offset + (d.items || []).length;
+    if (shown < (d.total || 0)) {
+      const more = document.createElement('button');
+      more.className = 'sbtn unit-more';
+      more.style.marginLeft = (6 + depth * 14) + 'px';
+      more.textContent = 'more… (' + shown + ' of ' + fmtK(d.total) + ')';
+      more.addEventListener('click', () => { more.remove(); unitFill(box, params, depth, shown); });
+      box.appendChild(more);
+    }
+    return d;
+  } catch (e) { pending.textContent = 'failed: ' + e; }
+}
+
+function loadUnitTree() {
+  const tree = document.getElementById('unittree');
+  tree.textContent = '';
+  const q = document.getElementById('unitsearch').value.trim();
+  const level = document.getElementById('unitlevel').value;
+  const status = document.getElementById('unitstatus').value;
+  if (!unitFile && !q && !level && !status) {
+    tree.innerHTML = '<div class="dim">Pick a file, or search.</div>';
+    return;
+  }
+  const head = document.createElement('div');
+  head.className = 'unit-treehead';
+  head.textContent = unitFile ? unitFile : 'search: all files';
+  if (unitFile) {
+    const x = document.createElement('button');
+    x.className = 'sbtn'; x.textContent = '× all files';
+    x.title = 'Search across every file';
+    x.addEventListener('click', () => {
+      unitFile = '';
+      document.querySelectorAll('#unitfiles .sel').forEach(b => b.classList.remove('sel'));
+      loadUnitTree();
+    });
+    head.appendChild(x);
+  }
+  tree.appendChild(head);
+  // A filtered view is flat (matches lose their place in the tree); a bare
+  // file shows its roots, expandable.
+  unitFill(tree, {path: unitFile, q, level, status}, 0);
+}
+
+function unitSection(el, label, items, render) {
+  if (!items || !items.length) return;
+  const h = document.createElement('div');
+  h.className = 'unit-sec';
+  h.textContent = label;
+  el.appendChild(h);
+  const box = document.createElement('div');
+  box.className = 'unit-links';
+  items.forEach(it => box.appendChild(render(it)));
+  el.appendChild(box);
+}
+
+function unitCallRender(c) {
+  if (c.id) {
+    const a = unitLink(c, c.label);
+    if (c.label !== unitShortTitle(c)) a.textContent = c.label + ' → ' + unitShortTitle(c);
+    return a;
+  }
+  const s = document.createElement('span');
+  s.className = 'unit-ext';
+  s.textContent = c.label + (c.external ? ' (import)' : '');
+  return s;
+}
+
+async function openUnit(id, fromHist) {
+  const el = document.getElementById('unitdetail');
+  if (!fromHist && unitSel && unitSel !== id) unitHist.push(unitSel);
+  unitSel = id;
+  document.querySelectorAll('#unittree .unit-row').forEach(r =>
+    r.classList.toggle('sel', r.dataset.id === id));
+  el.textContent = '…';
+  try {
+    const d = await unitApi('node', {id});
+    el.textContent = '';
+    el.classList.remove('dim');
+    if (d.error) { el.textContent = d.error; return; }
+    const u = d.unit;
+    const nav = document.createElement('div');
+    nav.className = 'unit-crumbs';
+    if (unitHist.length) {
+      const back = document.createElement('button');
+      back.className = 'sbtn'; back.textContent = '◀';
+      back.title = 'Previous unit';
+      back.addEventListener('click', () => openUnit(unitHist.pop(), true));
+      nav.appendChild(back);
+    }
+    d.breadcrumb.forEach(c => {
+      nav.appendChild(unitLink(c));
+      nav.appendChild(document.createTextNode(' › '));
+    });
+    const here = document.createElement('b');
+    here.textContent = unitShortTitle(u);
+    nav.appendChild(here);
+    el.appendChild(nav);
+    const meta = document.createElement('div');
+    meta.className = 'mem-detail-meta';
+    meta.textContent = [u.path + ' ' + unitSpan(u), 'L' + u.level, u.status,
+      ...Object.entries(d.meta || {}).map(([k, v]) => k + '=' + v)].join('   ');
+    el.appendChild(meta);
+    const sib = document.createElement('div');
+    sib.className = 'unit-sib';
+    if (d.prev) sib.appendChild(unitLink(d.prev, '← ' + unitShortTitle(d.prev)));
+    if (d.next) sib.appendChild(unitLink(d.next, unitShortTitle(d.next) + ' →'));
+    if (u.path !== unitFile) {
+      const f = document.createElement('button');
+      f.className = 'sbtn'; f.textContent = 'show file';
+      f.title = 'Open this unit\'s file in the tree';
+      f.addEventListener('click', () => { unitFile = u.path; loadUnitTree(); loadUnitFiles(); });
+      sib.appendChild(f);
+    }
+    if (sib.childNodes.length) el.appendChild(sib);
+    const body = document.createElement('div');
+    body.className = 'md unit-desc';
+    body.innerHTML = u.description ? renderMd(u.description)
+      : '<span class="dim">(not described yet)</span>';
+    el.appendChild(body);
+    Object.entries(d.extra || {}).forEach(([k, v]) => {
+      if (v === null || v === '' || (Array.isArray(v) && !v.length)) return;
+      const h = document.createElement('div');
+      h.className = 'unit-sec'; h.textContent = k.replace(/_/g, ' ');
+      const p = document.createElement('pre');
+      p.className = 'unit-extra';
+      p.textContent = typeof v === 'string' ? v : JSON.stringify(v, null, 2);
+      el.append(h, p);
+    });
+    unitSection(el, 'parts (' + d.children_total + ')', d.children, c => {
+      const a = unitLink(c);
+      a.textContent = unitShortTitle(c) + '  ' + unitSpan(c);
+      return a;
+    });
+    unitSection(el, 'calls (' + (d.callees || []).length + ')', d.callees, unitCallRender);
+    unitSection(el, 'called by (' + (d.callers || []).length + ')', d.callers, unitCallRender);
+    const src = d.source || {};
+    const sh = document.createElement('div');
+    sh.className = 'unit-sec';
+    sh.textContent = 'code' + (src.truncated ? ' (first lines — unit is longer)' : '')
+      + (src.stale ? ' — file is shorter than the unit; index is stale' : '');
+    el.appendChild(sh);
+    if (src.text !== undefined) {
+      const pre = document.createElement('pre');
+      pre.className = 'unit-src';
+      const w = String(src.end).length;
+      pre.textContent = src.text.replace(/\n$/, '').split('\n').map((l, i) =>
+        String(src.start + i).padStart(w, ' ') + '  ' + l).join('\n');
+      el.appendChild(pre);
+    } else {
+      const n = document.createElement('div');
+      n.className = 'dim'; n.textContent = src.note || 'no source';
+      el.appendChild(n);
+    }
+    el.scrollTop = 0;
+  } catch (e) { el.textContent = 'failed: ' + e; }
+}
+
+async function openUnitView(tier, id) {
+  if (tier) unitTier = tier;
+  showView('units');
+  await loadUnitSummary();
+  loadUnitFiles();
+  loadUnitTree();
+  if (id) {
+    unitHist = [];
+    unitSel = '';
+    openUnit(id, true);
+  }
+}
+
+document.getElementById('memunits').addEventListener('click', () =>
+  openUnitView(memTier === 'asm_unit' || memTier === 'unit' ? memTier : null));
+document.getElementById('unitback').addEventListener('click', () => showView('chat'));
+document.getElementById('unitpane').addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') showView('chat');
+});
+document.getElementById('unittier').addEventListener('change', (e) => {
+  unitTier = e.target.value;
+  unitFile = ''; unitSel = ''; unitHist = [];
+  document.getElementById('unitdetail').textContent = 'Pick a unit to read its description.';
+  loadUnitFiles();
+  loadUnitTree();
+});
+['unitlevel', 'unitstatus'].forEach(id =>
+  document.getElementById(id).addEventListener('change', loadUnitTree));
+(() => {
+  const deb = (fn) => { let t = null; return () => { clearTimeout(t); t = setTimeout(fn, 250); }; };
+  document.getElementById('unitsearch').addEventListener('input', deb(loadUnitTree));
+  document.getElementById('unitfileq').addEventListener('input', deb(loadUnitFiles));
 })();
 
 // Fold state for every <details class="dfold"> in both drawers, persisted per
@@ -2618,8 +2975,8 @@ let taskCurrentId = null;
 // always there — every other view is a takeover that hands it back. The
 // header chip names the current view, because the drawers can be closed and
 // then nothing else on screen says what you are looking at.
-const VIEW_PANES = {task: 'taskpane', memory: 'mempane'};
-const VIEW_LABELS = {task: '✎ task', memory: '🧠 memory'};
+const VIEW_PANES = {task: 'taskpane', memory: 'mempane', units: 'unitpane'};
+const VIEW_LABELS = {task: '✎ task', memory: '🧠 memory', units: '🧬 units'};
 let currentView = 'chat';
 
 function showView(name, label) {
