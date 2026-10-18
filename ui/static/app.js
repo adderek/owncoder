@@ -1845,7 +1845,8 @@ async function loadModels(silent) {
     let h = '<div class="modeline">mode <select id="modesel">' +
       (d.modes || []).map(m => '<option' + (m === d.mode ? ' selected' : '') + '>' +
         esc(m) + '</option>').join('') + '</select></div>';
-    h += '<div class="mrolesec">active: ' + esc(d.active_model || '?') + '</div>';
+    h += '<div class="mrolesec">active: ' + esc(d.active_model || '?') +
+      ' <button class="mbtn" data-setup="1" title="Pins, ladder order, effort, saved profiles — drag and drop">🧩 setup &amp; profiles…</button></div>';
     if (d.roles && d.roles.length) {
       // Same in-flight marker as the model rows: a role with requests running
       // lights here, and its serving model lights in the list below (a ladder
@@ -1981,6 +1982,7 @@ async function loadModels(silent) {
     el.querySelectorAll('[data-bulk]').forEach(b => b.addEventListener('click', () =>
       modelAction({action: 'toggle_bulk', entries: b.dataset.bulk.split(','),
                    enabled: b.dataset.en === '1'})));
+    el.querySelectorAll('[data-setup]').forEach(b => b.addEventListener('click', openSetupView));
     document.getElementById('modesel').addEventListener('change', (ev) =>
       modelAction({action: 'mode', mode: ev.target.value}));
   } catch (e) { el.textContent = 'failed: ' + e; }
@@ -3252,8 +3254,8 @@ let taskCurrentId = null;
 // always there — every other view is a takeover that hands it back. The
 // header chip names the current view, because the drawers can be closed and
 // then nothing else on screen says what you are looking at.
-const VIEW_PANES = {task: 'taskpane', memory: 'mempane', units: 'unitpane'};
-const VIEW_LABELS = {task: '✎ task', memory: '🧠 memory', units: '🧬 units'};
+const VIEW_PANES = {task: 'taskpane', memory: 'mempane', setup: 'setuppane', units: 'unitpane'};
+const VIEW_LABELS = {task: '✎ task', memory: '🧠 memory', setup: '🧩 model setup', units: '🧬 units'};
 let currentView = 'chat';
 
 function showView(name, label) {
@@ -4350,6 +4352,7 @@ function applyState(s) {
   lastTokenAt = 0;
   setActivity(s.busy ? 'thinking' : 'idle');
   setBusy(s.busy);
+  renderModelRestore(s.model_restore);
   stateLoaded = true;
 }
 
@@ -5945,3 +5948,321 @@ init();
 
   mic.addEventListener('click', start);
 })();
+
+// ── Model setup: pins + hand-ordered ladder + effort, named profiles ────────
+// Everything edits a local draft; "Apply to session" sends the whole draft.
+// Drag is pointer-events based (one code path for mouse and touch); the ×,
+// ↑/↓ buttons and the per-role select do the same without dragging.
+let msData = null;     // last /api/model_setup
+let msDraft = null;    // {pins:{role:entry}, ladder:[names]|null (null = auto), effort}
+
+function msFromSetup(st) {
+  st = st || {};
+  return {pins: Object.assign({}, st.pins || {}),
+          ladder: (st.ladder && st.ladder.length) ? st.ladder.slice() : null,
+          effort: st.effort || ''};
+}
+function msKey(d) {
+  return JSON.stringify([Object.entries(d.pins).sort(), d.ladder || [], d.effort || '']);
+}
+
+async function openSetupView() {
+  showView('setup');
+  await msLoad(true);
+}
+
+async function msLoad(resetDraft) {
+  try {
+    msData = await (await fetch('/api/model_setup')).json();
+  } catch (e) { msNote('load failed: ' + e, true); return; }
+  if (msData.error) { msNote(msData.error, true); return; }
+  if (resetDraft || !msDraft) msDraft = msFromSetup(msData.current);
+  const sel = document.getElementById('msprof');
+  const keep = sel.value;
+  sel.innerHTML = '<option value="">—</option>' + Object.entries(msData.profiles || {}).map(
+    ([n, p]) => '<option value="' + esc(n) + '">' + (p.problems.length ? '⚠ ' : '') + esc(n) +
+      '</option>').join('');
+  if (keep && (msData.profiles || {})[keep]) sel.value = keep;
+  msRender();
+}
+
+function msNote(text, err) {
+  const el = document.getElementById('msnote');
+  el.textContent = text || '';
+  el.classList.toggle('error', !!err);
+}
+
+function msChatEntries() {
+  return (msData.entries || []).filter(e => !e.embeddings);
+}
+function msEntry(name) {
+  return (msData.entries || []).find(e => e.name === name);
+}
+function msLadderNames() {
+  return msDraft.ladder || (msData.ladder || []).map(r => r.name);
+}
+
+function msChip(name, attrs, extra) {
+  const e = msEntry(name);
+  const live = (msData.ladder || []).find(r => r.name === name);
+  const cls = 'ms-chip' + (!e ? ' gone' : (e.status === 'off' ? ' off' : '')) +
+    (live && !live.live ? ' down' : '');
+  const tip = e ? e.model + '\n' + e.base_url + (live ? '\npower ' + live.power : '') +
+    (live && !live.live ? '\nendpoint down' : '') : 'not configured here';
+  return '<div class="' + cls + '" data-dnd="1" data-name="' + esc(name) + '" ' + attrs +
+    ' title="' + esc(tip) + '"><span class="ms-grip">⠿</span><span class="ms-n">' + esc(name) +
+    '</span>' + (live && !live.live ? '<span class="ms-down">down</span>' : '') +
+    (e ? '<span class="ms-t">' + esc(e.tier) + '</span>' : '') + (extra || '') + '</div>';
+}
+
+function msRender() {
+  const d = msDraft;
+  const inLadder = new Set(msDraft.ladder || []);
+  document.getElementById('mspalette').innerHTML = msChatEntries().map(e =>
+    msChip(e.name, 'data-from="palette"', inLadder.has(e.name) ? '<span class="ms-t">✓</span>' : '')
+  ).join('') || '<div class="dim">no chat models configured</div>';
+
+  const names = msLadderNames();
+  const auto = !d.ladder;
+  document.getElementById('msladder').innerHTML =
+    (auto ? '<div class="ms-hint">automatic — ranked by model power. Drag to hand-order.</div>' : '') +
+    names.map((n, i) => msChip(n, 'data-from="ladder" data-idx="' + i + '"',
+      '<span class="ms-acts"><button data-up="' + i + '" title="weaker">↑</button>' +
+      '<button data-down="' + i + '" title="stronger">↓</button>' +
+      '<button data-rm="' + i + '" title="take off the ladder">×</button></span>')).join('') +
+    (names.length ? '' : '<div class="ms-hint">drop models here, weakest first</div>');
+  document.getElementById('msladder').classList.toggle('auto', auto);
+  document.getElementById('msauto').disabled = auto;
+
+  const opts = msChatEntries().map(e => e.name);
+  document.getElementById('mspins').innerHTML = (msData.roles || [])
+    .filter(r => r.role !== 'embeddings').map(r => {
+      const pin = d.pins[r.role];
+      return '<div class="ms-slot' + (pin ? ' pinned' : '') + (r.env_locked ? ' locked' : '') +
+        '" data-zone="pin" data-role="' + esc(r.role) + '">' +
+        '<span class="ms-role">' + (r.env_locked ? '🔒 ' : (pin ? '📌 ' : '')) + esc(r.role) + '</span>' +
+        (pin ? msChip(pin, 'data-from="pin" data-role="' + esc(r.role) + '"',
+                      '<span class="ms-acts"><button data-unpin="' + esc(r.role) + '" title="unpin">×</button></span>')
+             : '<span class="ms-auto dim">auto → ' + esc(r.entry) + '</span>') +
+        (r.env_locked ? '' : '<select data-pinsel="' + esc(r.role) + '" title="pick without dragging">' +
+          '<option value="">…</option><option value="-">auto</option>' +
+          opts.map(o => '<option>' + esc(o) + '</option>').join('') + '</select>') +
+        '</div>';
+    }).join('');
+
+  document.getElementById('mseffort').innerHTML = ['', ...(msData.efforts || [])].map(ef =>
+    '<button class="' + (d.effort === ef ? 'on' : '') + '" data-effort="' + ef + '" title="' +
+    (ef ? ef : 'leave auto-tier as configured') + '">' + (ef || 'off') + '</button>').join('');
+
+  const dirty = msKey(d) !== msKey(msFromSetup(msData.current));
+  document.getElementById('msdirty').textContent = dirty ? '● unapplied changes' : 'matches the session';
+  document.getElementById('msapply').disabled = !dirty;
+  document.getElementById('msrevert').disabled = !dirty;
+}
+
+function msLadderEdit(fn) {
+  const names = msLadderNames().slice();
+  fn(names);
+  msDraft.ladder = names;
+  msRender();
+}
+
+// Where would a drop at (x, y) land? → {zone:'ladder', idx} | {zone:'pin', role} | {zone:'palette'} | null
+function msDropAt(x, y) {
+  const el = document.elementFromPoint(x, y);
+  if (!el) return null;
+  const slot = el.closest('#setuppane [data-zone="pin"]');
+  if (slot) return slot.classList.contains('locked') ? null : {zone: 'pin', role: slot.dataset.role, el: slot};
+  const lad = el.closest('#msladder');
+  if (lad) {
+    const items = [...lad.querySelectorAll('.ms-chip:not(.ms-dragging)')];
+    let idx = items.length;
+    for (let i = 0; i < items.length; i++) {
+      const r = items[i].getBoundingClientRect();
+      if (y < r.top + r.height / 2) { idx = i; break; }
+    }
+    return {zone: 'ladder', idx, el: lad, before: items[idx] || null};
+  }
+  if (el.closest('#mspalette')) return {zone: 'palette', el: el.closest('#mspalette')};
+  return null;
+}
+
+function msDrop(src, tgt) {
+  if (!tgt) return;
+  if (tgt.zone === 'ladder') {
+    msLadderEdit(names => {
+      let idx = tgt.idx;
+      const at = names.indexOf(src.name);
+      if (at >= 0) { names.splice(at, 1); if (at < idx) idx--; }
+      names.splice(idx, 0, src.name);
+    });
+  } else if (tgt.zone === 'pin') {
+    if (src.from === 'pin' && src.role !== tgt.role) delete msDraft.pins[src.role];
+    msDraft.pins[tgt.role] = src.name;
+    msRender();
+  } else if (tgt.zone === 'palette') {
+    if (src.from === 'ladder') msLadderEdit(names => names.splice(names.indexOf(src.name), 1));
+    else if (src.from === 'pin') { delete msDraft.pins[src.role]; msRender(); }
+  }
+}
+
+(() => {
+  const pane = document.getElementById('setuppane');
+  if (!pane) return;
+  let drag = null;
+  const clearMarks = () => pane.querySelectorAll('.ms-over, .ms-insert').forEach(n =>
+    n.classList.contains('ms-insert') ? n.remove() : n.classList.remove('ms-over'));
+  pane.addEventListener('pointerdown', (ev) => {
+    const chip = ev.target.closest('[data-dnd]');
+    if (!chip || ev.button > 0 || ev.target.closest('button, select')) return;
+    ev.preventDefault();
+    drag = {chip, x0: ev.clientX, y0: ev.clientY, moved: false, ghost: null,
+            src: {name: chip.dataset.name, from: chip.dataset.from, role: chip.dataset.role}};
+    chip.setPointerCapture(ev.pointerId);
+  });
+  pane.addEventListener('pointermove', (ev) => {
+    if (!drag) return;
+    if (!drag.moved) {
+      if (Math.hypot(ev.clientX - drag.x0, ev.clientY - drag.y0) < 5) return;
+      drag.moved = true;
+      const r = drag.chip.getBoundingClientRect();
+      drag.ghost = drag.chip.cloneNode(true);
+      drag.ghost.classList.add('ms-ghost');
+      drag.ghost.style.width = r.width + 'px';
+      drag.dx = ev.clientX - r.left; drag.dy = ev.clientY - r.top;
+      document.body.appendChild(drag.ghost);
+      drag.chip.classList.add('ms-dragging');
+    }
+    drag.ghost.style.left = (ev.clientX - drag.dx) + 'px';
+    drag.ghost.style.top = (ev.clientY - drag.dy) + 'px';
+    clearMarks();
+    const t = msDropAt(ev.clientX, ev.clientY);
+    if (!t) return;
+    t.el.classList.add('ms-over');
+    if (t.zone === 'ladder') {
+      const bar = document.createElement('div');
+      bar.className = 'ms-insert';
+      t.el.insertBefore(bar, t.before);
+    }
+  });
+  const end = (ev, cancel) => {
+    if (!drag) return;
+    const d = drag; drag = null;
+    clearMarks();
+    if (d.ghost) d.ghost.remove();
+    d.chip.classList.remove('ms-dragging');
+    if (!d.moved || cancel) return;
+    const t = msDropAt(ev.clientX, ev.clientY);
+    // Dragged out of the ladder or a pin slot into nowhere: take it off.
+    msDrop(d.src, t || (d.src.from !== 'palette' ? {zone: 'palette'} : null));
+  };
+  pane.addEventListener('pointerup', (ev) => end(ev, false));
+  pane.addEventListener('pointercancel', (ev) => end(ev, true));
+
+  pane.addEventListener('click', (ev) => {
+    const b = ev.target.closest('button');
+    if (!b) return;
+    const ds = b.dataset;
+    if (ds.up !== undefined) msLadderEdit(n => { const i = +ds.up; if (i > 0) n.splice(i - 1, 0, n.splice(i, 1)[0]); });
+    else if (ds.down !== undefined) msLadderEdit(n => { const i = +ds.down; if (i < n.length - 1) n.splice(i + 1, 0, n.splice(i, 1)[0]); });
+    else if (ds.rm !== undefined) msLadderEdit(n => n.splice(+ds.rm, 1));
+    else if (ds.unpin !== undefined) { delete msDraft.pins[ds.unpin]; msRender(); }
+    else if (ds.effort !== undefined) { msDraft.effort = ds.effort; msRender(); }
+  });
+  pane.addEventListener('change', (ev) => {
+    const s = ev.target.closest('[data-pinsel]');
+    if (!s || !s.value) return;
+    if (s.value === '-') delete msDraft.pins[s.dataset.pinsel];
+    else msDraft.pins[s.dataset.pinsel] = s.value;
+    msRender();
+  });
+
+  const post = async (payload) => {
+    try {
+      const r = await (await fetch('/api/model', {method: 'POST',
+        headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)})).json();
+      msNote(r.msg || (r.ok ? 'ok' : 'failed'), !r.ok);
+      return r.ok;
+    } catch (e) { msNote('failed: ' + e, true); return false; }
+  };
+  const draftSetup = () => ({pins: msDraft.pins, ladder: msDraft.ladder || [], effort: msDraft.effort});
+  document.getElementById('setupback').addEventListener('click', () => showView('chat'));
+  document.getElementById('msauto').addEventListener('click', () => { msDraft.ladder = null; msRender(); });
+  document.getElementById('msunpin').addEventListener('click', () => { msDraft.pins = {}; msRender(); });
+  document.getElementById('msrevert').addEventListener('click', () => {
+    msDraft = msFromSetup(msData.current); msNote(''); msRender();
+  });
+  document.getElementById('msapply').addEventListener('click', async () => {
+    if (await post({action: 'setup_apply', setup: draftSetup()})) {
+      await msLoad(true);
+      if (foldShown('modelsfold')) loadModels(true);
+    }
+  });
+  document.getElementById('msload').addEventListener('click', () => {
+    const name = document.getElementById('msprof').value;
+    const p = name && (msData.profiles || {})[name];
+    if (!p) { msNote('pick a profile first', true); return; }
+    const known = new Set(msChatEntries().map(e => e.name));
+    msDraft = msFromSetup({pins: Object.fromEntries(Object.entries(p.pins || {}).filter(([, n]) => known.has(n))),
+                           ladder: (p.ladder || []).filter(n => known.has(n)), effort: p.effort});
+    msNote(p.problems.length ? '⚠ not fully compatible with this config:\n' + p.problems.join('\n')
+                             : 'profile "' + name + '" loaded — Apply to use it', p.problems.length > 0);
+    msRender();
+  });
+  document.getElementById('mssave').addEventListener('click', async () => {
+    const name = (prompt('Profile name', document.getElementById('msprof').value || '') || '').trim();
+    if (!name) return;
+    if ((msData.profiles || {})[name] && !confirm('Overwrite profile "' + name + '"?')) return;
+    if (await post({action: 'profile_save', name, setup: draftSetup()})) {
+      await msLoad(false);
+      document.getElementById('msprof').value = name;
+    }
+  });
+  document.getElementById('msdel').addEventListener('click', async () => {
+    const name = document.getElementById('msprof').value;
+    if (!name || !confirm('Delete profile "' + name + '"?')) return;
+    if (await post({action: 'profile_delete', name})) await msLoad(false);
+  });
+})();
+
+// Resume offer: this session ran with a hand-made model setup the process no
+// longer has (restart, or a switch from a differently pinned session).
+function msSetupText(st) {
+  const parts = [];
+  const pins = Object.entries(st.pins || {});
+  if (pins.length) parts.push('pins ' + pins.map(([r, n]) => r + '→' + n).join(', '));
+  if ((st.ladder || []).length) parts.push('ladder ' + st.ladder.join(' → '));
+  if (st.effort) parts.push('effort ' + st.effort);
+  return parts.join('; ') || 'nothing';
+}
+function renderModelRestore(offer) {
+  const old = document.getElementById('mrestore');
+  if (old) old.remove();
+  if (!offer) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'row';
+  wrap.id = 'mrestore';
+  const box = document.createElement('div');
+  box.className = 'mrestore';
+  wrap.appendChild(box);
+  const probs = offer.problems || [];
+  box.innerHTML = '<div>🧩 This session ran with a model setup this agent does not have now: <b>' +
+    esc(msSetupText(offer.setup)) + '</b></div>' +
+    (probs.length ? '<div class="error">⚠ config differs — will skip: ' + esc(probs.join('; ')) + '</div>' : '') +
+    '<div class="mrbtns"><button class="sbtn ms-primary" data-acc="1">' +
+    (probs.length ? 'restore what fits' : 'restore') + '</button>' +
+    '<button class="sbtn" data-acc="0">keep current</button>' +
+    '<button class="sbtn" data-edit="1">open editor…</button></div>';
+  box.addEventListener('click', async (ev) => {
+    const b = ev.target.closest('button');
+    if (!b) return;
+    if (b.dataset.edit) { openSetupView(); return; }
+    const r = await (await fetch('/api/model', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action: 'restore', accept: b.dataset.acc === '1'})})).json();
+    wrap.remove();
+    row('sys' + (r.ok ? '' : ' error'), null, r.msg || 'failed');
+    if (foldShown('modelsfold')) loadModels(true);
+  });
+  document.getElementById('log').appendChild(wrap);
+}

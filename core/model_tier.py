@@ -78,8 +78,12 @@ def build_ladder(config: "Config", *, check_available: bool = True) -> list[tupl
     # entry) duplicate a named entry, usually with no power metadata — keep the
     # strongest-rated duplicate so the alias can't drag the model to the bottom.
     from agent.core.model_control import is_disabled
+    order = [n for n in (getattr(config.auto_tier, "ladder_order", None) or [])
+             if n in (config.model_entries or {})]
     best: dict[tuple, tuple[str, float]] = {}
-    for name, e in (config.model_entries or {}).items():
+    items = ([(n, config.model_entries[n]) for n in order] if order
+             else (config.model_entries or {}).items())
+    for name, e in items:
         tags = getattr(e, "tags", None) or []
         if any(t in tags for t in _NON_CHAT_TAGS) or getattr(e, "dimensions", 0):
             continue
@@ -94,9 +98,14 @@ def build_ladder(config: "Config", *, check_available: bool = True) -> list[tupl
         key = (getattr(e, "base_url", ""), getattr(e, "model", ""))
         power = model_power(e)
         cur = best.get(key)
-        if cur is None or power > cur[1] or (power == cur[1] and name < cur[0]):
+        if order:
+            # Hand-ordered: the user's position wins, first listing of a model.
+            best.setdefault(key, (name, power))
+        elif cur is None or power > cur[1] or (power == cur[1] and name < cur[0]):
             best[key] = (name, power)
     out = list(best.values())
+    if order:
+        return out
     out.sort(key=lambda kv: (kv[1], kv[0]))
     return out
 
@@ -145,10 +154,21 @@ def next_stronger(config: "Config") -> Optional[str]:
         active = config.model_roles.get("default", "")
         e = config.model_entries.get(active)
         cur_power = model_power(e) if e is not None else 0.0
+    if getattr(config.auto_tier, "ladder_order", None):
+        # Hand-ordered ladder: climb by position, power may not be monotonic.
+        for i, (name, _p) in enumerate(ladder):
+            if _is_active(config, name):
+                return ladder[i + 1][0] if i + 1 < len(ladder) else None
     for name, p in ladder:
         if p > cur_power:
             return name
     return None
+
+
+def _is_active(config: "Config", name: str) -> bool:
+    e = config.model_entries.get(name)
+    return e is not None and e.base_url == config.llm.base_url and \
+        (e.model or config.llm.model) == config.llm.model
 
 
 def resolve_tiers(config: "Config") -> tuple[Optional[str], Optional[str]]:

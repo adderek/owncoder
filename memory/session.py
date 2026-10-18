@@ -71,6 +71,9 @@ class Session:
     # Session-scoped extra path grants: [{"path", "mode", "origin"}] — the
     # non-default entries of security.path_grants, restored on session switch.
     path_grants: list[dict] = field(default_factory=list)
+    # Hand-made model pins/ladder/effort (core.model_profiles.capture). Pins
+    # live in the process only; resume offers to restore this.
+    model_setup: dict = field(default_factory=dict)
 
     # Path to the file this session was loaded from (not serialised)
     _file_path: Path | None = field(default=None, repr=False, compare=False)
@@ -189,6 +192,7 @@ def _session_from_data(data: dict, file_path: Path | None = None) -> Session:
         status_history=list(data.get("status_history") or []),
         working_dir=data.get("working_dir", ""),
         path_grants=list(data.get("path_grants") or []),
+        model_setup=dict(data.get("model_setup") or {}),
     )
     s._file_path = file_path
     return s
@@ -226,6 +230,8 @@ def _session_to_data(session: Session, messages: list[dict]) -> dict:
         data["working_dir"] = session.working_dir
     if session.path_grants:
         data["path_grants"] = session.path_grants
+    if session.model_setup:
+        data["model_setup"] = session.model_setup
     return data
 
 

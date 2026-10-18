@@ -885,6 +885,38 @@ _PAGE = r"""<!DOCTYPE html>
     <div id="unitdetail" class="dim">Pick a unit to read its description.</div>
   </div>
 </div>
+<!-- Model setup editor: role pins, hand-ordered ladder, effort, named
+     profiles. Drag model chips onto the ladder or a role slot; everything is a
+     draft until "Apply to session". -->
+<div id="setuppane" class="hidden">
+  <div id="setupbar">
+    <button class="sbtn" id="setupback" title="Back to the conversation">← chat</button>
+    <b>🧩 Model setup</b>
+    <span class="ms-prof">profile
+      <select id="msprof"></select>
+      <button class="sbtn" id="msload" title="Load the profile into the editor (Apply to use it)">load</button>
+      <button class="sbtn" id="mssave" title="Save the editor contents as a named profile">save as…</button>
+      <button class="sbtn" id="msdel" title="Delete the selected profile">delete</button>
+    </span>
+  </div>
+  <div id="msnote" class="dim"></div>
+  <div id="setupmain">
+    <section class="ms-col"><h4>Models <span class="dim">drag →</span></h4>
+      <div id="mspalette" class="ms-zone" data-zone="palette"></div></section>
+    <section class="ms-col"><h4>Ladder <span class="dim">weak ↓ strong</span>
+      <button class="sbtn" id="msauto" title="Forget the hand order — rank by model power">auto order</button></h4>
+      <div id="msladder" class="ms-zone" data-zone="ladder"></div></section>
+    <section class="ms-col"><h4>Role pins <span class="dim">drop a model on a role</span>
+      <button class="sbtn" id="msunpin" title="Unpin every role">clear</button></h4>
+      <div id="mspins"></div></section>
+  </div>
+  <div id="setupfoot">
+    <span>effort <span id="mseffort" class="ms-seg"></span></span>
+    <span id="msdirty" class="dim"></span>
+    <button class="sbtn" id="msrevert">revert</button>
+    <button class="sbtn ms-primary" id="msapply">Apply to session</button>
+  </div>
+</div>
 <div id="log"></div>
 <button id="jumpdown" class="hidden" title="Jump to latest">↓ new output</button>
 <div id="turnnav" class="hidden">
@@ -978,6 +1010,9 @@ class _HttpUI:
         self.session = session
         self.loop = loop
         self.bus = _EventBus()
+        # Pending "restore this session's model pins?" offer (see
+        # _offer_model_restore); shown by the page from /api/state.
+        self.model_restore: dict | None = None
         self.prompt_queue: asyncio.Queue = asyncio.Queue()
         self.busy = False
         self.chat_task: asyncio.Task | None = None
@@ -1157,6 +1192,7 @@ class _HttpUI:
         self.server.set_messages(messages)
         self.server.set_session_id(session.id)
         self.session = session
+        self._offer_model_restore()
         self.beacon()
         try:
             from agent.security import path_grants
@@ -1198,6 +1234,7 @@ class _HttpUI:
         self.server.reset_messages()
         self.server.set_session_id(session.id)
         self.session = session
+        self.model_restore = None
         self.beacon()
         try:
             from agent.security import path_grants
@@ -1510,12 +1547,19 @@ class _HttpUI:
         return str(get_working_dir())
 
     def _sync_grants(self) -> None:
-        """Snapshot the live path grants onto the session before it's saved."""
+        """Snapshot the live path grants and model setup onto the session
+        before it's saved."""
         if self.session is None:
             return
         try:
             from agent.security import path_grants
             self.session.path_grants = path_grants.session_snapshot()
+            cfg = _agent_config(self.server)
+            # An unanswered restore offer means the stored setup is still the
+            # user's; overwriting it with the live one would answer for them.
+            if cfg is not None and self.model_restore is None:
+                from agent.core.model_profiles import capture
+                self.session.model_setup = capture(cfg)
             if not getattr(self.session, "working_dir", ""):
                 from agent.memory.session import get_working_dir
                 self.session.working_dir = str(get_working_dir())
@@ -1561,6 +1605,7 @@ class _HttpUI:
             "fold_journal": self._fold_journal(),
             "token_stats": self.token_stats_info(),
             "simple": self.simple_info(),
+            "model_restore": self.model_restore,
             "io": {"in": stats.get("input_tokens", 0),
                    "out": stats.get("output_tokens", 0),
                    "calls": stats.get("calls", 0),
@@ -1742,9 +1787,103 @@ class _HttpUI:
             logger.exception("http ui: models_overview failed")
             return {}
 
+    _SETUP_ACTIONS = ("restore", "setup_apply", "profile_save",
+                      "profile_delete", "profile_apply")
+
+    def model_setup_info(self) -> dict:
+        """Everything the profile/ladder editor draws: live setup, effective
+        ladder, profiles with their compatibility against this config."""
+        cfg = _agent_config(self.server)
+        if cfg is None:
+            return {"error": "model profiles need a local agent"}
+        from agent.core import model_profiles as mp
+        from agent.core.model_tier import build_ladder
+        from agent.config.model_probe import entry_available
+        ladder = []
+        for name, power in build_ladder(cfg, check_available=False):
+            e = cfg.model_entries.get(name)
+            ladder.append({"name": name, "power": round(power, 1),
+                           "live": bool(e is not None and entry_available(e))})
+        profiles = {}
+        for name, setup in sorted(mp.load_profiles().items()):
+            _r, problems = mp.resolve(cfg, setup)
+            profiles[name] = {**setup, "problems": problems}
+        at = cfg.auto_tier
+        return {"current": mp.capture(cfg),
+                "ladder": ladder,
+                "ladder_custom": bool(getattr(at, "ladder_order", None)),
+                "ladder_on": bool(at.enabled and at.ladder),
+                "effort": at.effort, "efforts": list(mp.EFFORTS),
+                "profiles": profiles,
+                "restore": self.model_restore,
+                **self.models_info()}
+
+    def model_setup_action(self, action: str, payload: dict) -> dict:
+        agent = _agent_of(self.server)
+        if agent is None:
+            return {"ok": False, "msg": "model profiles need a local agent"}
+        from agent.core import model_profiles as mp
+        name = str(payload.get("name") or "").strip()
+        try:
+            if action == "restore":
+                offer, self.model_restore = self.model_restore, None
+                if not offer:
+                    return {"ok": False, "msg": "no model setup to restore"}
+                if not payload.get("accept"):
+                    return {"ok": True, "msg": "kept the current model setup"}
+                lines = self._call_on_loop(mp.apply, agent, offer["setup"])
+                msg = "restored session model setup:\n" + "\n".join(lines)
+            elif action == "setup_apply":
+                # Built from live entry names: nothing to fingerprint-check.
+                setup = {k: v for k, v in (payload.get("setup") or {}).items()
+                         if k != "entries"}
+                lines = self._call_on_loop(mp.apply, agent, setup)
+                msg = "\n".join(lines) or "model setup unchanged"
+            elif action == "profile_apply":
+                setup = mp.load_profiles().get(name)
+                if setup is None:
+                    return {"ok": False, "msg": f"no profile '{name}'"}
+                lines = self._call_on_loop(mp.apply, agent, setup)
+                msg = f"profile '{name}' applied:\n" + "\n".join(lines)
+            elif action == "profile_save":
+                if not name:
+                    return {"ok": False, "msg": "profile name required"}
+                setup = payload.get("setup")
+                mp.save_profile(agent.config, name,
+                                setup if isinstance(setup, dict) else mp.capture(agent.config))
+                msg = f"profile '{name}' saved"
+            else:  # profile_delete
+                if not mp.delete_profile(name):
+                    return {"ok": False, "msg": f"no profile '{name}'"}
+                msg = f"profile '{name}' deleted"
+        except Exception as exc:
+            logger.exception("http ui: model setup action failed")
+            return {"ok": False, "msg": f"failed: {exc}"}
+        return {"ok": True, "msg": _strip_rich(msg)}
+
+    def _offer_model_restore(self) -> None:
+        """After a resume: offer the session's hand-made model setup back when
+        it differs from what this process runs. Pins are process state, so a
+        restart (or a switch from a session pinned differently) loses them."""
+        self.model_restore = None
+        cfg = _agent_config(self.server)
+        setup = getattr(self.session, "model_setup", None)
+        if cfg is None or not setup:
+            return
+        from agent.core import model_profiles as mp
+        try:
+            if mp.same(mp.capture(cfg), setup):
+                return
+            _r, problems = mp.resolve(cfg, setup)
+            self.model_restore = {"setup": setup, "problems": problems}
+        except Exception:
+            logger.debug("http ui: model restore offer failed", exc_info=True)
+
     def model_action(self, payload: dict) -> dict:
         """Mutating model ops from the browser: use / release / toggle / mode."""
         action = str(payload.get("action") or "")
+        if action in self._SETUP_ACTIONS:
+            return self.model_setup_action(action, payload)
         try:
             if action == "use":
                 entry = str(payload.get("entry") or "")
@@ -3019,6 +3158,8 @@ def _make_handler(ui: _HttpUI):
                 self._json(ui.plan_info())
             elif self.path == "/api/models":
                 self._json(ui.models_info())
+            elif self.path == "/api/model_setup":
+                self._json(ui.model_setup_info())
             elif self.path == "/api/slash":
                 self._json({"commands": _slash_catalog(),
                             "known": sorted(_known_slash())})
@@ -3943,6 +4084,7 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
                 from agent.memory.session import _sanitize_short_name
                 ui.session.name = arg.strip()
                 ui.session.short_name = _sanitize_short_name(arg.strip())
+            ui._sync_grants()
             server.save_session(ui.session)
             label = ui.session.short_name or ui.session.id
             pub({"type": "sys", "text": f"saved session '{label}'"})
@@ -4151,6 +4293,7 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
 
     loop = asyncio.get_running_loop()
     ui = _HttpUI(server, session, loop)
+    ui._offer_model_restore()
     _configure_tool_summary(server)
     # Route voice / remote-delegated prompts through the same queue as typed
     # ones (starts a turn when idle, injects mid-turn) — parity with the TUIs.

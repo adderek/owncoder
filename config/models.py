@@ -1415,7 +1415,11 @@ class AutoTierConfig:
     # only live endpoints, and pick per-turn by predicted effort. Mid-turn
     # escalation climbs to the next-stronger live entry (no-op at the top).
     ladder: bool = False
-    effort: str = "smart"           # quick | smart | balanced | deep — "smart" predicts per turn;
+    # Hand-ordered ladder, weakest → strongest (entry names). Empty = rank by
+    # model_power(). When set, only listed entries are rungs. HTTP UI editor /
+    # model profiles write it at runtime.
+    ladder_order: list = field(default_factory=list)
+    effort: str = "smart"          # quick | smart | balanced | deep — "smart" predicts per turn;
                                     # quick/balanced/deep pin the ladder bottom/middle/top. /effort sets this at runtime.
     min_prompt_chars: int = 600     # prompt at/above this length escalates
     escalate_on_code: bool = True   # a fenced code block in the prompt escalates

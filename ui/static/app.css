@@ -1072,6 +1072,74 @@ button:hover { filter: brightness(1.15); }
 .sess-menu.simple-menu button.sm-adv { color: var(--dim); font-size: 11px; border-top: 1px solid var(--border);
                                        margin-top: 2px; padding-top: 5px; }
 
+/* Model setup editor: palette | ladder | role pins. Stacked on a narrow
+   screen, three columns once there is room. Chips drag with pointer events. */
+#setuppane { flex: 1; display: flex; flex-direction: column; gap: 10px; font-size: 13px;
+             padding: 16px; width: 100%; overflow: hidden; }
+#setuppane.hidden { display: none; }
+#setupbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; flex: none; }
+.ms-prof { margin-left: auto; display: flex; gap: 6px; align-items: center; color: var(--dim); }
+.ms-prof select, .ms-slot select { background: var(--bg); color: var(--fg); font: inherit;
+  border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px; }
+#msnote { white-space: pre-wrap; font-size: 12px; min-height: 1em; }
+#msnote.error { color: var(--err, #e06c75); }
+#setupmain { flex: 1; min-height: 0; display: grid; gap: 12px; overflow-y: auto;
+             grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 900px) {
+  #setupmain { grid-template-columns: minmax(180px, .9fr) minmax(220px, 1fr) minmax(260px, 1.2fr);
+               overflow: hidden; }
+  .ms-col { overflow-y: auto; }
+}
+.ms-col { background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+          padding: 8px 10px; min-height: 0; min-width: 0; }
+.ms-col h4 { margin: 0 0 8px; font-size: 13px; display: flex; gap: 8px; align-items: center; }
+.ms-col h4 .sbtn { margin-left: auto; font-size: 11px; padding: 1px 8px; }
+.ms-zone { display: flex; flex-direction: column; gap: 5px; min-height: 60px;
+           border: 1px dashed transparent; border-radius: 6px; padding: 4px; }
+.ms-zone.ms-over, .ms-slot.ms-over { border-color: var(--accent); background: var(--accent-soft); }
+#msladder.auto .ms-chip { opacity: .7; }
+.ms-hint { color: var(--dim); font-size: 11.5px; padding: 2px 4px; }
+.ms-chip { display: flex; align-items: center; gap: 6px; padding: 4px 8px;
+           background: var(--panel2); border: 1px solid var(--border); border-radius: 6px;
+           cursor: grab; user-select: none; touch-action: none; font-size: 12.5px; }
+.ms-chip:hover { border-color: var(--accent); }
+.ms-chip.off { opacity: .55; }
+.ms-chip.down .ms-n { color: var(--dim); }
+.ms-down { color: var(--warn); font-size: 11px; }
+.ms-chip.gone { border-color: var(--err, #e06c75); }
+.ms-chip.ms-dragging { opacity: .35; }
+.ms-ghost { position: fixed; z-index: 1000; pointer-events: none; opacity: .9;
+            box-shadow: 0 4px 14px rgba(0,0,0,.35); cursor: grabbing; }
+.ms-grip { color: var(--dimmer); }
+.ms-n { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ms-t { color: var(--dim); font-size: 11px; font-family: var(--mono); }
+.ms-acts { display: flex; gap: 2px; }
+.ms-acts button { background: none; border: none; color: var(--dim); cursor: pointer;
+                  padding: 0 4px; font: inherit; }
+.ms-acts button:hover { color: var(--fg); }
+.ms-insert { height: 2px; background: var(--accent); border-radius: 1px; margin: -1px 0; }
+#mspins { display: flex; flex-direction: column; gap: 5px; }
+.ms-slot { display: grid; grid-template-columns: 96px 1fr auto; gap: 6px; align-items: center;
+           border: 1px dashed var(--border); border-radius: 6px; padding: 4px 6px; min-height: 34px; }
+.ms-slot.pinned { border-style: solid; }
+.ms-slot.locked { opacity: .55; }
+.ms-slot select { max-width: 6.5em; }
+.ms-role { font-size: 12.5px; }
+.ms-auto { font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#setupfoot { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; flex: none; }
+#msdirty { margin-left: auto; font-size: 12px; }
+.ms-seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.ms-seg button { background: var(--panel); color: var(--dim); border: none; padding: 3px 9px;
+                 font: inherit; font-size: 12px; cursor: pointer; }
+.ms-seg button + button { border-left: 1px solid var(--border); }
+.ms-seg button.on { background: var(--accent-soft); color: var(--fg); }
+.sbtn.ms-primary { color: var(--accent); border-color: var(--accent); }
+.sbtn:disabled { opacity: .45; cursor: default; }
+.mrestore { margin: 8px 0; padding: 8px 12px; border: 1px solid var(--accent);
+            border-radius: 8px; background: var(--accent-soft); font-size: 13px; }
+.mrestore .error { color: var(--err, #e06c75); margin-top: 4px; }
+.mrbtns { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+
 /* Code-unit explorer: files, unit tree, selected unit. Same takeover as the
    memory browser; one column on a phone, three once there is width. */
 #unitpane { flex: 1; display: flex; flex-direction: column; gap: 10px;
