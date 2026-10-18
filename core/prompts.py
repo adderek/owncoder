@@ -610,6 +610,7 @@ def apply_prompt_hints(api_messages: list[dict], config: "Config") -> list[dict]
     api_messages = _inject_autonomy_hint(api_messages, config)
     api_messages = _inject_remote_hint(api_messages, config)
     api_messages = _inject_serial_hint(api_messages, config)
+    api_messages = _inject_usb_hint(api_messages, config)
     return _inject_aei_hint(api_messages, config)
 
 
@@ -630,6 +631,23 @@ def _inject_serial_hint(api_messages: list[dict], config: "Config") -> list[dict
             updated["content"] = msg["content"] + "\n" + hint
             return api_messages[:i] + [updated] + api_messages[i + 1:]
     return [{"role": "system", "content": hint}] + api_messages
+
+
+def _inject_usb_hint(api_messages: list[dict], config: "Config") -> list[dict]:
+    """Name the [usb] devices the sandbox has and their current /dev nodes."""
+    try:
+        from agent.devices.usb import hint
+        text = hint(config)
+    except Exception:
+        return api_messages
+    if not text:
+        return api_messages
+    for i, msg in enumerate(api_messages):
+        if msg.get("role") == "system":
+            updated = dict(msg)
+            updated["content"] = msg["content"] + "\n" + text
+            return api_messages[:i] + [updated] + api_messages[i + 1:]
+    return [{"role": "system", "content": text}] + api_messages
 
 
 def _inject_remote_hint(api_messages: list[dict], config: "Config") -> list[dict]:

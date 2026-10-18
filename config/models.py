@@ -1268,6 +1268,24 @@ class SerialConfig:
 
 
 @dataclass
+class UsbDeviceConfig:
+    """One USB device shared into the sandbox. See docs/usb.md."""
+    name: str = ""                 # what the model calls it
+    id: str = ""                   # "vvvv:pppp" as lsusb prints it
+    serial: str = ""               # iSerial; empty = any unit with that id
+    description: str = ""          # shown to the model (what it is, how to talk to it)
+    enabled: bool = True
+
+
+@dataclass
+class UsbConfig:
+    """USB devices whose /dev nodes sandboxed commands may open. Off by
+    default; user config layer only (loader._clamp_project_usb)."""
+    enabled: bool = False
+    devices: list = field(default_factory=list)  # list[UsbDeviceConfig]
+
+
+@dataclass
 class KbConfig:
     """Knowledge-base integration. Off by default."""
     enabled: bool = False
@@ -1701,6 +1719,7 @@ class Config:
     mcp: MCPConfig = field(default_factory=MCPConfig)
     remote: RemoteConfig = field(default_factory=RemoteConfig)
     serial: SerialConfig = field(default_factory=SerialConfig)
+    usb: UsbConfig = field(default_factory=UsbConfig)
     speech: SpeechConfig = field(default_factory=SpeechConfig)
     classify: ClassifyConfig = field(default_factory=ClassifyConfig)
     auto_tier: AutoTierConfig = field(default_factory=AutoTierConfig)

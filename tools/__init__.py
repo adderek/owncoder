@@ -113,6 +113,8 @@ def load_all_tools(config=None, store=None, embedder=None, asm_store=None, data_
     schedule.setup(config)
     remote.setup(config)
     serial_console.setup(config)
+    from agent.devices import usb as _usb
+    _usb.setup(config)
     from agent.tools import core_rules_tools
     core_rules_tools.setup(config)
     from agent.tools import discovery  # noqa: F401

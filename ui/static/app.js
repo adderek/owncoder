@@ -3073,6 +3073,95 @@ document.getElementById('remotefold').addEventListener('toggle', (e) => {
   if (e.target.open) loadRemote();
 });
 
+// USB panel: what is plugged in, what [usb] shares into the sandbox. Sharing
+// is the user's own config edit — the panel writes nothing, it shows the text
+// to paste (config entry + udev rule) and re-reads the user's files.
+const usbOpen = new Set();
+let usbCfg = [];
+async function loadUsb() {
+  const el = document.getElementById('usbbody');
+  const cnt = document.getElementById('usbcount');
+  let d;
+  try { d = await (await fetch('/api/usb')).json(); }
+  catch (e) { el.textContent = 'failed: ' + e; return; }
+  if (d.error) { el.textContent = d.error; return; }
+  const devs = d.devices || [];
+  usbCfg = d.configured || [];
+  const shared = devs.filter(x => x.shared_as);
+  cnt.textContent = d.enabled ? (shared.length + '/' + devs.length) : '';
+  const head = d.enabled
+    ? '<div class="rwarn">shared devices\' /dev nodes are opened by sandboxed commands</div>'
+    : '<div class="rwarn">[usb] off — nothing shared. Pick a device → share… for the config text.</div>';
+  const miss = (d.missing || []).map(m => '<div class="grow rhost off"><span class="rstate">absent</span>' +
+    '<span class="gpath">' + esc(m.name) + '<span class="greason">' + esc(m.id) +
+    (m.serial ? ' #' + esc(m.serial) : '') + ' not connected</span></span></div>').join('');
+  el.innerHTML = head + devs.map(x => {
+    const state = x.shared_as ? (x.blocked.length ? 'no access' : 'shared') : '—';
+    const cls = x.shared_as ? (x.blocked.length ? ' pending' : '') : ' off';
+    const label = (x.product || '?') + (x.manufacturer ? ' · ' + x.manufacturer : '');
+    return '<div class="grow rhost' + cls + '" title="' + esc(x.id + ' ' + label + ' — bus ' + x.bus + ' dev ' + x.devnum) + '">' +
+      '<span class="rstate' + (x.shared_as && !x.blocked.length ? ' ok' : '') + '">' + esc(state) + '</span>' +
+      '<span class="gpath">' + esc(x.shared_as || label) + '<span class="greason">' + esc(x.id) + '</span></span>' +
+      '<button class="sbtn" data-usb="' + esc(x.sysname) + '">' + (x.shared_as ? 'setup…' : 'share…') + '</button></div>' +
+      '<div class="usbbox' + (usbOpen.has(x.sysname) ? '' : ' hidden') + '" data-box="' + esc(x.sysname) + '"></div>';
+  }).join('') + miss +
+    '<div class="acc-add"><button class="sbtn" id="usbreload" title="Re-read [usb] from your config files">reload [usb] from config</button></div>';
+  devs.forEach(x => { if (usbOpen.has(x.sysname)) usbBox(x); });
+  el.querySelectorAll('[data-usb]').forEach(b => b.addEventListener('click', () => {
+    const sys = b.dataset.usb, box = el.querySelector('[data-box="' + CSS.escape(sys) + '"]');
+    if (usbOpen.has(sys)) { usbOpen.delete(sys); box.classList.add('hidden'); return; }
+    usbOpen.add(sys); box.classList.remove('hidden');
+    usbBox(devs.find(x => x.sysname === sys));
+  }));
+  document.getElementById('usbreload').addEventListener('click', async () => {
+    const r = await (await fetch('/api/usb', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action: 'reload'})})).json();
+    row('sys' + (r.ok ? '' : ' error'), null, r.msg || 'failed');
+    loadUsb();
+  });
+}
+
+function usbBox(dev) {
+  const box = document.querySelector('#usbbody [data-box="' + CSS.escape(dev.sysname) + '"]');
+  if (!box) return;
+  const nodes = dev.nodes.map(n => '<div class="usbnode' + (n.shareable ? '' : ' off') + '">' +
+    (!n.shareable ? '⛔ ' : (n.readable && n.writable ? '✓ ' : '✗ ')) + esc(n.path) +
+    ' <span class="dim">' + esc(n.subsystem) + (!n.shareable ? ' — never shared (raw disk)' :
+      (n.readable && n.writable ? '' : ' — no rw access for you')) + '</span></div>').join('');
+  box.innerHTML =
+    '<div class="usbform"><label>name <input data-f="name" value="' + esc(dev.shared_as || '') + '" placeholder="auto"></label>' +
+    '<label>description <input data-f="desc" value="' + esc(((usbCfg.find(c => c.name === dev.shared_as) || {}).description) || '') + '" placeholder="what it is, how the agent talks to it"></label>' +
+    (dev.serial ? '<label class="usbchk"><input type="checkbox" data-f="serial" checked> this unit only (serial ' + esc(dev.serial) + ')</label>' : '') +
+    '</div><div class="usbnodes">' + nodes + '</div><div class="usbsnip">…</div>';
+  let t = null;
+  const refresh = async () => {
+    const v = k => { const i = box.querySelector('[data-f="' + k + '"]'); return i ? (i.type === 'checkbox' ? (i.checked ? '1' : '0') : i.value) : ''; };
+    const q = new URLSearchParams({dev: dev.sysname, name: v('name'), desc: v('desc'), serial: v('serial') || '1'});
+    const sn = await (await fetch('/api/usb/snippet?' + q)).json();
+    const out = box.querySelector('.usbsnip');
+    if (sn.error) { out.textContent = sn.error; return; }
+    const blk = (title, text) => '<div class="usbstep">' + title + '</div><div class="usbpre"><pre>' + esc(text) +
+      '</pre><button class="sbtn usbcp" title="Copy">⧉</button></div>';
+    out.innerHTML =
+      blk('1. In file <code>' + esc(sn.file) + '</code> — copy and ' + esc(sn.where) + ':', sn.yaml) +
+      blk('2. Permissions (once, as root): create <code>' + esc(sn.udev_file) + '</code> with:', sn.udev) +
+      blk('then run (or replug the device):', sn.commands) +
+      '<div class="usbstep">3. Press <b>reload [usb] from config</b> below. Nodes are looked up per command, so replugging later needs nothing.</div>';
+    out.querySelectorAll('.usbcp').forEach(b => b.addEventListener('click', () =>
+      copyText(b.previousElementSibling.textContent, b)));
+  };
+  box.querySelectorAll('input').forEach(i => i.addEventListener('input', () => {
+    clearTimeout(t); t = setTimeout(refresh, 250);
+  }));
+  refresh();
+}
+document.getElementById('d-usb').addEventListener('click', (e) => {
+  e.preventDefault(); e.stopPropagation(); loadUsb();
+});
+document.getElementById('usbfold').addEventListener('toggle', (e) => {
+  if (e.target.open) loadUsb();
+});
+
 // Backlog panel: the same store as `agent todo` and /idea. A row is one line;
 // clicking it opens the task in the centre column. Nothing destructive is one
 // click away — status changes live behind the ⋯ menu, because ✓/✗ sitting in a
@@ -5590,7 +5679,7 @@ function restoreDrawers() {
 // drawer sections by their ⠿ grip, also between drawers. Outside edit mode
 // clicks act normally and nothing drags. Both choices persist per browser.
 const FOLD_LOADERS = {
-  sessfold: loadSessions, accessfold: loadGrants, remotefold: loadRemote,
+  sessfold: loadSessions, accessfold: loadGrants, remotefold: loadRemote, usbfold: loadUsb,
   planfold: loadPlan, trigfold: loadTriggers, todofold: loadTodos,
   modelsfold: loadModels, statsfold: loadStats, mcfold: loadModelCalls,
   ctxfold: loadContext, memfold: loadMemory, bgfold: loadBg,

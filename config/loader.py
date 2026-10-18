@@ -272,6 +272,7 @@ def _merge(config: Config, data: dict) -> None:
         ("mcp", config.mcp),
         ("remote", config.remote),
         ("serial", config.serial),
+        ("usb", config.usb),
         ("speech", config.speech),
         ("classify", config.classify),
         ("auto_tier", config.auto_tier),
@@ -301,7 +302,7 @@ _KNOWN_SECTIONS = {
     "verify", "diagnostics", "checkpoints", "tests", "confidence_guard", "compile_prompts", "token_limits",
     "tool_compaction", "security", "planning", "recovery", "parallel",
     "explore", "web_search", "concurrency", "kb", "aei", "notify", "mcp", "remote",
-    "serial", "speech", "classify", "auto_tier", "failover", "privacy", "scheduler", "hooks",
+    "serial", "usb", "speech", "classify", "auto_tier", "failover", "privacy", "scheduler", "hooks",
     "credpool", "permissions", "tool_discovery", "summarization", "output_store",
     "turn_signals", "ui_server", "models", "vision", "token_stats", "token_watch",
 }
@@ -372,23 +373,35 @@ def _coerce_serial_ports(config: Config) -> None:
     )
 
 
-def _clamp_project_serial(data: dict) -> list[str]:
-    """Drop [serial] from a project layer except `enabled = false`.
-
-    A serial console is usually an unauthenticated root shell on a device;
-    which ports exist is the user's call, not a repo's. Mutates *data*.
-    """
-    section = data.get("serial")
+def _clamp_user_only(data: dict, name: str, what: str) -> list[str]:
+    """Drop section *name* from a project layer except `enabled = false`. Mutates *data*."""
+    section = data.get(name)
     if not isinstance(section, dict):
         return []
-    data.pop("serial")
+    data.pop(name)
     if section.get("enabled") is False:
-        data["serial"] = {"enabled": False}
+        data[name] = {"enabled": False}
     dropped = sorted(k for k in section if not (k == "enabled" and section[k] is False))
     if not dropped:
         return []
-    return [f"[serial] {', '.join(dropped)} from a project config ignored — "
-            f"serial ports come only from ~/.config/agent/agent.yaml"]
+    return [f"[{name}] {', '.join(dropped)} from a project config ignored — "
+            f"{what} come only from ~/.config/agent/agent.yaml"]
+
+
+def _clamp_project_serial(data: dict) -> list[str]:
+    """A serial console is usually an unauthenticated root shell on a device;
+    which ports exist is the user's call, not a repo's."""
+    return _clamp_user_only(data, "serial", "serial ports")
+
+
+def _clamp_project_usb(data: dict) -> list[str]:
+    """Which host hardware sandboxed commands may open is the user's call."""
+    return _clamp_user_only(data, "usb", "USB devices")
+
+
+def _coerce_usb_devices(config: Config) -> None:
+    from agent.config.models import UsbDeviceConfig
+    config.usb.devices = _coerce_dataclass_list(config.usb.devices, UsbDeviceConfig, "usb.devices")
 
 
 def _clamp_project_remote(data: dict) -> list[str]:
@@ -1028,6 +1041,7 @@ def load_config(extra_path: Path | list[Path] | None = None) -> Config:
                 security_issues.extend(_clamp_project_security(config, data))
                 security_issues.extend(_clamp_project_remote(data))
                 security_issues.extend(_clamp_project_serial(data))
+                security_issues.extend(_clamp_project_usb(data))
                 _srv, _iss = _clamp_project_mcp(data, p.parent)
                 project_mcp.extend(_srv)
                 security_issues.extend(_iss)
@@ -1074,6 +1088,7 @@ def load_config(extra_path: Path | list[Path] | None = None) -> Config:
     _coerce_mcp_servers(config)
     _coerce_remote_hosts(config)
     _coerce_serial_ports(config)
+    _coerce_usb_devices(config)
     _coerce_test_suites(config)
     _coerce_hooks(config)
     _coerce_diagnostics_checkers(config)

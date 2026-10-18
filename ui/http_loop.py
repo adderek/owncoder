@@ -790,6 +790,10 @@ _PAGE = r"""<!DOCTYPE html>
     <summary class="dhead">remote — SSH hosts <span id="remotecount" class="chip"></span><span id="d-remote" class="dhead-refresh" title="Refresh">⟳</span></summary>
     <div id="remotebody">—</div>
   </details>
+  <details id="usbfold" class="dfold">
+    <summary class="dhead">usb — devices <span id="usbcount" class="chip"></span><span id="d-usb" class="dhead-refresh" title="Refresh">⟳</span></summary>
+    <div id="usbbody">—</div>
+  </details>
   <details id="planfold" class="dfold">
     <summary class="dhead">plan &amp; goal <span id="plancount" class="chip"></span><span id="d-plan" class="dhead-refresh" title="Refresh">⟳</span></summary>
     <div id="planbody">—</div>
@@ -1399,6 +1403,36 @@ class _HttpUI:
                     "msg": f"{name}: connect OK" if res == "ok" else f"{name}: connect failed — {res}"}
         from agent.tools.remote import host_action
         ok, msg = host_action(cfg, action, name)
+        return {"ok": ok, "msg": msg}
+
+    def usb_info(self) -> dict:
+        """[usb] panel: connected devices, which are shared, what is missing.
+        Sharing itself is a config edit the user makes (the panel shows the
+        text); the panel only re-reads the user's files."""
+        cfg = _agent_config(self.server)
+        if cfg is None:
+            return {"enabled": False, "devices": [], "error": _NEEDS_LOCAL}
+        from agent.devices import usb
+        return usb.info(cfg)
+
+    def usb_snippet(self, sysname: str, name: str, desc: str, serial: bool) -> dict:
+        cfg = _agent_config(self.server)
+        if cfg is None:
+            return {"error": _NEEDS_LOCAL}
+        from agent.devices import usb
+        dev = next((d for d in usb.scan() if d["sysname"] == sysname), None)
+        if dev is None:
+            return {"error": f"device {sysname!r} is not connected"}
+        return usb.snippet(dev, name, desc, cfg, serial=serial)
+
+    def usb_action(self, payload: dict) -> dict:
+        cfg = _agent_config(self.server)
+        if cfg is None:
+            return {"ok": False, "msg": _NEEDS_LOCAL}
+        if payload.get("action") != "reload":
+            return {"ok": False, "msg": "unknown action"}
+        from agent.devices import usb
+        ok, msg = usb.reload_config(cfg)
         return {"ok": ok, "msg": msg}
 
     # ── backlog (.agent/ideas.db) ─────────────────────────────────────────
@@ -3169,6 +3203,13 @@ def _make_handler(ui: _HttpUI):
                 self._json(ui.grants_info())
             elif self.path == "/api/remote":
                 self._json(ui.remote_info())
+            elif self.path == "/api/usb":
+                self._json(ui.usb_info())
+            elif self.path.startswith("/api/usb/snippet"):
+                from urllib.parse import parse_qs, urlparse
+                q = parse_qs(urlparse(self.path).query)
+                g = lambda k: (q.get(k) or [""])[0]
+                self._json(ui.usb_snippet(g("dev"), g("name"), g("desc"), g("serial") != "0"))
             elif self.path.startswith("/api/todos"):
                 from urllib.parse import parse_qs, urlparse
                 q = parse_qs(urlparse(self.path).query)
@@ -3324,6 +3365,8 @@ def _make_handler(ui: _HttpUI):
                 self._json(ui.grant_action(payload))
             elif self.path == "/api/remote":
                 self._json(ui.remote_action(payload))
+            elif self.path == "/api/usb":
+                self._json(ui.usb_action(payload))
             elif self.path == "/api/todo":
                 self._json(ui.todo_action(payload))
             else:

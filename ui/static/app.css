@@ -379,6 +379,23 @@ aside.resizing { transition: none; }   /* no lag while dragging */
 .rhost.off .gpath { color: var(--dimmer); }
 .rprob { color: var(--warn); font-family: var(--mono); font-size: 10.5px;
          margin: 0 0 4px 12px; overflow-wrap: anywhere; }
+/* USB panel: connected devices + copy-paste config for sharing one. */
+.usbbox { margin: 2px 0 8px 12px; padding: 6px 8px; border-left: 2px solid var(--border);
+          font-size: 11px; display: flex; flex-direction: column; gap: 5px; }
+.usbbox.hidden { display: none; }
+.usbform { display: flex; flex-direction: column; gap: 4px; }
+.usbform label { display: flex; gap: 6px; align-items: center; color: var(--dim); }
+.usbform input:not([type]) { flex: 1; min-width: 0; background: var(--bg); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 5px; font-size: 11px; padding: 2px 6px; }
+.usbnode { font-family: var(--mono); font-size: 10.5px; overflow-wrap: anywhere; }
+.usbnode.off { color: var(--dimmer); }
+.usbstep { color: var(--fg); margin-top: 4px; overflow-wrap: anywhere; }
+.usbstep code { font-family: var(--mono); font-size: 10.5px; }
+.usbpre { position: relative; }
+.usbpre pre { margin: 0; padding: 5px 28px 5px 6px; background: var(--bg); border: 1px solid var(--border);
+              border-radius: 5px; font-family: var(--mono); font-size: 10.5px; white-space: pre;
+              overflow-x: auto; }   /* wrapped YAML would misstate its indentation */
+.usbpre .usbcp { position: absolute; top: 3px; right: 3px; padding: 0 6px; font-size: 11px; }
 /* Plan panel: the agent's current multi-step state, mirrored from /api/plan. */
 .plan-goal { margin-bottom: 6px; font-size: 11.5px; color: var(--fg); }
 .plan-goal .pg-label { color: var(--dimmer); font-family: var(--mono); font-size: 10px;

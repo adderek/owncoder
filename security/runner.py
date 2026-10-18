@@ -681,12 +681,23 @@ def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool, seccomp_fd: int | 
                 continue  # already inside the project bind
             if not gp.exists():
                 continue  # bwrap needs a real mountpoint
-            if g.mode == "rw":
+            if g.mode == "rw" and gp.is_char_device():
+                # --bind mounts nodev: a granted /dev/video0 would be EACCES.
+                a += ["--dev-bind", str(gp), str(gp)]
+            elif g.mode == "rw":
                 a += ["--bind", str(gp), str(gp)]
             else:
                 a += ["--ro-bind", str(gp), str(gp)]
     except Exception:
         pass  # grants are best-effort; don't break the sandbox
+    # [usb] devices: their current /dev nodes, looked up per command (replug
+    # renumbers them). Same best-effort rule as grants.
+    try:
+        from agent.devices import usb as _usb
+        for p in _usb.shared_nodes():
+            a += ["--dev-bind", p, p]
+    except Exception:
+        logger.debug("usb: sandbox binds skipped", exc_info=True)
     # Real dirs only, re-bound read-only even under a grant (an rw grant must
     # not make the interpreter writable); symlinked aliases are recreated as
     # links — mounting onto one fails (see _interpreter_aliases).
