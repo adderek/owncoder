@@ -68,6 +68,16 @@ def loop_guard_stop_note(summary: str, triggered: list[tuple[str, str, int, str]
     return "".join(parts)
 
 
+def _file_fingerprint(path: str) -> tuple[int, int] | None:
+    """(mtime_ns, size) of *path* as the file tools resolve it; None if unknown."""
+    try:
+        from agent.tools.files import _resolve
+        st = _resolve(path).stat()
+        return st.st_mtime_ns, st.st_size
+    except Exception:
+        return None
+
+
 def patch_read_file_result(tc, result: str, read_path_counts: dict,
                            warn_threshold: int, stop_threshold: int,
                            read_advance: dict | None = None) -> tuple[str, str | None]:
@@ -85,8 +95,19 @@ def patch_read_file_result(tc, result: str, read_path_counts: dict,
         if not rpath:
             return result, None
         # Key on (path, start_line, end_line) so reading different sections of
-        # the same large file doesn't trigger the guard.
-        rkey = (rpath, a.get("start_line"), a.get("end_line"))
+        # the same large file doesn't trigger the guard, and on the file's
+        # fingerprint so a re-read after ANY change (edit_file, write_file, a
+        # sed in the shell) counts as new. The edit-side reset alone missed
+        # chunk-form edits and whatever the compactor had turned into prose.
+        fp = _file_fingerprint(rpath)
+        stale = [k for k in read_path_counts
+                 if isinstance(k, tuple) and len(k) == 4 and k[0] == rpath and k[3] != fp]
+        if stale:
+            for k in stale:
+                del read_path_counts[k]
+            if read_advance is not None:
+                read_advance.pop(rpath, None)
+        rkey = (rpath, a.get("start_line"), a.get("end_line"), fp)
         read_path_counts[rkey] = read_path_counts.get(rkey, 0) + 1
         count = read_path_counts[rkey]
 

@@ -93,6 +93,11 @@ def _should_skip(result_str: str, config: "Config", tool_name: str = "") -> tupl
     if isinstance(parsed, dict):
         if tc.skip_on_error and "error" in parsed:
             return True, "error"
+        # A failed command reports through its exit status, not an "error" key.
+        # Its output is the diagnosis: pytest's `cli.py:88 IndentationError`
+        # came back from the compactor as "1 error during collection".
+        if tc.skip_on_error and parsed.get("returncode", parsed.get("exit_code")) not in (None, 0):
+            return True, "error"
         if tc.skip_on_truncated and parsed.get("truncated"):
             return True, "truncated"
     return False, ""

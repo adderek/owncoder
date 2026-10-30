@@ -559,7 +559,11 @@ class ToolCompactionConfig:
     skip_on_truncated: bool = True
     # Tools whose raw output is always passed through unchanged (never compacted).
     # read_file is exempt by default: anchor matching requires verbatim content.
-    skip_tools: list = field(default_factory=lambda: ["read_file"])
+    # edit_file/write_file likewise: their `current` view and syntax verdict are
+    # the only post-edit copy of the file in context, and the loop guards parse
+    # the result as JSON. A compactor model summarised a broken edit as "Added
+    # cache subcommand to cli.py." and the agent never saw the bad indentation.
+    skip_tools: list = field(default_factory=lambda: ["read_file", "edit_file", "write_file"])
     concurrency_limit: int = 2
     prompt_path: str = ""
 

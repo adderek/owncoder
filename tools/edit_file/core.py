@@ -179,6 +179,7 @@ def edit_file(
     applied: list[dict] = []
     post_checks: dict[str, dict] = {}
     current: dict[str, str] = {}
+    syntax_errors: dict[str, str] = {}
     by_file2: dict[str, list[_ValidatedChunk]] = {}
     for v in validated:
         by_file2.setdefault(v.path, []).append(v)
@@ -207,6 +208,21 @@ def edit_file(
             current[path] = _current_view(content, vs)
         except Exception:
             pass
+        # Same check write_file makes. Without it an edit that broke the
+        # indentation reported ok and the agent learned of it only from pytest.
+        # Only an error this edit introduced: a file that did not parse before
+        # is not the edit's fault, and flagging it would fail every step of a fix.
+        if fpath.suffix == ".py":
+            import ast
+            try:
+                ast.parse(vs_sorted[0].original)
+            except SyntaxError:
+                pass
+            else:
+                try:
+                    ast.parse(content)
+                except SyntaxError as e:
+                    syntax_errors[path] = str(e)
         _log_edit("edit_file", path, "ok",
                   expect_rev=next((c.get("expect_rev") for c in chunks
                                    if isinstance(c, dict) and c.get("path") == path
@@ -229,6 +245,12 @@ def edit_file(
     if current:
         # The file as it is now — quote the next anchor from here.
         result["current"] = current
+    if syntax_errors:
+        # Applied and written, so `applied`/`current` stay: the broken lines are
+        # what the agent needs to see to fix them.
+        del result["ok"]
+        result["error"] = "File edited but has syntax error: " + "; ".join(
+            f"{p}: {e}" for p, e in syntax_errors.items()) + ". Use undo_file to revert."
     try:
         from agent.core.preload import mark_edited
         notes = [n for n in (mark_edited(p) for p in sorted({a["path"] for a in applied})) if n]

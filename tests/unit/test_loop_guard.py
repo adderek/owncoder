@@ -232,6 +232,28 @@ class TestReadAutoAdvance:
         assert adv == {}
         assert counts == {}
 
+    def test_reread_after_file_changed_is_a_fresh_read(self):
+        """Any change to the file -- here a write outside edit_file, which the
+        edit-side reset never sees -- starts the count over."""
+        import os
+        path = self._make_file("changed.txt", 600)
+        tc = _fake_tool_call("read_file", {"path": path})
+        counts, adv = {}, {}
+
+        patch_read_file_result(tc, self._read_result(path), counts, WARN, STOP, adv)
+        patch_read_file_result(tc, self._read_result(path), counts, WARN, STOP, adv)
+        assert adv[path] == 401
+
+        self._make_file(path, 610)
+        st = os.stat(self.work / path)
+        os.utime(self.work / path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+        result = self._read_result(path)
+        r3, stop = patch_read_file_result(tc, result, counts, WARN, STOP, adv)
+        assert stop is None
+        assert r3 == result  # served as asked, not auto-advanced
+        assert path not in adv
+        assert list(counts.values()) == [1]
+
     def test_errored_read_does_not_advance(self):
         tc = _fake_tool_call("read_file", {"path": "missing.txt"})
         result = json.dumps({"error": "File not found: missing.txt"})
