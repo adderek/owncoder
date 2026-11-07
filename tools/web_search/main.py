@@ -31,6 +31,7 @@ _config = None
 def setup(config) -> None:
     global _config
     _config = config
+    _blocked_until.clear()
     from agent.security import policy as _sec_policy
     _sec_policy.setup(config)
     query_gate.setup(config)
@@ -97,13 +98,18 @@ def _gunzip_if_needed(body: bytes) -> bytes:
     return body
 
 
-def _fetch_raw(url: str, headers: dict[str, str], timeout: int, mode: str) -> tuple[bytes, dict[str, str], int | None]:
-    """Unified HTTP fetcher for search backends. Returns (body, headers, status)."""
+def _fetch_raw(url: str, headers: dict[str, str], timeout: int, mode: str,
+               pinned_ip: str | None = None) -> tuple[bytes, dict[str, str], int | None]:
+    """Unified HTTP fetcher for search backends. Returns (body, headers, status).
+
+    *pinned_ip* skips the sandboxed fetcher's private-address check for the
+    first hop — only for operator-configured endpoints (see _search_searxng).
+    """
     import urllib.request
     import base64
 
     if mode == "sandboxed":
-        res = http_executor.fetch(url, headers=headers, total_timeout=timeout)
+        res = http_executor.fetch(url, pinned_ip=pinned_ip, headers=headers, total_timeout=timeout)
         if res.get("error"):
             raise Exception(f"Sandboxed fetch failed: {res['error']}")
         body = base64.b64decode(res.get("body_base64", ""))
@@ -114,14 +120,24 @@ def _fetch_raw(url: str, headers: dict[str, str], timeout: int, mode: str) -> tu
             return _gunzip_if_needed(resp.read()), dict(resp.headers), resp.status
 
 
-def _get_json(url: str, extra_headers: dict | None = None) -> dict | list:
+def _search_timeout() -> int:
+    ws_cfg = _config.web_search
+    return max(1, min(ws_cfg.timeout_total_s, getattr(ws_cfg, "search_timeout_s", 10)))
+
+
+# backend name -> monotonic time until which it is skipped after a block.
+_blocked_until: dict[str, float] = {}
+
+
+def _get_json(url: str, extra_headers: dict | None = None,
+              pinned_ip: str | None = None) -> dict | list:
     """Fetch *url* through the configured mode and parse JSON; anti-bot aware."""
     import json as _json
     ws_cfg = _config.web_search
     headers = {"User-Agent": ws_cfg.user_agent, "Accept": "application/json"}
     if extra_headers:
         headers.update(extra_headers)
-    body, _, status = _fetch_raw(url, headers, ws_cfg.timeout_total_s, ws_cfg.execution_mode)
+    body, _, status = _fetch_raw(url, headers, _search_timeout(), ws_cfg.execution_mode, pinned_ip)
     text = body.decode("utf-8", errors="replace")
     if status is not None and status >= 400:
         reason = _detect_antibot(status, text) or f"HTTP {status}"
@@ -168,7 +184,7 @@ def _search_duckduckgo(query: str, num_results: int) -> list[dict]:
     ws_cfg = _config.web_search
 
     try:
-        raw, _, status = _fetch_raw(url, {"User-Agent": ws_cfg.user_agent}, ws_cfg.timeout_total_s, ws_cfg.execution_mode)
+        raw, _, status = _fetch_raw(url, {"User-Agent": ws_cfg.user_agent}, _search_timeout(), ws_cfg.execution_mode)
     except Exception as e:
         logger.warning("DuckDuckGo search failed: %s", e)
         if "Connection reset" in str(e):
@@ -272,7 +288,7 @@ def _search_mojeek(query: str, num_results: int) -> list[dict]:
 
     url = f"https://www.mojeek.com/search?q={urllib.parse.quote(query)}"
     ws_cfg = _config.web_search
-    raw, _, status = _fetch_raw(url, {"User-Agent": ws_cfg.user_agent}, ws_cfg.timeout_total_s, ws_cfg.execution_mode)
+    raw, _, status = _fetch_raw(url, {"User-Agent": ws_cfg.user_agent}, _search_timeout(), ws_cfg.execution_mode)
     html_text = raw.decode("utf-8", errors="replace")
 
     class MojeekParser(HTMLParser):
@@ -332,14 +348,26 @@ def _search_mojeek(query: str, num_results: int) -> list[dict]:
 def _search_searxng(query: str, num_results: int) -> list[dict]:
     """Search a SearXNG instance (self-hosted metasearch; JSON API).
 
-    Configure with [web_search] searxng_url = "http://192.168.x.x:8888".
-    The instance must allow `format=json` (settings.yaml: search.formats).
+    Configure with [web_search] searxng_url = "http://127.0.0.1:8888" in the
+    USER config (a project config cannot set it — loader._clamp_project_web_search).
+    The instance must allow `format=json` (settings.yml: search.formats).
+
+    A self-hosted instance normally sits on loopback/LAN, which the sandboxed
+    fetcher refuses (SSRF guard). The URL is operator-set, so its address is
+    resolved here and pinned, letting the first hop through; redirects are
+    still re-validated by the fetcher.
     """
+    import socket
     import urllib.parse
     base = (_config.web_search.searxng_url or "").rstrip("/")
     if not base:
-        raise RuntimeError("SearXNG not configured. Set [web_search] searxng_url in agent.toml.")
-    data = _get_json(f"{base}/search?q={urllib.parse.quote(query)}&format=json")
+        raise RuntimeError("SearXNG not configured. Set [web_search] searxng_url in agent.yaml.")
+    host = urllib.parse.urlparse(base).hostname or ""
+    try:
+        pinned = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)[0][4][0]
+    except (socket.gaierror, IndexError) as e:
+        raise RuntimeError(f"SearXNG host {host!r} does not resolve: {e}") from None
+    data = _get_json(f"{base}/search?q={urllib.parse.quote(query)}&format=json", pinned_ip=pinned)
     results = []
     for i, r in enumerate(data.get("results", [])[:num_results]):
         results.append(_mk_result(i + 1, r.get("title", ""), r.get("url", ""), r.get("content", ""), "searxng"))
@@ -349,8 +377,12 @@ def _search_searxng(query: str, num_results: int) -> list[dict]:
 def _search_marginalia(query: str, num_results: int) -> list[dict]:
     """Search Marginalia (independent index of small/non-commercial web; free API)."""
     import urllib.parse
+    # api.marginalia.nu/public/... is gone (hangs until timeout); current API
+    # takes the key in a header.
     data = _get_json(
-        f"https://api.marginalia.nu/public/search/{urllib.parse.quote(query)}?count={num_results}"
+        f"https://api2.marginalia-search.com/search?query={urllib.parse.quote(query)}"
+        f"&count={num_results}",
+        {"API-Key": getattr(_config.web_search, "marginalia_api_key", "") or "public"},
     )
     results = []
     for i, r in enumerate(data.get("results", [])[:num_results]):
@@ -380,7 +412,7 @@ def _search_brave(query: str, num_results: int) -> list[dict]:
         "User-Agent": ws_cfg.user_agent,
     }
     try:
-        raw, _, _status = _fetch_raw(url_with_params, headers, ws_cfg.timeout_total_s, ws_cfg.execution_mode)
+        raw, _, _status = _fetch_raw(url_with_params, headers, _search_timeout(), ws_cfg.execution_mode)
         data = _json.loads(raw)
     except Exception as e:
         logger.warning("Brave search failed: %s", e)
@@ -565,16 +597,25 @@ def _search_backend(query: str, num_results: int) -> tuple[list[dict], list[str]
     chain = _auto_chain() if backend == "auto" else [backend]
     notes: list[str] = []
     last_error: Exception | None = None
+    import time as _time
+    cooldown = getattr(_config.web_search, "blocked_backend_cooldown_s", 600) if _config else 0
     for name in chain:
         fn = _WEB_BACKENDS.get(name)
         if fn is None:
             notes.append(f"{name}: unknown backend")
+            continue
+        left = _blocked_until.get(name, 0.0) - _time.monotonic()
+        if left > 0 and len(chain) > 1:
+            notes.append(f"{name}: blocked earlier, skipped for {int(left)}s more")
+            last_error = last_error or BackendBlocked("cooldown")
             continue
         try:
             results = fn(query, num_results)
         except BackendBlocked as e:
             notes.append(f"{name}: blocked — {e}")
             last_error = e
+            if cooldown > 0:
+                _blocked_until[name] = _time.monotonic() + cooldown
             continue
         except Exception as e:
             notes.append(f"{name}: unavailable — {e}")

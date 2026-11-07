@@ -993,7 +993,16 @@ class WebSearchConfig:
     # Self-hosted SearXNG metasearch instance, e.g. "http://192.168.31.42:8888".
     # Most robust general-web backend (no anti-bot, aggregates engines); the
     # instance must enable JSON output (settings.yaml search.formats: [html, json]).
-    searxng_url: str = ""
+    searxng_url: str = ""  # user config only; pinned past the private-IP guard
+    # Marginalia API key. "public" is a shared key with a tight per-minute quota
+    # (frequent HTTP 429); a personal key is free on request from marginalia.
+    marginalia_api_key: str = "public"
+    # Per-backend cap for SEARCH requests (fetch keeps timeout_total_s). A dead or
+    # slow backend should cost seconds, not the whole chain's patience.
+    search_timeout_s: int = 10
+    # After a backend answers with an anti-bot block / rate limit, skip it for
+    # this long instead of paying the round-trip on every query.
+    blocked_backend_cooldown_s: int = 600
     max_results_per_search: int = 10
     max_search_calls_per_turn: int = 3
     max_fetch_calls_per_turn: int = 5

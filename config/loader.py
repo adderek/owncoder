@@ -415,6 +415,21 @@ def _clamp_project_agent(data: dict) -> list[str]:
     return issues
 
 
+def _clamp_project_web_search(data: dict) -> list[str]:
+    """Drop [web_search] searxng_url from a project layer.
+
+    The SearXNG address is pinned past the sandbox's private-IP guard (it is
+    usually on loopback/LAN). From a repo config that would let a clone aim the
+    agent's queries at any service on the user's network. Mutates *data*.
+    """
+    section = data.get("web_search")
+    if not isinstance(section, dict) or "searxng_url" not in section:
+        return []
+    section.pop("searxng_url")
+    return ["[web_search] searxng_url from a project config ignored — "
+            "set it in ~/.config/agent/"]
+
+
 def _clamp_project_usb(data: dict) -> list[str]:
     """Which host hardware sandboxed commands may open is the user's call."""
     return _clamp_user_only(data, "usb", "USB devices")
@@ -1064,6 +1079,7 @@ def load_config(extra_path: Path | list[Path] | None = None) -> Config:
                 security_issues.extend(_clamp_project_serial(data))
                 security_issues.extend(_clamp_project_usb(data))
                 security_issues.extend(_clamp_project_agent(data))
+                security_issues.extend(_clamp_project_web_search(data))
                 _srv, _iss = _clamp_project_mcp(data, p.parent)
                 project_mcp.extend(_srv)
                 security_issues.extend(_iss)
