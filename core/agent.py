@@ -54,6 +54,11 @@ def _describe_turn_failure(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {text}"[:200] if text else type(exc).__name__
 
 
+
+# Turn sources that are not a human typing right now. A `/fastweb` arm is meant
+# for the user's next message, so these neither consume nor use it.
+_UNATTENDED_SOURCES = frozenset({"scheduler", "wake", "watch", "loop", "evolve", "heal"})
+
 class Agent:
     def __init__(self, config: "Config", store=None, embedder=None, asm_store=None, data_provider=None) -> None:
         from agent.tools import load_all_tools
@@ -68,6 +73,8 @@ class Agent:
             asm_store = data_provider.get_asm_store()
 
         self.config = config
+        # `/fastweb` arms direct web access for the next user turn only.
+        self._fast_web_armed = False
         self._llm_defaults: dict = {
             "max_output_tokens": config.llm.max_output_tokens,
             "ctx_window": config.llm.ctx_window,
@@ -918,6 +925,23 @@ class Agent:
             logger.debug("checkpoint note for failed turn failed", exc_info=True)
             return ""
 
+    def _web_gate(self, source: str) -> set[str]:
+        """Tools to hide this turn so the agent has exactly one path to the web.
+
+        ultrasecure (default): the privileged agent loses web_search/web_fetch
+        and reaches the internet only through the quarantined ask_internet
+        broker. fast: direct tools, broker hidden. `/fastweb` lifts the gate for
+        one user turn when the user config allows it (agent.fast_web_per_turn);
+        the arm is consumed by the first attended turn, whether or not allowed.
+        """
+        direct = getattr(self.config.agent, "mode", "ultrasecure") == "fast"
+        if self._fast_web_armed and source not in _UNATTENDED_SOURCES:
+            self._fast_web_armed = False
+            if getattr(self.config.agent, "fast_web_per_turn", False):
+                direct = True
+                logger.info("fast web: direct web_search/web_fetch for this turn")
+        return {"ask_internet"} if direct else {"web_search", "web_fetch"}
+
     async def chat(
         self,
         user_input: str,
@@ -1139,13 +1163,7 @@ class Agent:
         _excluded: set[str] = set()
         if self.config.web_search.require_worker:
             _excluded.update({"web_search", "web_fetch"})
-        # Mode gate: in ultrasecure the privileged agent loses direct net access
-        # and reaches the internet only through the quarantined ask_internet
-        # broker; in fast mode ask_internet is hidden (broker is unconfigured).
-        if getattr(self.config.agent, "mode", "fast") == "ultrasecure":
-            _excluded.update({"web_search", "web_fetch"})
-        else:
-            _excluded.add("ask_internet")
+        _excluded.update(self._web_gate(source))
         # Remote SSH tools exist only for hosts the user declared ([remote]).
         from agent.tools.remote import active_hosts as _remote_hosts, TOOL_NAMES as _remote_tools
         if not _remote_hosts(self.config):

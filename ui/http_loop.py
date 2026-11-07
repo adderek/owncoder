@@ -3630,7 +3630,7 @@ _LIVE_SLASH = frozenset({
     "/maxtokens", "/max_tokens", "/maxiter", "/max_iter", "/unlimited", "/nomax",
     "/context", "/ctx", "/legend", "/modelcalls", "/mc", "/perf", "/timing",
     "/who", "/agents", "/tools", "/permissions", "/perms", "/tokwatch", "/paths",
-    "/remote",
+    "/remote", "/fastweb",
 })
 
 
@@ -3815,6 +3815,8 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
     elif cmd == "/stop":
         server.stop_after_iteration()
         pub({"type": "sys", "text": "stopping after current iteration…"})
+    elif cmd == "/fastweb":
+        _apply(server.set_fast_web)
     elif cmd == "/think":
         _apply(server.set_think_level)
     elif cmd in ("/autonomy", "/auto", "/verbose"):

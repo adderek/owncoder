@@ -730,6 +730,10 @@ async def simple_loop(agent: "Agent", session=None, server: "UIServerProtocol | 
                     except Exception as e:
                         console.print(f"[red]analyze-asm error: {e}[/red]")
 
+            elif cmd == "/fastweb":
+                ok, msg = server.set_fast_web(arg)
+                console.print(f"[{'green' if ok else 'yellow'}]{msg}[/]")
+
             elif cmd == "/think":
                 ok, msg = server.set_think_level(arg)
                 console.print(f"[{'green' if ok else 'yellow'}]{msg}[/]")

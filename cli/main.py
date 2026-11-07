@@ -144,7 +144,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Run in ultrasecure mode: the agent reaches the "
                              "internet only via a quarantined subagent broker "
                              "(ask_internet); web_search/web_fetch are stripped "
-                             "from the main agent. Overrides agent.mode.")
+                             "from the main agent. Overrides agent.mode. This is "
+                             "the default; the flag forces it over a user config "
+                             "that sets mode = \"fast\".")
 
     sub = parser.add_subparsers(dest="command")
 

@@ -394,6 +394,27 @@ def _clamp_project_serial(data: dict) -> list[str]:
     return _clamp_user_only(data, "serial", "serial ports")
 
 
+def _clamp_project_agent(data: dict) -> list[str]:
+    """Drop [agent] keys from a project layer that would give the agent raw web.
+
+    Direct web access (mode = "fast", or the per-turn `/fastweb` opt-in) lets
+    fetched page bytes reach the privileged agent verbatim. A cloned repo must
+    not be able to turn that on for itself. Mutates *data*.
+    """
+    section = data.get("agent")
+    if not isinstance(section, dict):
+        return []
+    issues: list[str] = []
+    if "mode" in section and section["mode"] != "ultrasecure":
+        issues.append(f"[agent] mode = {section.pop('mode')!r} from a project config "
+                      f"ignored — direct web access is set only in ~/.config/agent/")
+    if section.get("fast_web_per_turn"):
+        section.pop("fast_web_per_turn")
+        issues.append("[agent] fast_web_per_turn from a project config ignored — "
+                      "direct web access is set only in ~/.config/agent/")
+    return issues
+
+
 def _clamp_project_usb(data: dict) -> list[str]:
     """Which host hardware sandboxed commands may open is the user's call."""
     return _clamp_user_only(data, "usb", "USB devices")
@@ -1042,6 +1063,7 @@ def load_config(extra_path: Path | list[Path] | None = None) -> Config:
                 security_issues.extend(_clamp_project_remote(data))
                 security_issues.extend(_clamp_project_serial(data))
                 security_issues.extend(_clamp_project_usb(data))
+                security_issues.extend(_clamp_project_agent(data))
                 _srv, _iss = _clamp_project_mcp(data, p.parent)
                 project_mcp.extend(_srv)
                 security_issues.extend(_iss)

@@ -847,8 +847,7 @@ class ExploreConfig:
 class AgentConfig:
     """Agent runtime behavior (independent of model/endpoint choice)."""
     # Operating mode:
-    #   "fast"        — default. web_search/web_fetch callable directly by the agent.
-    #   "ultrasecure" — dual-LLM quarantine. Internet (web_search/web_fetch) is
+    #   "ultrasecure" — default. Dual-LLM quarantine. Internet (web_search/web_fetch) is
     #                   stripped from the main agent; it can only reach the net via
     #                   the ask_internet broker, which spawns a disposable subagent
     #                   that holds the internet tools and returns sanitized,
@@ -856,7 +855,14 @@ class AgentConfig:
     #                   internet-facing subagent as compromised; injection in
     #                   fetched bytes is laundered through it and never reaches the
     #                   privileged agent verbatim.
-    mode: str = "fast"  # "fast" | "ultrasecure"
+    #   "fast"        — web_search/web_fetch callable directly by the agent, every
+    #                   turn. Opt-in from a USER config file only (a project
+    #                   agent.toml cannot set it — see loader._clamp_project_agent).
+    mode: str = "ultrasecure"  # "ultrasecure" | "fast"
+    # Per-turn escape hatch while mode = "ultrasecure": when True, `/fastweb`
+    # arms direct web access for the NEXT user turn only, then reverts. User
+    # config only, like `mode = "fast"`.
+    fast_web_per_turn: bool = False
     # Which cost tiers may be used for AUTOMATIC model selection (idle/background
     # work + spawn_agents decision-maker). Does NOT override an explicitly pinned
     # [models] default — that is always honored.
