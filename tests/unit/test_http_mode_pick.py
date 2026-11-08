@@ -8,9 +8,14 @@ until the user chooses, and asks again for every new or switched session.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
+import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from agent.config import Config
 from agent.config.models import ModelEntry
@@ -20,6 +25,33 @@ _STATIC = Path(__file__).resolve().parents[2] / "ui" / "static"
 APP_JS = (_STATIC / "app.js").read_text(encoding="utf-8")
 APP_CSS = (_STATIC / "app.css").read_text(encoding="utf-8")
 HEADER = _PAGE[_PAGE.index('<div id="header">'):_PAGE.index('<div id="main">')]
+MD_JS = _STATIC / "md.js"
+RENDER = APP_JS[APP_JS.index("let modePickState"):]
+RENDER = RENDER[:RENDER.index("\n}\n") + 3]
+
+
+def _render(state) -> dict:
+    """Run app.js's renderModePick under node against a stub <select>."""
+    script = r"""
+const fs = require('fs');
+const [mdPath, render, stateJson] = process.argv.slice(1);
+const sel = {style: {display: 'x'}, innerHTML: '', title: '', cls: new Set(),
+  classList: {toggle(c, on) { on ? sel.cls.add(c) : sel.cls.delete(c); }}};
+globalThis.document = {getElementById: id => id === 'modepick' ? sel : null};
+eval(fs.readFileSync(mdPath, 'utf8') + '\n' + render +
+     '\nmodePickState = JSON.parse(stateJson); renderModePick();');
+console.log(JSON.stringify({display: sel.style.display, html: sel.innerHTML,
+  unset: sel.cls.has('unset'), title: sel.title}));
+"""
+    proc = subprocess.run(["node", "-e", script, str(MD_JS), RENDER, json.dumps(state)],
+                          capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+_needs_node = pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+_CHOICES = [{"mode": "private", "first": "lan"}, {"mode": "cloud", "first": "ds"},
+            {"mode": "paid-cloud", "first": None}]
 
 
 def _entry(model, url, **kw):
@@ -91,10 +123,29 @@ class TestPage:
         block = block[:block.index("\n}")]
         assert re.search(r"#modepick\.unset\s*\{[^}]*animation:\s*none", block)
 
-    def test_unpicked_shows_an_empty_prompt_option(self):
-        fn = APP_JS[APP_JS.index("function renderModePick"):]
-        fn = fn[:fn.index("\n}\n")]
-        assert "if (!st.chosen)" in fn and 'value="" selected disabled' in fn
+    @_needs_node
+    def test_unpicked_shows_an_empty_prompt_and_flashes(self):
+        out = _render({"chosen": False, "mode": "private", "choices": _CHOICES})
+        assert out["display"] == "" and out["unset"] is True
+        first = out["html"].split("</option>")[0]
+        assert 'value="" selected disabled' in first and "pick work mode" in first
+        assert "configured default (private)" in out["title"]
+
+    @_needs_node
+    def test_picked_selects_the_mode_and_names_its_model(self):
+        out = _render({"chosen": True, "mode": "cloud", "choices": _CHOICES})
+        assert out["unset"] is False and "pick work mode" not in out["html"]
+        assert re.search(r'<option value="cloud" selected>☁ cloud → ds</option>', out["html"])
+        assert "💳 paid-cloud (no model)" in out["html"]
+
+    @_needs_node
+    def test_a_mode_outside_the_list_still_shows(self):
+        out = _render({"chosen": True, "mode": "lan-only", "choices": _CHOICES})
+        assert "lan-only (/mode)" in out["html"] and out["unset"] is False
+
+    @_needs_node
+    def test_no_state_hides_it(self):
+        assert _render(None)["display"] == "none"
 
     def test_session_boundaries_reset_the_pick(self):
         src = Path(__file__).resolve().parents[2].joinpath("ui", "http_loop.py").read_text()
