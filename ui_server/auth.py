@@ -55,9 +55,9 @@ def origin_host_error(handler: BaseHTTPRequestHandler) -> dict:
     name = _rejected_name(handler)
     msg = "forbidden — bad Origin/Host"
     if name:
-        msg += (f": '{name}' is not allowed. If that is this server's address as you typed it "
-                f"in the browser, restart with --allow-host {name} "
-                f"(or [ui] allowed_hosts in agent.toml/agent.yaml).")
+        msg += (f": '{name}' is not allowed. This list names the SERVER as typed in the "
+                f"address bar (not your client's IP). If '{name}' is this server, restart "
+                f"with --allow-host {name} (or [ui] allowed_hosts in agent.toml/agent.yaml).")
     return {"error": msg}
 
 

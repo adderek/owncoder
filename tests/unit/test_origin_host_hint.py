@@ -30,3 +30,21 @@ def test_hint_sanitises_echoed_name(monkeypatch):
     monkeypatch.delenv("AGENT_ALLOWED_HOSTS", raising=False)
     msg = origin_host_error(_h("<script>x</script>:1"))["error"]
     assert "<" not in msg and ">" not in msg
+
+
+def test_own_ips_are_non_loopback_ip_literals(monkeypatch):
+    """Bound to 0.0.0.0 the UI accepts this machine's own IPs as Host, so the
+    LAN link it prints works without --allow-host."""
+    from agent.ui import http_loop
+    monkeypatch.setattr("agent.ui_server.tls.local_names",
+                        lambda extra=None: ["127.0.0.1", "::1", "localhost", "fractal",
+                                            "192.168.31.42", "172.17.0.1"])
+    assert http_loop._own_ips() == ["192.168.31.42", "172.17.0.1"]
+
+
+def test_lan_ip_allow_list_is_wired_for_wildcard_bind():
+    import inspect
+    from agent.ui import http_loop
+    src = inspect.getsource(http_loop)
+    assert '_lan_ips = _own_ips() if host in ("0.0.0.0", "") else []' in src
+    assert "_extra_hosts += [ip for ip in _lan_ips" in src

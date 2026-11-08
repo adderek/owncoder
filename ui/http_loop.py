@@ -3432,6 +3432,21 @@ def _write_project_pidfile_if_enabled(agent, port: int) -> str | None:
         return None
 
 
+def _own_ips() -> list[str]:
+    """Non-loopback IP literals of this machine (LAN, docker, VPN)."""
+    import ipaddress
+    from agent.ui_server.tls import local_names
+    out = []
+    for name in local_names():
+        try:
+            ip = ipaddress.ip_address(name)
+        except ValueError:
+            continue
+        if not ip.is_loopback:
+            out.append(name)
+    return out
+
+
 def _bind_server(handler, host: str, port: int,
                  tls_cert: str = "", tls_key: str = "") -> ThreadingHTTPServer:
     """Bind requested port; walk forward a little if it's taken.
@@ -4420,6 +4435,12 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
     # (which has no config access) accepts them, and router-spawned project
     # processes inherit it via the environment.
     _extra_hosts = [str(h) for h in (getattr(cfg, "allowed_hosts", None) or [])]
+    # Bound to every interface: this machine's own IP literals are names a
+    # browser legitimately types for it, so accept them without --allow-host.
+    # Safe against DNS rebinding — that arrives under the attacker's hostname,
+    # never under one of our IP literals — and the token is still required.
+    _lan_ips = _own_ips() if host in ("0.0.0.0", "") else []
+    _extra_hosts += [ip for ip in _lan_ips if ip not in _extra_hosts]
     if _extra_hosts:
         os.environ["AGENT_ALLOWED_HOSTS"] = ",".join(_extra_hosts)
     tls_cert = str(getattr(cfg, "http_tls_cert", "") or "")
@@ -4463,6 +4484,8 @@ async def http_loop(agent: "Agent", session=None, server: "UIServerProtocol | No
         f"Open your browser at: "
         f"[bold]{scheme}://{shown_host}:{actual_port}/?token={ui.auth.token}[/bold]"
     )
+    for _ip in _lan_ips:
+        console.print(f"  [dim]LAN:[/dim] {scheme}://{_ip}:{actual_port}/?token={ui.auth.token}")
     console.print(
         "[dim]The token is the only credential for this UI (loopback included) "
         "and it changes on every start.[/dim]"
