@@ -104,6 +104,25 @@ def mode_allows(entry: "ModelEntry", mode: str) -> bool:
     return entry_tier(entry) in MODE_TIERS.get(mode, MODE_TIERS["any"])
 
 
+# Modes promising that nothing leaves the network. Their pool walks may fall
+# back between own endpoints (lan-only → localhost) but never onto the cloud:
+# a session nobody can serve is better than one silently sent to a third party.
+NO_CLOUD_MODES = frozenset({"private", "lan-only", "local-only"})
+
+
+def mode_ordered(entries: dict, names: list, mode: str) -> list:
+    """*names* with the ones *mode* allows first, then the last-resort tail.
+
+    Under a NO_CLOUD_MODES mode the tail drops cloud entries. Names missing
+    from *entries* (legacy keys) are kept; the caller probes what they mean.
+    """
+    preferred = [n for n in names if n in entries and mode_allows(entries[n], mode)]
+    rest = [n for n in names if n not in preferred]
+    if mode in NO_CLOUD_MODES:
+        rest = [n for n in rest if n not in entries or mode_allows(entries[n], "private")]
+    return preferred + rest
+
+
 def model_power(entry: "ModelEntry") -> float:
     """Comparable capability score for ranking entries weakest → strongest.
 

@@ -9,6 +9,7 @@ Three plain knobs on top of precise ones. `core/simple_select.py`.
 | effort | off · low · medium · high · xhigh | `llm.think_level`: off · low · normal · high · max | `/think` |
 
 - `/use cloud strong xhigh`, `/use fast`, `/use auto`, `/use effort=high`. Disjoint tokens → any order/subset. Aliases: lan/private→local, quick→fast, deep→strong, max→xhigh.
+- No-cloud modes (`private`, `lan-only`, `local-only`): startup/role pool walks may fall back between own endpoints, never onto cloud entries — all own endpoints down → role unresolved + warning, not a silent third-party session. Explicit `/model` pin still honored.
 - Ladder ranks live entries allowed by current mode → `where` and `model` compose ("local strong" = strongest LAN/local box).
 - View derived from knobs: state it cannot name shows `custom` with raw value (e.g. `lan-only · 📌glm · high` after `/mode lan-only` + `/model glm`).
 - HTTP UI: header chip `where · model · effort ▾` → popover, one row per knob, "advanced…" opens models panel. API: `POST /api/model {"action":"simple", where?, model?, effort?}`; state in `/api/state.simple`, SSE `simple`.

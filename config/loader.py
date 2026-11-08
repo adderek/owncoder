@@ -1159,13 +1159,9 @@ def _resolve_role_pools(config: Config, timeout: int = 3) -> None:
             # Same mode-ordering as the default pool. Embeddings are exempt:
             # they are a cheap local vector service, not an LLM cost decision —
             # "lan-only" still wants the localhost embed server when it is up.
-            from agent.config.registry import mode_allows
-            mode = getattr(config.agent, "model_mode", "any")
-            allowed = [n for n in candidates
-                       if n in config.model_entries
-                       and mode_allows(config.model_entries[n], mode)]
-            if allowed:
-                candidates = allowed + [n for n in candidates if n not in allowed]
+            from agent.config.registry import mode_ordered
+            candidates = mode_ordered(config.model_entries, candidates,
+                                      getattr(config.agent, "model_mode", "any"))
         for name in candidates:
             entry = config.model_entries.get(name)
             if entry is None:
@@ -1258,16 +1254,13 @@ def check_reachability(config: Config) -> None:
     # (e.g. "lan-only" skips the localhost entries that list first), otherwise
     # a mode switch would leave the main role on a disallowed endpoint. An
     # explicit pin (TOML string, --model, env) is always honored, and the
-    # disallowed entries stay at the back as a last-resort fallback rather than
-    # being dropped — no reachable endpoint at all is worse than a wrong tier.
+    # disallowed entries stay at the back as a last-resort fallback — except
+    # cloud entries under a no-cloud mode (private/lan-only/local-only): there
+    # no endpoint at all beats a session silently sent to a third party.
     if not pinned:
-        from agent.config.registry import mode_allows
-        mode = getattr(config.agent, "model_mode", "any")
-        preferred = [n for n in ordered
-                     if n in config.model_entries
-                     and mode_allows(config.model_entries[n], mode)]
-        if preferred:
-            ordered = preferred + [n for n in ordered if n not in preferred]
+        from agent.config.registry import mode_ordered
+        ordered = mode_ordered(config.model_entries, ordered,
+                               getattr(config.agent, "model_mode", "any"))
 
     selected: str | None = None
     for name in ordered:
@@ -1306,6 +1299,10 @@ def check_reachability(config: Config) -> None:
         logger.info(msg)
     else:
         tried = ", ".join(ordered) if ordered else config.llm.base_url
+        from agent.config.registry import NO_CLOUD_MODES
+        mode = getattr(config.agent, "model_mode", "any")
+        if not pinned and mode in NO_CLOUD_MODES:
+            tried += f"; model-mode {mode}: cloud entries not tried (/mode cloud to allow)"
         print(
             f"\nWarning: no LLM endpoint reachable (tried: {tried})\n"
             f"  Make sure a server is running, or configure [models] in agent.toml.\n"

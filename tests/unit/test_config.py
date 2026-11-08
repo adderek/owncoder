@@ -305,6 +305,59 @@ class TestSummarizerPool:
         _resolve_role_pools(c)
         assert c.model_roles["summarizer"] == "gpu-summ"
 
+    @pytest.mark.parametrize("mode", ["private", "lan-only", "local-only"])
+    def test_no_cloud_mode_never_falls_back_to_cloud(self, monkeypatch, mode):
+        # Own endpoints down: the role stays unresolved rather than landing on
+        # a third-party endpoint the mode promised not to use.
+        c = Config()
+        c.agent.model_mode = mode
+        c.model_pools["summarizer"] = ["remote-summ", "cloud-summ"]
+        c.model_entries["remote-summ"] = _entry("qwen-lan", "http://192.168.31.42:8081/v1")
+        c.model_entries["cloud-summ"] = _entry("ds", "https://api.deepseek.com")
+
+        def fake_urlopen(req, timeout):
+            if "192.168.31.42" in req.full_url:
+                raise OSError("down")
+            return _FakeResponse()
+
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        _resolve_role_pools(c)
+        assert "summarizer" not in c.model_roles
+
+    def test_private_default_pool_skips_cloud_when_lan_down(self, monkeypatch, capsys):
+        from agent.config.loader import check_reachability
+        c = Config()
+        c.agent.model_mode = "private"
+        c.model_pools["default"] = ["remote-main", "cloud-main"]
+        c.model_entries["remote-main"] = _entry("qwen-lan", "http://192.168.31.42:8081/v1")
+        c.model_entries["cloud-main"] = _entry("ds", "https://api.deepseek.com")
+
+        def fake_urlopen(req, timeout):
+            if "192.168.31.42" in req.full_url:
+                raise OSError("down")
+            return _FakeResponse()
+
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        check_reachability(c)
+        assert c.model_roles.get("default") != "cloud-main"
+        assert "cloud entries not tried" in capsys.readouterr().err
+
+    def test_any_mode_still_falls_back_to_cloud(self, monkeypatch):
+        c = Config()
+        c.agent.model_mode = "any"
+        c.model_pools["summarizer"] = ["remote-summ", "cloud-summ"]
+        c.model_entries["remote-summ"] = _entry("qwen-lan", "http://192.168.31.42:8081/v1")
+        c.model_entries["cloud-summ"] = _entry("ds", "https://api.deepseek.com")
+
+        def fake_urlopen(req, timeout):
+            if "192.168.31.42" in req.full_url:
+                raise OSError("down")
+            return _FakeResponse()
+
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        _resolve_role_pools(c)
+        assert c.model_roles["summarizer"] == "cloud-summ"
+
     def test_embeddings_pool_exempt_from_mode(self, monkeypatch):
         # Embeddings keep their own local-first order under lan-only.
         c = Config()
