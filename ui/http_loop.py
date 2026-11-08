@@ -715,6 +715,7 @@ _PAGE = r"""<!DOCTYPE html>
   <button class="icon" id="lefttoggle" title="Sessions panel — Ctrl+B toggles, Alt+↑/↓ switches session" aria-label="Toggle sessions panel">☰</button>
   <b id="brand" data-hprio="0">owncoder</b>
   <button type="button" class="chip btn" id="model" data-hprio="3" title="Click to manage models"></button>
+  <select class="chip btn unset" id="modepick" data-hprio="4" title="Work mode for this session — pick one" aria-label="Work mode" style="display:none"></select>
   <button type="button" class="chip btn" id="simplechip" data-hprio="3" title="Model choice: where · model · effort — click to change" aria-haspopup="menu" aria-expanded="false" style="display:none"></button>
   <button type="button" class="chip btn" id="session" data-hprio="2" title="Current session — click for the sessions panel"></button>
   <button type="button" class="chip btn" id="workdir" title="Project directory (session-scoped) — click to manage access"></button>
@@ -1017,6 +1018,10 @@ class _HttpUI:
         # Pending "restore this session's model pins?" offer (see
         # _offer_model_restore); shown by the page from /api/state.
         self.model_restore: dict | None = None
+        # Work mode (model-mode) picked in THIS session? False until the user
+        # picks it from the header dropdown, /mode or /use where=…; the page
+        # shows the dropdown empty and flashing until then. Reset per session.
+        self.mode_chosen = False
         self.prompt_queue: asyncio.Queue = asyncio.Queue()
         self.busy = False
         self.chat_task: asyncio.Task | None = None
@@ -1196,6 +1201,7 @@ class _HttpUI:
         self.server.set_messages(messages)
         self.server.set_session_id(session.id)
         self.session = session
+        self.mode_chosen = False
         self._offer_model_restore()
         self.beacon()
         try:
@@ -1239,6 +1245,7 @@ class _HttpUI:
         self.server.set_session_id(session.id)
         self.session = session
         self.model_restore = None
+        self.mode_chosen = False
         self.beacon()
         try:
             from agent.security import path_grants
@@ -1639,6 +1646,7 @@ class _HttpUI:
             "fold_journal": self._fold_journal(),
             "token_stats": self.token_stats_info(),
             "simple": self.simple_info(),
+            "modepick": self.mode_pick_info(),
             "model_restore": self.model_restore,
             "io": {"in": stats.get("input_tokens", 0),
                    "out": stats.get("output_tokens", 0),
@@ -1720,6 +1728,35 @@ class _HttpUI:
         except Exception:
             logger.debug("http ui: simple state failed", exc_info=True)
             return None
+
+    # Work modes offered by the header dropdown; /mode keeps the full list.
+    MODE_PICK_CHOICES = ("private", "cloud", "paid-cloud")
+
+    def mode_pick_info(self) -> dict | None:
+        """Header work-mode dropdown: chosen yet? + each choice with the entry
+        its default pool would start on. None when the agent is not local."""
+        cfg = _agent_config(self.server)
+        if cfg is None:
+            return None
+        from agent.config.registry import mode_allows
+        entries = cfg.model_entries or {}
+        pool = (cfg.model_pools or {}).get("default") or []
+        choices = []
+        for m in self.MODE_PICK_CHOICES:
+            first = next((n for n in pool if n in entries and mode_allows(entries[n], m)), "")
+            choices.append({"mode": m, "first": first})
+        return {"chosen": self.mode_chosen, "mode": cfg.agent.model_mode,
+                "choices": choices}
+
+    def publish_mode_pick(self, chosen: bool | None = None) -> None:
+        if chosen is not None:
+            self.mode_chosen = chosen
+        info = self.mode_pick_info()
+        if info is not None:
+            self.bus.publish({"type": "modepick", **info})
+        simple = self.simple_info()
+        if simple is not None:
+            self.bus.publish({"type": "simple", **simple})
 
     def token_stats_info(self) -> dict:
         """Whether per-token logprob capture is on, and why it may not apply."""
@@ -1948,14 +1985,14 @@ class _HttpUI:
                                if payload.get(k))
                 msg = simple_select.run_use_command(cfg, arg)
                 ok = not msg.startswith("unknown")
-                info = self.simple_info()
-                if info is not None:
-                    self.bus.publish({"type": "simple", **info})
+                self.publish_mode_pick(chosen=True if ok and payload.get("where") else None)
             elif action == "mode":
                 setter = getattr(self.server, "set_model_mode", None)
                 if setter is None:
                     return {"ok": False, "msg": "server does not support model-mode"}
                 ok, msg = self._call_on_loop(setter, str(payload.get("mode") or ""))
+                if ok and payload.get("mode") and not msg.startswith("unknown"):
+                    self.publish_mode_pick(chosen=True)
             elif action in ("use_all", "release_all"):
                 # Pin/release one entry across every role it can serve. The
                 # role list is the registry matrix minus the embedding role,
@@ -3921,6 +3958,8 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
         else:
             ok, msg = setter(arg)
             pub({"type": "sys", "error": not ok, "text": msg})
+            if ok and arg.strip() and not msg.startswith("unknown"):
+                ui.publish_mode_pick(chosen=True)
     elif cmd in ("/output", "/out"):
         scope = arg.strip().lower() or "session"
         if scope not in ("session", "last"):
@@ -4103,8 +4142,10 @@ async def _handle_slash(ui: _HttpUI, cmd: str, arg: str) -> None:
             from agent.core import simple_select
             text = await asyncio.to_thread(simple_select.run_use_command, cfg, arg)
             pub({"type": "sys", "text": text})
-            st = simple_select.state(cfg)
-            pub({"type": "simple", "label": simple_select.label(st), **st})
+            # `/use local|cloud` (or an alias) is a work-mode pick; `auto` is not.
+            toks = arg.lower().replace("=", " ").split()
+            picked = any(simple_select._ALIASES.get(t, t) in ("local", "cloud") for t in toks)
+            ui.publish_mode_pick(chosen=True if picked and not text.startswith("unknown") else None)
     elif cmd == "/plan":
         _apply(server.set_plan)
     elif cmd == "/plans":

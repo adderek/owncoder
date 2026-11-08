@@ -1324,7 +1324,7 @@ function handle(ev) {
   if (['tokens', 'stats'].indexOf(ev.type) < 0) lastEventAt = Date.now();
   // History preview is read-only: drop render events while it's open (header
   // chips still update); count them so the banner shows activity happened.
-  if (previewing && ['tokens','stats','state','switched','mode','token_stats','simple','connect_request','connect_done',
+  if (previewing && ['tokens','stats','state','switched','mode','token_stats','simple','modepick','connect_request','connect_done',
                      'loopguard','loopguard_done','permission','permission_done',
                      'grants_changed'].indexOf(ev.type) < 0) {
     missedLive++;
@@ -1360,6 +1360,8 @@ function handle(ev) {
     tokStats = ev; renderTokStatsBtn();
   } else if (ev.type === 'simple') {
     simpleState = ev; renderSimpleChip();
+  } else if (ev.type === 'modepick') {
+    modePickState = ev; renderModePick();
   } else if (ev.type === 'tokstats') {
     stamp(metaMount(tokstatsFold(ev, null)));
     noteWatch(ev.watch);
@@ -3834,6 +3836,42 @@ document.addEventListener('keydown', (ev) => {
 }, true);
 setSessionMode('standard', false);
 
+// Work mode (model-mode) for the session: private = own hardware only, cloud /
+// paid-cloud = third-party endpoints. Empty and flashing until picked in this
+// session (a new or switched session asks again); until then the configured
+// default mode is in force. Same /api/model {action:'mode'} as /mode.
+let modePickState = null;
+const MODE_PICK_ICON = {'private': '🔒', 'cloud': '☁', 'paid-cloud': '💳'};
+function renderModePick() {
+  const sel = document.getElementById('modepick');
+  if (!sel) return;
+  const st = modePickState;
+  if (!st) { sel.style.display = 'none'; return; }
+  sel.style.display = '';
+  const known = (st.choices || []).some(c => c.mode === st.mode);
+  let h = '';
+  if (!st.chosen) h += '<option value="" selected disabled>⚠ pick work mode…</option>';
+  for (const c of st.choices || []) {
+    const on = st.chosen && c.mode === st.mode;
+    h += '<option value="' + esc(c.mode) + '"' + (on ? ' selected' : '') + '>' +
+      esc((MODE_PICK_ICON[c.mode] || '') + ' ' + c.mode + (c.first ? ' → ' + c.first : ' (no model)')) +
+      '</option>';
+  }
+  if (st.chosen && !known)
+    h += '<option value="" selected disabled>' + esc(st.mode) + ' (/mode)</option>';
+  sel.innerHTML = h;
+  sel.classList.toggle('unset', !st.chosen);
+  sel.title = st.chosen
+    ? 'Work mode: ' + st.mode + ' — change any time (/mode for all modes)'
+    : 'Work mode not picked for this session — until you pick, the configured default (' +
+      st.mode + ') is in force';
+}
+document.getElementById('modepick').addEventListener('change', async (ev) => {
+  const v = ev.target.value;
+  if (v) await modelAction({action: 'mode', mode: v});
+  renderModePick();   // a refused switch must not leave the new value showing
+});
+
 // Simple model choice (core/simple_select.py): where · model · effort, the
 // codex/Claude Code-style three knobs. Writes /mode, /effort and /think
 // underneath; "advanced…" opens the full models panel.
@@ -4407,6 +4445,7 @@ function replayTranscriptInner(messages) {
 function applyState(s) {
   document.getElementById('model').textContent = s.model;
   if ('simple' in s) { simpleState = s.simple; renderSimpleChip(); }
+  if ('modepick' in s) { modePickState = s.modepick; renderModePick(); }
   visionOn = !!s.vision;
   if (s.models && s.models.llm) {
     // Hover the model chip for the full role table (llm/emb/sum + availability).

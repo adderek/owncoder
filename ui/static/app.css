@@ -115,6 +115,22 @@ details.dfold.dragging { opacity: .6; outline: 1px solid var(--accent); }
         border: 1px solid var(--border); color: var(--dim); white-space: nowrap; }
 .chip.btn { cursor: pointer; }
 .chip.btn:hover { color: var(--fg); border-color: var(--accent); }
+/* ── Work-mode picker ───────────────────────────────────────────────────────
+   Unpicked = flashing red→rainbow, so nobody starts a session without deciding
+   where its prompts may go. Picked = a plain chip. */
+#modepick { appearance: auto; padding: 1px 4px; color: var(--fg); }
+#modepick.unset { color: #fff; font-weight: 600; border-width: 2px;
+  animation: modepick-flash 1.6s linear infinite; }
+#modepick option { color: var(--fg); background: var(--panel2); }
+@keyframes modepick-flash {
+  0%, 12% { background: #d32f2f; border-color: #ff8a80; }
+  25%     { background: #ef6c00; border-color: #ffd180; }
+  37%     { background: #c9a400; border-color: #ffff8d; }
+  50%     { background: #2e7d32; border-color: #b9f6ca; }
+  62%     { background: #1565c0; border-color: #82b1ff; }
+  75%     { background: #6a1b9a; border-color: #ea80fc; }
+  88%, 100% { background: #d32f2f; border-color: #ff8a80; }
+}
 /* ── Session privacy mode ──────────────────────────────────────────────────
    A session that leaves no trace must not look like one that records
    everything, so the mode colours the chip AND the page frame: a tinted rule
@@ -704,6 +720,7 @@ body[data-layout="full"] .row { max-width: none; }
 @keyframes fadein { from { opacity: 0; transform: translateY(4px); }
                     to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) {
+  #modepick.unset { animation: none; background: #d32f2f; border-color: #ff8a80; }
   .row { animation: none; }
   aside { transition: none; }
   /* Redefining the keyframes covers every user of fadein — the ask box, the
