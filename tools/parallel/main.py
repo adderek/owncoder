@@ -115,6 +115,80 @@ def _build_group_semaphores(config: "Config") -> tuple[dict[str, asyncio.Semapho
     return group_sems, model_to_group
 
 
+_GLOBAL_LANE = "__global__"
+
+
+class _Lanes:
+    """In-flight counters per concurrency group, shared by one spawn_agents call.
+
+    A task holds a ranked list of (model, lane) choices and takes the first
+    lane with a free slot, waiting only when every one of its lanes is full.
+    Models outside any group share the global lane.
+    """
+
+    def __init__(self, limits: dict[str, int]):
+        self._limits = limits
+        self._busy: dict[str, int] = {k: 0 for k in limits}
+        self._cond = asyncio.Condition()
+
+    async def acquire(self, choices: list[tuple[str, str]]) -> tuple[str, str]:
+        async with self._cond:
+            while True:
+                for model, lane in choices:
+                    if self._busy[lane] < self._limits[lane]:
+                        self._busy[lane] += 1
+                        return model, lane
+                await self._cond.wait()
+
+    async def release(self, lane: str) -> None:
+        async with self._cond:
+            self._busy[lane] -= 1
+            self._cond.notify_all()
+
+
+def _lane_limits(config: "Config") -> dict[str, int]:
+    pcfg = config.parallel
+    limits = {_GLOBAL_LANE: max(1, int(pcfg.global_max_concurrent))}
+    for group_name, group_data in pcfg.groups.items():
+        if isinstance(group_data, dict):
+            limits[group_name] = max(1, int(group_data.get("max_concurrent", 1)))
+    return limits
+
+
+def _spill_choices(ranked: list[str], entries: dict, model_to_group: dict[str, str],
+                   available, group_models: dict[str, list[str]]) -> list[tuple[str, str]]:
+    """Ranked models -> (model, lane) choices, one live model per device.
+
+    A device is a concurrency group, or the base_url of an ungrouped entry:
+    a second model on the same device would queue on the same slots and make
+    the server swap models (on Tiiny evict the first). Within a group the
+    model listed first in the group (its default) wins; the group's place in
+    the result is that of its best-ranked model. When nothing is reachable
+    the top pick stays, so the worker reports the real error.
+    """
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    ranked_set = set(ranked)
+    for name in ranked:
+        group = model_to_group.get(name)
+        device = f"group:{group}" if group else getattr(entries.get(name), "base_url", "")
+        if device in seen:
+            continue
+        if group is not None:
+            members = [m for m in group_models.get(group, []) if m in ranked_set]
+            pick = next((m for m in members if available(m)), None)
+        else:
+            pick = name if available(name) else None
+        if pick is None:
+            continue
+        seen.add(device)
+        seen.add(getattr(entries.get(pick), "base_url", ""))
+        out.append((pick, group or _GLOBAL_LANE))
+    if not out and ranked:
+        out.append((ranked[0], model_to_group.get(ranked[0]) or _GLOBAL_LANE))
+    return out
+
+
 async def _run_worker(
     task: str,
     model_name: str,
@@ -298,16 +372,19 @@ async def spawn_agents(tasks: list[dict]) -> str:
         all_names = {s["function"]["name"] for s in get_schemas()}
         excluded |= (all_names - _INTERNET_TOOLS)
 
-    # Build per-group semaphores and model->group mapping.
-    group_sems, model_to_group = _build_group_semaphores(_config)
-    global_sem = asyncio.Semaphore(max(1, int(pcfg.global_max_concurrent)))
+    # model->group mapping; each group is one lane with its own slot count.
+    _sems, model_to_group = _build_group_semaphores(_config)
+    lanes = _Lanes(_lane_limits(_config))
+    group_models = {g: list(d.get("models", [])) for g, d in pcfg.groups.items()
+                    if isinstance(d, dict)}
 
     # Resolve decision-maker once (may be None if disabled).
     decision_cfg = getattr(pcfg, "decision", None)
     use_decision = decision_cfg is not None and getattr(decision_cfg, "enabled", False)
 
-    # Assign model per task.
-    tasks_resolved: list[tuple[str, str | None, str]] = []  # (prompt, model, context)
+    # Rank models per task. A task without an explicit model may spill onto
+    # the next live lane when its best one is full (GPU0 -> GPU1 -> Tiiny).
+    tasks_resolved: list[tuple[str, list[str], str]] = []  # (prompt, ranked models, context)
     for i, item in enumerate(tasks):
         task_prompt = item.get("task", "")
         context = item.get("context", "") or ""
@@ -315,37 +392,57 @@ async def spawn_agents(tasks: list[dict]) -> str:
         if explicit_model:
             model_name: str | None = explicit_model
         elif use_decision:
-            from agent.tools.parallel.decision import pick_model
+            from agent.tools.parallel.decision import rank_models
             from agent.config import make_registry
             hint = item.get("hint") or {}
             # Restrict the decision-maker to models permitted by the active
             # model-mode (local-only / free-cloud / free-hybrid / paid-cloud / any).
             allowed = make_registry(_config).allowed_names()
-            model_name = pick_model(
-                _config.model_entries,
-                hint,
-                decision_cfg,
-                candidates=allowed or list(_config.model_entries.keys()),
-            )
+            # The default pool is the user's curated list of devices; the
+            # rest of the allowed entries only when nothing in it qualifies
+            # (they include other hosts' localhost aliases of the same router).
+            pool = list(_config.model_pools.get("default", []))
+            ranked = rank_models(_config.model_entries, hint, decision_cfg,
+                                 candidates=[n for n in pool if n in allowed], prefer=pool)
+            if not ranked:
+                ranked = rank_models(_config.model_entries, hint, decision_cfg,
+                                     candidates=allowed or list(_config.model_entries.keys()))
+            tasks_resolved.append((task_prompt, ranked, context))
+            continue
         else:
             model_name = workers_pool[i % len(workers_pool)] if workers_pool else None
-        tasks_resolved.append((task_prompt, model_name, context))
+        tasks_resolved.append((task_prompt, [model_name] if model_name else [], context))
 
-    async def _guarded(task_prompt: str, model_name: str | None, context: str):
-        if model_name is None:
+    # Probe each ranked endpoint once (cached ~60 s in model_probe) off the loop.
+    probe = sorted({n for _t, ranked, _c in tasks_resolved if len(ranked) > 1 for n in ranked})
+    live: dict[str, bool] = {}
+    if probe:
+        from agent.config.model_probe import entry_available
+        entries = _config.model_entries
+        live = await asyncio.to_thread(
+            lambda: {n: n in entries and entry_available(entries[n]) for n in probe})
+
+    async def _guarded(task_prompt: str, ranked: list[str], context: str):
+        if not ranked:
             return {
                 "model": None,
                 "output": None,
                 "error": "no model specified and no workers configured in [parallel].workers",
                 "tokens": {},
             }
-        group_name = model_to_group.get(model_name)
-        sem = group_sems.get(group_name, global_sem) if group_name else global_sem
-        async with sem:
+        if len(ranked) == 1:   # explicit model / workers pool: no spill
+            choices = [(ranked[0], model_to_group.get(ranked[0]) or _GLOBAL_LANE)]
+        else:
+            choices = _spill_choices(ranked, _config.model_entries, model_to_group,
+                                     lambda n: live.get(n, False), group_models)
+        model_name, lane = await lanes.acquire(choices)
+        try:
             return await _run_worker(
                 task_prompt, model_name, _config, _data_provider, timeout, excluded,
                 context=context,
             )
+        finally:
+            await lanes.release(lane)
 
     results = await asyncio.gather(*[_guarded(t, m, c) for t, m, c in tasks_resolved])
     return json.dumps({"results": list(results)}, indent=2)

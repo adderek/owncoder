@@ -816,6 +816,8 @@ class ParallelConfig:
 
     spawn_agents tasks pick a model by name; the group that owns that model
     enforces its own semaphore.  Models not in any group use global_max_concurrent.
+    Tasks without a model spill onto the next live group in default-pool order
+    when their best group is full (tools/parallel/main.py _spill_choices).
     Backward-compat: flat `workers` list works when groups are not defined.
     """
     enabled: bool = False

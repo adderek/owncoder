@@ -31,6 +31,8 @@ def pick_model(
 ) -> str | None:
     """Return the best model name from *entries* for the given *hint*.
 
+    The head of :func:`rank_models`.
+
     Args:
         entries: mapping of name → ModelEntry (all configured models).
         hint: task-level requirements dict. Recognised keys:
@@ -45,6 +47,26 @@ def pick_model(
     Returns:
         Name of the chosen model entry, or None if no candidate qualifies.
     """
+    ranked = rank_models(entries, hint, decision_cfg, candidates)
+    return ranked[0] if ranked else None
+
+
+def rank_models(
+    entries: dict[str, "ModelEntry"],
+    hint: dict,
+    decision_cfg: "DecisionConfig",
+    candidates: list[str] | None = None,
+    prefer: list[str] | None = None,
+) -> list[str]:
+    """Every chat candidate that passes the hard filters, best first.
+
+    Order: score ascending, then position in *prefer* (the user's default
+    pool order; unlisted after), then the stronger model (``model_power``),
+    then name. spawn_agents walks this list to spill tasks onto the next lane
+    when the best one is full. Embedding endpoints are never candidates.
+    """
+    from agent.config.registry import model_power
+
     est_in: int = int(hint.get("est_in_tokens", 0))
     est_out: int = int(hint.get("est_out_tokens", 0))
     min_strength: float = float(hint.get("min_strength", 0.0))
@@ -52,10 +74,13 @@ def pick_model(
 
     pool = candidates if candidates is not None else list(entries.keys())
 
-    scored: list[tuple[float, str]] = []
+    rank = {n: i for i, n in enumerate(prefer or [])}
+    scored: list[tuple[float, int, float, str]] = []
     for name in pool:
         entry = entries.get(name)
         if entry is None:
+            continue
+        if "embeddings" in (entry.tags or []) or getattr(entry, "dimensions", 0):
             continue
 
         # Hard filters (ctx_window=0 means auto/unknown — skip size filter)
@@ -67,14 +92,10 @@ def pick_model(
             continue
 
         score = _score(entry, est_in, est_out, min_strength, decision_cfg)
-        scored.append((score, name))
+        scored.append((score, rank.get(name, len(rank)), -model_power(entry), name))
 
-    if not scored:
-        return None
-
-    # Sort by score asc, then name asc for tie-break determinism
-    scored.sort(key=lambda t: (t[0], t[1]))
-    return scored[0][1]
+    scored.sort()
+    return [t[-1] for t in scored]
 
 
 def _score(
