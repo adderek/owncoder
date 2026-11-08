@@ -566,6 +566,12 @@ class SlashHandlerMixin:
         elif cmd in ("/analyze-asm", "/asm"):
             await self._run_analyze_asm(arg)
 
+        elif cmd == "/fastweb":
+            ok, msg = self._server.set_fast_web(arg)
+            color = t.success if ok else t.warning
+            for line in msg.splitlines():
+                self._write_sys(f"[{color}]{line}[/{color}]")
+
         elif cmd == "/think":
             ok, msg = self._server.set_think_level(arg)
             color = t.success if ok else t.warning

@@ -661,3 +661,29 @@ class TestPostCheckCmd:
             core_mod._run_post_check = orig
         assert checked == [str((work / "a.py").resolve())] or len(checked) == 1
         assert "b.py" not in "".join(checked)
+
+
+# ── Syntax check ──────────────────────────────────────────────────────────
+
+
+class TestSyntaxCheck:
+    def test_edit_that_breaks_python_reports_error_with_view(self, work):
+        (work / "cli.py").write_text("def f():\n    z = 1\n    return z\n")
+        r = edit_file([{"path": "cli.py", "anchor": "    return z\n",
+                        "replacement": "        return z\n"}])
+        assert "syntax error" in r["error"]
+        assert "ok" not in r
+        # Written, and the broken lines are in front of the agent.
+        assert "        return z" in (work / "cli.py").read_text()
+        assert r["applied"] and "cli.py" in r["current"]
+
+    def test_already_broken_file_is_not_blamed_on_the_edit(self, work):
+        (work / "cli.py").write_text("def f(:\n    pass\n# todo\n")
+        r = edit_file([{"path": "cli.py", "anchor": "# todo\n", "replacement": "# done\n"}])
+        assert r.get("ok") is True
+        assert "error" not in r
+
+    def test_valid_python_edit_is_ok(self, work):
+        (work / "m.py").write_text("x = 1\n")
+        r = edit_file([{"path": "m.py", "anchor": "x = 1", "replacement": "x = 2"}])
+        assert r.get("ok") is True and "error" not in r

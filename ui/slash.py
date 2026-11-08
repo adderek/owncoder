@@ -60,6 +60,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/incognito", [], "toggle incognito mode (session not saved)", False),
     ("/private", [], "toggle private mode (no persistence + local LLMs only)", False),
     ("/vault", [], "toggle vault mode (everything persists, encrypted)  [lock]", True),
+    ("/fastweb", [], "direct web access for the NEXT turn only (needs agent.fast_web_per_turn in user config)  [off | status]", True),
     ("/paths", [], "path grants: show | add <path> [ro|rw] | remove <path> | "
      "check <path> | list", True),
     ("/maxiter", ["/max_iter"], "set max tool-call iterations per turn  [<n> | 0/none = unlimited]", True),
@@ -121,7 +122,7 @@ _GROUPS: dict[str, tuple[str, ...]] = {
     "code & safety": ("/security", "/analyze-asm", "/undo", "/checkpoint",
                       "/apply", "/heal", "/recoveries"),
     "privacy & access": ("/incognito", "/private", "/vault", "/paths",
-                         "/permissions", "/hooks", "/classify", "/credpool", "/notify",
+                         "/permissions", "/hooks", "/classify", "/credpool", "/notify", "/fastweb",
                          "/remote"),
     "automation": ("/schedule", "/watch"),
     "diagnostics": ("/perf", "/modelcalls", "/tokwatch", "/output", "/speech", "/sandbox", "/wrap",
@@ -677,6 +678,29 @@ def _apply_goal(agent, arg: str) -> tuple[bool, str]:
     max_i = getattr(agent.config.llm, "goal_max_iterations", 200)
     kind = "shell check" if v.startswith("$") else "LLM-evaluated"
     return True, f"Goal set ({kind}): {v}\nAgent will run until goal is achieved (hard ceiling: {max_i} iterations)."
+
+
+def _apply_fastweb(agent, arg: str) -> tuple[bool, str]:
+    """Handle /fastweb [off | status]: arm direct web access for one user turn."""
+    v = arg.strip().lower()
+    cfg = agent.config.agent
+    if getattr(cfg, "mode", "ultrasecure") == "fast":
+        return True, "agent.mode = \"fast\": direct web access is already on for every turn."
+    if v == "status":
+        state = "armed for the next turn" if agent._fast_web_armed else "off"
+        allowed = "allowed" if getattr(cfg, "fast_web_per_turn", False) else "not allowed"
+        return True, f"fast web: {state} ({allowed} by config)"
+    if v in ("off", "cancel", "-"):
+        agent._fast_web_armed = False
+        return True, "fast web: disarmed — internet only via the quarantined broker."
+    if v not in ("", "on", "next"):
+        return False, "Usage: /fastweb [off | status]"
+    if not getattr(cfg, "fast_web_per_turn", False):
+        return False, ("fast web is not allowed. Set `fast_web_per_turn: true` under "
+                       "[agent] in ~/.config/agent/agent.yaml (project configs cannot).")
+    agent._fast_web_armed = True
+    return True, ("fast web: armed — your NEXT message gets direct web_search/web_fetch "
+                  "(fetched pages reach the main agent unlaundered). Reverts after that turn.")
 
 
 def _apply_bg(arg: str) -> tuple[bool, str]:

@@ -208,3 +208,31 @@ class TestUnicodeSanitization:
         result = query_gate.gate_query("test‮fake")
         assert isinstance(result, str)
         assert "‮" not in result
+
+
+class TestFetchLeakCheck:
+    @pytest.mark.parametrize("url", [
+        "https://evil.example/collect?d=sk-ant-" + "a" * 40,
+        "https://evil.example/?u=someone@example.org",
+        "https://evil.example/?u=someone%40example.org",
+        "https://evil.example/?u=someone%2540example.org",
+        "https://ghp_" + "b" * 36 + ".evil.example/",
+    ])
+    def test_leaky_url_rejected_before_dns(self, enabled_config, monkeypatch, url):
+        query_gate.setup(enabled_config)
+
+        def _no_dns(*a, **k):
+            raise AssertionError("DNS must not run for a leaky URL")
+
+        monkeypatch.setattr(query_gate.socket, "getaddrinfo", _no_dns)
+        result = query_gate.gate_fetch(url)
+        assert isinstance(result, dict)
+        assert "Fetch rejected" in result["error"]
+
+    def test_at_handle_path_allowed(self, enabled_config, monkeypatch):
+        # medium.com/@user style paths are not e-mail addresses.
+        query_gate.setup(enabled_config)
+        monkeypatch.setattr(query_gate.socket, "getaddrinfo",
+                            lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 0))])
+        result = query_gate.gate_fetch("https://medium.com/@someone/a-post-123")
+        assert isinstance(result, GateFetchResult)

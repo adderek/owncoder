@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+from json import dumps as json_dumps
 
 from agent.config import Config
 from agent.tool_compactor import compact_result
@@ -77,3 +78,36 @@ async def test_bad_prompt_template_falls_back(tmp_path):
     assert info["skipped"] is True
     assert info["reason"].startswith("bad_prompt:")
     client.chat.completions.create.assert_not_called()
+
+
+@pytest.mark.parametrize("tool", ["edit_file", "write_file"])
+async def test_edit_results_never_compacted_by_default(tool):
+    """The `current` view is the agent's only post-edit copy of the file."""
+    cfg = _cfg()
+    raw = '{"ok": true, "current": {"cli.py": "82:    z = 1\\n83:        _common(z)"}}' + " " * 50
+    client = make_client(make_response(content="Added cache subcommand to cli.py."))
+    out, info = await compact_result(tool, {}, "add subcommand", raw, cfg, client)
+    assert out == raw
+    assert info["reason"] == "skip_tools"
+    client.chat.completions.create.assert_not_called()
+
+
+@pytest.mark.parametrize("key", ["returncode", "exit_code"])
+async def test_failed_command_output_not_compacted(key):
+    """pytest's file:line diagnosis must reach the agent verbatim."""
+    cfg = _cfg()
+    raw = json_dumps({"stdout": "cli.py:88 IndentationError: unexpected indent\n" * 5, key: 2})
+    client = make_client(make_response(content="1 error during collection"))
+    out, info = await compact_result("run_argv", {}, "run tests", raw, cfg, client)
+    assert out == raw
+    assert info["reason"] == "error"
+    client.chat.completions.create.assert_not_called()
+
+
+async def test_successful_command_still_compacted():
+    cfg = _cfg()
+    raw = json_dumps({"stdout": "." * 200 + "\n14 passed in 0.02s\n", "returncode": 0})
+    client = make_client(make_response(content="14 passed"))
+    out, info = await compact_result("run_argv", {}, "run tests", raw, cfg, client)
+    assert out == "14 passed"
+    assert not info["skipped"]

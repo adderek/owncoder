@@ -41,9 +41,80 @@ def test_coerce_unparseable_falls_back_to_answer():
 
 # ── config + defaults ───────────────────────────────────────────────────────
 
-def test_mode_defaults_to_fast():
+def test_mode_defaults_to_ultrasecure():
     cfg = load_config(None)
-    assert cfg.agent.mode == "fast"
+    assert cfg.agent.mode == "ultrasecure"
+    assert cfg.agent.fast_web_per_turn is False
+
+
+# ── per-turn web gate (Agent._web_gate) ─────────────────────────────────────
+
+def _gate_agent(mode="ultrasecure", per_turn=False):
+    import types
+    from agent.core.agent import Agent
+    cfg = load_config(None)
+    cfg.agent.mode = mode
+    cfg.agent.fast_web_per_turn = per_turn
+    a = types.SimpleNamespace(config=cfg, _fast_web_armed=False)
+    a.gate = lambda source="terminal": Agent._web_gate(a, source)
+    return a
+
+
+_QUARANTINED = {"web_search", "web_fetch"}
+
+
+def test_gate_default_quarantines_web():
+    assert _gate_agent().gate() == _QUARANTINED
+
+
+def test_gate_fast_mode_is_direct():
+    assert _gate_agent(mode="fast").gate() == {"ask_internet"}
+
+
+def test_gate_fastweb_lasts_one_turn():
+    a = _gate_agent(per_turn=True)
+    a._fast_web_armed = True
+    assert a.gate() == {"ask_internet"}
+    assert a.gate() == _QUARANTINED  # reverted
+
+
+def test_gate_fastweb_ignored_without_config_and_consumed():
+    a = _gate_agent(per_turn=False)
+    a._fast_web_armed = True
+    assert a.gate() == _QUARANTINED
+    assert a._fast_web_armed is False
+
+
+def test_gate_unattended_turn_neither_uses_nor_consumes_arm():
+    a = _gate_agent(per_turn=True)
+    a._fast_web_armed = True
+    assert a.gate("scheduler") == _QUARANTINED
+    assert a._fast_web_armed is True
+    assert a.gate("terminal") == {"ask_internet"}
+
+
+def test_slash_fastweb_requires_config():
+    from agent.ui.slash import _apply_fastweb
+    a = _gate_agent(per_turn=False)
+    ok, msg = _apply_fastweb(a, "")
+    assert not ok and "fast_web_per_turn" in msg
+    assert a._fast_web_armed is False
+    a.config.agent.fast_web_per_turn = True
+    ok, _ = _apply_fastweb(a, "")
+    assert ok and a._fast_web_armed is True
+    ok, _ = _apply_fastweb(a, "off")
+    assert ok and a._fast_web_armed is False
+
+
+def test_project_config_cannot_enable_direct_web():
+    from agent.config.loader import _clamp_project_agent
+    data = {"agent": {"mode": "fast", "fast_web_per_turn": True, "model_mode": "any"}}
+    issues = _clamp_project_agent(data)
+    assert len(issues) == 2
+    assert data["agent"] == {"model_mode": "any"}
+    keep = {"agent": {"mode": "ultrasecure", "fast_web_per_turn": False}}
+    assert _clamp_project_agent(keep) == []
+    assert keep["agent"]["mode"] == "ultrasecure"
 
 
 # ── broker behaviour ────────────────────────────────────────────────────────

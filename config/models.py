@@ -559,7 +559,11 @@ class ToolCompactionConfig:
     skip_on_truncated: bool = True
     # Tools whose raw output is always passed through unchanged (never compacted).
     # read_file is exempt by default: anchor matching requires verbatim content.
-    skip_tools: list = field(default_factory=lambda: ["read_file"])
+    # edit_file/write_file likewise: their `current` view and syntax verdict are
+    # the only post-edit copy of the file in context, and the loop guards parse
+    # the result as JSON. A compactor model summarised a broken edit as "Added
+    # cache subcommand to cli.py." and the agent never saw the bad indentation.
+    skip_tools: list = field(default_factory=lambda: ["read_file", "edit_file", "write_file"])
     concurrency_limit: int = 2
     prompt_path: str = ""
 
@@ -843,8 +847,7 @@ class ExploreConfig:
 class AgentConfig:
     """Agent runtime behavior (independent of model/endpoint choice)."""
     # Operating mode:
-    #   "fast"        — default. web_search/web_fetch callable directly by the agent.
-    #   "ultrasecure" — dual-LLM quarantine. Internet (web_search/web_fetch) is
+    #   "ultrasecure" — default. Dual-LLM quarantine. Internet (web_search/web_fetch) is
     #                   stripped from the main agent; it can only reach the net via
     #                   the ask_internet broker, which spawns a disposable subagent
     #                   that holds the internet tools and returns sanitized,
@@ -852,7 +855,14 @@ class AgentConfig:
     #                   internet-facing subagent as compromised; injection in
     #                   fetched bytes is laundered through it and never reaches the
     #                   privileged agent verbatim.
-    mode: str = "fast"  # "fast" | "ultrasecure"
+    #   "fast"        — web_search/web_fetch callable directly by the agent, every
+    #                   turn. Opt-in from a USER config file only (a project
+    #                   agent.toml cannot set it — see loader._clamp_project_agent).
+    mode: str = "ultrasecure"  # "ultrasecure" | "fast"
+    # Per-turn escape hatch while mode = "ultrasecure": when True, `/fastweb`
+    # arms direct web access for the NEXT user turn only, then reverts. User
+    # config only, like `mode = "fast"`.
+    fast_web_per_turn: bool = False
     # Which cost tiers may be used for AUTOMATIC model selection (idle/background
     # work + spawn_agents decision-maker). Does NOT override an explicitly pinned
     # [models] default — that is always honored.
@@ -987,7 +997,16 @@ class WebSearchConfig:
     # Self-hosted SearXNG metasearch instance, e.g. "http://192.168.31.42:8888".
     # Most robust general-web backend (no anti-bot, aggregates engines); the
     # instance must enable JSON output (settings.yaml search.formats: [html, json]).
-    searxng_url: str = ""
+    searxng_url: str = ""  # user config only; pinned past the private-IP guard
+    # Marginalia API key. "public" is a shared key with a tight per-minute quota
+    # (frequent HTTP 429); a personal key is free on request from marginalia.
+    marginalia_api_key: str = "public"
+    # Per-backend cap for SEARCH requests (fetch keeps timeout_total_s). A dead or
+    # slow backend should cost seconds, not the whole chain's patience.
+    search_timeout_s: int = 10
+    # After a backend answers with an anti-bot block / rate limit, skip it for
+    # this long instead of paying the round-trip on every query.
+    blocked_backend_cooldown_s: int = 600
     max_results_per_search: int = 10
     max_search_calls_per_turn: int = 3
     max_fetch_calls_per_turn: int = 5

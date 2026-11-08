@@ -459,6 +459,63 @@ class TestBackendChain:
             with pytest.raises(RuntimeError, match="anti-bot"):
                 ws_main._search_backend("q", 5)
 
+    def test_blocked_backend_skipped_during_cooldown(self, enabled_cfg):
+        enabled_cfg.web_search.backend = "auto"
+        ws_main.setup(enabled_cfg)
+        hit = ws_main._mk_result(1, "T", "https://t.com", "s", "mojeek")
+        ddg = MagicMock(side_effect=ws_main.BackendBlocked("202"))
+        with patch.dict(ws_main._WEB_BACKENDS, {
+            "duckduckgo": ddg, "mojeek": MagicMock(return_value=[hit]),
+        }):
+            ws_main._search_backend("q1", 5)
+            results, notes = ws_main._search_backend("q2", 5)
+        assert ddg.call_count == 1  # second query did not pay for the block again
+        assert results == [hit]
+        assert any("duckduckgo: blocked earlier" in n for n in notes)
+
+    def test_all_in_cooldown_still_raises_actionable_error(self, enabled_cfg):
+        enabled_cfg.web_search.backend = "auto"
+        ws_main.setup(enabled_cfg)
+        blocked = MagicMock(side_effect=ws_main.BackendBlocked("x"))
+        with patch.dict(ws_main._WEB_BACKENDS,
+                        {k: blocked for k in ws_main._WEB_BACKENDS}):
+            with pytest.raises(RuntimeError):
+                ws_main._search_backend("q", 5)
+            calls = blocked.call_count
+            with pytest.raises(RuntimeError, match="anti-bot"):
+                ws_main._search_backend("q", 5)
+        assert blocked.call_count == calls
+
+    def test_marginalia_uses_current_api(self, enabled_cfg):
+        ws_main.setup(enabled_cfg)
+        with patch.object(ws_main, "_get_json", return_value={"results": []}) as gj:
+            ws_main._search_marginalia("rust lang", 3)
+        url, headers = gj.call_args.args
+        assert url.startswith("https://api2.marginalia-search.com/search?query=rust%20lang")
+        assert headers == {"API-Key": "public"}
+
+    def test_search_timeout_capped(self, enabled_cfg):
+        enabled_cfg.web_search.timeout_total_s = 30
+        enabled_cfg.web_search.search_timeout_s = 10
+        ws_main.setup(enabled_cfg)
+        assert ws_main._search_timeout() == 10
+
+    def test_searxng_pins_configured_host(self, enabled_cfg):
+        enabled_cfg.web_search.searxng_url = "http://127.0.0.1:8888/"
+        ws_main.setup(enabled_cfg)
+        with patch.object(ws_main, "_get_json", return_value={"results": [
+                {"title": "T", "url": "https://t.com", "content": "c"}]}) as gj:
+            out = ws_main._search_searxng("q x", 5)
+        assert gj.call_args.args[0] == "http://127.0.0.1:8888/search?q=q%20x&format=json"
+        assert gj.call_args.kwargs["pinned_ip"] == "127.0.0.1"
+        assert out[0]["url"] == "https://t.com"
+
+    def test_project_config_cannot_set_searxng_url(self):
+        from agent.config.loader import _clamp_project_web_search
+        data = {"web_search": {"searxng_url": "http://10.0.0.5:80", "enabled": True}}
+        assert _clamp_project_web_search(data)
+        assert data["web_search"] == {"enabled": True}
+
     def test_searxng_first_when_configured(self, enabled_cfg):
         enabled_cfg.web_search.searxng_url = "http://lan:8888"
         ws_main.setup(enabled_cfg)
@@ -517,7 +574,7 @@ class TestSourceGroups:
                                           "score": 5, "answer_count": 2,
                                           "is_answered": True, "tags": ["python"]}]}).encode()
         with patch.object(ws_main, "_fetch_raw",
-                          side_effect=lambda url, h, t, m: (payload, {}, 200)):
+                          side_effect=lambda url, h, t, m, *_a: (payload, {}, 200)):
             r = ws_main._search_stackexchange("q", 5)
         assert r[0]["title"] == "Q"
 
