@@ -933,6 +933,10 @@ class ModelEntry:
     max_output_tokens: int = 4096
     temperature: float = 0.7
     seed: int | None = None
+    # Thinking-token budget sent as `thinking_budget_tokens` while this entry is
+    # active. None = inherit [llm].think_budget. For backends whose server-side
+    # reasoning budget cannot be set (e.g. a vendor-managed llama-server).
+    think_budget: int | None = None
     dimensions: int = 0          # embeddings only
     query_instruct: str = ""     # embeddings only; see EmbeddingsConfig.query_instruct
     tags: list = field(default_factory=list)

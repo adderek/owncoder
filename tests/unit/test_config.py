@@ -619,3 +619,45 @@ class TestAutoSelectOnARouter:
     def test_is_loaded(self, info, expected):
         from agent.config.model_probe import is_loaded
         assert is_loaded(info) is expected
+
+
+class TestEntryThinkBudget:
+    """Per-entry think_budget -> config.llm.think_budget (sent as thinking_budget_tokens)."""
+
+    def _apply(self, c, name, entry):
+        from agent.config.loader import _apply_entry_to_llm
+        _apply_entry_to_llm(c, name, entry)
+
+    def test_entry_budget_applied(self, monkeypatch):
+        monkeypatch.delenv("AGENT_LLM_THINK_BUDGET", raising=False)
+        c = Config()
+        e = ModelEntry(model="m", think_budget=256)
+        self._apply(c, "tiiny", e)
+        assert c.llm.think_budget == 256
+
+    def test_unset_entry_inherits_llm_value(self, monkeypatch):
+        monkeypatch.delenv("AGENT_LLM_THINK_BUDGET", raising=False)
+        c = Config()
+        c.llm.think_budget = 1024
+        self._apply(c, "plain", ModelEntry(model="m"))
+        assert c.llm.think_budget == 1024
+
+    def test_switch_away_restores_base(self, monkeypatch):
+        monkeypatch.delenv("AGENT_LLM_THINK_BUDGET", raising=False)
+        c = Config()
+        self._apply(c, "tiiny", ModelEntry(model="a", think_budget=256))
+        self._apply(c, "gpu", ModelEntry(model="b"))
+        assert c.llm.think_budget == -1
+
+    def test_env_wins_over_entry(self, monkeypatch):
+        monkeypatch.setenv("AGENT_LLM_THINK_BUDGET", "512")
+        c = Config()
+        self._apply(c, "tiiny", ModelEntry(model="a", think_budget=256))
+        assert c.llm.think_budget == 512
+
+    def test_request_carries_budget(self, monkeypatch):
+        monkeypatch.delenv("AGENT_LLM_THINK_BUDGET", raising=False)
+        from agent.core.prompts import _build_call_kwargs
+        c = Config()
+        self._apply(c, "tiiny", ModelEntry(model="a", think_budget=256))
+        assert _build_call_kwargs(c)["extra_body"]["thinking_budget_tokens"] == 256

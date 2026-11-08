@@ -879,6 +879,16 @@ def _apply_entry_to_llm(config: Config, name: str, entry: "ModelEntry") -> None:
     config.llm.max_output_tokens = entry.max_output_tokens
     config.llm.temperature = entry.temperature
     config.llm.seed = entry.seed
+    # Unconditional for the same reason as vision: a live switch must not leave
+    # the previous entry's budget behind. The [llm] value is remembered on first
+    # use; AGENT_LLM_THINK_BUDGET still wins, as it does at load time.
+    if not hasattr(config, "_think_budget_base"):
+        config._think_budget_base = config.llm.think_budget
+    config.llm.think_budget = (entry.think_budget if entry.think_budget is not None
+                               else config._think_budget_base)
+    _env_tb = os.environ.get("AGENT_LLM_THINK_BUDGET", "").strip()
+    if _env_tb.lstrip("-").isdigit():
+        config.llm.think_budget = int(_env_tb)
     config.llm.gpu = name in config.concurrency.gpu_pool
     config.llm.assume_available = getattr(entry, "assume_available", False)
 
