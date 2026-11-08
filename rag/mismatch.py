@@ -82,6 +82,105 @@ def backup_index(db_path: str) -> Path | None:
     return dst
 
 
+def stale_stamp(store: "VectorStore", config: "Config", n: int = 8) -> bool:
+    """True when the stamp names another model but the stored vectors are, in
+    fact, the configured model's — checked by re-embedding a random sample.
+
+    The stamp is only metadata; the vectors are the truth. An index-update pass
+    cut short used to write Qwen3 vectors and exit before restamping, so the
+    stamp kept saying 'bge-m3' and every startup offered a full re-embed of an
+    index that needed none (2026-11-08: 857/857 sampled vectors cos 1.000).
+    Read-only; any failure means "can't tell" → False.
+    """
+    from agent.rag.embedder import Embedder
+    from agent.rag.indexer import SAME_MODEL_COS, same_space
+
+    try:
+        sample = store.sample_vectors(n)
+        if not sample:
+            return False
+        fresh = Embedder(config.embeddings).embed([text for _, text, _ in sample])
+        return same_space([vec for _, _, vec in sample], fresh) >= SAME_MODEL_COS
+    except Exception:
+        log.debug("stale-stamp check failed", exc_info=True)
+        return False
+
+
+def run_reembed(store: "VectorStore", config: "Config", console,
+                helpers: "list[str] | None" = None) -> dict:
+    """Re-embed with progress, a served-model check and optional helpers.
+
+    *helpers* are launcher specs ('gpu0', 'gpu1', 'cpu') started only for this
+    run on free ports and stopped afterwards; they share batches with the
+    configured endpoint. Returns reembed_all's result dict (``aborted`` set on a
+    model mismatch without touching the index).
+    """
+    import dataclasses
+
+    from agent.rag import embed_server
+    from agent.rag.embedder import Embedder
+    from agent.rag.indexer import progress_text, reembed_all
+
+    embedder = Embedder(config.embeddings)
+    problem = embedder.model_problem() if hasattr(embedder, "model_problem") else ""
+    if problem:
+        console.print(f"[red]Wrong embedding model:[/red] {problem} — index left untouched.")
+        return {"chunks": 0, "embedded": 0, "failed": 0, "aborted": True,
+                "workers": [], "dropped": [problem], "elapsed": 0.0}
+
+    started = []
+    if helpers:
+        console.print(f"  [dim]starting helpers: {', '.join(helpers)}…[/dim]")
+        started = embed_server.start_helpers(
+            config, helpers, say=lambda m: console.print(f"  [dim]{m}[/dim]"))
+    extras = [Embedder(dataclasses.replace(config.embeddings, base_url=h.base_url))
+              for h in started]
+
+    t0 = time.monotonic()
+    last = [0.0]
+
+    def _progress(done: int, total: int) -> None:
+        now = time.monotonic()
+        if now - last[0] >= 10 or done >= total:
+            last[0] = now
+            console.print(f"  [dim]{progress_text(done, total, now - t0)}[/dim]")
+
+    try:
+        result = reembed_all(store, embedder, config.rag, progress_cb=_progress,
+                             extra_embedders=extras)
+    finally:
+        embed_server.stop_helpers(started)
+    if result.get("workers"):
+        console.print(f"  [dim]workers: {', '.join(result['workers'])}[/dim]")
+    for d in result.get("dropped", []):
+        console.print(f"  [yellow]helper dropped:[/yellow] {d}")
+    return result
+
+
+def ask_helpers(config: "Config", console) -> "list[str]":
+    """Interactive: which temporary servers should join this re-embed."""
+    from agent.rag import embed_server
+
+    default = " ".join(config.rag.reembed_helpers or [])
+    if not (config.rag.embed_server_command or "").strip():
+        return []
+    console.print(
+        "  Speed up with temporary embed servers (stopped afterwards), e.g. "
+        "[cyan]gpu0 gpu1[/cyan] — the configured endpoint keeps working too."
+    )
+    while True:
+        try:
+            raw = input(f"  Helpers [{default or 'none'}]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            raw = ""
+        if raw.lower() in ("none", "no", "-"):
+            return []
+        try:
+            return embed_server.parse_helpers(raw or default)
+        except ValueError as e:
+            console.print(f"  [red]{e}[/red]")
+
+
 def _reembed(store: "VectorStore", config: "Config", console) -> "tuple[VectorStore, bool]":
     """Back up the index, then replace every vector with the configured model's.
 
@@ -89,9 +188,8 @@ def _reembed(store: "VectorStore", config: "Config", console) -> "tuple[VectorSt
     and the original vectors were left in place (caller then runs frozen).
     """
     from agent.rag.store import VectorStore
-    from agent.rag.embedder import Embedder
-    from agent.rag.indexer import reembed_all
 
+    helpers = ask_helpers(config, console)
     # Close before copying so the backup captures a quiescent WAL.
     store.close()
     backup = backup_index(config.rag.db_path)
@@ -99,8 +197,7 @@ def _reembed(store: "VectorStore", config: "Config", console) -> "tuple[VectorSt
         console.print(f"  [dim]backup: {backup}[/dim]")
 
     store = VectorStore(config.rag)
-    embedder = Embedder(config.embeddings)
-    result = reembed_all(store, embedder, config.rag)
+    result = run_reembed(store, config, console, helpers)
     if result["aborted"]:
         console.print(
             "[red]Re-embed aborted — index left untouched[/red] "
@@ -108,7 +205,8 @@ def _reembed(store: "VectorStore", config: "Config", console) -> "tuple[VectorSt
         )
         return store, False
     console.print(
-        f"  Re-embedded {result['embedded']}/{result['chunks']} chunks."
+        f"  Re-embedded {result['embedded']}/{result['chunks']} chunks"
+        f" in {result.get('elapsed', 0) / 60:.1f} min."
     )
     return store, True
 
@@ -132,6 +230,15 @@ def handle_embedding_mismatch(
         return store, OK
 
     emb = config.embeddings
+    if code == "model" and stale_stamp(store, config):
+        prev = store.get_meta("embedding_model")
+        store.record_embedding_model(emb.model, emb.base_url)
+        console.print(
+            f"[dim]Index stamp said {prev}, but sampled vectors match "
+            f"{emb.model} — stamp corrected, no re-embed needed.[/dim]"
+        )
+        log.warning("embedding stamp %r was stale; vectors verified as %r", prev, emb.model)
+        return store, OK
     console.print(
         f"\n[yellow]Embedding mismatch:[/yellow] the index holds "
         f"[bold]{index_summary(store)}[/bold] vectors, but config now uses "

@@ -169,6 +169,9 @@ def build_parser() -> argparse.ArgumentParser:
     idx_p = sub.add_parser("index", help="Manage index")
     idx_p.add_argument("--update", action="store_true", help="Re-index changed files (also prunes stale & purges expired archive)")
     idx_p.add_argument("--reembed", action="store_true", help="Re-apply embeddings to every stored chunk with the current model; no re-chunking, no summarization")
+    idx_p.add_argument("--helpers", metavar="SPECS", default=None,
+                       help="With --reembed: temporary embed servers sharing the work, e.g. 'gpu0,gpu1' or 'gpu1 cpu' "
+                            "(default rag.reembed_helpers; '' = none)")
     idx_p.add_argument("--stats", action="store_true", help="Show index statistics")
     idx_p.add_argument("--list-pending", action="store_true", help="With --stats, list files not yet indexed")
     idx_p.add_argument("--prune", action="store_true", help="Archive chunks for files that are missing or now match .agent.ignore")

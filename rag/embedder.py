@@ -114,6 +114,22 @@ class Embedder:
         finally:
             _ms_dec("emb")
 
+    def served_models(self) -> list[str] | None:
+        """Model ids/aliases the endpoint reports, or None when it cannot say."""
+        try:
+            return [m.id for m in self._client.with_options(timeout=5).models.list().data]
+        except Exception:
+            return None
+
+    def model_problem(self) -> str:
+        """"" when the endpoint serves the configured model (or cannot tell),
+        else a one-line reason. llama-server reports its --alias as the id."""
+        served = self.served_models()
+        if not served or self._cfg.model in served:
+            return ""
+        return (f"{self.endpoint} serves {', '.join(served)}, "
+                f"but config expects {self._cfg.model}")
+
     def embed_one(self, text: str) -> list[float]:
         return self.embed([text])[0]
 

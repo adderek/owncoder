@@ -233,13 +233,30 @@ class VectorStore:
         self._vec_dims = None
         self._ensure_vec_table(dims)
 
-    def write_embeddings(self, rows: list[tuple[str, list[float]]]) -> None:
-        """Attach precomputed vectors to existing chunks. Text is not touched."""
+    def write_embeddings(self, rows: list[tuple[str, list[float]]]) -> int:
+        """Attach precomputed vectors to existing chunks. Text is not touched.
+
+        Empty vectors (the Embedder's per-text failure marker) are skipped, and a
+        width that disagrees with the existing table raises instead of resizing
+        it: resizing drops every stored vector, and one failed batch of empty
+        vectors used to do exactly that (2026-09-21, the whole bge-m3 index).
+        Returns the number of vectors written.
+        """
+        rows = [(cid, emb) for cid, emb in rows if emb]
         if not rows:
-            return
+            return 0
+        widths = {len(emb) for _, emb in rows}
+        if len(widths) != 1:
+            raise ValueError(f"write_embeddings: mixed vector widths {sorted(widths)}")
+        width = widths.pop()
+        if self._vec_dims is not None and self._vec_dims != width:
+            raise ValueError(
+                f"write_embeddings: {width}-dim vectors for a float[{self._vec_dims}] "
+                "table — reset_vectors() first"
+            )
         import sqlite_vec
         conn = self._conn()
-        self._ensure_vec_table(len(rows[0][1]))
+        self._ensure_vec_table(width)
         for chunk_id, emb in rows:
             conn.execute("DELETE FROM vec_chunks WHERE chunk_id = ?", (chunk_id,))
             conn.execute(
@@ -247,6 +264,27 @@ class VectorStore:
                 (chunk_id, sqlite_vec.serialize_float32(emb)),
             )
         conn.commit()
+        return len(rows)
+
+    def has_vectors(self) -> bool:
+        if self._vec_dims is None:
+            return False
+        return self._conn().execute("SELECT 1 FROM vec_chunks LIMIT 1").fetchone() is not None
+
+    def sample_vectors(self, n: int = 8) -> list[tuple[str, str, list[float]]]:
+        """(chunk_id, content, vector) for up to *n* random embedded chunks."""
+        if not self.has_vectors():
+            return []
+        import struct
+        rows = self._conn().execute(
+            "SELECT v.chunk_id, ch.content, v.embedding FROM vec_chunks v "
+            "JOIN chunks ch ON ch.id = v.chunk_id ORDER BY random() LIMIT ?", (int(n),)
+        ).fetchall()
+        out = []
+        for r in rows:
+            blob = bytes(r[2])
+            out.append((r[0], r[1], list(struct.unpack(f"{len(blob) // 4}f", blob))))
+        return out
 
     def fts_drift(self) -> int:
         """How far the keyword index disagrees with the chunks table (0 = in step).

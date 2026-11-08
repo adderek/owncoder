@@ -117,6 +117,11 @@ class RAGConfig:
     #   "off" — never start, just warn
     # Needs embed_server_command; without it the check only prints how to set it.
     embed_server_autostart: str = "ask"
+    # Temporary extra launcher instances for a full re-embed (`agent index
+    # --reembed`, startup mismatch prompt): "gpu0", "gpu1", "gpu", "cpu". Each
+    # gets a free port (EMB_PORT) and, for gpuN, EMB_GPU=N; all are stopped
+    # when the run ends. Empty = configured endpoint only.
+    reembed_helpers: list = field(default_factory=list)
     # Per-file byte cap for generic text files (binary-sniffed; code files exempt).
     text_max_bytes: int = 256 * 1024
     # Background index maintenance (agent/rag/maintainer.py): incremental passes

@@ -420,16 +420,25 @@ def cmd_index_reembed(args, config):
     index are the input. That makes this the run to use after an embedding
     model or endpoint change, where `agent init --force` would re-parse the
     whole tree and then re-summarize it for identical text.
+
+    `--helpers gpu0,gpu1` starts temporary launcher instances that share the
+    work with the configured endpoint (default: rag.reembed_helpers).
     """
-    from agent.rag.indexer import reembed_all
+    from agent.rag import embed_server
+    from agent.rag.mismatch import run_reembed
     from agent.rag.store import VectorStore
-    from agent.rag.embedder import Embedder
     from rich.console import Console
 
     console = Console()
-    store = VectorStore(config.rag)
-    embedder = Embedder(config.embeddings)
+    raw = getattr(args, "helpers", None)
+    try:
+        helpers = (embed_server.parse_helpers(raw) if raw is not None
+                   else list(config.rag.reembed_helpers or []))
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise SystemExit(2)
 
+    store = VectorStore(config.rag)
     total = store.stats()["chunks"]
     if not total:
         console.print("Index holds no chunks — nothing to re-embed.")
@@ -443,23 +452,19 @@ def cmd_index_reembed(args, config):
     )
     console.print("  [dim]Chunk text and summaries are untouched.[/dim]")
 
-    def _progress(done: int, tot: int) -> None:
-        console.print(f"  [dim]{done}/{tot} chunks…[/dim]")
-
-    result = reembed_all(store, embedder, config.rag, progress_cb=_progress)
+    result = run_reembed(store, config, console, helpers)
     if result["aborted"]:
         console.print("[red]Aborted — the index was left untouched.[/red]")
     else:
         console.print(
-            f"Re-embedded {result['embedded']}/{result['chunks']} chunks."
-            + (f"  [yellow]{result['failed']} failed (no vector).[/yellow]" if result["failed"] else "")
+            f"Re-embedded {result['embedded']}/{result['chunks']} chunks "
+            f"in {result['elapsed'] / 60:.1f} min."
+            + (f"  [yellow]{result['failed']} failed (no vector) — "
+               f"`agent index --update` retries them.[/yellow]" if result["failed"] else "")
         )
-        if embedder.call_count:
-            console.print(
-                f"  [dim]emb: {embedder.call_count} vecs @ {embedder.rate:.1f}/s "
-                f"({embedder.endpoint})[/dim]"
-            )
     store.close()
+    if result["aborted"]:
+        raise SystemExit(1)
 
 
 def cmd_index_prune(args, config):

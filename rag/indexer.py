@@ -206,7 +206,8 @@ def _chunk_and_embed(
             embeddings = embedder.embed(texts)
             for chunk, emb in zip(batch, embeddings):
                 chunk["embedding"] = emb
-                embedded += 1
+                if emb:  # [] is the Embedder's per-text failure marker
+                    embedded += 1
         except Exception:
             log.debug("embedding batch of %d failed", len(batch), exc_info=True)
         for chunk in batch:
@@ -258,6 +259,17 @@ def index_directory(
                     "without re-reading the tree.",
                     prev_model, emb_model,
                 )
+    # An empty vector table carries no other model's vectors, so the stamp can
+    # be committed with the first vector written rather than at the end. A pass
+    # cut short (agent exit, Ctrl-C) used to leave Qwen3 vectors under a stale
+    # 'bge-m3' stamp, which the next startup reported as a model mismatch.
+    stamp_pending = [bool(emb_model) and not _has_vectors(store)]
+
+    def _stamp_early() -> None:
+        if stamp_pending[0]:
+            stamp_pending[0] = False
+            store.record_embedding_model(emb_model, getattr(emb_cfg, "base_url", ""))
+
     # One shared list of prunable directories (security.path_policy), plus the
     # indexer's own: ".env" is a directory here, not the secrets file.
     default_exclude = set(path_policy.hidden_dir_names()) | {".env"}
@@ -350,11 +362,16 @@ def index_directory(
                 texts = [c["content"] for c in batch]
                 try:
                     embeddings = embedder.embed(texts)
+                    got = 0
                     for chunk, emb in zip(batch, embeddings):
                         chunk["embedding"] = emb
                         chunk["mtime"] = mtime
                         chunk["git_hash"] = git_hash
-                    embed_ok += len(batch)
+                        got += 1 if emb else 0
+                    embed_ok += got
+                    embed_failed += len(batch) - got
+                    if got:
+                        _stamp_early()
                 except Exception:
                     embed_failed += len(batch)
                     log.debug("embedding batch of %d failed", len(batch), exc_info=True)
@@ -419,6 +436,8 @@ def index_directory(
                     continue
                 _, chunks, _, emb_n = future.result()
                 embed_ok += emb_n
+                if emb_n:
+                    _stamp_early()
                 embed_failed += len(chunks) - emb_n
                 if not chunks:
                     store.set_file_mtime(rel, mtime)
@@ -477,13 +496,45 @@ def index_directory(
     }
 
 
+def _has_vectors(store) -> bool:
+    fn = getattr(store, "has_vectors", None)
+    return bool(fn()) if fn else False
+
+
+def _good(vectors, n: int, dims: int | None = None) -> list[bool]:
+    """Per-row usability: the Embedder marks a failed text with [] instead of
+    raising, so a 'successful' call can still carry no vector at all."""
+    vectors = list(vectors or [])
+    vectors += [[]] * (n - len(vectors))
+    return [bool(v) and (dims is None or len(v) == dims) for v in vectors[:n]]
+
+
+def progress_text(done: int, total: int, elapsed: float, failed: int = 0) -> str:
+    """'4192/10257 (41%) 3.2/s, ETA 31m' — shared by every re-embed front end."""
+    pct = 100.0 * done / total if total else 100.0
+    rate = done / elapsed if elapsed > 0 else 0.0
+    out = f"{done}/{total} ({pct:.0f}%)"
+    if rate > 0:
+        left = (total - done) / rate
+        if left >= 5400:
+            eta = f"{left / 3600:.1f}h"
+        elif left >= 90:
+            eta = f"{left / 60:.0f}m"
+        else:
+            eta = f"{left:.0f}s"
+        out += f" {rate:.1f}/s, ETA {eta}"
+    if failed:
+        out += f", {failed} failed"
+    return out
+
+
 def embed_missing(store, embedder, limit: int = 0) -> dict:
     """Embed chunks that have no vector, from their stored text.
 
     A file indexed while the embedder was down keeps its chunks (keyword
     search works) and its mtime, so nothing ever retried it — those chunks
-    stayed invisible to semantic search for good. Stops at the first failed
-    batch: a dead endpoint is not hammered, the next pass resumes.
+    stayed invisible to semantic search for good. Stops at the first batch that
+    yields nothing: a dead endpoint is not hammered, the next pass resumes.
     Callers check the index's embedding model matches *embedder* first.
     """
     rows = store.missing_vector_texts(limit)
@@ -497,15 +548,44 @@ def embed_missing(store, embedder, limit: int = 0) -> dict:
                         type(e).__name__, len(rows) - out["embedded"])
             out["failed"] = len(rows) - out["embedded"]
             break
-        if not vectors or len(vectors) != len(batch):
+        ok = _good(vectors, len(batch), getattr(store, "_vec_dims", None))
+        written = store.write_embeddings(
+            [(cid, v) for (cid, _), v, g in zip(batch, vectors, ok) if g])
+        out["embedded"] += written
+        if not written:
             out["failed"] = len(rows) - out["embedded"]
             break
-        store.write_embeddings([(cid, v) for (cid, _), v in zip(batch, vectors)])
-        out["embedded"] += len(vectors)
     return out
 
 
-def reembed_all(store, embedder, cfg, progress_cb=None) -> dict:
+def _cos(a, b) -> float:
+    import math
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    return sum(x * y for x, y in zip(a, b)) / (na * nb) if na and nb else 0.0
+
+
+# Same model + quant on another build/device agrees to ~1.0; a different model
+# does not. Measured 2026-11-08: Qwen3-0.6B Q8_0 (CPU) vs the stored vectors
+# 1.000 on 60 random chunks; stored bge-m3 vs Qwen3 on the same text ~0.0.
+SAME_MODEL_COS = 0.99
+
+
+def same_space(reference: list[list[float]], candidate: list[list[float]]) -> float:
+    """Lowest cosine between paired vectors (0.0 when anything is missing)."""
+    if not reference or len(reference) != len(candidate):
+        return 0.0
+    if not all(reference) or not all(candidate):
+        return 0.0
+    return min(_cos(a, b) for a, b in zip(reference, candidate))
+
+
+def _label(embedder) -> str:
+    return (getattr(embedder, "endpoint", None)
+            or getattr(getattr(embedder, "_cfg", None), "base_url", "?"))
+
+
+def reembed_all(store, embedder, cfg, progress_cb=None, extra_embedders=()) -> dict:
     """Replace every stored vector with one produced by *embedder*.
 
     The vector half of the index only: chunk text is read back from the index,
@@ -515,20 +595,30 @@ def reembed_all(store, embedder, cfg, progress_cb=None) -> dict:
     the wrong tool for an embedding-model swap.
 
     The old vectors are dropped only after a probe batch has proved the embedder
-    answers, so a dead endpoint leaves the index intact rather than empty. A
-    failure *after* that point leaves the chunks already re-embedded correct and
-    the rest keyword-searchable only; re-running finishes the job.
+    answers *with vectors*, so a dead endpoint leaves the index intact rather
+    than empty. The stamp is committed right after the reset — the table then
+    only ever holds this model's vectors — so an interrupted run is finished by
+    `embed_missing` (`agent index --update`) instead of starting over.
+
+    *extra_embedders* (e.g. temporary GPU servers) share the work, one batch in
+    flight each; an extra whose vectors are not in the primary's space (cosine
+    < SAME_MODEL_COS on the probe) is dropped before it writes anything.
     """
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+
     emb_cfg = getattr(embedder, "_cfg", None)
     emb_model = getattr(emb_cfg, "model", "") if emb_cfg is not None else ""
     rows = store.all_chunk_texts()
-    result = {"chunks": len(rows), "embedded": 0, "failed": 0, "aborted": False}
+    result = {"chunks": len(rows), "embedded": 0, "failed": 0, "aborted": False,
+              "workers": [], "dropped": [], "elapsed": 0.0}
     if not rows:
         return result
 
+    t0 = time.monotonic()
     probe = rows[:_BATCH_SIZE]
+    probe_texts = [text for _, text in probe]
     try:
-        vectors = embedder.embed([text for _, text in probe])
+        vectors = embedder.embed(probe_texts)
     except Exception as e:
         log.error(
             "re-embed aborted: embedder did not answer (%s: %s) — index left "
@@ -537,8 +627,8 @@ def reembed_all(store, embedder, cfg, progress_cb=None) -> dict:
         )
         result["aborted"] = True
         return result
-    if not vectors:
-        log.error("re-embed aborted: embedder returned no vectors — index untouched")
+    if not vectors or not all(_good(vectors, len(probe))):
+        log.error("re-embed aborted: embedder returned no (or empty) vectors — index untouched")
         result["aborted"] = True
         return result
 
@@ -550,33 +640,94 @@ def reembed_all(store, embedder, cfg, progress_cb=None) -> dict:
             dims, emb_cfg.dimensions,
         )
 
+    workers = [embedder]
+    for extra in extra_embedders:
+        why = ""
+        try:
+            got = extra.embed(probe_texts[:4])
+        except Exception as e:
+            got, why = [], f"{type(e).__name__}: {e}"
+        sim = same_space(vectors[:4], got)
+        if sim >= SAME_MODEL_COS:
+            workers.append(extra)
+        else:
+            why = why or f"vectors differ from the primary (cos {sim:.3f})"
+            log.warning("re-embed: dropping helper %s — %s", _label(extra), why)
+            result["dropped"].append(f"{_label(extra)}: {why}")
+    result["workers"] = [_label(w) for w in workers]
+
     # Past this point the old vectors are being replaced, not compared.
     store.reset_vectors(dims)
-    store.write_embeddings([(cid, v) for (cid, _), v in zip(probe, vectors)])
-    result["embedded"] = len(vectors)
-    if progress_cb:
-        progress_cb(result["embedded"], len(rows))
+    if emb_model:
+        store.record_embedding_model(emb_model, getattr(emb_cfg, "base_url", ""))
+    result["embedded"] = store.write_embeddings(
+        [(cid, v) for (cid, _), v in zip(probe, vectors)])
 
-    for i in range(_BATCH_SIZE, len(rows), _BATCH_SIZE):
-        batch = rows[i:i + _BATCH_SIZE]
-        try:
-            vectors = embedder.embed([text for _, text in batch])
-        except Exception:
-            log.warning(
-                "re-embed: batch of %d chunks failed — they keep no vector and "
-                "stay keyword-searchable only. Re-run to finish.",
-                len(batch),
-            )
-            result["failed"] += len(batch)
-            continue
-        store.write_embeddings([(cid, v) for (cid, _), v in zip(batch, vectors)])
-        result["embedded"] += len(vectors)
+    last_log = [t0]
+
+    def _report() -> None:
         if progress_cb:
             progress_cb(result["embedded"], len(rows))
+        now = time.monotonic()
+        if now - last_log[0] >= 30 or result["embedded"] + result["failed"] >= len(rows):
+            last_log[0] = now
+            log.info("re-embed: %s", progress_text(
+                result["embedded"], len(rows), now - t0, result["failed"]))
 
-    if emb_model and result["embedded"]:
-        # Truthful here: the vectors in the table were produced by this model.
-        store.record_embedding_model(emb_model, getattr(emb_cfg, "base_url", ""))
+    _report()
+
+    # Work queue of (batch, attempt). Rows that come back without a vector are
+    # retried — on whichever worker is free — up to 3 attempts in total.
+    pending = [(rows[i:i + _BATCH_SIZE], 0)
+               for i in range(_BATCH_SIZE, len(rows), _BATCH_SIZE)]
+    pending.reverse()  # pop() from the end keeps index order
+    strikes = {id(w): 0 for w in workers}
+    idle = list(workers)
+    inflight: dict = {}
+    with ThreadPoolExecutor(max_workers=len(workers)) as pool:
+        while pending or inflight:
+            while pending and idle:
+                w = idle.pop(0)
+                batch, attempt = pending.pop()
+                fut = pool.submit(w.embed, [t for _, t in batch])
+                inflight[fut] = (w, batch, attempt)
+            if not inflight:
+                break  # every worker retired; leftovers stay pending
+            done, _ = wait(list(inflight), return_when=FIRST_COMPLETED)
+            for fut in done:
+                w, batch, attempt = inflight.pop(fut)
+                try:
+                    vecs = fut.result()
+                except Exception:
+                    vecs = []
+                ok = _good(vecs, len(batch), dims)
+                result["embedded"] += store.write_embeddings(
+                    [(cid, v) for (cid, _), v, g in zip(batch, vecs, ok) if g])
+                bad = [row for row, g in zip(batch, ok) if not g]
+                if bad:
+                    strikes[id(w)] += 1
+                    if attempt + 1 < 3:
+                        pending.append((bad, attempt + 1))
+                    else:
+                        log.warning(
+                            "re-embed: %d chunks failed 3 times — they keep no vector "
+                            "and stay keyword-searchable only. `agent index --update` "
+                            "retries them.", len(bad))
+                        result["failed"] += len(bad)
+                else:
+                    strikes[id(w)] = 0
+                # A worker failing 3 batches in a row is retired, unless it is
+                # the last one standing (then the attempt cap ends the run).
+                others = len(idle) + len(inflight)
+                if strikes[id(w)] >= 3 and others:
+                    log.warning("re-embed: retiring %s after 3 failed batches", _label(w))
+                    result["dropped"].append(f"{_label(w)}: retired after 3 failed batches")
+                else:
+                    idle.append(w)
+                _report()
+
+    result["failed"] += sum(len(b) for b, _ in pending)
+    result["elapsed"] = time.monotonic() - t0
     return result
 
 

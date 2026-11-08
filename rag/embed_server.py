@@ -147,6 +147,107 @@ def start(
     )
 
 
+class Helper:
+    """A temporary embeddings server started only for one re-embed run."""
+
+    def __init__(self, spec: str, proc: subprocess.Popen, base_url: str, log: Path):
+        self.spec, self.proc, self.base_url, self.log = spec, proc, base_url, log
+
+    def stop(self) -> None:
+        try:
+            os.killpg(self.proc.pid, signal.SIGTERM)
+            self.proc.wait(timeout=10)
+        except (ProcessLookupError, PermissionError):
+            pass
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(self.proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+
+def _free_port() -> int:
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def parse_helpers(text: str) -> list[str]:
+    """'gpu0,gpu1 cpu' → ['gpu0', 'gpu1', 'cpu']; raises ValueError on junk."""
+    import re
+    specs = [s for s in re.split(r"[,\s]+", (text or "").strip().lower()) if s]
+    for s in specs:
+        if not re.fullmatch(r"cpu|gpu\d?", s):
+            raise ValueError(f"unknown helper {s!r} (use cpu, gpu, gpu0, gpu1, …)")
+    return specs
+
+
+def start_helpers(
+    config: "Config",
+    specs: list[str],
+    probe: Callable[[str], bool] | None = None,
+    wait_s: float = 90.0,
+    say: Callable[[str], None] = lambda _m: None,
+) -> list[Helper]:
+    """Start one extra launcher instance per spec, each on its own free port.
+
+    The launcher gets the usual device word ("cpu"/"gpu") plus EMB_PORT and, for
+    gpuN, EMB_GPU=N — the env contract of ollama-turboquant/emb.sh. All are
+    started first and then awaited together, so two GPUs load in parallel.
+    Instances that never answer are stopped and left out of the result.
+    """
+    probe = probe or _probe
+    cmd = (config.rag.embed_server_command or "").strip()
+    if not cmd or not specs:
+        return []
+    script = Path(cmd).expanduser()
+    if not script.exists():
+        say(f"helper launcher not found: {script}")
+        return []
+    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    started: list[Helper] = []
+    for spec in specs:
+        port = _free_port()
+        env = dict(os.environ, EMB_PORT=str(port))
+        device = "cpu" if spec == "cpu" else "gpu"
+        if spec.startswith("gpu") and spec[3:]:
+            env["EMB_GPU"] = spec[3:]
+        log_path = _CACHE_DIR / f"embed-helper-{spec}.log"
+        with open(log_path, "ab") as log:
+            proc = subprocess.Popen(
+                [str(script), device], stdout=log, stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL, cwd=str(script.parent), env=env,
+                start_new_session=True,
+            )
+        logger.info("embed helper %s spawned on :%d (pid %d)", spec, port, proc.pid)
+        started.append(Helper(spec, proc, f"http://127.0.0.1:{port}/v1", log_path))
+
+    ready: list[Helper] = []
+    waiting = list(started)
+    deadline = time.monotonic() + wait_s
+    while waiting and time.monotonic() < deadline:
+        for h in list(waiting):
+            if h.proc.poll() is not None:
+                say(f"helper {h.spec} exited (rc={h.proc.returncode}) — see {h.log}")
+                waiting.remove(h)
+            elif probe(h.base_url):
+                say(f"helper {h.spec} up: {h.base_url}")
+                ready.append(h)
+                waiting.remove(h)
+        if waiting:
+            time.sleep(1.0)
+    for h in waiting:
+        say(f"helper {h.spec} not answering after {int(wait_s)}s — stopped, see {h.log}")
+        h.stop()
+    return ready
+
+
+def stop_helpers(helpers: list[Helper]) -> None:
+    for h in helpers:
+        h.stop()
+
+
 def stop(config: "Config") -> str:
     pid = _read_pid()
     if pid is None:
