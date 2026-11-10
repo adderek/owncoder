@@ -111,3 +111,48 @@ async def test_successful_command_still_compacted():
     out, info = await compact_result("run_argv", {}, "run tests", raw, cfg, client)
     assert out == "14 passed"
     assert not info["skipped"]
+
+
+@pytest.mark.parametrize("verdict", [
+    "No 8051-related plugins found in rizin output.",
+    "objdump does not support 8051.",
+    "not found",
+    "```\nNo asm.8051 plugin found.\n```",
+    "0 matches",
+])
+async def test_negative_verdict_returns_raw(verdict):
+    """The compactor sees one command's output and cannot tell "absent" from
+    "wrong command" — `rizin -L` (IO plugins) came back as "No 8051-related
+    plugins found". A short absence claim must not replace the evidence."""
+    cfg = _cfg()
+    raw = "rw_  ar  Open ar/lib files\nrw_  ihex  Intel HEX\n" * 20
+    client = make_client(make_response(content=verdict))
+    out, info = await compact_result("run_argv", {}, "does rizin support 8051", raw, cfg, client)
+    assert out == raw
+    assert info["skipped"] and info["reason"] == "negative_verdict"
+
+
+@pytest.mark.parametrize("extract", [
+    "Found: rizin, sdcc, objdump",
+    "3 matches: a.py, b.py, c.py",
+    "tests/test_x.py:12 AssertionError: expected 3",
+])
+async def test_positive_extract_still_compacted(extract):
+    cfg = _cfg()
+    client = make_client(make_response(content=extract))
+    out, info = await compact_result("run_argv", {}, "p", "x" * 3000, cfg, client)
+    assert out == extract
+    assert not info["skipped"]
+
+
+async def test_long_extract_mentioning_absence_is_kept():
+    """Only short verdicts are suspect; a detailed extract may note a gap."""
+    cfg = _cfg()
+    extract = "\n".join(f"mod{i}.py:{i} ok" for i in range(40)) + "\nmod99.py not found"
+    client = make_client(make_response(content=extract))
+    out, info = await compact_result("run_argv", {}, "p", "x" * 5000, cfg, client)
+    assert out == extract and not info["skipped"]
+
+
+def test_default_min_length_leaves_small_outputs_raw():
+    assert Config().tool_compaction.min_length_to_compact >= 2000

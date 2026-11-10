@@ -129,6 +129,60 @@ def _try_translate_to_argv(cmd: str) -> list[str] | None:
         return None
 
 
+# run_argv has no shell, so an operator passed as its own argv element reaches
+# the program as a literal argument: `['rizin','-L','|','grep','8051']` ran
+# `rizin -L` with three junk arguments, exited 0, and the listing was read as
+# "grep found nothing". Refuse before running and hand back the sh -c form.
+_SHELLS = {"sh", "bash", "dash", "zsh", "ksh", "fish", "busybox"}
+# Unambiguous as a standalone token: nobody passes these as data.
+_ARGV_ALWAYS_OP_RE = __import__("re").compile(r"^(\|\||&&|\d*>&\d|&>>?.*|\d>>?.*|>>?/dev/null)$")
+# Programs that legitimately take a bare `|`, `<`, `>` or `;` as a pattern/text.
+_PATTERN_COMMANDS = {"grep", "egrep", "fgrep", "rg", "ag", "sed", "awk", "gawk", "tr", "cut",
+                     "sort", "printf", "echo", "test", "[", "expr", "find", "git", "jq"}
+
+
+def _argv_shell_operator(argv: list[str]) -> str | None:
+    """Return the first argv element that is shell syntax run_argv will not
+    interpret, or None. Conservative: a token that could be literal data for
+    this program is let through."""
+    import shutil
+    if not argv or os.path.basename(str(argv[0])) in _SHELLS:
+        return None
+    pattern_cmd = os.path.basename(str(argv[0])) in _PATTERN_COMMANDS
+    for i, tok in enumerate(argv[1:], start=1):
+        if not isinstance(tok, str):
+            continue
+        if _ARGV_ALWAYS_OP_RE.match(tok):
+            return tok
+        nxt = argv[i + 1] if i + 1 < len(argv) else None
+        if tok in ("|", ";"):
+            # A command separator is followed by a command.
+            if isinstance(nxt, str) and shutil.which(nxt):
+                return tok
+        elif tok in (">", ">>", "<") and not pattern_cmd and nxt is not None:
+            return tok
+    return None
+
+
+def _shell_operator_error(argv: list[str]) -> dict | None:
+    op = _argv_shell_operator(argv)
+    if op is None:
+        return None
+    line = " ".join(
+        a if (_ARGV_ALWAYS_OP_RE.match(a) or a in ("|", ";", ">", ">>", "<")) else shlex.quote(a)
+        for a in map(str, argv)
+    )
+    return {
+        "error": (
+            f"argv contains the shell operator {op!r}, but run_argv runs no shell: "
+            f"{argv[0]!r} would receive it as a literal argument. Not executed. "
+            "For pipes/redirects/chains pass the whole line to a shell (see `suggested_argv`)."
+        ),
+        "suggested_argv": ["sh", "-c", line],
+        "argv": list(argv),
+    }
+
+
 def run_shell_line(line: str, cwd: str | None = None, timeout: int | None = None) -> dict:
     """Run a human-typed command line (/exec). Simple commands run as argv;
     pipes, redirects and substitutions run via `sh -c`. Both go through
@@ -231,6 +285,9 @@ def _precheck_argv(argv: list[str], network: bool, timeout: int | None,
 )
 def run_argv(argv: list[str], cwd: str | None = None, timeout: int | None = None,
              network: bool = False, _confirmed: bool = False) -> dict:
+    op_err = _shell_operator_error(argv)
+    if op_err is not None:
+        return op_err
     err, eff_timeout = _precheck_argv(argv, network, timeout, confirmed=_confirmed)
     if err is not None:
         return err
@@ -405,6 +462,9 @@ def run_argv_bg(argv: list[str], cwd: str | None = None,
                 _confirmed: bool = False) -> dict:
     # Background jobs may run long: skip the interactive max_timeout ceiling,
     # default to 1h, but still honour an explicit timeout argument.
+    op_err = _shell_operator_error(argv)
+    if op_err is not None:
+        return op_err
     err, _ = _precheck_argv(argv, network, timeout or 3600, cap_timeout=False,
                             confirmed=_confirmed)
     if err is not None:

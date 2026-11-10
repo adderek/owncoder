@@ -559,7 +559,9 @@ class ToolCompactionConfig:
     model: str = ""
     max_output_tokens: int = 512
     timeout_seconds: float = 30.0
-    min_length_to_compact: int = 500
+    # Below this the raw result is cheaper than the risk: a 500-char floor had
+    # the compactor rewriting 12-line command outputs into one-line verdicts.
+    min_length_to_compact: int = 2000
     skip_on_error: bool = True
     skip_on_truncated: bool = True
     # Tools whose raw output is always passed through unchanged (never compacted).

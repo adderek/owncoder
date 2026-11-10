@@ -232,3 +232,47 @@ class TestRunArgvNetworkGuard:
         assert len(r["stdout"]) < 100_000
         assert "truncated" in r
         assert r["truncated"]["stdout_chars"] >= 100_000
+
+
+class TestRunArgvShellOperators:
+    """run_argv runs no shell: an operator as its own argv element would reach
+    the program as a literal argument and the call would 'succeed' wrongly."""
+
+    @pytest.mark.parametrize("argv,op", [
+        (["rizin", "-L", "|", "grep", "-i", "8051"], "|"),
+        (["which", "sinowisp", "||", "find", "/", "-name", "sinowisp"], "||"),
+        (["python3", "x.py", ">", "out.asm", "2>", "err.log"], ">"),
+        (["python3", "x.py", "2>&1"], "2>&1"),
+        (["find", "/home", "-name", "x", "2>/dev/null"], "2>/dev/null"),
+        (["make", "&&", "make", "install"], "&&"),
+        (["ls", ";", "ls"], ";"),
+    ])
+    def test_operator_refused_with_sh_form(self, tmp_path, argv, op):
+        _enabled_cfg(tmp_path)
+        r = run_argv(argv)
+        assert "returncode" not in r, "must not execute"
+        assert repr(op) in r["error"]
+        assert r["suggested_argv"][:2] == ["sh", "-c"]
+        assert f" {op}" in r["suggested_argv"][2]
+
+    def test_suggestion_quotes_arguments_not_operators(self, tmp_path):
+        _enabled_cfg(tmp_path)
+        r = run_argv(["grep", "-c", "a b", "f.txt", "|", "head", "-1"])
+        assert r["suggested_argv"][2] == "grep -c 'a b' f.txt | head -1"
+
+    @pytest.mark.parametrize("argv", [
+        ["sh", "-c", "echo a | cat"],
+        ["grep", "-c", "|", "f.txt"],          # literal pattern
+        ["grep", ">", "f.txt"],                # literal pattern
+        ["echo", "a", "|", "zzz-not-a-command"],
+        ["python3", "-c", "print(1 > 0 or 2 | 1)"],
+    ])
+    def test_literal_arguments_allowed(self, tmp_path, argv):
+        from agent.tools.shell.main import _argv_shell_operator
+        assert _argv_shell_operator(argv) is None
+
+    def test_bg_refuses_too(self, tmp_path):
+        from agent.tools.shell.main import run_argv_bg
+        _enabled_cfg(tmp_path)
+        r = run_argv_bg(["make", "|", "tee", "log"])
+        assert "suggested_argv" in r and "id" not in r

@@ -28,7 +28,13 @@ Rules:
 - Drop decorative output, banners, repeated whitespace, unrelated entries.
 - If the raw output already answers the purpose concisely, return it verbatim.
 - If the output is a list and purpose asks about existence/count, return just
-  that fact (e.g. "3 matches: a.py, b.py, c.py" or "not found").
+  that fact (e.g. "3 matches: a.py, b.py, c.py").
+- Report only what the output shows. Never conclude that something is
+  missing, unsupported or absent: the command may simply have been the wrong
+  one to ask. If the output does not contain what the purpose asks about,
+  return the output trimmed of noise and let the agent judge.
+- Describe the output in its own terms, not the purpose's. If the purpose
+  expects "asm plugins" and the output lists IO plugins, they are IO plugins.
 - If purpose is vague or you cannot tell what matters, return the output
   trimmed of obvious noise only — never invent, never summarize away detail.
 - No preamble, no "here is". Just the compacted result.
@@ -48,6 +54,27 @@ _META_PREAMBLE_RE = re.compile(
     r"looking at the (raw )?output)",
     re.IGNORECASE,
 )
+
+# A short compaction that asserts absence ("No 8051 plugins found", "objdump
+# does not support X") is a verdict, not an extract. The compactor only sees one
+# command's output and cannot tell "absent" from "wrong command": `rizin -L`
+# lists IO plugins, was asked about 8051, and came back as "No 8051-related
+# plugins found" — the agent then hand-wrote a disassembler instead of running
+# `rizin -a 8051`. Such results go back raw so the main model reads the evidence.
+_NEGATIVE_VERDICT_RE = re.compile(
+    r"\b(not found|none found|nothing (was )?(found|matched)|"
+    r"no\b[^\n]{0,60}\b(found|match(es)?|results?|available|installed|support(ed)?|exists?|present)|"
+    r"(does|do|did|is|are|was|were)(n't| not) "
+    r"(support(ed)?|exist|contain|include|available|installed|present|found|have)|"
+    r"unsupported|0 (matches|results|hits))\b",
+    re.IGNORECASE,
+)
+_NEGATIVE_VERDICT_MAX_LEN = 300
+
+
+def _is_negative_verdict(text: str) -> bool:
+    return len(text) <= _NEGATIVE_VERDICT_MAX_LEN and bool(_NEGATIVE_VERDICT_RE.search(text))
+
 
 _client_cache: dict[tuple[str, str], "AsyncOpenAI"] = {}
 _semaphore_cache: dict[int, asyncio.Semaphore] = {}
@@ -180,6 +207,13 @@ async def compact_result(
             logger.warning("tool_compaction: meta-preamble leak for %s — using raw result", tool_name)
             info["skipped"] = True
             info["reason"] = "meta_preamble"
+            return result_str, info
+        if _is_negative_verdict(text):
+            logger.info("tool_compaction: negative verdict for %s (%r) — using raw result",
+                        tool_name, text[:80])
+            info["skipped"] = True
+            info["reason"] = "negative_verdict"
+            info["seconds"] = time.monotonic() - t0
             return result_str, info
         info["compacted_len"] = len(text)
         info["seconds"] = time.monotonic() - t0
