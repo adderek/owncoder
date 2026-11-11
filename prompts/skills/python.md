@@ -1,7 +1,8 @@
-# Python coding guidelines
 ---
 description: Python best practices: typing, error handling, style
 ---
+
+# Python coding guidelines
 
 - Use `from __future__ import annotations` in every module.
 - Prefer `pathlib.Path` over `os.path`.

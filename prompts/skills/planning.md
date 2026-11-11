@@ -1,7 +1,8 @@
-# Planning guide
 ---
 description: Full DAG planning instructions — create plans, wire deps, complete steps, handle blocking issues
 ---
+
+# Planning guide
 
 ## Plan-driven execution with DAG dependencies
 

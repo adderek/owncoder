@@ -1,7 +1,8 @@
-# Legacy reverse engineering
 ---
 description: Analyze a legacy binary without source (REA + asm index), extract its logic as specs and characterization tests, rewrite module by module
 ---
+
+# Legacy reverse engineering
 
 Goal: legacy app nobody dares to touch → documented logic → tested rewrite on a
 supported stack. Output is files in the repo, not chat: every finding written

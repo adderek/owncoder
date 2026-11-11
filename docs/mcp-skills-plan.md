@@ -21,12 +21,14 @@ Created 2026-11-11. Executed by separate low-context agent sessions, one task pe
 
 Bundled: `agent/prompts/skills/<name>.md`, read-only. Project-local: `.agent/skills/<name>.md`.
 ```
-# Title
 ---
 description: one line, used in index — make it trigger-worthy
 ---
+
+# Title
 - terse imperative bullets
 ```
+Frontmatter MUST be line 1 (`parse_skill()`); test enforces it.
 Keep bodies ≤ ~40 lines (token-efficiency first; local models). Procedures > philosophy. No meta-instructions about tone.
 
 ## Tasks
@@ -38,29 +40,34 @@ Follow-up for user: add `description:` to REA in both `agent.fractal.yaml` + `ag
 ### T1b [ ] Lazy MCP spawn (optional)
 Deps: T1. Only if startup time/RAM of servers hurts (REA spawns JVM/Ghidra lazily? check first). Add `lazy: bool` to `MCPServerConfig`; lazy server spawns on first `find_tools` match against its name or first call. Measure startup time before/after; skip with `[-]` if gain < 1 s.
 
-### T2 [ ] Remove dead MCP examples
+### T2 [x] Remove dead MCP examples
+done 2026-11-11 (root repo commit). fs/git/http examples replaced by one commented stdio example; `load_config()` verified.
 Deps: none.
 - `agent.yaml` (repo root) lists `fs` and `git` MCP servers (disabled) — duplicate built-in tools. Replace with one commented stdio example incl. `description`.
 - Acceptance: config loads (`agent/.venv/bin/pytest agent/tests -k config -x`).
 
-### T3 [ ] Skill: spec-and-plan
+### T3 [x] Skill: spec-and-plan
+done 2026-11-11. Also fixed: all bundled skills had `# Title` before frontmatter → `parse_skill()` ignored `description:` and leaked `---` into body. Frontmatter now first; regression test `test_bundled_skills_have_frontmatter_description`.
 Deps: none.
 - `agent/prompts/skills/spec-and-plan.md`: before code — restate goal, inputs/outputs, constraints, acceptance check; split into small atomic steps each independently verifiable; when to write a `/plan` (link `planning` skill, don't duplicate it).
 - Merges TODO.md items "spec before code" + "plan small atomic tasks"; tick them in `TODO.md:195` list.
 - Acceptance: `agent/.venv/bin/pytest agent/tests/unit/test_skills.py -x`; skill appears in `/skills`.
 
-### T4 [ ] Skill: self-review
+### T4 [x] Skill: self-review
+done 2026-11-11.
 Deps: none.
 - `agent/prompts/skills/self-review.md`: before declaring done — read own diff (`git diff`), check: matches request, no unrelated edits, no debug leftovers, error paths, tests run + result stated, simplification pass (dead code, duplication). Mention `review_changes` tool if it fits (read `agent/tools/review_changes/` first).
 - Covers TODO "review" + "code-simplify".
 - Acceptance: as T3.
 
-### T5 [ ] Skill: debug
+### T5 [x] Skill: debug
+done 2026-11-11.
 Deps: none.
 - `agent/prompts/skills/debug.md`: reproduce first (exact command), read full error, one hypothesis at a time, minimal probe, bisect (`git bisect` / halving input), fix root cause not symptom, add regression test (`tests/regression/`).
 - Acceptance: as T3.
 
-### T6 [ ] Skill: github (optional, via `gh`)
+### T6 [x] Skill: github (optional, via `gh`)
+done 2026-11-11.
 Deps: none.
 - `agent/prompts/skills/github.md`: PR/issue/CI workflow through `gh` CLI over shell — not an MCP (zero schema cost, works with any model). Cover: `gh pr create/view/checks/diff`, `gh issue list/view`, `gh run view --log-failed`, `gh api`. Rules: never push/comment without user confirmation; respect AGENTS.md immutable commits; check `gh auth status` first, if unavailable say so and stop (offline is a normal state).
 - Description must make clear it's only for repos with a GitHub remote.

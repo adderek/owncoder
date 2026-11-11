@@ -272,3 +272,14 @@ class TestSkillLocks:
         monkeypatch.setattr(tool, "_get_loader", lambda: ldr)
         out = tool.save_skill("deploy", "rewrite")
         assert "locked by the user" in out["error"]
+
+
+def test_bundled_skills_have_frontmatter_description():
+    """Frontmatter must open the file; a leading '# Title' hides it from the index."""
+    from agent.skills import _BUNDLED_DIR, parse_skill
+    files = sorted(_BUNDLED_DIR.glob("*.md"))
+    assert files
+    for p in files:
+        meta = parse_skill(p)
+        assert meta["description"] != p.stem, p.name
+        assert not meta["body"].startswith("---"), p.name

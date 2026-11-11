@@ -1,7 +1,8 @@
-# Testing guidelines
 ---
 description: pytest conventions, test structure, what to assert
 ---
+
+# Testing guidelines
 
 - One test file per module under `tests/unit/` mirroring the source path.
 - Test function names: `test_<what>_<condition>_<expected>`.
