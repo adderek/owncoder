@@ -5,6 +5,7 @@ import json
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
+from agent.security import host_git as _hg
 
 if TYPE_CHECKING:
     from agent.config import Config
@@ -245,12 +246,12 @@ def _build_system_prompt(
         # Bound + non-interactive: this runs on every system-prompt build, so a
         # hung git (lock contention, credential prompt) must not stall startup.
         branch = subprocess.check_output(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            _hg.argv("rev-parse", "--abbrev-ref", "HEAD"),
             cwd=config.tools.working_dir,
             stderr=subprocess.DEVNULL,
             text=True,
             timeout=10,
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            env=_hg.env(),
         ).strip()
     except Exception:
         branch = "unknown"

@@ -17,6 +17,7 @@ from agent.core.index_coverage import (  # noqa: E402
     coverage_map as _get_index_coverage,
     format_coverage as _format_index_coverage,
 )
+from agent.security import host_git as _hg  # noqa: E402
 
 
 def _bg_update_index(store, embedder, config, result: dict) -> None:
@@ -136,8 +137,8 @@ def _audit_crash(console, sentinel: Path, messages: list[dict]) -> None:
     for f in written:
         try:
             r = subprocess.run(
-                ["git", "diff", "--name-only", "HEAD", "--", f],
-                capture_output=True, text=True, timeout=5,
+                _hg.argv("diff", "--name-only", "HEAD", "--", f),
+                capture_output=True, text=True, timeout=5, env=_hg.env(),
             )
             if r.stdout.strip():
                 dirty.append(f)

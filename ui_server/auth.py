@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import re
 import secrets
 from http.server import BaseHTTPRequestHandler
 
@@ -95,6 +96,18 @@ def validate_origin_host(handler: BaseHTTPRequestHandler) -> bool:
 
 
 # ── Session token ────────────────────────────────────────────────────────────
+
+_QUERY_RE = re.compile(r"\?[^\s\"]*")
+
+
+def redact_query(value):
+    """*value* with every URL query string replaced by `?…`.
+
+    For access-log lines: the bootstrap URL carries `?token=…`, and the log is
+    readable from inside the sandbox — a token there is the whole UI API,
+    permission prompts included. Non-strings pass through.
+    """
+    return _QUERY_RE.sub("?…", value) if isinstance(value, str) else value
 
 # Cookie name for the double-submit token.
 _TOKEN_COOKIE = "owncoder_auth"

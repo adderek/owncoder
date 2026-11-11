@@ -949,7 +949,8 @@ def run_ui(agent: "Agent", session=None):
                 int(getattr(agent.config.ui, "http_port", 8180)),
             )
             shown_host = "127.0.0.1" if httpd.server_address[0] in ("0.0.0.0", "") else httpd.server_address[0]
-            print(f"HTTP sidecar running: http://{shown_host}:{httpd.server_address[1]}/ "
+            print(f"HTTP sidecar running: http://{shown_host}:{httpd.server_address[1]}/"
+                  f"?token={server.auth.token} "
                   f"(companion view — {mode} stays in control here)")
         except Exception:
             logger.exception("http sidecar: failed to start; continuing without it")

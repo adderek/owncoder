@@ -8,6 +8,7 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass, asdict
 from pathlib import Path
+from agent.security import host_git as _hg
 
 
 @dataclass
@@ -51,13 +52,8 @@ def find_git_repos(working_dir: str, max_depth: int = 4) -> list[str]:
 def _git(*args: str, cwd: str, timeout: float = 30.0) -> tuple[str, str, int]:
     # Bound the call and disable interactive credential prompts so a snapshot
     # step can never hang the plan on a stuck git process.
-    import os
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     try:
-        r = subprocess.run(
-            ["git"] + list(args), cwd=cwd, capture_output=True, text=True,
-            timeout=timeout, env=env,
-        )
+        r = _hg.run(args, cwd=cwd, timeout=timeout)
     except subprocess.TimeoutExpired:
         return "", f"git timed out after {timeout:.0f}s: git {' '.join(args)}", 124
     return r.stdout, r.stderr, r.returncode

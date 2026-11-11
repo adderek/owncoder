@@ -21,8 +21,10 @@ logger = logging.getLogger(__name__)
 def scrub_env(host_env: dict[str, str], cfg) -> dict[str, str]:
     """Drop env vars matching cfg.env_deny_patterns, keep only cfg.env_allow
     (when non-empty). Shared by the sandbox runner and unsandboxed children
-    (MCP stdio servers) so host secrets never reach either."""
-    deny = [re.compile(p) for p in cfg.env_deny_patterns]
+    (MCP stdio servers) so host secrets never reach either.
+
+    Case-insensitive: `github_token` is as much a secret as `GITHUB_TOKEN`."""
+    deny = [re.compile(p, re.IGNORECASE) for p in cfg.env_deny_patterns]
     allow = set(cfg.env_allow)
     return {k: v for k, v in host_env.items()
             if not any(d.match(k) for d in deny) and (not allow or k in allow)}
@@ -41,9 +43,11 @@ class Policy:
 
     def env_for_child(self, host_env: dict[str, str]) -> dict[str, str]:
         out = scrub_env(host_env, self.cfg)
-        # HOME inside sandbox points to project root so tools that use ~
-        # don't leak into the host home.
-        out.setdefault("HOME", str(self.root))
+        # HOME is forced, not defaulted: HOME is in env_allow, so setdefault
+        # kept the host /home/<user> — a path that does not exist inside the
+        # sandbox, so pip/npm/cargo caches vanished after every command.
+        # <scratch>/home persists for the session and stays out of the tree.
+        out["HOME"] = str(self.root)
         out.setdefault("PWD", str(self.root))
         self._add_project_venv(out)
         # Temp files: point every convention at the project scratch instead of
@@ -54,6 +58,13 @@ class Policy:
         # alone: the child then uses the sandbox's own /tmp, as before.
         scratch = self.ensure_scratch()
         if scratch is not None:
+            home = scratch / "home"
+            try:
+                home.mkdir(exist_ok=True)
+                if home.is_dir() and not home.is_symlink():
+                    out["HOME"] = str(home)
+            except OSError:
+                pass
             out["AGENT_TMP"] = str(scratch)
             out["TMPDIR"] = str(scratch)
             out["TMP"] = str(scratch)

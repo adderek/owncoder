@@ -14,6 +14,8 @@ Design constraints:
   checkers, only checkers whose binary is actually installed are used.
 - **No shell.** Commands are argv lists, never a shell string, so a filename can
   never inject. The path is resolved and confined to the working directory.
+- **Sandboxed.** Checkers read agent-written files and project config (an
+  ``eslint.config.js`` is code), so they run through ``security.runner``.
 - **Budgeted.** Hard per-file timeout; a slow or hanging checker is dropped, it
   never blocks the turn.
 - **Advisory.** Findings are attached under a ``_diagnostics`` key on the tool
@@ -42,11 +44,14 @@ _AUTO_CHECKERS: list[tuple[tuple[str, ...], str, list[str]]] = [
     ((".sh", ".bash"), "bash", ["bash", "-n", "{file}"]),
     ((".go",), "gofmt", ["gofmt", "-e", "-l", "{file}"]),
     ((".js", ".jsx", ".ts", ".tsx"), "eslint",
-     ["eslint", "--no-eslintrc", "--format", "compact", "{file}"]),
+     # ESLint >= 9 (flat config) rejects --no-eslintrc; --no-config-lookup is
+     # its equivalent: parse errors only, no project config loaded.
+     ["eslint", "--no-config-lookup", "--format", "compact", "{file}"]),
 ]
 
 # Fallback for Python when ruff is absent: the interpreter always is.
-_PY_COMPILE = ["python3", "-c",
+# -I: a `py_compile.py` in the project root must not shadow the stdlib module.
+_PY_COMPILE = ["python3", "-I", "-c",
                "import sys,py_compile;py_compile.compile(sys.argv[1],doraise=True)", "{file}"]
 
 
@@ -98,26 +103,23 @@ async def _run(argv: list[str], path: Path, cwd: str, timeout_s: float) -> str:
     cannot be spawned yields no findings rather than an error — diagnostics are
     advisory and must never break a turn.
     """
+    from agent.security import runner
     cmd = [a.replace("{file}", str(path)) for a in argv]
+    if not shutil.which(cmd[0]):
+        # Inside the sandbox a missing binary is bwrap's execvp error text,
+        # which would read as a finding.
+        logger.debug("diagnostics: %s not on PATH", cmd[0])
+        return ""
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, cwd=cwd,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-    except (OSError, ValueError) as e:
+        res = await asyncio.to_thread(
+            runner.run, cmd, cwd=cwd, timeout=max(1, int(round(timeout_s + 0.5))))
+    except Exception as e:
         logger.debug("diagnostics: cannot run %s: %s", cmd[0], e)
         return ""
-    try:
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
-    except asyncio.TimeoutError:
+    if res.timed_out:
         logger.debug("diagnostics: %s timed out after %.1fs", cmd[0], timeout_s)
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
         return ""
-    text = (out or b"").decode("utf-8", "replace") + (err or b"").decode("utf-8", "replace")
-    return text.strip()
+    return ((res.stdout or "") + (res.stderr or "")).strip()
 
 
 async def check_path(raw_path: str, config: "Config") -> list[str]:

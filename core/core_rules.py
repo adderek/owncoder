@@ -31,6 +31,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
+from agent.security import host_git as _hg
 
 if TYPE_CHECKING:
     from agent.config import Config
@@ -104,9 +105,9 @@ def _git_reason(path: Path) -> dict:
     """Last commit touching *path*: the human's own words for why it changed."""
     try:
         proc = subprocess.run(
-            ["git", "-C", str(path.parent), "log", "-1", "--format=%H%n%cI%n%an%n%s",
-             "--", str(path)],
-            capture_output=True, text=True, timeout=15,
+            _hg.argv("-C", str(path.parent), "log", "-1", "--format=%H%n%cI%n%an%n%s",
+                     "--", str(path)),
+            capture_output=True, text=True, timeout=15, env=_hg.env(),
         )
     except (OSError, subprocess.SubprocessError):
         return {}

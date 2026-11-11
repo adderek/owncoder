@@ -4,6 +4,7 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from agent.security import host_git as _hg
 from agent.tools import register
 from agent.tools._common import working_dir, is_read_protected, is_path_allowed
 
@@ -76,7 +77,6 @@ def _untrusted_git_dir(target: Path, root: Path) -> bool:
 # fsmonitor hooks run on status/diff, external diff drivers and textconv
 # filters run on diff/blame. The agent cannot write .git/** (security/fs.py),
 # but a checkout received with its .git dir can carry such config.
-_GIT_PREFIX = ("--no-pager", "-c", "core.fsmonitor=false", "-c", "log.showSignature=false")
 _DIFF_SAFE = ("--no-ext-diff", "--no-textconv")
 
 
@@ -94,7 +94,7 @@ def _run_git(*args: str, cwd: str | None = None, timeout: float = 30.0) -> tuple
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0"}
     try:
         result = subprocess.run(
-            ["git", *_GIT_PREFIX, *args],
+            _hg.argv(*args),
             cwd=cwd,
             capture_output=True,
             text=True,
@@ -114,7 +114,7 @@ def _run_git_sandboxed(args, cwd: str, timeout: float) -> tuple[str, str, int]:
         if not _sec_policy.is_configured():
             return "", "git refused: repo config is untrusted and no sandbox is configured", 1
         r = _runner.run(["env", "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0",
-                         "git", *_GIT_PREFIX, *args],
+                         *_hg.argv(*args)],
                         cwd=cwd, timeout=int(timeout))
     except Exception as e:   # SandboxUnavailable and friends
         return "", f"git refused: sandbox unavailable for untrusted repo: {e}", 1

@@ -5,11 +5,12 @@ import os
 import re
 import subprocess
 from pathlib import Path
+from agent.security import host_git as _hg
 
 
 def _git_env() -> dict:
     """Environment that prevents git from blocking on an interactive prompt."""
-    return {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    return _hg.env()
 
 
 def _fmt_tps(v: float) -> str:
@@ -108,17 +109,17 @@ def _save_problem_report(
     git_info = {}
     try:
         branch = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            _hg.argv("rev-parse", "--abbrev-ref", "HEAD"),
             cwd=str(repo_path), capture_output=True, text=True,
             timeout=10, env=_git_env(),
         ).stdout.strip()
         sha = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
+            _hg.argv("rev-parse", "--short", "HEAD"),
             cwd=str(repo_path), capture_output=True, text=True,
             timeout=10, env=_git_env(),
         ).stdout.strip()
         has_changes = subprocess.run(
-            ["git", "diff", "--quiet"],
+            _hg.argv("diff", "--quiet"),
             cwd=str(repo_path),
             timeout=10, env=_git_env(),
         ).returncode != 0
@@ -421,7 +422,7 @@ def cmd_commit(args, config):
         return
 
     result = subprocess.run(
-        ["git", "rev-parse", "--git-dir"],
+        _hg.argv("rev-parse", "--git-dir"),
         cwd=str(path),
         capture_output=True, text=True,
         timeout=10, env=_git_env(),
@@ -433,7 +434,7 @@ def cmd_commit(args, config):
     def _git(*git_args: str) -> str:
         try:
             r = subprocess.run(
-                ["git"] + list(git_args), cwd=str(path), capture_output=True,
+                _hg.argv(*git_args), cwd=str(path), capture_output=True,
                 text=True, timeout=30, env=_git_env(),
             )
         except subprocess.TimeoutExpired:
@@ -895,7 +896,7 @@ def cmd_commit(args, config):
             return
 
     result = subprocess.run(
-        ["git", "commit", "-m", message],
+        _hg.argv("commit", "-m", message, hooks=True),
         cwd=str(path),
         capture_output=True, text=True,
         timeout=30, env=_git_env(),

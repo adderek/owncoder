@@ -600,6 +600,15 @@ class SecurityConfig:
     sandbox_backend: str = "auto"
     require_sandbox: bool = True
     network: str = "off"
+    # How network="on" is given to a bwrap command (security/runner.py):
+    #   "auto"  — own network namespace via pasta (passt) when installed: the
+    #             internet and LAN work, the host's loopback services, its own
+    #             LAN-IP listeners and abstract sockets (X11) do not; DNS is
+    #             forwarded to the host resolver. No pasta → host network + a
+    #             one-time warning.
+    #   "netns" — as auto, but no pasta → network commands are refused.
+    #   "host"  — share the host network namespace (pre-2026-11 behaviour).
+    network_isolation: str = "auto"
     cpu_seconds: int = 20
     wall_seconds: int = 30
     # Heap cap per sandboxed process (RLIMIT_DATA). 512 MB is under what a V8
@@ -668,6 +677,10 @@ class SecurityConfig:
         # (LD_LIBRARY_PATH stays: ROCm/CUDA toolchains need it to find libs.)
         r"^LD_PRELOAD$", r"^PYTHONSTARTUP$",
         r"^PYTHONINSPECT$", r"^PYTHONBREAKPOINT$",
+        # Desktop session handles: with network on, X11 is keystroke injection
+        # and the session bus reaches every desktop service.
+        r"^DISPLAY$", r"^WAYLAND_DISPLAY$", r"^XAUTHORITY$",
+        r"^DBUS_SESSION_BUS_ADDRESS$",
     ])
     argv_allow: list = field(default_factory=list)
     # Write-deny globs (root-relative). None = use built-in defaults.

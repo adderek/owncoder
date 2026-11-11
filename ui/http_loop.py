@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agent.ui import tool_summary as _tool_summary
+from agent.security import host_git as _hg
 
 if TYPE_CHECKING:
     from agent.core.agent import Agent
@@ -2065,8 +2066,9 @@ class _HttpUI:
         paths: list[str] = []
         try:
             out = subprocess.run(
-                ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+                _hg.argv("ls-files", "--cached", "--others", "--exclude-standard"),
                 cwd=str(root), capture_output=True, text=True, timeout=5,
+                env=_hg.env(),
             )
             if out.returncode == 0:
                 paths = [ln for ln in out.stdout.splitlines() if ln][:self._FILE_LIST_MAX]
@@ -2408,13 +2410,13 @@ class _HttpUI:
         cwd = self.workdir()
         try:
             result = subprocess.run(
-                ["git", "diff", "--", path], capture_output=True, text=True,
-                timeout=5, cwd=cwd or None)
+                _hg.argv("diff", "--", path), capture_output=True, text=True,
+                timeout=5, cwd=cwd or None, env=_hg.env())
             out = result.stdout if result.returncode == 0 else ""
             if not out.strip():
                 result = subprocess.run(
-                    ["git", "diff", "--cached", "--", path], capture_output=True,
-                    text=True, timeout=5, cwd=cwd or None)
+                    _hg.argv("diff", "--cached", "--", path), capture_output=True,
+                    text=True, timeout=5, cwd=cwd or None, env=_hg.env())
                 out = result.stdout if result.returncode == 0 else ""
             return {"path": path, "diff": out}
         except Exception as exc:
@@ -2487,8 +2489,11 @@ class _HttpUI:
         line instead of a 500."""
         import subprocess
         try:
+            if args and args[0] == "git":
+                args = _hg.argv(*args[1:])
             r = subprocess.run(
-                args, capture_output=True, text=True, timeout=10, cwd=cwd or None)
+                args, capture_output=True, text=True, timeout=10, cwd=cwd or None,
+                env=_hg.env())
             if r.returncode == 0:
                 return r.stdout, ""
             return "", (r.stderr or "git failed").strip()
@@ -3012,7 +3017,10 @@ def _make_handler(ui: _HttpUI):
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):  # silence per-request stderr noise
-            logger.debug("http ui: %s " + fmt, self.client_address[0], *args)
+            # Query stripped: `/?token=…` must not reach agent.log (sandbox-readable).
+            from agent.ui_server.auth import redact_query
+            logger.debug("http ui: %s " + fmt, self.client_address[0],
+                         *(redact_query(a) for a in args))
 
         def _check_auth(self) -> bool:
             """Origin/Host + per-process token on every request.

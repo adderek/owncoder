@@ -33,6 +33,7 @@ _ALLOWED: list[tuple[str, set[str]]] = [
                            "high", "max"}),                        # core/prompts.py THINK_LEVELS
     ("tools.revisions.mode", {"off", "warn", "require"}),          # core/revisions.py
     ("security.network", {"off", "on"}),                           # tools/shell/main.py
+    ("security.network_isolation", {"auto", "netns", "host"}),     # security/runner.py
     ("security.sandbox_backend", {"auto", "bwrap", "firejail", "none"}),  # security/runner.py
     ("recovery.prompt_mode", {"ask", "auto_recover", "auto_skip"}),  # planning/recovery.py
     ("ui.mode", {"textual", "simple", "http"}),                    # cli/chat.py

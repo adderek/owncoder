@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
+from agent.security import host_git as _hg
 
 if TYPE_CHECKING:
     pass
@@ -1566,15 +1567,15 @@ def build_widget_classes(t) -> SimpleNamespace:
             path = self._entry.get("path", "")
             try:
                 result = subprocess.run(
-                    ["git", "diff", "--", path],
-                    capture_output=True, text=True, timeout=5,
+                    _hg.argv("diff", "--", path),
+                    capture_output=True, text=True, timeout=5, env=_hg.env(),
                 )
                 if result.returncode == 0 and result.stdout.strip():
                     return result.stdout
                 # Try staged diff too
                 result = subprocess.run(
-                    ["git", "diff", "--cached", "--", path],
-                    capture_output=True, text=True, timeout=5,
+                    _hg.argv("diff", "--cached", "--", path),
+                    capture_output=True, text=True, timeout=5, env=_hg.env(),
                 )
                 if result.returncode == 0 and result.stdout.strip():
                     return result.stdout

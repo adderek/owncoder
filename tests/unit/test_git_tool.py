@@ -37,8 +37,8 @@ def test_run_git_passes_timeout_and_noninteractive_env(monkeypatch, tmp_path):
     assert seen["timeout"] == 30.0
     assert seen["env"]["GIT_TERMINAL_PROMPT"] == "0"
     assert seen["env"]["GIT_OPTIONAL_LOCKS"] == "0"
-    assert seen["cmd"] == ["git", "--no-pager", "-c", "core.fsmonitor=false",
-                           "-c", "log.showSignature=false", "status"]
+    from agent.security import host_git
+    assert seen["cmd"] == ["git", *host_git.PREFIX, "status", "--ignore-submodules=dirty"]
 
 
 def _setup_repo(tmp_path):

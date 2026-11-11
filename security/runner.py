@@ -136,6 +136,88 @@ def select_backend() -> str:
     return _BACKEND
 
 
+# ── network namespace for network=True (TODO-4 item 6) ────────────────────
+# Without --unshare-net a networked command shares the host namespace: every
+# 127.0.0.1 service (the HTTP UI, CUPS, dev servers), the host's own LAN-IP
+# listeners and abstract unix sockets (X11 → keystroke injection) are in
+# reach. pasta gives the command its own namespace with NATed outbound access
+# instead. Measured here: internet + LAN gateway reachable; 127.0.0.1:8888,
+# :631, own-IP :22 and the X11 abstract socket refused; ~150 ms per command.
+_PASTA_DNS = "169.254.1.53"     # forwarded to the host's first nameserver
+_PASTA_OK: bool | None = None
+_PASTA_WARNED = False
+_RESOLV_CONF: Path | None = None
+
+
+def _pasta_argv(host_ports: tuple[int, ...] = ()) -> list[str]:
+    """*host_ports*: TCP ports on the namespace's loopback forwarded to the
+    host's loopback — only for operator-configured endpoints (a local
+    SearXNG), never for anything the model chose."""
+    out_tcp = [a for p in host_ports for a in ("-T", str(int(p)))] or ["-T", "none"]
+    return ["pasta", "--config-net", "--quiet",
+            # gateway address is the real gateway, not the host's loopback
+            "--no-map-gw",
+            # no inbound forwarding; outbound to the host only as listed
+            "-t", "none", "-u", "none", *out_tcp, "-U", "none",
+            "--dns-forward", _PASTA_DNS]
+
+
+def _pasta_usable() -> bool:
+    global _PASTA_OK
+    if _PASTA_OK is None:
+        _PASTA_OK = False
+        if shutil.which("pasta"):
+            try:
+                r = subprocess.run(_pasta_argv() + ["--", "/bin/true"],
+                                   capture_output=True, timeout=10)
+                _PASTA_OK = r.returncode == 0
+                if not _PASTA_OK:
+                    logger.warning("pasta present but not functional: %s",
+                                   r.stderr.decode("utf-8", "replace").strip()[:200])
+            except Exception as e:
+                logger.warning("pasta probe failed: %s", e)
+    return _PASTA_OK
+
+
+def _netns_resolv_conf() -> Path:
+    """Host-private resolv.conf pointing at pasta's DNS forward address.
+
+    The host one usually names 127.0.0.53 (systemd-resolved), which inside the
+    namespace is the namespace's own, empty loopback.
+    """
+    global _RESOLV_CONF
+    if _RESOLV_CONF is None or not _RESOLV_CONF.is_file():
+        import tempfile
+        fd, path = tempfile.mkstemp(prefix="agent-resolv-", suffix=".conf")
+        with os.fdopen(fd, "w") as f:
+            f.write(f"nameserver {_PASTA_DNS}\n")
+        _RESOLV_CONF = Path(path)
+    return _RESOLV_CONF
+
+
+def _use_netns(network: bool, backend: str) -> bool:
+    """Whether this networked bwrap command gets its own namespace via pasta."""
+    global _PASTA_WARNED
+    if not network or backend != "bwrap":
+        return False
+    mode = getattr(policy.get().cfg, "network_isolation", "auto")
+    if mode == "host":
+        return False
+    if _pasta_usable():
+        return True
+    if mode == "netns":
+        raise SandboxUnavailable(
+            "security.network_isolation = \"netns\" but pasta (package passt) is "
+            "not installed or not functional; refusing a networked command.")
+    if not _PASTA_WARNED:
+        _PASTA_WARNED = True
+        logger.warning(
+            "sandbox: network=on shares the HOST network namespace (no pasta): "
+            "host loopback services and abstract sockets are reachable. Install "
+            "passt, or set security.network_isolation = \"host\" to silence this.")
+    return False
+
+
 def _warn_degraded(tried: list[str]) -> None:
     global _DEGRADED_WARNING_SHOWN
     if _DEGRADED_WARNING_SHOWN:
@@ -154,12 +236,13 @@ def _warn_degraded(tried: list[str]) -> None:
     )
 
 
-def _rlimit_preexec(sandbox_backend: str = "none") -> None:
+def _rlimit_preexec(sandbox_backend: str = "none", cpu_seconds: int | None = None) -> None:
     cfg = policy.get().cfg
     # Wall-clock is enforced by the parent (SIGKILL after timeout).
     # CPU limit via rlimit; hit it and the kernel sends SIGKILL.
+    cpu = cpu_seconds or cfg.cpu_seconds
     try:
-        resource.setrlimit(resource.RLIMIT_CPU, (cfg.cpu_seconds, cfg.cpu_seconds))
+        resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
     except (ValueError, OSError):
         pass
     try:
@@ -256,6 +339,63 @@ def _sweep_created(root: Path, before: set[str]) -> list[str]:
     return notes
 
 
+def _deny_snapshot(paths: list[Path]) -> dict[Path, tuple[int, int]]:
+    """(st_dev, st_ino) per write-deny path — identity, not content."""
+    out: dict[Path, tuple[int, int]] = {}
+    for p in paths:
+        try:
+            st = os.lstat(p)
+        except OSError:
+            continue
+        out[p] = (st.st_dev, st.st_ino)
+    return out
+
+
+def _sweep_replaced(root: Path, before: dict[Path, tuple[int, int]]) -> list[str]:
+    """Quarantine write-deny paths a command created or replaced anywhere in
+    the tree; return notes.
+
+    A read-only bind sticks to the dentry, not the path: renaming a parent
+    (`mv sub sub_old && git init sub`) leaves the bind on `sub_old/.git` and a
+    fresh, writable `sub/.git` at the old path — whose config a plain host
+    `git status` in the superproject then executes (core.fsmonitor). Walks the
+    write-deny set again after the command; any match that is new, or whose
+    inode changed, goes to quarantine. _sweep_created covers the root names.
+    """
+    try:
+        after = _deny_snapshot(_write_deny_paths(root))
+    except Exception as e:     # incomplete scan, unreadable tree
+        logger.warning("sandbox: post-command write-deny sweep failed: %s", e)
+        return [f"[sandbox] WARNING: post-command sweep of protected paths failed: {e}"]
+    # The agent dir is written by the host itself while the command runs
+    # (audit log, session record), and is a mountpoint inside the sandbox, so
+    # it cannot be renamed away from its bind. Its contents are not swept.
+    agent_dir = policy.get().agent_dir
+    suspect = sorted(p for p, ident in after.items()
+                     if before.get(p) != ident and not _under_root(p, agent_dir))
+    # A nested hit under a quarantined directory moves with it.
+    suspect = [p for p in suspect if not any(q in p.parents for q in suspect)]
+    notes: list[str] = []
+    if not suspect:
+        return notes
+    qdir = policy.get().agent_dir / "quarantine" / "sandbox"
+    stamp = time.strftime("%Y%m%dT%H%M%S")
+    for i, src in enumerate(suspect):
+        rel = os.path.relpath(src, root)
+        dst = qdir / f"{stamp}-{os.getpid()}-{i}-{rel.replace(os.sep, '__').lstrip('.')}"
+        try:
+            qdir.mkdir(parents=True, exist_ok=True)
+            os.rename(src, dst)
+            notes.append(f"[sandbox] refused: command created or replaced protected "
+                         f"path {rel!r} — moved to {dst}")
+        except OSError as e:
+            notes.append(f"[sandbox] WARNING: command created or replaced protected "
+                         f"path {rel!r} and it could not be quarantined: {e}")
+        logger.warning("sandbox: %s", notes[-1])
+        audit.record("run.protected_replaced", path=str(src), note=notes[-1])
+    return notes
+
+
 def _own_interpreter_under_root(root: Path) -> Path | None:
     """The running interpreter's prefix when it lives inside the project.
 
@@ -307,6 +447,14 @@ def _truncated(partial, root: Path, globs: list[str], why: str):
     )
 
 
+# Pruned elsewhere (indexer, grep) but walked here: build output is small and
+# is exactly where a copied `.env` lands — `cat build/.env` read it unmasked
+# while the fs gate refused the same file. Dependency trees (.venv,
+# node_modules) stay pruned: tens of thousands of files per command, and not
+# where the user's own secrets live.
+_WALKED_DESPITE_PRUNE = frozenset({"build", "dist", "graphify-out"})
+
+
 def _scan(root: Path, sets: dict[str, tuple[list[str], list[Path]]]) -> dict[str, list[Path]]:
     """Walk *root* once for every glob set — see mask_scan.scan.
 
@@ -319,7 +467,7 @@ def _scan(root: Path, sets: dict[str, tuple[list[str], list[Path]]]) -> dict[str
     # whole-directory read-only bind is off, because then the only thing
     # keeping a shell out of `path_grants.json` is a per-file bind, and a
     # pruned directory produces no per-file binds.
-    pruned = set(mask_scan.prune_dirs())
+    pruned = set(mask_scan.prune_dirs()) - _WALKED_DESPITE_PRUNE
     if _agent_dir_ro(pol, root) is None:
         pruned.discard(pol.agent_dir.name)
     result = mask_scan.scan(
@@ -607,7 +755,9 @@ def _agent_dir_ro(pol, root: Path) -> Path | None:
     return agent_dir
 
 
-def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool, seccomp_fd: int | None = None) -> list[str]:
+def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool, seccomp_fd: int | None = None,
+                overlays: tuple[list[Path], list[Path]] | None = None,
+                netns: bool = False) -> list[str]:
     pol = policy.get()
     root = pol.root
     # /tmp: either the project scratch (persists across commands, visible to the
@@ -651,7 +801,8 @@ def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool, seccomp_fd: int | 
         "--ro-bind-try", "/etc/alternatives", "/etc/alternatives",
         "--ro-bind-try", "/etc/ssl", "/etc/ssl",
         "--ro-bind-try", "/etc/ca-certificates", "/etc/ca-certificates",
-        "--ro-bind-try", "/etc/resolv.conf", "/etc/resolv.conf",
+        *(["--ro-bind", str(_netns_resolv_conf()), "/etc/resolv.conf"] if netns
+          else ["--ro-bind-try", "/etc/resolv.conf", "/etc/resolv.conf"]),
         # User/name resolution: without passwd+group inside the jail, getpwuid()
         # fails, so `whoami` errors and OpenSSH aborts pre-connect with
         # "No user exists for uid N". hosts+nsswitch keep name lookups sane.
@@ -671,9 +822,16 @@ def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool, seccomp_fd: int | 
     # Bind external path grants into the sandbox. Grants inside the project
     # root are already visible (the root bind covers them); only external
     # grants need an explicit mount. ro grants get --ro-bind, rw get --bind.
+    # Best-effort per grant, but never silent: a grant that vanishes from the
+    # sandbox without a trace looks like a sandbox bug to the user.
     try:
         from . import path_grants as _pg
-        for g in _pg.get_all():
+        grants = list(_pg.get_all())
+    except Exception:
+        logger.warning("sandbox: path grants unreadable; none bound", exc_info=True)
+        grants = []
+    for g in grants:
+        try:
             if g.state != "granted":
                 continue
             gp = g.path
@@ -688,8 +846,9 @@ def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool, seccomp_fd: int | 
                 a += ["--bind", str(gp), str(gp)]
             else:
                 a += ["--ro-bind", str(gp), str(gp)]
-    except Exception:
-        pass  # grants are best-effort; don't break the sandbox
+        except Exception:
+            logger.warning("sandbox: grant %r not bound", getattr(g, "path", g),
+                           exc_info=True)
     # [usb] devices: their current /dev nodes, looked up per command (replug
     # renumbers them). Same best-effort rule as grants.
     try:
@@ -697,7 +856,7 @@ def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool, seccomp_fd: int | 
         for p in _usb.shared_nodes():
             a += ["--dev-bind", p, p]
     except Exception:
-        logger.debug("usb: sandbox binds skipped", exc_info=True)
+        logger.warning("usb: sandbox binds skipped", exc_info=True)
     # Real dirs only, re-bound read-only even under a grant (an rw grant must
     # not make the interpreter writable); symlinked aliases are recreated as
     # links — mounting onto one fails (see _interpreter_aliases).
@@ -728,7 +887,7 @@ def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool, seccomp_fd: int | 
     # otherwise bypass the gate and rewrite grants/permissions/core. Paths are
     # concrete and exist (matched by walk), so a plain --ro-bind is safe here.
     # Anything under the read-only agent directory is already covered.
-    deny_paths, secret_paths = _sandbox_overlays(root)
+    deny_paths, secret_paths = overlays if overlays is not None else _sandbox_overlays(root)
     for p in deny_paths:
         if ro_agent is not None and _under_root(p, ro_agent):
             continue
@@ -755,7 +914,8 @@ def _bwrap_argv(argv: list[str], *, cwd: Path, network: bool, seccomp_fd: int | 
     return a
 
 
-def _firejail_argv(argv: list[str], *, cwd: Path, network: bool) -> list[str]:
+def _firejail_argv(argv: list[str], *, cwd: Path, network: bool,
+                   overlays: tuple[list[Path], list[Path]] | None = None) -> list[str]:
     pol = policy.get()
     # --seccomp enables firejail's built-in default syscall blacklist.
     # This is NOT the curated _BLOCKED_SYSCALLS from seccomp_filter.py (bwrap-only).
@@ -795,7 +955,7 @@ def _firejail_argv(argv: list[str], *, cwd: Path, network: bool) -> list[str]:
         if scratch is not None and _under_root(scratch, ro_agent):
             a += [f"--read-write={scratch}"]
     # Same write-deny overlay as bwrap — see _write_deny_paths.
-    deny_paths, secret_paths = _sandbox_overlays(pol.root)
+    deny_paths, secret_paths = overlays if overlays is not None else _sandbox_overlays(pol.root)
     for p in deny_paths:
         if ro_agent is not None and _under_root(p, ro_agent):
             continue
@@ -810,6 +970,24 @@ def _firejail_argv(argv: list[str], *, cwd: Path, network: bool) -> list[str]:
     return a
 
 
+def config_network(config) -> bool:
+    """security.network == "on" for *config* (None → off)."""
+    sec = getattr(config, "security", None) if config is not None else None
+    return getattr(sec, "network", "off") == "on"
+
+
+def policy_network() -> bool:
+    """security.network == "on" in the active sandbox policy."""
+    return policy.is_configured() and getattr(policy.get().cfg, "network", "off") == "on"
+
+
+def run_shell(cmd: str, **kw) -> RunResult:
+    """`sh -c cmd` inside the sandbox — for config-declared commands ([verify],
+    `$goal`, hooks) that would otherwise run on the host. Raises
+    SandboxUnavailable when require_sandbox is on and no backend works."""
+    return run(["sh", "-c", cmd], **kw)
+
+
 def run(
     argv: list[str],
     *,
@@ -819,11 +997,19 @@ def run(
     stdin: bytes | str | None = None,
     on_spawn=None,
     extra_env: dict[str, str] | None = None,
+    cpu_seconds: int | None = None,
+    host_ports: tuple[int, ...] = (),
 ) -> RunResult:
     """Run *argv* (list, not shell string) inside the configured sandbox.
 
     extra_env: variables added after the env scrub (caller-supplied context,
     e.g. hook TOOL_ARGS). Not filtered — never pass host secrets here.
+
+    cpu_seconds: per-call RLIMIT_CPU override for long, config-declared
+    commands (the [verify] test run); default security.cpu_seconds.
+
+    host_ports: host-loopback TCP ports reachable from a networked command
+    in its own namespace (see _use_netns). Operator-configured only.
 
     on_spawn(proc): optional callback invoked with the live Popen right after
     launch — lets a background caller capture the process so it can terminate
@@ -841,11 +1027,41 @@ def run(
             raise ValueError(f"cwd escapes project root: {cwd_path}")
     backend = select_backend()
     seccomp_fd: int | None = None
-    if backend == "bwrap":
+    # One walk feeds both the binds and the before-snapshot for _sweep_replaced.
+    if backend in ("bwrap", "firejail"):
+        overlays = _sandbox_overlays(pol.root)
+        deny_before = _deny_snapshot(overlays[0])
+    else:
+        overlays = None
+        deny_before = _deny_snapshot(_write_deny_paths(pol.root))
+    netns = _use_netns(network, backend)
+    seccomp_file: str | None = None
+    if backend == "bwrap" and netns:
+        # pasta closes inherited fds, so the filter cannot ride in as one: it
+        # goes through a host-private file that a shell inside pasta reopens
+        # as fd 9 for bwrap.
+        fd = seccomp_filter.build_filter_fd()
+        sc_arg = None
+        if fd is not None:
+            import tempfile
+            with os.fdopen(fd, "rb") as rf:
+                prog = rf.read()
+            tfd, seccomp_file = tempfile.mkstemp(prefix="agent-seccomp-", suffix=".bpf")
+            with os.fdopen(tfd, "wb") as wf:
+                wf.write(prog)
+            sc_arg = 9
+        inner = _bwrap_argv(list(argv), cwd=cwd_path, network=network, seccomp_fd=sc_arg,
+                            overlays=overlays, netns=True)
+        wrapped = _pasta_argv(tuple(host_ports)) + ["--"]
+        if seccomp_file is not None:
+            wrapped += ["/bin/sh", "-c", 'exec "$@" 9<"$0"', seccomp_file]
+        wrapped += inner
+    elif backend == "bwrap":
         seccomp_fd = seccomp_filter.build_filter_fd()
-        wrapped = _bwrap_argv(list(argv), cwd=cwd_path, network=network, seccomp_fd=seccomp_fd)
+        wrapped = _bwrap_argv(list(argv), cwd=cwd_path, network=network, seccomp_fd=seccomp_fd,
+                              overlays=overlays)
     elif backend == "firejail":
-        wrapped = _firejail_argv(list(argv), cwd=cwd_path, network=network)
+        wrapped = _firejail_argv(list(argv), cwd=cwd_path, network=network, overlays=overlays)
     else:
         wrapped = list(argv)
     wall = timeout or pol.cfg.wall_seconds
@@ -864,8 +1080,9 @@ def run(
         argv=list(argv),
         cwd=str(cwd_path),
         network=network,
+        netns=netns,
         wall_s=wall,
-        seccomp=seccomp_fd is not None,
+        seccomp=seccomp_fd is not None or seccomp_file is not None,
     )
     start = time.monotonic()
     timed_out = False
@@ -880,7 +1097,7 @@ def run(
             stdin=subprocess.PIPE if stdin_bytes is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            preexec_fn=lambda: _rlimit_preexec(backend),
+            preexec_fn=lambda: _rlimit_preexec(backend, cpu_seconds),
             close_fds=True,
             pass_fds=pass_fds,
             # Put the child in its own session/process group so the timeout path
@@ -919,7 +1136,13 @@ def run(
             audit.record("run.error", backend=backend, argv=list(argv), error=str(e))
         raise
     finally:
+        if seccomp_file is not None:
+            try:
+                os.unlink(seccomp_file)
+            except OSError:
+                pass
         swept = _sweep_created(pol.root, guarded_before)
+        swept += _sweep_replaced(pol.root, deny_before)
     duration_ms = int((time.monotonic() - start) * 1000)
     stdout = (out_b or b"").decode("utf-8", errors="replace")
     stderr = (err_b or b"").decode("utf-8", errors="replace")

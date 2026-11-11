@@ -28,6 +28,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from agent.security import host_git as _hg
 
 EVALS_DIR = Path(__file__).resolve().parent
 TASKS_DIR = EVALS_DIR / "tasks"
@@ -88,7 +89,7 @@ def tool_source_files(tool: str, project: Path) -> list[str]:
         return []
     try:
         proc = subprocess.run(
-            ["git", "-C", str(project), "grep", "-l", "-F", f'"{tool}"', "--", "*.py"],
+            _hg.argv("-C", str(project), "grep", "-l", "-F", f'"{tool}"', "--", "*.py"),
             capture_output=True, text=True, timeout=15,
         )
     except (OSError, subprocess.SubprocessError):
@@ -124,7 +125,7 @@ def last_changed(path: str, project: Path) -> str:
     """
     try:
         proc = subprocess.run(
-            ["git", "-C", str(project), "log", "-1", "--format=%cI", "--", path],
+            _hg.argv("-C", str(project), "log", "-1", "--format=%cI", "--", path),
             capture_output=True, text=True, timeout=15,
         )
     except (OSError, subprocess.SubprocessError):

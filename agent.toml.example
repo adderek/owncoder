@@ -525,6 +525,10 @@ sandbox_backend    = "auto"  # "auto" | "bwrap" | "firejail" | "none"
 require_sandbox    = false   # default true: refuse host exec when no backend found
 network            = "off"   # "off" | "on" — allow sandboxed commands to opt into
                              # network access (run_shell/run_argv network=true)
+network_isolation  = "auto"  # "auto" | "netns" | "host" — network=on gets its own
+                             # namespace via pasta (passt): internet/LAN yes, host
+                             # 127.0.0.1 services + X11 abstract socket no. "netns"
+                             # refuses without pasta; "host" = shared host netns.
 cpu_seconds        = 20
 wall_seconds       = 30
 rss_mb             = 512

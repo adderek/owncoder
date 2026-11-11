@@ -4,12 +4,12 @@ import asyncio
 import json
 import logging
 import os
-import subprocess
 import time
 from typing import TYPE_CHECKING
 
 from agent.memory.compactor import compact, _count_tokens_approx
 from agent.tools import get_schemas
+from agent.security import runner as _runner
 from openai import APIConnectionError, APIError, APITimeoutError, BadRequestError, InternalServerError, RateLimitError
 
 from .prompts import _build_call_kwargs, apply_prompt_hints, _log_llm_request
@@ -137,16 +137,20 @@ def _apply_budget_notice(messages: list[dict], config, injected) -> list[dict]:
 def _run_verify_command(command: str, cwd: str, timeout_s: int) -> tuple[int, str]:
     """Run the configured project verify command; returns (returncode, combined output).
 
-    A timeout is reported as a synthetic non-zero result rather than raising,
-    so the caller always gets a (rc, text) pair to feed back to the model.
+    Runs in the shell-tool sandbox, never on the host: the command executes
+    agent-writable code (tests, conftest.py). No sandbox → fails closed with a
+    non-zero result. A timeout is a synthetic non-zero result, not an exception.
     """
+    from agent.security import runner
     try:
-        proc = subprocess.run(command, shell=True, cwd=cwd, capture_output=True, text=True, timeout=timeout_s)
-        return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
-    except subprocess.TimeoutExpired as e:
-        out = e.stdout if isinstance(e.stdout, str) else (e.stdout or b"").decode("utf-8", "replace")
-        err = e.stderr if isinstance(e.stderr, str) else (e.stderr or b"").decode("utf-8", "replace")
-        return 1, f"[verify] command timed out after {timeout_s}s\n{out}{err}"
+        res = runner.run_shell(command, cwd=cwd, timeout=timeout_s,
+                               cpu_seconds=timeout_s, network=runner.policy_network())
+    except Exception as e:
+        return 1, f"[verify] could not run in the sandbox: {e}"
+    out = (res.stdout or "") + (res.stderr or "")
+    if res.timed_out:
+        return 1, f"[verify] command timed out after {timeout_s}s\n{out}"
+    return res.returncode, out
 
 
 def _is_tool_call_parse_error(exc: BaseException) -> bool:
@@ -1423,13 +1427,14 @@ async def run_turn(
                     if goal.startswith("$"):
                         shell_cmd = goal[1:].strip()
                         _phase("goal_check", f"shell: {shell_cmd[:60]}")
+                        # Sandboxed like hooks: the check runs project code
+                        # the agent may have written. No sandbox → not met.
                         try:
-                            proc = await asyncio.create_subprocess_shell(
-                                shell_cmd,
-                                stdout=asyncio.subprocess.DEVNULL,
-                                stderr=asyncio.subprocess.DEVNULL,
+                            _res = await asyncio.to_thread(
+                                _runner.run_shell, shell_cmd,
+                                network=_runner.config_network(config),
                             )
-                            ret = await proc.wait()
+                            ret = _res.returncode if not _res.timed_out else 1
                         except Exception as _e:
                             ret = 1
                             logger.warning("goal shell check failed to run: %s", _e)

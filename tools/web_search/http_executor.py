@@ -353,6 +353,19 @@ def fetch(
 
     stdin_json = json.dumps(request)
 
+    # A pinned loopback endpoint (operator-configured, e.g. a local SearXNG)
+    # needs its one port forwarded: networked commands run in their own
+    # network namespace, where 127.0.0.1 is not the host's.
+    host_ports: tuple[int, ...] = ()
+    if pinned_ip:
+        import ipaddress
+        import urllib.parse
+        try:
+            if ipaddress.ip_address(pinned_ip).is_loopback:
+                u = urllib.parse.urlparse(url)
+                host_ports = (u.port or (443 if u.scheme == "https" else 80),)
+        except ValueError:
+            pass
     try:
         result = _runner.run(
             [python, str(script_path)],
@@ -360,6 +373,7 @@ def fetch(
             network=True,
             timeout=total_timeout + 5,  # extra margin over HTTP timeout
             stdin=stdin_json,
+            host_ports=host_ports,
         )
     except Exception as e:
         return {"error": f"Sandbox runner error: {type(e).__name__}: {e}"}

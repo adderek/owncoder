@@ -45,6 +45,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from agent.security import host_git as _hg
 
 logger = logging.getLogger(__name__)
 
@@ -160,8 +161,9 @@ def _static_components() -> dict:
                 pass
         commit = ""
         try:
-            commit = subprocess.run(["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
-                                    capture_output=True, text=True, timeout=2).stdout.strip()
+            commit = subprocess.run(_hg.argv("-C", str(root), "rev-parse", "--short", "HEAD"),
+                                    capture_output=True, text=True, timeout=2,
+                                    env=_hg.env()).stdout.strip()
         except Exception:
             pass
         _static_fp = {"prompts": h.hexdigest()[:10], "commit": commit or "?"}

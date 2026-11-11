@@ -28,6 +28,7 @@ from dataclasses import dataclass, asdict, field
 from pathlib import Path
 
 from agent.security.redaction import _PATTERNS
+from agent.security import host_git as _hg
 
 # Severity ordering for sorting / gating.
 _SEV_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
@@ -78,7 +79,7 @@ def _run(cmd: list[str], cwd: str, timeout: int = 180) -> tuple[int, str, str]:
     try:
         p = subprocess.run(
             cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
-            env={**os.environ, "NO_COLOR": "1"},
+            env={**_hg.env(), "NO_COLOR": "1"},
         )
         return p.returncode, p.stdout, p.stderr
     except FileNotFoundError:
@@ -317,11 +318,11 @@ def _scan_hygiene(root: str, files: list[str]) -> list[Finding]:
 def _git_changed(root: str) -> list[str] | None:
     if not shutil.which("git") or not os.path.isdir(os.path.join(root, ".git")):
         return None
-    rc, out, _ = _run(["git", "diff", "--name-only", "HEAD"], root, timeout=30)
+    rc, out, _ = _run(_hg.argv("diff", "--name-only", "HEAD"), root, timeout=30)
     if rc != 0:
         return None
     changed = set(l.strip() for l in out.splitlines() if l.strip())
-    rc, out, _ = _run(["git", "ls-files", "--others", "--exclude-standard"], root, timeout=30)
+    rc, out, _ = _run(_hg.argv("ls-files", "--others", "--exclude-standard"), root, timeout=30)
     if rc == 0:
         changed |= set(l.strip() for l in out.splitlines() if l.strip())
     return sorted(changed)

@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 from agent.tools import register
 from agent.tools._common import working_dir
+from agent.security import host_git as _hg
 
 if TYPE_CHECKING:
     from agent.config import Config
@@ -68,12 +69,8 @@ def setup(config: "Config") -> None:
 
 
 def _run_git(*args: str, cwd: str, timeout: float = 30.0) -> tuple[str, int]:
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     try:
-        result = subprocess.run(
-            ["git"] + list(args),
-            cwd=cwd, capture_output=True, text=True, timeout=timeout, env=env,
-        )
+        result = _hg.run(args, cwd=cwd, timeout=timeout)
     except subprocess.TimeoutExpired:
         return "", 124
     return result.stdout, result.returncode

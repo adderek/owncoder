@@ -260,7 +260,9 @@ class _SidecarServer:
     `chat()`. Delegates everything else unchanged."""
 
     def __init__(self, inner: "UIServerProtocol") -> None:
+        from agent.ui_server.auth import AuthState
         self._inner = inner
+        self.auth = AuthState()   # per-process token, gates POST
         self.bus = _EventBus()
         self.busy = False
         self.permission_fut: asyncio.Future | None = None
@@ -387,22 +389,40 @@ class _SidecarServer:
 
 def _make_sidecar_handler(wrapped: "_SidecarServer"):
     class Handler(BaseHTTPRequestHandler):
+        _auth_cookie = ""
+
         def log_message(self, fmt, *args):
-            logger.debug("http sidecar: " + fmt, *args)
+            from agent.ui_server.auth import redact_query
+            logger.debug("http sidecar: " + fmt, *(redact_query(a) for a in args))
 
         def _check_auth(self) -> bool:
             """Origin/Host guard on every request (DNS-rebinding).
 
-            No token here, unlike the full --ui http surface: the sidecar is
-            driven by the terminal UI and by the VS Code client on the same
-            loopback port, so loopback remains the (thinner) boundary. Non-
-            loopback binds are the operator's exposure to decide.
+            Reads stay token-free (a mirror of the turn the terminal shows).
+            Writes — /api/chat, /api/permission — need the per-process token:
+            loopback alone admits every local process, including a sandboxed
+            background job when security.network is on, and that job could
+            otherwise approve the agent's own permission prompts.
             """
             from agent.ui_server.auth import origin_host_error, validate_origin_host
             if not validate_origin_host(self):
                 self._json(origin_host_error(self), 403)
                 return False
             return True
+
+        def _check_token(self) -> bool:
+            """Cookie (browser, after the `?token=` page load) or the
+            X-Owncoder-Auth header (VS Code client)."""
+            from agent.ui_server.auth import _TOKEN_HEADER, constant_time_compare
+            auth = wrapped.auth
+            if auth.validate_cookie(self):
+                return True
+            given = self.headers.get(_TOKEN_HEADER, "")
+            if given and constant_time_compare(given, auth.token):
+                return True
+            self._json({"error": "forbidden — token required. Open the sidecar "
+                                 "URL printed at startup (it ends in /?token=…)."}, 403)
+            return False
 
         def _bytes(self, body: bytes, ctype: str, code: int = 200) -> None:
             # Client can vanish mid-response; log it rather than let the stdlib
@@ -411,6 +431,8 @@ def _make_sidecar_handler(wrapped: "_SidecarServer"):
                 self.send_response(code)
                 self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(len(body)))
+                if self._auth_cookie:
+                    self.send_header("Set-Cookie", self._auth_cookie)
                 self.end_headers()
                 self.wfile.write(body)
             except (BrokenPipeError, ConnectionResetError, OSError) as exc:
@@ -423,7 +445,10 @@ def _make_sidecar_handler(wrapped: "_SidecarServer"):
         def do_GET(self):
             if not self._check_auth():
                 return
-            if self.path == "/" or self.path.startswith("/index"):
+            path = self.path.split("?", 1)[0]
+            if path == "/" or path.startswith("/index"):
+                if wrapped.auth.validate_bootstrap(self):
+                    self._auth_cookie = wrapped.auth.session_cookie_header()
                 self._bytes(_SIDECAR_PAGE.encode(), "text/html; charset=utf-8")
             elif self.path in _STATIC_ASSETS:
                 content_type, body = _STATIC_ASSETS[self.path]
@@ -490,7 +515,7 @@ def _make_sidecar_handler(wrapped: "_SidecarServer"):
                 wrapped.bus.unsubscribe(q)
 
         def do_POST(self):
-            if not self._check_auth():
+            if not self._check_auth() or not self._check_token():
                 return
             if self.path not in ("/api/chat", "/api/permission"):
                 self._json({"error": "not found"}, 404)

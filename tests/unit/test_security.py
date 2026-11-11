@@ -109,7 +109,23 @@ class TestEnvScrub:
         assert "MY_KEY" not in out
         assert "FOO" not in out  # not on allow list
         assert out["PATH"] == "/usr/bin"
-        assert out["HOME"] == "/root"  # in allow list
+        # Forced into the scratch: the host HOME does not exist in the sandbox.
+        assert out["HOME"] == str(sec_policy.get().scratch_dir() / "home")
+
+    def test_deny_is_case_insensitive_and_drops_desktop_handles(self, project):
+        cfg = sec_policy.get().cfg
+        saved = cfg.env_allow
+        cfg.env_allow = []          # allow-all: only the deny list filters
+        try:
+            out = sec_policy.get().env_for_child({
+                "github_token": "abc", "DISPLAY": ":0", "XAUTHORITY": "/x",
+                "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1/bus",
+                "WAYLAND_DISPLAY": "wayland-0", "KEEP": "1"})
+        finally:
+            cfg.env_allow = saved
+        assert set(out) & {"github_token", "DISPLAY", "XAUTHORITY",
+                           "DBUS_SESSION_BUS_ADDRESS", "WAYLAND_DISPLAY"} == set()
+        assert out["KEEP"] == "1"
 
 
 class TestProjectVenvOnPath:
@@ -1458,3 +1474,133 @@ class TestAgentDirIsReadOnly:
             assert self._sh("echo x > .agent/path_grants.json", ready) != 0
         finally:
             cfg.agent_dir_read_only = True
+
+
+@pytest.mark.skipif(shutil.which("bwrap") is None or shutil.which("git") is None,
+                    reason="bwrap or git not installed")
+class TestRenameParentEscape:
+    """TODO-4 item 2b: a read-only bind sticks to the dentry. Renaming the
+    parent moves the bind away and leaves a writable path behind."""
+
+    @pytest.fixture
+    def ready(self, project):
+        sec_policy.get().cfg.require_sandbox = True
+        sec_runner._BACKEND = None
+        try:
+            ok = sec_runner.select_backend() == "bwrap"
+        except sec_runner.SandboxUnavailable:
+            ok = False
+        if not ok:      # e.g. already inside a sandbox: nested bwrap is blocked
+            pytest.skip("bwrap present but not functional here")
+        mod = project / "mod"
+        mod.mkdir()
+        # a submodule's gitfile, as `git submodule add` leaves it
+        (mod / ".git").write_text("gitdir: ../.git/modules/mod\n")
+        yield project
+        sec_runner._BACKEND = None
+
+    def _sh(self, cmd, cwd):
+        return sec_runner.run(["sh", "-c", cmd], cwd=str(cwd), timeout=20)
+
+    def test_replaced_submodule_git_is_quarantined(self, ready):
+        r = self._sh("mv mod mod_old && mkdir mod && git init -q mod", ready)
+        assert r.returncode != 0
+        assert "mod/.git" in r.stderr
+        assert not (ready / "mod" / ".git").exists()
+        assert list((ready / ".agent" / "quarantine" / "sandbox").iterdir())
+
+    def test_new_nested_config_is_quarantined(self, ready):
+        r = self._sh("mkdir -p fresh && echo x > fresh/agent.toml", ready)
+        assert r.returncode != 0
+        assert not (ready / "fresh" / "agent.toml").exists()
+
+    def test_ordinary_writes_pass(self, ready):
+        r = self._sh("mkdir -p src && echo ok > src/a.txt", ready)
+        assert r.returncode == 0, r.stderr
+
+    def test_secret_in_build_output_is_masked(self, ready):
+        """TODO-4 item 7: build/ is pruned for the indexer, not for masks."""
+        (ready / "build").mkdir()
+        (ready / "build" / ".env").write_text("TOKEN=s3cret\n")
+        r = self._sh("cat build/.env", ready)
+        assert "s3cret" not in r.stdout
+
+
+class TestNetworkIsolation:
+    """TODO-4 item 6: network=on must not mean the host network namespace."""
+
+    def test_pasta_argv_forwards_nothing_by_default(self):
+        a = sec_runner._pasta_argv()
+        for flag in ("-t", "-u", "-T", "-U"):
+            assert a[a.index(flag) + 1] == "none"
+        assert "--no-map-gw" in a
+
+    def test_host_ports_open_only_those(self):
+        a = sec_runner._pasta_argv((8888,))
+        assert a[a.index("-T") + 1] == "8888" and a.count("-T") == 1
+        assert a[a.index("-t") + 1] == "none"
+
+    def test_modes(self, project, monkeypatch):
+        cfg = sec_policy.get().cfg
+        monkeypatch.setattr(sec_runner, "_pasta_usable", lambda: False)
+        assert sec_runner._use_netns(False, "bwrap") is False
+        cfg.network_isolation = "auto"
+        assert sec_runner._use_netns(True, "bwrap") is False     # falls back
+        cfg.network_isolation = "netns"
+        with pytest.raises(sec_runner.SandboxUnavailable):
+            sec_runner._use_netns(True, "bwrap")
+        monkeypatch.setattr(sec_runner, "_pasta_usable", lambda: True)
+        assert sec_runner._use_netns(True, "bwrap") is True
+        cfg.network_isolation = "host"
+        assert sec_runner._use_netns(True, "bwrap") is False
+        cfg.network_isolation = "auto"
+
+    def test_project_layer_cannot_loosen(self):
+        from agent.config.loader import _security_narrows
+        assert _security_narrows("network_isolation", "auto", "netns")
+        assert not _security_narrows("network_isolation", "auto", "host")
+        assert not _security_narrows("network_isolation", "netns", "auto")
+        assert not _security_narrows("network_isolation", "auto", "bogus")
+
+
+@pytest.mark.skipif(shutil.which("bwrap") is None or shutil.which("pasta") is None,
+                    reason="bwrap or pasta not installed")
+class TestNetnsLive:
+    @pytest.fixture
+    def ready(self, project):
+        import socket
+        sec_policy.get().cfg.require_sandbox = True
+        sec_runner._BACKEND = None
+        try:
+            ok = sec_runner.select_backend() == "bwrap" and sec_runner._pasta_usable()
+        except sec_runner.SandboxUnavailable:
+            ok = False
+        if not ok:
+            pytest.skip("bwrap/pasta not functional here")
+        srv = socket.socket()
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(4)
+        yield project, srv.getsockname()[1]
+        srv.close()
+        sec_runner._BACKEND = None
+
+    @staticmethod
+    def _probe(port):
+        return (f"python3 -c \"import socket,sys;s=socket.socket();s.settimeout(2);"
+                f"sys.exit(s.connect_ex(('127.0.0.1',{port})))\"")
+
+    def test_host_loopback_unreachable(self, ready):
+        _, port = ready
+        r = sec_runner.run(["sh", "-c", self._probe(port)], network=True, timeout=20)
+        assert r.returncode != 0
+
+    def test_forwarded_port_reachable(self, ready):
+        _, port = ready
+        r = sec_runner.run(["sh", "-c", self._probe(port)], network=True, timeout=20,
+                           host_ports=(port,))
+        assert r.returncode == 0, r.stderr
+
+    def test_exit_code_and_seccomp_survive_pasta(self, ready):
+        r = sec_runner.run(["sh", "-c", "grep -q '^Seccomp:.*2' /proc/self/status && exit 7"],
+                           network=True, timeout=20)
+        assert r.returncode == 7, r.stderr

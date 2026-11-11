@@ -12,10 +12,17 @@ import agent.core.diagnostics as diag
 
 
 @pytest.fixture()
-def cfg(tmp_path):
+def cfg(tmp_path, monkeypatch):
+    from agent.security import fs as sec_fs, policy as sec_policy
     c = Config()
     c.tools.working_dir = str(tmp_path)
     c.tools.agent_dir = str(tmp_path / ".agent")
+    # Checkers run through the sandbox runner, which needs a policy.
+    c.security.require_sandbox = False
+    monkeypatch.setattr(sec_fs, "_root_dev", None)
+    monkeypatch.setattr(sec_fs, "_root_ino", None)
+    monkeypatch.setattr(sec_policy, "_policy", None)
+    sec_policy.setup(c)
     c.diagnostics.enabled = True
     c.diagnostics.timeout_s = 20.0
     # Declared checker beats auto-detection, so the test does not depend on
@@ -138,3 +145,22 @@ class TestAutoCheckers:
     def test_declared_checkers_win(self, cfg):
         pairs = diag._resolve_argv(cfg)
         assert pairs == [((".py",), cfg.diagnostics.checkers[0].command)]
+
+
+def test_py_compile_fallback_is_isolated():
+    """A `py_compile.py` in the project root must not shadow the stdlib."""
+    assert diag._PY_COMPILE[:2] == ["python3", "-I"]
+
+
+def test_checkers_run_in_the_sandbox(cfg, tmp_path, monkeypatch):
+    from agent.security import runner
+    seen = {}
+
+    def fake_run(argv, **kw):
+        seen["argv"] = argv
+        return runner.RunResult(1, "bad.py:1: boom", "", 1, "fake")
+
+    monkeypatch.setattr(runner, "run", fake_run)
+    (tmp_path / "bad.py").write_text("def f(:\n")
+    assert _run(diag.check_path("bad.py", cfg)) == ["bad.py:1: boom"]
+    assert seen["argv"][-1] == str(tmp_path / "bad.py")

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -78,8 +77,8 @@ async def test_verify_disabled_no_subprocess_run(monkeypatch):
     assert cfg.verify.enabled is False  # default
 
     def _boom(*a, **k):
-        raise AssertionError("subprocess.run should not be called when verify is disabled")
-    monkeypatch.setattr(turn_mod.subprocess, "run", _boom)
+        raise AssertionError("verify must not run when disabled")
+    monkeypatch.setattr(turn_mod, "_run_verify_command", _boom)
     monkeypatch.setattr(turn_mod, "execute_tool", _fake_execute_ok)
     monkeypatch.setattr(turn_mod, "get_schemas", lambda: [])
 
@@ -182,14 +181,12 @@ async def test_verify_timeout_treated_as_failure(monkeypatch):
     cfg.verify.command = "sleep 999"
     cfg.verify.timeout_s = 1
 
-    def _raise_timeout(command, cwd, timeout_s):
-        # Exercise the real helper's TimeoutExpired handling.
-        raise subprocess.TimeoutExpired(cmd=command, timeout=timeout_s, output="partial", stderr="")
+    # Patch the sandbox runner so _run_verify_command's real timeout branch runs.
+    from agent.security import runner
 
-    # Patch subprocess.run itself so _run_verify_command's real except-branch runs.
-    def _fake_run(command, shell, cwd, capture_output, text, timeout):
-        raise subprocess.TimeoutExpired(cmd=command, timeout=timeout, output="partial", stderr="")
-    monkeypatch.setattr(turn_mod.subprocess, "run", _fake_run)
+    def _fake_run_shell(command, **kw):
+        return runner.RunResult(-9, "partial", "", 1000, "fake", timed_out=True)
+    monkeypatch.setattr(runner, "run_shell", _fake_run_shell)
     monkeypatch.setattr(turn_mod, "execute_tool", _fake_execute_ok)
     monkeypatch.setattr(turn_mod, "get_schemas", lambda: [])
 
@@ -241,3 +238,27 @@ async def test_a_failing_verify_is_announced_while_it_happens(monkeypatch):
     assert all(m.get("_injected_kind") == "verify" for m in out_messages
                if "[verify]" in (m.get("content") or ""))
     assert "boom" in announced[0][1]
+
+
+def test_verify_runs_in_the_sandbox(monkeypatch):
+    """[verify] executes agent-writable tests; it must never run on the host."""
+    from agent.security import runner
+    seen = {}
+
+    def _fake_run_shell(command, **kw):
+        seen.update(kw, command=command)
+        return runner.RunResult(0, "ok", "", 1, "fake")
+    monkeypatch.setattr(runner, "run_shell", _fake_run_shell)
+    assert turn_mod._run_verify_command("pytest -q", "/proj", 180) == (0, "ok")
+    assert seen["command"] == "pytest -q" and seen["cwd"] == "/proj"
+    assert seen["timeout"] == 180 and seen["cpu_seconds"] == 180
+
+
+def test_verify_fails_closed_without_sandbox(monkeypatch):
+    from agent.security import runner
+
+    def _unavailable(command, **kw):
+        raise runner.SandboxUnavailable("no backend")
+    monkeypatch.setattr(runner, "run_shell", _unavailable)
+    rc, out = turn_mod._run_verify_command("pytest", "/proj", 5)
+    assert rc != 0 and "no backend" in out

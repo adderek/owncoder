@@ -85,6 +85,7 @@ def _apply_env_overrides(config: Config) -> None:
         "AGENT_SECURITY_BACKEND": ("security", "sandbox_backend"),
         "AGENT_SECURITY_REQUIRE_SANDBOX": ("security", "require_sandbox"),
         "AGENT_SECURITY_NETWORK": ("security", "network"),
+        "AGENT_SECURITY_NETWORK_ISOLATION": ("security", "network_isolation"),
         "AGENT_SECURITY_CPU_SECONDS": ("security", "cpu_seconds"),
         "AGENT_SECURITY_WALL_SECONDS": ("security", "wall_seconds"),
         "AGENT_SECURITY_RSS_MB": ("security", "rss_mb"),
@@ -591,6 +592,9 @@ def _security_narrows(field: str, current, value) -> bool:
             return False
     if field == "network":
         return value == "off" or value == current
+    if field == "network_isolation":
+        order = {"host": 0, "auto": 1, "netns": 2}
+        return order.get(value, -1) >= order.get(current, 3)
     if field in _SEC_SAFER_SUBSET:
         return set(value or []) <= set(current or [])
     if field in _SEC_SAFER_SUPERSET:
@@ -599,7 +603,8 @@ def _security_narrows(field: str, current, value) -> bool:
 
 
 _SEC_GOVERNED = (_SEC_SAFER_TRUE + _SEC_SAFER_FALSE + _SEC_SAFER_LOWER
-                 + _SEC_SAFER_SUBSET + _SEC_SAFER_SUPERSET + ("network",))
+                 + _SEC_SAFER_SUBSET + _SEC_SAFER_SUPERSET
+                 + ("network", "network_isolation"))
 
 
 def _clamp_project_security(config: Config, data: dict) -> list[str]:

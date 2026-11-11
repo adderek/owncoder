@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import shlex
-import subprocess
 from pathlib import Path
 
 from agent.tools.rules import get_rules
@@ -17,21 +16,24 @@ def _run_post_check(cmd_template: str, fpath: Path, timeout: int) -> dict:
     Substitutes {file} with the absolute path, clips combined output to
     _POST_CHECK_OUTPUT_CAP chars. Never raises — timeout/launch failure are
     reported as part of the result, not propagated (a broken check command
-    must not fail the edit that already succeeded).
+    must not fail the edit that already succeeded). Runs in the shell-tool
+    sandbox: the checker reads the agent-written file and project config.
     """
+    from agent.security import runner
     cmd = cmd_template.replace("{file}", str(fpath))
     try:
         args = shlex.split(cmd)
     except ValueError as e:
         return {"error": f"post_check_cmd parse error: {e}"}
+    if not args:
+        return {"error": "post_check_cmd is empty"}
     try:
-        proc = subprocess.run(
-            args, capture_output=True, text=True, timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
-        return {"error": f"post_check timed out after {timeout}s"}
-    except OSError as e:
+        proc = runner.run(args, timeout=timeout,
+                          network=runner.config_network(get_rules().config))
+    except (OSError, ValueError, runner.SandboxUnavailable) as e:
         return {"error": f"post_check failed to launch: {e}"}
+    if proc.timed_out:
+        return {"error": f"post_check timed out after {timeout}s"}
     output = (proc.stdout or "") + (proc.stderr or "")
     if len(output) > _POST_CHECK_OUTPUT_CAP:
         output = output[:_POST_CHECK_OUTPUT_CAP] + "\n…[clipped]…"

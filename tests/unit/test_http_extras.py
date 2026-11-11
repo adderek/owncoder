@@ -327,3 +327,64 @@ def test_the_page_can_answer_a_prompt():
     assert "/api/permission" in _SIDECAR_PAGE
     assert "permission_done" in _SIDECAR_PAGE
     assert "denies in" in _SIDECAR_PAGE          # the countdown says it fails closed
+
+
+class TestSidecarWritesNeedToken:
+    """TODO-4 item 5: loopback admits every local process — a sandboxed job
+    with network on could approve the agent's own permission prompts."""
+
+    @pytest.fixture
+    def sidecar(self):
+        from agent.security import permissions as p
+        from agent.ui.http_sidecar import start_http_sidecar
+        wrapped, httpd = start_http_sidecar(_FakeInner(), "127.0.0.1", 0)
+        try:
+            yield wrapped, httpd.server_address[1]
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            p.set_asker(None)
+
+    @staticmethod
+    def _post(port, path, headers=None):
+        import http.client
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        c.request("POST", path, body=b'{"choice": "allow"}',
+                  headers={"Content-Type": "application/json", **(headers or {})})
+        r = c.getresponse()
+        r.read()
+        c.close()
+        return r.status
+
+    def test_permission_without_token_is_refused(self, sidecar):
+        _, port = sidecar
+        assert self._post(port, "/api/permission") == 403
+        assert self._post(port, "/api/chat") == 403
+
+    def test_header_token_is_accepted(self, sidecar):
+        wrapped, port = sidecar
+        # 400 = authorised, no prompt pending
+        assert self._post(port, "/api/permission",
+                          {"X-Owncoder-Auth": wrapped.auth.token}) == 400
+
+    def test_bootstrap_page_sets_cookie(self, sidecar):
+        import http.client
+        wrapped, port = sidecar
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        c.request("GET", f"/?token={wrapped.auth.token}")
+        r = c.getresponse()
+        r.read()
+        assert r.status == 200
+        cookie = r.getheader("Set-Cookie", "")
+        assert wrapped.auth.token in cookie
+        c.close()
+        assert self._post(port, "/api/permission",
+                          {"Cookie": cookie.split(";")[0]}) == 400
+
+
+def test_access_log_drops_the_query_string():
+    """TODO-4 item 4: agent.log is readable inside the sandbox."""
+    from agent.ui_server.auth import redact_query
+    line = redact_query("GET /?token=s3cret&x=1 HTTP/1.1")
+    assert "s3cret" not in line and line == "GET /?… HTTP/1.1"
+    assert redact_query(200) == 200

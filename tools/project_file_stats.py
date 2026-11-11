@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from agent.tools import register
 from agent.tools._common import working_dir
+from agent.security import host_git as _hg
 
 if TYPE_CHECKING:
     from agent.config import Config
@@ -35,17 +36,8 @@ def _run_git(*args: str, cwd: str | None = None, timeout: float = 30.0) -> tuple
     cwd = cwd or _working_dir()
     # Bound the call and disable interactive credential prompts so an
     # LLM-invoked stats run can never hang the agent on a stuck git process.
-    import os
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     try:
-        result = subprocess.run(
-            ["git"] + list(args),
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=env,
-        )
+        result = _hg.run(args, cwd=cwd, timeout=timeout)
     except subprocess.TimeoutExpired:
         return "", 124
     return result.stdout, result.returncode

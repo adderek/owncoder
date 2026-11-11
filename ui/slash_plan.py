@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from agent.security import host_git as _hg
 
 if TYPE_CHECKING:
     pass
@@ -203,8 +204,8 @@ def _apply_plan(agent, arg: str) -> tuple[bool, str]:
         import subprocess
         try:
             r = subprocess.run(
-                ["git", "stash", "push", "-u", "-m", f"plan:{plan.id}"],
-                capture_output=True, text=True, timeout=15,
+                _hg.argv("stash", "push", "-u", "-m", f"plan:{plan.id}"),
+                capture_output=True, text=True, timeout=15, env=_hg.env(),
                 cwd=agent.config.tools.working_dir,
             )
             stash_out = r.stdout.strip() or r.stderr.strip()
