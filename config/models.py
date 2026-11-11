@@ -1594,16 +1594,19 @@ class SchedulerConfig:
 class HookConfig:
     """One shell hook fired around tool calls — core/hooks.py.
 
-    event: "pre_tool" (before the tool runs) | "post_tool" (after it returns).
+    event: "pre_tool" (before the tool runs) | "post_tool" (after it returns) |
+      "pre_turn" (before a user prompt is stored or sent; `tools` ignored, env is
+      USER_PROMPT, TURN_SOURCE, LLM_MODEL, LLM_BASE_URL instead of TOOL_*).
     tools: tool-name globs this hook applies to (["*"] = all). e.g.
       ["edit_file", "replace_symbol"].
     command: shell command. Receives context in env: HOOK_EVENT, TOOL_NAME,
       TOOL_ARGS (JSON), TOOL_PATH (args.path if present), and for post_tool
       TOOL_RESULT (JSON, truncated). Runs in the shell-tool sandbox (scrubbed
       env, project-root cwd, network only with security.network = "on").
-    block: pre_tool only — a non-zero exit denies the tool call and the hook's
-      stdout/stderr is returned to the model as the error. Ignored for post_tool
-      (post hooks are advisory; their output surfaces as a note).
+    block: pre_tool — a non-zero exit denies the tool call and the hook's
+      stdout/stderr is returned to the model as the error. pre_turn — a non-zero
+      exit refuses the turn and the output is shown to the user only. Ignored
+      for post_tool (post hooks are advisory; their output surfaces as a note).
     timeout_s: kill the hook after this long (non-zero exit → block if set).
     origin: which config layer defined this hook. Stamped by the loader, never
       read from the file itself — a project config claiming origin = "user" would

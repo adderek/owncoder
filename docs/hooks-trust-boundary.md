@@ -102,6 +102,28 @@ Network only when `security.network = "on"`. No sandbox available → launch
 fails → a blocking hook denies (fail closed). Hooks needing host paths outside
 the project or secrets in env no longer work; that is the point.
 
+### D6 — pre_turn: **a hook may refuse a user prompt before any model sees it** (2026-11-11)
+
+`event = "pre_turn"` fires once per user turn, before the prompt is stored or
+sent. Env: `USER_PROMPT`, `TURN_SOURCE`, `LLM_MODEL`, `LLM_BASE_URL` (no
+`TOOL_*`; `tools` globs are ignored). Intended use: a local check on what leaves
+the machine, e.g. refuse a prompt naming a customer when the endpoint is not local.
+
+- `block = true` + non-zero exit, launch failure or timeout → turn refused.
+  History, session file and model are untouched.
+- The hook's output goes to the **user only**. It is not added to the
+  conversation, so D2 does not apply and the refused text cannot reach a model
+  through its own refusal.
+- D3 (project hooks need approval), D4 (quarantined side fires none) and D5
+  (sandboxed) apply unchanged.
+- Mid-turn injected messages are not re-checked; the gate is on turn start.
+
+### D7 — Engine failure: **deny** (2026-11-11)
+
+An exception inside the hook machinery itself (as opposed to inside a hook)
+denies the tool call / refuses the turn. Previously pre_tool logged at debug
+level and allowed.
+
 ## Implementation hand-off (mechanical)
 
 1. `security/` or `core/hooks.py`: fingerprint function + origin tagging.

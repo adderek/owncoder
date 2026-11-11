@@ -127,3 +127,47 @@ async def test_hook_machinery_failure_denies_the_call(monkeypatch):
     blocked, _note = await tool_calls.pre_tool_gates("read_file", {"path": "x"}, Config())
     assert blocked and blocked.get("blocked_by_hook")
     assert "not run" in blocked["error"]
+
+
+async def test_pre_turn_blocks_and_sees_prompt_and_endpoint():
+    c = _cfg(HookConfig(
+        event="pre_turn", block=True, name="dlp",
+        command='case "$USER_PROMPT" in *ACME*) echo "customer name, $TURN_SOURCE, $LLM_BASE_URL"; exit 1;; esac'))
+    c.llm.base_url = "https://cloud.example/v1"
+    allow, msg = await hooks.run_pre_turn(c, "summarise the ACME contract", "http")
+    assert not allow
+    assert "dlp" in msg and "customer name, http, https://cloud.example/v1" in msg
+    allow, _ = await hooks.run_pre_turn(c, "summarise the contract", "http")
+    assert allow
+
+
+async def test_pre_turn_ignores_tool_hooks_and_nonblocking_failures():
+    c = _cfg(HookConfig(event="pre_tool", command="exit 1", block=True),
+             HookConfig(event="pre_turn", command="exit 1", block=False))
+    assert (await hooks.run_pre_turn(c, "hi"))[0]
+    assert (await hooks.run_pre_turn(None, "hi"))[0]
+
+
+async def test_pre_turn_timeout_refuses():
+    c = _cfg(HookConfig(event="pre_turn", command="sleep 5", block=True, timeout_s=1))
+    allow, msg = await hooks.run_pre_turn(c, "hi")
+    assert not allow and "timed out" in msg
+
+
+async def test_refused_turn_reaches_no_model_and_leaves_no_trace(tmp_path, monkeypatch):
+    import agent.core.agent as agent_mod
+    from agent.core.agent import Agent
+
+    c = _cfg(HookConfig(event="pre_turn", command="echo nope; exit 1", block=True, name="gate"))
+    c.tools.working_dir = str(tmp_path)
+    c.tools.agent_dir = str(tmp_path / ".agent")
+    a = Agent(c)
+
+    async def must_not_run(*_a, **_k):
+        raise AssertionError("model was called")
+
+    monkeypatch.setattr(agent_mod, "run_turn", must_not_run)
+    before = list(a.messages)
+    out = await a.chat("secret prompt")
+    assert "gate" in out and "nope" in out
+    assert a.messages == before

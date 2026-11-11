@@ -1,4 +1,4 @@
-"""Shell hooks around tool execution — pre_tool (can block) and post_tool.
+"""Shell hooks — pre_tool (can block), post_tool, pre_turn (can block).
 
 Configured under [[hooks.entries]] (see HookConfig). Hooks are user-authored
 shell, run in the shell-tool sandbox (security/runner.py: scrubbed env, project
@@ -13,6 +13,18 @@ root cwd, network only with security.network = "on") with tool context in env:
 A blocking pre_tool hook that exits non-zero denies the call; its output is
 returned to the model as the error. post_tool hooks are advisory: they run in
 the background and their output (on non-zero exit) surfaces as a transient note.
+
+pre_turn fires once per user turn, before the prompt is added to the history and
+before any model sees it (`tools` is ignored). Its env:
+
+  HOOK_EVENT    pre_turn
+  USER_PROMPT   the prompt text (truncated)
+  TURN_SOURCE   terminal | http | scheduler | notify | …
+  LLM_MODEL     model the turn would start on
+  LLM_BASE_URL  its endpoint — lets a hook treat local and cloud differently
+
+A blocking pre_turn hook that exits non-zero refuses the turn: nothing is sent,
+nothing is stored, and its output is shown to the user (never to the model).
 
 Trust: hooks defined by a *project* config (a cloned repo's agent.toml) are
 untrusted and stay inert until approved by fingerprint — see
@@ -180,3 +192,36 @@ async def run_post_tool(config: "Config | None", tool: str, args: dict,
             notes.append(_attribute(config, "post_tool", h,
                                     f"exit {code}: {out[:300]}"))
     return notes
+
+
+async def run_pre_turn(config: "Config | None", prompt: str,
+                       source: str = "terminal") -> tuple[bool, str]:
+    """Run pre_turn hooks for a user prompt. Returns (allow, message).
+
+    Same blocking contract as pre_tool: a `block = true` hook that exits
+    non-zero, fails to launch or times out refuses the turn. The message goes to
+    the user, not into the conversation, so the refused prompt never reaches a
+    model by way of its own refusal."""
+    hooks = _matching(config, "pre_turn", "")
+    if not hooks:
+        return True, ""
+    llm = getattr(config, "llm", None)
+    env = {
+        "HOOK_EVENT": "pre_turn",
+        "USER_PROMPT": (prompt or "")[:_RESULT_ENV_CAP],
+        "TURN_SOURCE": source or "",
+        "LLM_MODEL": str(getattr(llm, "model", "") or ""),
+        "LLM_BASE_URL": str(getattr(llm, "base_url", "") or ""),
+    }
+    cwd = _cwd(config)
+    for h in hooks:
+        code, out = await _run(h, env, cwd, _network(config))
+        label = getattr(h, "name", "") or h.command[:40]
+        if code != 0 and getattr(h, "block", False):
+            msg = out or f"pre_turn hook '{label}' exited {code}"
+            logger.info("hook refused turn: %s", msg)
+            return False, _attribute(config, "pre_turn", h, f"refused this turn: {msg}")
+        if code != 0:
+            logger.info("pre_turn hook '%s' exited %d (non-blocking): %s",
+                        label, code, out[:200])
+    return True, ""

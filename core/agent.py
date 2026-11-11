@@ -1036,6 +1036,20 @@ class Agent:
         # message state, so a raise here leaves nothing to roll back.
         self._validate_private_mode()
 
+        # pre_turn hooks ([[hooks.entries]] event = "pre_turn"): user-authored
+        # gate on the prompt itself. Runs before any state changes, so a refusal
+        # leaves the session exactly as it was. Fail closed, like pre_tool.
+        try:
+            from agent.core import hooks as _hooks
+            _turn_ok, _turn_msg = await _hooks.run_pre_turn(self.config, user_input, source)
+        except Exception:
+            logger.exception("pre_turn hook machinery failed; turn refused")
+            _turn_ok = False
+            _turn_msg = ("pre_turn hooks could not be evaluated (internal error, "
+                         "see the agent log); the prompt was not sent")
+        if not _turn_ok:
+            return _turn_msg
+
         pre_turn_len = len(self.messages)
         _is_continue = user_input.strip().lower() in ("continue", "/continue", "/c")
         if not _is_continue:
