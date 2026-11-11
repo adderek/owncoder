@@ -54,6 +54,16 @@ def default_store() -> Path:
 _PENDING_ID = re.compile(r"^[0-9a-f]{12}$")
 
 
+def _printable(text: str) -> str:
+    """*text* without control characters.
+
+    The User-Agent of an unauthenticated request is shown to the operator in
+    the terminal and written to the log: an ESC in it would be a terminal
+    escape sequence of the sender's choosing.
+    """
+    return "".join(c for c in text if c.isprintable())
+
+
 def decisions_dir(store: Path | None = None) -> Path:
     """Where `agent http-clients approve` leaves decisions for a running agent."""
     return (store or default_store()).parent / "http_decisions"
@@ -227,7 +237,8 @@ class ClientRegistry:
                 return None, "", "too many pending requests — try again shortly"
             claim = secrets.token_urlsafe(24)
             p = Pending(id=secrets.token_hex(6), code=f"{secrets.randbelow(1000):03d}",
-                        ip=ip, agent=agent[:160], created=now, claim_hash=_hash(claim),
+                        ip=ip, agent=_printable(agent)[:160], created=now,
+                        claim_hash=_hash(claim),
                         host="".join(c for c in host if c.isalnum() or c in ".-:[]")[:80])
             self._pending[p.id] = p
         logger.info("http ui: connection request %s from %s host=%s (%s)", p.id, ip, p.host, p.agent)

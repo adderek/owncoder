@@ -179,7 +179,7 @@ class DualProtocolServer(QuietThreadingHTTPServer):
 
 def _redirect_to_https(sock, port: int, any_host: bool = False) -> None:
     """Answer one plain-HTTP request with 308 → https:// on the same host:port."""
-    from agent.ui_server.auth import _extra_allowed_hosts
+    from agent.ui_server.auth import _extra_allowed_hosts, _name_allowed
     try:
         sock.settimeout(5)
         data = b""
@@ -193,7 +193,7 @@ def _redirect_to_https(sock, port: int, any_host: bool = False) -> None:
         host = next((ln.split(":", 1)[1].strip() for ln in head[1:] if ln.lower().startswith("host:")), "")
         name = host.rsplit(":", 1)[0].strip("[]") if host.count(":") <= 1 or host.startswith("[") else host
         allowed = {"127.0.0.1", "localhost", "::1"} | _extra_allowed_hosts()
-        ok_name = (name in allowed or name.startswith("127.")
+        ok_name = (_name_allowed(name, allowed)
                    or (any_host and name and all(c.isalnum() or c in ".-:" for c in name)))
         if not path.startswith("/") or not ok_name:
             body = (b"This owncoder UI only speaks HTTPS. Open https:// with this server's "

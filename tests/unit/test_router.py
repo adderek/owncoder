@@ -149,3 +149,26 @@ class TestSubmitReview:
 
 # Minimal import to make pytest happy about the Path reference above.
 from pathlib import Path
+
+
+class TestRootPageEscapesPeerData:
+    def test_remote_label_is_not_markup(self):
+        """A relay peer names its own project; the landing page must show that
+        name, not parse it."""
+        import io
+
+        registry = ProjectRegistry()
+        registry.apply_presence({"peers": {"peer-1": {
+            "project_id": "rp1", "host": "otherhost",
+            "label": "<img src=x onerror=alert(1)>'\"",
+        }}})
+        handler = _RouterHandler.__new__(_RouterHandler)
+        handler.registry = registry
+        handler.wfile = io.BytesIO()
+        handler.send_response = lambda *a, **k: None
+        handler.send_header = lambda *a, **k: None
+        handler.end_headers = lambda: None
+        handler._serve_root()
+        page = handler.wfile.getvalue().decode()
+        assert "<img" not in page
+        assert "&lt;img src=x onerror=alert(1)&gt;" in page

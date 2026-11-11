@@ -305,3 +305,25 @@ def test_the_sidecar_no_longer_carries_its_own_renderer():
     from agent.ui import http_sidecar
 
     assert "function renderMd" not in http_sidecar._SIDECAR_PAGE
+
+
+# --- markup injection ------------------------------------------------------
+# Everything renderMd returns goes to innerHTML, and its input is model output
+# (which can be steered by a fetched page or a file the model read).
+
+def test_quote_in_link_url_cannot_add_an_attribute():
+    html = render('[x](https://a/"onmouseover="location=1)')
+    assert 'onmouseover="' not in html
+    assert html.count('href="') == 1
+
+
+def test_agent_exec_args_and_body_are_escaped():
+    html = render('<agent_exec tool="t" args="<img src=x onerror=alert(1) ">'
+                  '<img src=x onerror=alert(2)></agent_exec>')
+    assert "<img" not in html
+    assert "&lt;img src=x onerror=alert(2)&gt;" in html
+
+
+def test_bare_url_stops_at_an_escaped_quote():
+    html = render('see "https://example.com/a?b=1" now')
+    assert 'href="https://example.com/a?b=1"' in html

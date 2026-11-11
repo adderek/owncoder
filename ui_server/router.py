@@ -198,6 +198,7 @@ class _RouterHandler(BaseHTTPRequestHandler):
 
     def _serve_root(self):
         """Serve the project switcher landing page."""
+        from html import escape as _e
         projects = self.registry.projects()
         rows = ""
         for rec in projects:
@@ -206,15 +207,19 @@ class _RouterHandler(BaseHTTPRequestHandler):
             link = f'<a href="{url}">open</a>' if url else "—"
             reviewable = rec.host == "local" and rec.port
             if reviewable:
+                # Labels and ids come from project directories and relay
+                # peers: JSON makes them JS string literals, the HTML escape
+                # keeps those inside the attribute.
                 btn = (f'<button class="btn" onclick="reviewProject('
-                       f"'{rec.project_id}', this, '{rec.label}')\">Review plan</button>")
+                       f'{_e(json.dumps(rec.project_id))}, this, '
+                       f'{_e(json.dumps(rec.label))})">Review plan</button>')
             else:
                 btn = '<button class="btn remote" disabled title="remote/unreachable">Review plan</button>'
             rows += (
                 f'<tr>'
-                f'<td>{rec.label}</td>'
+                f'<td>{_e(rec.label)}</td>'
                 f'<td><span class="badge {badge}">{badge}</span></td>'
-                f'<td>{rec.host}</td>'
+                f'<td>{_e(rec.host)}</td>'
                 f'<td>{link}</td>'
                 f'<td>{btn}</td>'
                 f'</tr>'
@@ -446,7 +451,12 @@ def _write_project_pidfile(
         "secret": secret,
         "workdir": str(Path(workdir).resolve()),
     })
-    pidfile.write_text(payload, encoding="utf-8")
-    # 0600: owner-only read/write (§7.1 threat model)
-    os.chmod(pidfile, stat.S_IRUSR | stat.S_IWUSR)
+    # 0600 from creation (§7.1 threat model): the secret must not sit in a
+    # umask-default file even for the instant before a chmod. O_EXCL|O_NOFOLLOW
+    # after the unlink: never write it through a path someone else planted.
+    pidfile.unlink(missing_ok=True)
+    fd = os.open(pidfile, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                 stat.S_IRUSR | stat.S_IWUSR)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(payload)
     return str(pidfile)

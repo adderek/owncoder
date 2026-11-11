@@ -224,8 +224,11 @@ class RelayHub:
                            f"protocol version mismatch (server {NOTIFY_PROTOCOL_VERSION})")
             return None
         # Always evaluate both compares (constant-time, no short-circuit leak).
-        agent_ok = hmac.compare_digest(token, self._agent_token)
-        client_ok = hmac.compare_digest(token, self._client_token)
+        # As bytes: compare_digest raises on a non-ASCII str, and that must
+        # be a refused hello, not an exception out of the handler.
+        given = token.encode("utf-8", "surrogatepass")
+        agent_ok = hmac.compare_digest(given, self._agent_token.encode())
+        client_ok = hmac.compare_digest(given, self._client_token.encode())
         claimed = "agent" if hello.get("role") == "agent" else "client"
         if agent_ok and client_ok:
             role = claimed            # shared-token mode: trust self-asserted role
@@ -238,7 +241,9 @@ class RelayHub:
             await ws.close(CLOSE_UNAUTHORIZED, "unauthorized")
             return None
         raw_name = hello.get("name")
-        name = raw_name if isinstance(raw_name, str) else ""
+        # Clamped like the presence fields: the name is a roster key that is
+        # broadcast to every peer on each join/leave.
+        name = raw_name[:PRESENCE_MAX_FIELD_LEN] if isinstance(raw_name, str) else ""
         return role, name, peer_v
 
     def _apply_presence(self, ws, raw: str) -> bool:

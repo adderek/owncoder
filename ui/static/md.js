@@ -32,7 +32,11 @@ function esc(s) {
   // Null-safe: callers pass event fields that may be absent, and the sidecar
   // relied on that when it had its own DOM-based escaper.
   if (s === null || s === undefined) return '';
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  // Quotes too: callers build attribute values (title="…", value="…", href="…")
+  // out of this, and an unescaped quote there closes the attribute and lets the
+  // text add its own (onmouseover=…).
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+                  .replace(/"/g,'&quot;').replace(/'/g,'&#x27;');
 }
 
 // Inline spans: code, bold, italic, strikethrough, links. Split out of renderMd
@@ -56,7 +60,9 @@ function mdInline(h) {
     anchors.push(m);
     return '\x03A' + (anchors.length - 1) + '\x03';
   });
-  h = h.replace(/https?:\/\/[^\s<>"')\]]+/g, (u) => {
+  // The text is already escaped, so the characters that end a URL arrive as
+  // entities (&quot; &#x27; &lt; &gt;) — stop there, as at the raw ones.
+  h = h.replace(/https?:\/\/(?:(?!&(?:quot|#x27|lt|gt);)[^\s<>"')\]])+/g, (u) => {
     // A URL at the end of a sentence must not swallow the period.
     const trail = (u.match(/[.,;:!?]+$/) || [''])[0];
     const url = u.slice(0, u.length - trail.length);
@@ -264,9 +270,11 @@ function renderMd(raw) {
     const e = execs[+i];
     const tool = (e.attrs.match(/tool="([^"]*)"/) || [,'?'])[1];
     const args = (e.attrs.match(/args="([^"]*)"/) || [,''])[1];
+    // attrs and body were lifted out before the escape pass above: they are
+    // model text, and unescaped they would reach innerHTML as markup.
     return '<details class="tool"><summary><span class="toolname">⚙ ' + esc(tool) +
-           '</span><span class="toolargs">' + args + '</span></summary>' +
-           '<div class="body">' + e.body + '</div></details>';
+           '</span><span class="toolargs">' + esc(args) + '</span></summary>' +
+           '<div class="body">' + esc(e.body) + '</div></details>';
   });
   return h;
 }

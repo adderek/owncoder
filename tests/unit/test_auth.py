@@ -126,3 +126,29 @@ class TestAuthState:
         h.command = "GET"
         h.path = "/api/chat"
         assert state.validate_request(h) is False
+
+
+class TestLoopbackIsParsedNotPrefixed:
+    """`127.evil.com` is a hostname anyone can point at 127.0.0.1 — accepting
+    it by its `127.` prefix let a DNS-rebinding page through the Host check."""
+
+    def _handler(self, host, origin=""):
+        h = MagicMock()
+        h.headers = {"Host": host}
+        if origin:
+            h.headers["Origin"] = origin
+        return h
+
+    @pytest.mark.parametrize("host", ["127.evil.com:8180", "127.0.0.1.evil.com",
+                                      "127.1.evil", "127.0.0.1x"])
+    def test_rejects_hostname_with_loopback_prefix(self, host):
+        assert validate_origin_host(self._handler(host)) is False
+
+    def test_rejects_origin_with_loopback_prefix(self):
+        h = self._handler("127.0.0.1:8180", "http://127.evil.com:8180")
+        assert validate_origin_host(h) is False
+
+    @pytest.mark.parametrize("host", ["127.0.0.2:8180", "[::1]:8180", "::1",
+                                      "LOCALHOST:8180"])
+    def test_allows_real_loopback_forms(self, host):
+        assert validate_origin_host(self._handler(host)) is True

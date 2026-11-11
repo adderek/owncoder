@@ -3509,10 +3509,13 @@ def _start_connect_approvers(ui, console) -> None:
         return
 
     def _prompt(p) -> None:
+        # User-Agent comes from a browser nobody has approved yet: as console
+        # markup it could restyle or rewrite the prompt the operator answers.
+        from rich.markup import escape as _esc
         console.print(f"\n[bold yellow]⚠ Connection attempt[/bold yellow] from [bold]{p.ip}[/bold] "
                       f"— code [bold cyan]{p.code}[/bold cyan]"
-                      + (f" via Host [bold]{p.host}[/bold]" if p.host else "")
-                      + f"\n  [dim]{p.agent or 'unknown browser'}[/dim]\n"
+                      + (f" via Host [bold]{_esc(p.host)}[/bold]" if p.host else "")
+                      + f"\n  [dim]{_esc(p.agent or 'unknown browser')}[/dim]\n"
                       "  Allow? [bold]s[/bold] = this session · [bold]r[/bold] = remember "
                       f"{ui.clients.remember_days} days · [bold]d[/bold] = deny  (then Enter)")
 

@@ -47,6 +47,16 @@ _BLOCKED_NETS = [
     ipaddress.IPv4Network("169.254.0.0/16"),
     ipaddress.IPv4Network("0.0.0.0/8"),
     ipaddress.IPv4Network("224.0.0.0/4"),
+    ipaddress.IPv4Network("100.64.0.0/10"),   # CGNAT — Tailscale/VPN peers live here
+    ipaddress.IPv4Network("192.0.0.0/24"),    # IETF protocol assignments
+    ipaddress.IPv4Network("198.18.0.0/15"),   # benchmarking, routed internally
+    ipaddress.IPv4Network("240.0.0.0/4"),     # reserved + broadcast
+    ipaddress.IPv6Network("::/128"),          # unspecified: connects to this host
+    ipaddress.IPv6Network("::/96"),           # IPv4-compatible (deprecated)
+    ipaddress.IPv6Network("64:ff9b::/96"),    # NAT64: wraps any IPv4, private included
+    ipaddress.IPv6Network("64:ff9b:1::/48"),  # local-use NAT64
+    ipaddress.IPv6Network("2002::/16"),       # 6to4: wraps any IPv4
+    ipaddress.IPv6Network("ff00::/8"),        # multicast
     ipaddress.IPv6Network("::1/128"),
     ipaddress.IPv6Network("fc00::/7"),
     ipaddress.IPv6Network("fe80::/10"),

@@ -26,6 +26,44 @@ def _extra_allowed_hosts() -> set[str]:
     return {h.strip() for h in raw.split(",") if h.strip()}
 
 
+def _host_name(host: str) -> str:
+    """Hostname part of a Host header value: port and IPv6 brackets removed."""
+    host = host.strip()
+    if host.startswith("["):
+        return host[1:].split("]", 1)[0]
+    if host.count(":") == 1:
+        return host.split(":", 1)[0]
+    if host.count(":") > 1:
+        # Unbracketed IPv6, as address:port (some clients) or bare. Port
+        # first: `::1:8180` also parses whole, as a different address. Either
+        # way the result is an IP literal, never a name DNS could repoint.
+        import ipaddress
+        for cand in (host.rsplit(":", 1)[0], host):
+            try:
+                ipaddress.ip_address(cand)
+                return cand
+            except ValueError:
+                continue
+    return host
+
+
+def _name_allowed(name: str, allowed: set[str]) -> bool:
+    """Is *name* this server: an allow-listed name or a loopback IP literal.
+
+    Loopback is decided by parsing the address, never by prefix: `127.evil.com`
+    is a hostname an attacker can point at 127.0.0.1, which is exactly the
+    DNS-rebinding request this check exists to refuse.
+    """
+    import ipaddress
+    name = name.strip().lower().rstrip(".")
+    if name in {a.lower() for a in allowed}:
+        return True
+    try:
+        return ipaddress.ip_address(name).is_loopback
+    except ValueError:
+        return False
+
+
 def _rejected_name(handler: BaseHTTPRequestHandler) -> str:
     """The Host/Origin hostname that failed the allow-list, sanitised for echoing."""
     from urllib.parse import urlparse
@@ -33,7 +71,7 @@ def _rejected_name(handler: BaseHTTPRequestHandler) -> str:
     names = []
     host = handler.headers.get("Host", "")
     if host:
-        names.append(host.rsplit(":", 1)[0].strip("[]"))
+        names.append(_host_name(host))
     origin = handler.headers.get("Origin", "")
     if origin:
         try:
@@ -41,7 +79,7 @@ def _rejected_name(handler: BaseHTTPRequestHandler) -> str:
         except ValueError:
             pass
     for n in names:
-        if n and n not in allowed and not n.startswith("127."):
+        if n and not _name_allowed(n, allowed):
             clean = "".join(c for c in n if c.isalnum() or c in ".-:")[:80]
             return clean
     return ""
@@ -76,8 +114,7 @@ def validate_origin_host(handler: BaseHTTPRequestHandler) -> bool:
     allowed_hosts = {"127.0.0.1", "localhost", "::1"} | _extra_allowed_hosts()
 
     if host:
-        host_clean = host.rsplit(":", 1)[0]  # strip port
-        if host_clean not in allowed_hosts and not host_clean.startswith("127."):
+        if not _name_allowed(_host_name(host), allowed_hosts):
             return False
 
     if origin:
@@ -89,7 +126,7 @@ def validate_origin_host(handler: BaseHTTPRequestHandler) -> bool:
             origin_host = parsed.hostname or ""
         except Exception:
             origin_host = ""
-        if origin_host and origin_host not in allowed_hosts and not origin_host.startswith("127."):
+        if origin_host and not _name_allowed(origin_host, allowed_hosts):
             return False
 
     return True
