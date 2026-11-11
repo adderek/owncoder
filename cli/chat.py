@@ -445,6 +445,10 @@ def cmd_chat(args, config):
     agent.session = session
     agent.set_session_mode(session.mode)
 
+    # After the mode is set: incognito/private/vault sessions skip it.
+    from agent.housekeeping import maybe_start_background
+    maybe_start_background(_agent_dir, config)
+
     # Scheduled jobs: idle-kind jobs hook into the idle sweep; time-based jobs
     # fire from a ticker thread that defers to the interactive agent.
     _sched_stop = None

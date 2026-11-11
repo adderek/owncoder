@@ -175,6 +175,10 @@ def _setup_logging(agent_dir: str | None = None, logs_cfg=None,
     elif vault.persist_allowed():
         fh = RotatingFileHandler(log_path, maxBytes=max_bytes,
                                  backupCount=backup_count, encoding="utf-8")
+        # Rotated files are gzipped (agent.log.N.gz): text logs shrink ~10x.
+        from agent.housekeeping import gz_namer, gz_rotator
+        fh.namer = gz_namer
+        fh.rotator = gz_rotator
     # else: incognito / private — no file handler at all. stderr still works.
     if fh is not None:
         fh.setLevel(getattr(logging, level_name, logging.DEBUG))

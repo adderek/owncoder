@@ -1563,6 +1563,19 @@ class VisionConfig:
 
 
 @dataclass
+class HousekeepingConfig:
+    """State-directory housekeeping — agent/housekeeping.py, `agent gc`.
+
+    A background pass at chat start, at most once per `interval_hours`:
+    gzips rotated logs and trims `index.db.bak-*` to the newest
+    `keep_index_backups` (-1 keeps all). Never touches session data.
+    """
+    enabled: bool = True
+    interval_hours: float = 24.0
+    keep_index_backups: int = 1
+
+
+@dataclass
 class SchedulerConfig:
     """Scheduled jobs (cron-like + delayed prompts) — core/scheduler.py.
 
@@ -1771,6 +1784,7 @@ class Config:
     failover: FailoverConfig = field(default_factory=FailoverConfig)
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
+    housekeeping: HousekeepingConfig = field(default_factory=HousekeepingConfig)
     hooks: HooksConfig = field(default_factory=HooksConfig)
     credpool: CredPoolConfig = field(default_factory=CredPoolConfig)
     vision: VisionConfig = field(default_factory=VisionConfig)

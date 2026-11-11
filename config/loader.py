@@ -280,6 +280,7 @@ def _merge(config: Config, data: dict) -> None:
         ("failover", config.failover),
         ("privacy", config.privacy),
         ("scheduler", config.scheduler),
+        ("housekeeping", config.housekeeping),
         ("hooks", config.hooks),
         ("credpool", config.credpool),
         ("tool_discovery", config.tool_discovery),
@@ -304,6 +305,7 @@ _KNOWN_SECTIONS = {
     "tool_compaction", "security", "planning", "recovery", "parallel",
     "explore", "web_search", "concurrency", "kb", "aei", "notify", "mcp", "remote",
     "serial", "usb", "speech", "classify", "auto_tier", "failover", "privacy", "scheduler", "hooks",
+    "housekeeping",
     "credpool", "permissions", "tool_discovery", "summarization", "output_store",
     "turn_signals", "ui_server", "models", "vision", "token_stats", "token_watch",
 }

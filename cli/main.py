@@ -379,6 +379,11 @@ def build_parser() -> argparse.ArgumentParser:
     diag_p = sub.add_parser("diag", help="Tool health report from audit.jsonl")
     diag_p.add_argument("--json", action="store_true", help="Output raw JSON (for scripting)")
 
+    gc_p = sub.add_parser("gc", help="Housekeeping of the agent state dir (dry run unless --apply)")
+    gc_p.add_argument("--apply", action="store_true", help="Carry out the listed actions")
+    gc_p.add_argument("--dry-run", action="store_true", help="List actions only (default)")
+    gc_p.add_argument("--json", action="store_true", help="Output raw JSON (for scripting)")
+
     # debug
     dbg_p = sub.add_parser("debug", help="Debug utilities")
     dbg_p.add_argument("--context", action="store_true", help="Show full context of current session")
@@ -636,6 +641,9 @@ def main() -> None:
         elif args.command == "diag":
             from agent.cli.diag import cmd_diag
             cmd_diag(args, config)
+        elif args.command == "gc":
+            from agent.cli.gc import cmd_gc
+            sys.exit(cmd_gc(args, config))
         elif args.command == "serve":
             from agent.cli.serve import cmd_serve
             cmd_serve(args, config)
