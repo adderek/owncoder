@@ -167,3 +167,33 @@ def test_populated_kb_tools_stay_listed(tmp_path):
     cfg = _kb_cfg(tmp_path, 2)
     assert "kb_search" in td.render_catalog(KB_SCHEMAS, cfg)
     assert td.hidden_names(KB_SCHEMAS, cfg) == frozenset()
+
+
+def _mcp_schemas(n=40):
+    return [_schema(f"mcp__rea__tool_{i:02d}",
+                    f"Reverse-engineering helper number {i} that inspects a binary section in detail.")
+            for i in range(n)]
+
+
+def test_mcp_tools_collapse_to_one_catalog_line_per_server():
+    schemas = SCHEMAS + _mcp_schemas()
+    cat = td.render_catalog(schemas, _cfg())
+    rea_lines = [ln for ln in cat.splitlines() if "mcp__rea" in ln]
+    assert rea_lines == ["- mcp__rea__* (40 tools) — e.g. tool_00, tool_01, tool_02, tool_03"]
+    # Collapsing must be a real saving over one line per tool.
+    per_tool = len(td.render_catalog(SCHEMAS, _cfg())) + sum(
+        len(f"- {s['function']['name']} — {td._first_sentence(s['function']['description'])}\n")
+        for s in _mcp_schemas())
+    assert len(cat) < per_tool / 5
+
+
+def test_mcp_catalog_line_uses_configured_description():
+    cfg = _cfg()
+    cfg.mcp = SimpleNamespace(servers=[SimpleNamespace(name="REA", description="Static binary analysis. Ghidra-backed.")])
+    cat = td.render_catalog(_mcp_schemas(3), cfg)
+    assert "- mcp__rea__* (3 tools) — Static binary analysis" in cat
+
+
+def test_mcp_tools_still_found_by_find_tools():
+    res = td.find_matches(SCHEMAS + _mcp_schemas(5), "rea tool_03", _cfg(), 3)
+    assert res[0]["name"] == "mcp__rea__tool_03"

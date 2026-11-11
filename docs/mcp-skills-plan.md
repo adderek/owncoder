@@ -14,7 +14,7 @@ Created 2026-11-11. Executed by separate low-context agent sessions, one task pe
 
 - owncoder = local-first. Used where subsidized agents (Claude Code, Gemini, Codex) can't be: offline work, topics a model's vendor censors (e.g. Chinese models + Tiananmen/Uyghurs), security work Claude refuses, private code. Design for **small local models, small context, offline by default**.
 - Skills are cheap: prompt carries one index line each (`agent/skills.py`, `skills_index_max`), body loaded on demand.
-- MCP is expensive: `agent/mcp/manager.py:load_mcp_tools()` registers every allowed tool schema at startup → billed every turn. REA allowlist alone ~16k tok on fractal (per `~/.config/agent/agent.fractal.yaml` comment, not measured).
+- MCP: `agent/mcp/manager.py:load_mcp_tools()` spawns every enabled server at startup and registers all allowed schemas. With `[tool_discovery] enabled = true` (set in user config) only core schemas + a catalog go per turn; MCP schemas load via `find_tools`. Without discovery, full cost (~16k tok for REA, `docs/rea.md`). Remaining MCP costs: catalog lines (fixed by T1), startup spawn time/RAM.
 - Any network-dependent addition must be opt-in and degrade gracefully offline.
 
 ## Skill format
@@ -31,19 +31,16 @@ Keep bodies ≤ ~40 lines (token-efficiency first; local models). Procedures > p
 
 ## Tasks
 
-### T1 [ ] Lazy MCP loading
-Deps: none. Highest value: unlocks T7/T8 without per-turn cost.
-- Add per-server `lazy: bool` to `MCPServerConfig` (`agent/config/models.py:1199`), default `false` (no behavior change).
-- Lazy server: at startup register nothing but its name + one-line `description` (new field) in a compact list; expose one tool, e.g. `mcp_load(server)`, that starts the server and registers its allowed tools for the rest of the session. Optional `mcp_unload`.
-- Tool registry must handle tools appearing mid-session (check how `tools/__init__.py:159` registers; next request must include new schemas).
-- `/mcp` slash (`run_mcp_command`) shows lazy/loaded state.
-- Respect existing `tools_allow`/`tools_deny`, sandbox, project-config clamp (`loader._clamp_project_mcp`).
-- Docs: `agent/docs/rea.md` mention `lazy: true` for REA; `FEATURES_LIST.md` entry (config field + tool).
-- Acceptance: unit tests — lazy server not spawned at startup; `mcp_load` spawns + registers; schema count in request before/after. Measure prompt tokens with REA lazy vs eager, record number here.
+### T1 [x] MCP tools in discovery catalog: one line per server
+done 2026-11-11. Original plan (lazy loading) was based on wrong premise: progressive tool disclosure (`core/tool_discovery.py`, `find_tools`) already keeps MCP schemas out of the per-turn request. Residual cost was one catalog line per MCP tool (REA 42 tools ≈ 4 KB ≈ 1k tok/turn, estimate from synthetic test, not measured on real REA). Done: `render_catalog()` collapses `mcp__<srv>__*` to one line; new `MCPServerConfig.description` field feeds it (fallback: sample tool names). `find_tools` unchanged. Tests in `tests/unit/test_tool_discovery.py`.
+Follow-up for user: add `description:` to REA in both `agent.fractal.yaml` + `agent.sharkoon.yaml`.
+
+### T1b [ ] Lazy MCP spawn (optional)
+Deps: T1. Only if startup time/RAM of servers hurts (REA spawns JVM/Ghidra lazily? check first). Add `lazy: bool` to `MCPServerConfig`; lazy server spawns on first `find_tools` match against its name or first call. Measure startup time before/after; skip with `[-]` if gain < 1 s.
 
 ### T2 [ ] Remove dead MCP examples
 Deps: none.
-- `agent.yaml` (repo root) lists `fs` and `git` MCP servers (disabled) — duplicate built-in tools. Replace with one commented example of a lazy server (after T1) or a plain stdio example.
+- `agent.yaml` (repo root) lists `fs` and `git` MCP servers (disabled) — duplicate built-in tools. Replace with one commented stdio example incl. `description`.
 - Acceptance: config loads (`agent/.venv/bin/pytest agent/tests -k config -x`).
 
 ### T3 [ ] Skill: spec-and-plan
@@ -70,13 +67,13 @@ Deps: none.
 - Acceptance: as T3.
 
 ### T7 [ ] Optional MCP: browser (Playwright)
-Deps: T1.
-- Document (not enable) in `agent/docs/mcp-recipes.md`: pinned install, `lazy: true`, `sandbox: bwrap`, `tools_allow` ≤ ~6 tools (navigate, snapshot, click, type, screenshot, console). Use case: verify HTTP UI, read JS-rendered pages.
+Deps: none (T1 done).
+- Document (not enable) in `agent/docs/mcp-recipes.md`: pinned install, `description`, `sandbox: bwrap`, `tools_allow` ≤ ~6 tools (navigate, snapshot, click, type, screenshot, console). Use case: verify HTTP UI, read JS-rendered pages.
 - Measure schema size of the allowlist (tokens) and record it.
 - Acceptance: manually load once via `mcp_load`, navigate to local HTTP UI, record result here. If not possible in session, say so.
 
 ### T8 [ ] Optional MCP: library docs lookup
-Deps: T1.
+Deps: none.
 - Evaluate a docs MCP (e.g. Context7) vs offline alternative (local docs index via existing RAG `agent index` on vendored docs). Network service → leaks queries; must be opt-in, flagged unsuitable for private mode (see memory/notes on private vs cloud modes).
 - Output: recipe in `agent/docs/mcp-recipes.md` or a "rejected, use X" note here. No code unless trivially small.
 

@@ -1204,6 +1204,7 @@ class MCPServerConfig:
     registered as ``mcp__<name>__<tool>`` in the agent tool registry.
     """
     name: str = ""                              # short id; used in the tool prefix
+    description: str = ""                       # one line for the tool catalog (else sample tool names)
     transport: str = "stdio"                    # "stdio" | "http" (Streamable HTTP)
     # stdio transport
     command: str = ""                           # executable, e.g. "npx" or "python"

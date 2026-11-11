@@ -181,16 +181,22 @@ def render_catalog(schemas: list[dict], config) -> str:
     core = core_names(config) | hidden_names(schemas, config)
     buckets: dict[str, list[str]] = {}
     descs: dict[str, str] = {}
+    mcp: dict[str, list[str]] = {}
     for s in schemas:
         fn = s.get("function", {})
         name = fn.get("name")
         if not name or name in core:
             continue
+        if name.startswith("mcp__"):
+            # One line per server, not per tool: an MCP server can bring dozens
+            # of tools and their names are already discoverable by find_tools.
+            mcp.setdefault(name.split("__", 2)[1], []).append(name)
+            continue
         label, _hint = categorize(name)
         buckets.setdefault(label, []).append(name)
         descs[name] = _first_sentence(fn.get("description", ""))
 
-    if not buckets:
+    if not buckets and not mcp:
         return ""
 
     order = [label for label, *_ in _CATEGORIES] + ["other"]
@@ -212,7 +218,30 @@ def render_catalog(schemas: list[dict], config) -> str:
             d = descs.get(name, "")
             lines.append(f"- {name}" + (f" — {d}" if d else ""))
         lines.append("")
+    if mcp:
+        lines.append('## MCP servers — external tools; find_tools("<server> <what>")')
+        server_descs = _mcp_server_descriptions(config)
+        for server in sorted(mcp):
+            names = sorted(mcp[server])
+            d = server_descs.get(server) or "e.g. " + ", ".join(
+                n.split("__", 2)[2] for n in names[:4])
+            lines.append(f"- mcp__{server}__* ({len(names)} tools) — {d}")
     return "\n".join(lines).rstrip()
+
+
+def _mcp_server_descriptions(config) -> dict[str, str]:
+    """Configured server descriptions keyed by the name part of mcp__<name>__."""
+    out: dict[str, str] = {}
+    try:
+        from agent.mcp.manager import _safe
+        for srv in getattr(getattr(config, "mcp", None), "servers", None) or []:
+            desc = (getattr(srv, "description", "") or "").strip()
+            name = getattr(srv, "name", "") or ""
+            if desc and name:
+                out[_safe(name)] = _first_sentence(desc)
+    except Exception:
+        pass
+    return out
 
 
 # ── find_tools ranking ──────────────────────────────────────────────────────

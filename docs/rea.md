@@ -34,11 +34,16 @@ static + native 42 tools ≈ 64 KB (~16k tokens). `inspect_analysis_view` alone
 ≈ 10 KB. `analyze_function` left out: one dossier ≈ 45 KB of result;
 `procedure_pseudo_code` ≈ 4–7 KB gives the code.
 
+With `[tool_discovery] enabled = true` those schemas are not sent each turn:
+the catalog carries one line per MCP server (`description`, else sample tool
+names) and `find_tools("rea <what>")` loads the matching schemas.
+
 ```yaml
 mcp:
   enabled: true
   servers:
     - name: rea
+      description: Reverse engineering of binaries and JS bundles (REA, Ghidra-backed).
       # node + script, not the npm `.bin/rea` symlink: the shim resolves
       # outside the bwrap binds and the jailed server dies on start.
       command: node
