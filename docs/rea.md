@@ -54,6 +54,8 @@ mcp:
       sandbox_rw: ["{project}/.rea-out"]   # export_evidence_bundle target
       init_timeout_s: 60
       call_timeout_s: 600                  # Ghidra auto-analysis on first open
+      # REA reports progress, and each report restarts the clock above, so this
+      # is "silent for 600 s". call_max_s (default 1800) caps the total.
       tools_allow:
         # static — no provider needed
         - analyze_javascript_application

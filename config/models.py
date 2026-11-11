@@ -1215,7 +1215,10 @@ class MCPServerConfig:
     headers: dict = field(default_factory=dict) # extra HTTP headers (auth, etc.)
     enabled: bool = True
     init_timeout_s: int = 20                     # handshake/list deadline
-    call_timeout_s: int = 120                    # per tool-call deadline
+    call_timeout_s: int = 120                    # per tool-call deadline; with progress: longest silence
+    # stdio only: a call whose server sends notifications/progress may run past
+    # call_timeout_s, up to this many seconds in total. 0 = no extension.
+    call_max_s: int = 1800
     # stdio jail (agent/mcp/sandbox.py). "none" = host rights; "bwrap" = no
     # $HOME/project/network, private home, seccomp. Fail-closed.
     sandbox: str = "none"                       # "none" | "bwrap"

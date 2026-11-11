@@ -6,6 +6,13 @@ subprocess's stdin/stdout. A background thread reads responses and dispatches
 them to per-request queues so notifications/logs interleaved on the stream
 don't desync request/response matching.
 
+A long tool call stays alive while the server reports progress: ``tools/call``
+carries a progress token, and each ``notifications/progress`` for it restarts
+the ``call_timeout_s`` clock, up to the ``call_max_s`` ceiling. So the timeout
+means "silent for this long", not "took this long" — an analysis that runs ten
+minutes and says so is not killed at two. A call that does time out is
+cancelled on the server (``notifications/cancelled``) instead of left running.
+
 Synchronous by design: the agent executes tools in a thread-pool executor, so
 blocking calls here are fine and avoid pulling in an async MCP SDK.
 """
@@ -17,6 +24,7 @@ import os
 import queue
 import subprocess
 import threading
+import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -68,6 +76,8 @@ class MCPClient:
         self._write_lock = threading.Lock()
         self._pending: dict[int, queue.Queue] = {}
         self._pending_lock = threading.Lock()
+        # request id → (monotonic time of last progress, last progress text)
+        self._progress: dict[int, tuple[float, str]] = {}
         self._reader: threading.Thread | None = None
         self._stderr_reader: threading.Thread | None = None
         self._closed = False
@@ -159,6 +169,7 @@ class MCPClient:
             "tools/call",
             {"name": name, "arguments": arguments or {}},
             timeout=self._server.call_timeout_s,
+            max_total=getattr(self._server, "call_max_s", 0),
         )
         return flatten_tool_result(result)
 
@@ -184,24 +195,77 @@ class MCPClient:
     def _notify(self, method: str, params: dict) -> None:
         self._send({"jsonrpc": "2.0", "method": method, "params": params})
 
-    def _request(self, method: str, params: dict, *, timeout: int) -> dict:
+    def _request(self, method: str, params: dict, *, timeout: int,
+                 max_total: float = 0) -> dict:
+        """Send a request and wait for its response.
+
+        *timeout* is the longest silence tolerated. With *max_total* > 0 the
+        request carries a progress token and every progress notification for it
+        restarts that clock, until *max_total* seconds have passed overall."""
         rid = self._next_id()
         q: queue.Queue = queue.Queue(maxsize=1)
+        track = max_total and max_total > timeout
+        if track:
+            params = {**params, "_meta": {**(params.get("_meta") or {}), "progressToken": rid}}
+        start = time.monotonic()
         with self._pending_lock:
             self._pending[rid] = q
+            if track:
+                self._progress[rid] = (start, "")
         try:
             self._send({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
-            try:
-                msg = q.get(timeout=timeout)
-            except queue.Empty:
-                raise MCPError(f"mcp request {method!r} timed out after {timeout}s")
+            while True:
+                with self._pending_lock:
+                    last, note = self._progress.get(rid, (start, ""))
+                now = time.monotonic()
+                deadline = last + timeout
+                if track:
+                    deadline = min(deadline, start + max_total)
+                if now >= deadline:
+                    self._cancel(rid)
+                    waited = now - start
+                    if track and now >= start + max_total:
+                        why = f"hit the {max_total:.0f}s ceiling (call_max_s)"
+                    elif last > start:
+                        why = (f"went silent for {timeout}s after {waited:.0f}s"
+                               + (f"; last progress: {note}" if note else ""))
+                    else:
+                        why = f"timed out after {timeout}s"
+                    raise MCPError(f"mcp request {method!r} {why}")
+                try:
+                    msg = q.get(timeout=deadline - now)
+                    break
+                except queue.Empty:
+                    continue   # progress may have moved the deadline; re-check
         finally:
             with self._pending_lock:
                 self._pending.pop(rid, None)
+                self._progress.pop(rid, None)
         if "error" in msg:
             err = msg["error"]
             raise MCPError(f"mcp {method} error: {err.get('message', err)}")
         return msg.get("result") or {}
+
+    def _cancel(self, rid: int) -> None:
+        """Tell the server to stop working on a request nobody waits for."""
+        try:
+            self._notify("notifications/cancelled",
+                         {"requestId": rid, "reason": "client timeout"})
+        except MCPError:
+            pass
+
+    def _on_notification(self, msg: dict) -> None:
+        if msg.get("method") != "notifications/progress":
+            return
+        params = msg.get("params") or {}
+        token = params.get("progressToken")
+        note = str(params.get("message") or "")[:200]
+        if not note and params.get("progress") is not None:
+            total = params.get("total")
+            note = f"{params['progress']}" + (f"/{total}" if total is not None else "")
+        with self._pending_lock:
+            if token in self._progress:
+                self._progress[token] = (time.monotonic(), note)
 
     def _read_loop(self) -> None:
         proc = self._proc
@@ -218,7 +282,8 @@ class MCPClient:
                 continue
             rid = msg.get("id")
             if rid is None:
-                continue  # server notification — ignored
+                self._on_notification(msg)
+                continue
             with self._pending_lock:
                 q = self._pending.get(rid)
             if q is not None:
