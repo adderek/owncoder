@@ -386,3 +386,42 @@ tool = "git_status"
 match = "anything"
 verdict = "deny"
 """)
+
+
+class TestHiddenCharacters:
+    """A command with characters nobody can see is never silently allowed."""
+
+    def test_plain_command_stays_allowed(self, cfg):
+        args = {"argv": ["git", "commit", "-m", "zażółć gęślą jaźń\tok\n"]}
+        assert perms.hidden_chars("run_argv", args) == []
+        assert perms.evaluate("run_argv", args, cfg).verdict == perms.ALLOW
+
+    @pytest.mark.parametrize("ch", ["​", "‮", " ", "\x1b", "ㅤ", "\U000e0041"])
+    def test_hidden_character_escalates_allow_to_ask(self, cfg, ch):
+        args = {"argv": ["echo", f"a{ch}b"]}
+        d = perms.evaluate("run_argv", args, cfg)
+        assert d.verdict == perms.ASK
+        assert f"U+{ord(ch):04X}" in d.reason
+
+    def test_explicit_allow_rule_does_not_bypass(self, cfg):
+        cfg.permissions.rules = [_rule("run_argv", perms.ALLOW)]
+        d = perms.evaluate("run_argv", {"argv": ["ls", "‮"]}, cfg)
+        assert d.verdict == perms.ASK
+
+    def test_deny_stays_deny(self, cfg):
+        cfg.permissions.rules = [_rule("run_argv", perms.DENY)]
+        d = perms.evaluate("run_argv", {"argv": ["ls", "‮"]}, cfg)
+        assert d.verdict == perms.DENY
+
+    def test_non_command_tools_are_not_scanned(self, cfg):
+        args = {"path": "a​b.txt"}
+        assert perms.evaluate("read_file", args, cfg).verdict == perms.ALLOW
+
+    def test_no_asker_resolves_to_deny(self, cfg):
+        d = _run(perms.check("run_argv", {"argv": ["ls", "​"]}, cfg))
+        assert d.verdict == perms.DENY
+
+    def test_question_spells_out_the_characters(self, cfg):
+        args = {"argv": ["echo", "a‮b"]}
+        q = perms.format_question("run_argv", args, perms.evaluate("run_argv", args, cfg), cfg)
+        assert "<U+202E>" in q and "‮" not in q

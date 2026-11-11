@@ -28,6 +28,7 @@ import logging
 import re
 import secrets
 import time
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable, TYPE_CHECKING
@@ -382,6 +383,65 @@ def _is_glob(pattern: str) -> bool:
 
 # ── evaluation ───────────────────────────────────────────────────────────────
 
+# ── hidden characters in commands ────────────────────────────────────────────
+# A command line can carry characters the approval prompt, the transcript and a
+# terminal all render as nothing (zero-width, bidi overrides, tag characters) or
+# as something else (an ESC sequence that repaints the line). What the shell
+# executes then differs from what anyone read. The model picks these up from a
+# fetched page or a file, so this is an injection path, not a typo class.
+#
+# Such a call is never silently allowed: an `allow` becomes an `ask`, with the
+# characters spelled out as code points in the question. `deny` stays `deny`.
+_COMMAND_TOOLS = ("run_argv", "run_argv_bg", "remote_exec", "serial_send")
+_PLAIN_CONTROLS = "\t\n\r"
+# Letters by category, blank by rendering: fillers and the braille blank.
+_BLANK_LETTERS = frozenset("\u115f\u1160\u3164\uffa0\u2800")
+
+
+def _is_hidden(ch: str) -> bool:
+    if ch == " " or ch in _PLAIN_CONTROLS:
+        return False
+    if ch in _BLANK_LETTERS:
+        return True
+    cat = unicodedata.category(ch)
+    # Cf: zero-width, bidi, tags, BOM. Cc: ESC, backspace and friends.
+    # Zs/Zl/Zp: every space that is not U+0020 (the shell does not split on them).
+    return cat in ("Cf", "Cc", "Zs", "Zl", "Zp")
+
+
+def _strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            yield from _strings(v)
+    elif isinstance(value, dict):
+        for v in value.values():
+            yield from _strings(v)
+
+
+def hidden_chars(tool: str, args: dict) -> list[str]:
+    """Code points (``U+202E``) of hidden characters in a command tool's
+    arguments, in first-seen order. Empty for any other tool."""
+    if tool not in _COMMAND_TOOLS:
+        return []
+    found: dict[str, None] = {}
+    for text in _strings(args):
+        if text.isascii() and text.isprintable():
+            continue
+        for ch in text:
+            if _is_hidden(ch):
+                found.setdefault(f"U+{ord(ch):04X}", None)
+    return list(found)
+
+
+def reveal_hidden(text: str) -> str:
+    """Replace each hidden character with a visible ``<U+XXXX>`` token."""
+    if text.isascii() and text.isprintable():
+        return text
+    return "".join(f"<U+{ord(c):04X}>" if _is_hidden(c) else c for c in text)
+
+
 def _primary_value(tool: str, args: dict) -> str | None:
     """The string a rule's `match` is tested against, or None if there is none."""
     key = PERMISSION_MATCH_ARG.get(tool)
@@ -464,6 +524,17 @@ def unanswerable_asks(config: "Config") -> list[str]:
     return sources
 
 
+def _escalate_hidden(decision: Decision, tool: str, args: dict) -> Decision:
+    """Turn an `allow` into an `ask` when the command carries hidden characters."""
+    if decision.verdict != ALLOW:
+        return decision
+    found = hidden_chars(tool, args)
+    if not found:
+        return decision
+    shown = ", ".join(found[:8]) + (", …" if len(found) > 8 else "")
+    return Decision(ASK, f"command contains hidden characters ({shown})", decision.rule)
+
+
 def evaluate(tool: str, args: dict, config: "Config",
              internal_security: bool = False) -> Decision:
     """Pure rule walk. No I/O, no prompting — `check()` does the asking.
@@ -483,9 +554,10 @@ def evaluate(tool: str, args: dict, config: "Config",
     try:
         for rule in active_rules(config):
             if _matches(rule, tool, args):
-                return Decision(rule.verdict, rule.reason, rule)
+                return _escalate_hidden(Decision(rule.verdict, rule.reason, rule),
+                                        tool, args)
         default = perms.default if perms.default in VERDICTS else ASK
-        return Decision(default, "default policy")
+        return _escalate_hidden(Decision(default, "default policy"), tool, args)
     except Exception:
         # Never fail open on an engine bug: ask when someone can answer,
         # deny when nobody can.
@@ -599,6 +671,7 @@ def format_question(tool: str, args: dict, decision: Decision, config: "Config")
             value = json.dumps(args, ensure_ascii=False)
         except (TypeError, ValueError):
             value = str(args)
+    value = reveal_hidden(value)
     if len(value) > 300:
         value = value[:300] + "…"
     try:

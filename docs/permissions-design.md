@@ -144,6 +144,21 @@ With no interactive asker (`agent run`, CI) an `ask` resolves to deny.
 enumerating fifteen raw regexes, so the rules the user actually wrote stay
 visible in the warning.
 
+## Hidden characters in commands
+
+Independent of the rule list. For `run_argv`, `run_argv_bg`, `remote_exec` and
+`serial_send`, an `allow` verdict becomes `ask` when any string argument carries
+a character that renders as nothing or repaints the line: Unicode categories
+`Cf` (zero-width, bidi overrides, tag characters, BOM), `Cc` other than tab /
+newline / CR (ESC, backspace), every space other than U+0020, and the blank
+fillers U+115F, U+1160, U+3164, U+FFA0, U+2800.
+
+- An explicit `allow` rule or session grant does not bypass it; `deny` stays `deny`.
+- The question shows each such character as `<U+XXXX>` and names the code points
+  in the reason, so what is approved is what runs.
+- No asker (`agent run`, cron) → deny, like any other `ask`.
+- No config switch. `/permissions yolo` still answers it, as it answers every ask.
+
 ## Composition with existing modes — the narrowing invariant
 
 **Invariant: permission rules can only narrow, never widen.** Enforced
