@@ -189,6 +189,33 @@ def _spill_choices(ranked: list[str], entries: dict, model_to_group: dict[str, s
     return out
 
 
+_PARTIAL_CAP = 4_000
+
+
+def _partial_of(messages: list[dict], seeded: int) -> dict:
+    """What a worker had produced when it was cut off.
+
+    *messages* is the turn's last checkpoint (run_turn's partial_sink); the
+    first *seeded* entries are the prompt we wrote ourselves. Returns the last
+    thing the worker said and how far it got, so a timeout hands the parent the
+    work that was done instead of nothing."""
+    own = messages[seeded:]
+    text = ""
+    for m in reversed(own):
+        if m.get("role") == "assistant" and isinstance(m.get("content"), str) \
+                and m["content"].strip():
+            text = m["content"].strip()
+            break
+    tools = [tc.get("function", {}).get("name", "?")
+             for m in own if m.get("role") == "assistant"
+             for tc in (m.get("tool_calls") or [])]
+    if not text and not tools:
+        return {}
+    if len(text) > _PARTIAL_CAP:
+        text = "…" + text[-_PARTIAL_CAP:]
+    return {"partial": text or None, "tool_calls_done": tools}
+
+
 async def _run_worker(
     task: str,
     model_name: str,
@@ -248,6 +275,8 @@ async def _run_worker(
         messages.append({"role": "assistant", "content": "Understood. I have the context."})
     messages.append({"role": "user", "content": task})
 
+    seeded = len(messages)
+    checkpoint: list[dict] = []
     usage: dict = {}
 
     def _on_usage(u: dict) -> None:
@@ -265,6 +294,7 @@ async def _run_worker(
                     client=client,
                     on_usage=_on_usage,
                     excluded_tools=excluded_tools,
+                    partial_sink=checkpoint,
                 ),
                 timeout=timeout,
             )
@@ -273,7 +303,8 @@ async def _run_worker(
     except asyncio.TimeoutError:
         err = f"timeout after {timeout}s"
         finish_worker(wid, error=err)
-        return {"model": model_name, "output": None, "error": err, "tokens": usage}
+        return {"model": model_name, "output": None, "error": err, "tokens": usage,
+                **_partial_of(checkpoint, seeded)}
     except Exception as exc:
         logger.exception("spawn_agents worker %s failed", model_name)
         err = str(exc)
@@ -287,6 +318,8 @@ async def _run_worker(
         "description": (
             "Run subtasks in parallel across worker agents (different models/endpoints). "
             "Per-group concurrency limits. Workers read-only by default. "
+            "A worker that times out returns `partial` (its last text) and "
+            "`tool_calls_done` with `output: null`. "
             "Requires [parallel] enabled=true in agent.toml."
         ),
         "parameters": {
