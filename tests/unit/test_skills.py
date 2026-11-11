@@ -199,3 +199,76 @@ class TestRunSkillsCommand:
 
     def test_unknown_subcommand(self, tmp_path):
         assert "Unknown subcommand" in run_skills_command(self._cfg(tmp_path), "frobnicate")
+
+
+# ---------------------------------------------------------------------------
+# locks: a skill the user locked is not changed by the agent
+# ---------------------------------------------------------------------------
+
+class TestSkillLocks:
+    def _cfg(self, tmp_path):
+        cfg = MagicMock()
+        cfg.tools.working_dir = str(tmp_path)
+        cfg.tools.agent_dir = ".agent"
+        return cfg
+
+    def test_locked_skill_refuses_save_and_rollback(self, loader):
+        from agent.skills import SkillLocked
+        ldr, project_dir, _ = loader
+        ldr.save("deploy", "v1 body")
+        ldr.save("deploy", "v2 body, hand-tuned")
+        assert ldr.set_locked("deploy", True) is True
+        before = (project_dir / "deploy.md").read_text()
+
+        with pytest.raises(SkillLocked, match="/skills unlock deploy"):
+            ldr.save("deploy", "distilled rewrite", origin="distill:abc")
+        with pytest.raises(SkillLocked):
+            ldr.rollback("deploy", 1)
+        assert (project_dir / "deploy.md").read_text() == before
+
+    def test_lock_changes_only_the_flag(self, loader):
+        from agent.skills import parse_skill
+        ldr, project_dir, _ = loader
+        saved = ldr.save("deploy", "body", description="how to deploy")
+        ldr.set_locked("deploy", True)
+        meta = parse_skill(project_dir / "deploy.md")
+        assert meta["locked"] is True
+        assert {k: meta[k] for k in ("version", "body", "description", "updated_at")} == \
+               {k: saved[k] for k in ("version", "body", "description", "updated_at")}
+        assert len(ldr.history("deploy")) == 1          # no archive entry
+
+    def test_unlock_restores_writes(self, loader):
+        ldr, _, _ = loader
+        ldr.save("deploy", "body")
+        ldr.set_locked("deploy", True)
+        assert ldr.set_locked("deploy", True) is False
+        assert ldr.set_locked("deploy", False) is True
+        assert ldr.save("deploy", "new body")["version"] == 2
+
+    def test_hand_written_frontmatter_lock_is_honoured(self, loader):
+        from agent.skills import SkillLocked
+        ldr, project_dir, _ = loader
+        (project_dir / "mine.md").write_text("---\ndescription: mine\nlocked: true\n---\nkeep\n")
+        with pytest.raises(SkillLocked):
+            ldr.save("mine", "overwrite")
+
+    def test_slash_command(self, tmp_path, skill_dirs):
+        project_dir, _ = skill_dirs
+        cfg = self._cfg(tmp_path)
+        SkillLoader(cfg).save("deploy", "body")
+        assert "Locked 'deploy'" in run_skills_command(cfg, "lock deploy")
+        assert "already locked" in run_skills_command(cfg, "lock deploy")
+        assert "deploy [project, locked]" in run_skills_command(cfg, "list")
+        assert "Unlocked 'deploy'" in run_skills_command(cfg, "unlock deploy")
+        assert "No project skill" in run_skills_command(cfg, "lock nope")
+        assert run_skills_command(cfg, "lock").startswith("Usage:")
+
+    def test_save_skill_tool_reports_the_lock(self, tmp_path, skill_dirs, monkeypatch):
+        from agent.tools.manage_skills import main as tool
+        cfg = self._cfg(tmp_path)
+        ldr = SkillLoader(cfg)
+        ldr.save("deploy", "body")
+        ldr.set_locked("deploy", True)
+        monkeypatch.setattr(tool, "_get_loader", lambda: ldr)
+        out = tool.save_skill("deploy", "rewrite")
+        assert "locked by the user" in out["error"]

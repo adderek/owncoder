@@ -67,7 +67,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/wrap", [], "toggle line wrapping", False),
     ("/round-summary", ["/summary"], "toggle gray Q/A summary after each turn", False),
     ("/tools", [], "list available tools", False),
-    ("/skills", [], "skills: list | show <name> | history <name> | rm <name>", True),
+    ("/skills", [], "skills: list | show <name> | history <name> | rm <name> | lock <name> | unlock <name>", True),
     ("/commands", ["/cmds"], "list project ':name' commands from .agent/commands/", False),
     ("/undo", [], "restore last file snapshot", False),
     ("/checkpoint", ["/cp"], "checkpoint: list | new [label] | rollback <id> | prune", True),

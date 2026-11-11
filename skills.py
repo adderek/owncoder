@@ -42,7 +42,7 @@ def parse_skill(path: Path) -> dict:
     """Parse a skill file into a metadata dict.
 
     Recognised frontmatter keys: description, version, created_at, updated_at,
-    origin. Falls back to a leading ``# heading`` for the description. Unknown
+    origin, locked. Falls back to a leading ``# heading`` for the description. Unknown
     keys are ignored. Always returns at least name/description/body.
     """
     text = path.read_text(encoding="utf-8")
@@ -74,8 +74,13 @@ def parse_skill(path: Path) -> dict:
         "created_at": meta.get("created_at", ""),
         "updated_at": meta.get("updated_at", ""),
         "origin": meta.get("origin", ""),
+        "locked": meta.get("locked", "").lower() in ("true", "yes", "1"),
         "body": body,
     }
+
+
+class SkillLocked(ValueError):
+    """An autonomous write hit a skill its owner locked."""
 
 
 def _parse_skill_file(path: Path) -> tuple[str, str]:
@@ -92,9 +97,10 @@ def _render_skill(meta: dict) -> str:
         f"created_at: {meta['created_at']}",
         f"updated_at: {meta['updated_at']}",
         f"origin: {meta['origin']}",
-        "---",
-        "",
     ]
+    if meta.get("locked"):
+        fm.append("locked: true")
+    fm += ["---", ""]
     return "\n".join(fm) + meta["body"].strip() + "\n"
 
 
@@ -206,7 +212,10 @@ class SkillLoader:
         """Create or update a project skill, archiving the prior version.
 
         Returns the saved skill's metadata dict. Raises ValueError on a name
-        that normalizes to empty or on empty content.
+        that normalizes to empty or on empty content, and SkillLocked (a
+        ValueError) when the existing skill is locked: every caller of save()
+        is the agent acting on its own — the save_skill and rollback_skill
+        tools, session-end distillation — and a lock means "mine, hands off".
         """
         slug = normalize_name(name)
         if not slug:
@@ -219,6 +228,11 @@ class SkillLoader:
         path = self._project_dir / f"{slug}.md"
         if path.exists():
             prev = parse_skill(path)
+            if prev["locked"]:
+                raise SkillLocked(
+                    f"skill {slug!r} is locked by the user and was not changed; "
+                    f"save under a different name, or ask the user to run "
+                    f"/skills unlock {slug}")
             # archive the existing copy before overwriting
             archive = self._history_dir(slug) / f"v{prev['version']}.md"
             _atomic_write(archive, path.read_text(encoding="utf-8"))
@@ -241,6 +255,33 @@ class SkillLoader:
         }
         _atomic_write(path, _render_skill(meta))
         return meta
+
+    def set_locked(self, name: str, locked: bool) -> bool | None:
+        """Lock or unlock a project skill against autonomous writes.
+
+        Rewrites only the frontmatter flag: no version bump, no archive entry —
+        a lock is a property of the file, not a new revision of the skill.
+        → True if the flag changed, False if it already had that value, None if
+        there is no such project skill (bundled skills are read-only anyway).
+        """
+        slug = normalize_name(name)
+        path = self._project_dir / f"{slug}.md"
+        if not path.exists():
+            return None
+        meta = parse_skill(path)
+        if meta["locked"] == locked:
+            return False
+        meta["locked"] = locked
+        meta["created_at"] = meta["created_at"] or _now_iso()
+        meta["updated_at"] = meta["updated_at"] or meta["created_at"]
+        meta["origin"] = meta["origin"] or "user"
+        _atomic_write(path, _render_skill(meta))
+        return True
+
+    def locked_names(self) -> set[str]:
+        if not self._project_dir.is_dir():
+            return set()
+        return {p.stem for p in self._project_dir.glob("*.md") if parse_skill(p)["locked"]}
 
     def history(self, name: str) -> list[dict]:
         """Return archived versions (oldest→newest) plus the current one."""
@@ -279,7 +320,9 @@ class SkillLoader:
 def run_skills_command(config: "Config", arg: str) -> str:
     """Text handler for the /skills slash command, shared by both UIs.
 
-    Subcommands: (list) | show <name> | history <name> | rm <name>.
+    Subcommands: (list) | show <name> | history <name> | rm <name> |
+    lock <name> | unlock <name>. Slash commands are typed by a person; the model
+    has no path to them, which is what makes the lock mean something.
     """
     loader = SkillLoader(config)
     parts = arg.strip().split(None, 1)
@@ -291,9 +334,12 @@ def run_skills_command(config: "Config", arg: str) -> str:
         if not skills:
             return "No skills. The agent saves them via save_skill / session-end distillation."
         project = loader.project_names()
+        locked = loader.locked_names()
         lines = [f"Skills ({len(skills)}):"]
         for name, desc in skills:
             tag = "project" if name in project else "bundled"
+            if name in locked:
+                tag += ", locked"
             lines.append(f"  - {name} [{tag}]: {desc}")
         return "\n".join(lines)
 
@@ -321,4 +367,20 @@ def run_skills_command(config: "Config", arg: str) -> str:
             return f"Deleted project skill '{normalize_name(rest)}' (final version archived)."
         return f"No deletable project skill '{rest}' (bundled skills are read-only)."
 
-    return f"Unknown subcommand '{sub}'. Use: list | show <name> | history <name> | rm <name>"
+    if sub in ("lock", "unlock"):
+        if not rest:
+            return f"Usage: /skills {sub} <name>"
+        slug = normalize_name(rest)
+        changed = loader.set_locked(rest, sub == "lock")
+        if changed is None:
+            return f"No project skill '{rest}' (bundled skills are read-only already)."
+        state = "locked" if sub == "lock" else "unlocked"
+        if not changed:
+            return f"Skill '{slug}' was already {state}."
+        if sub == "lock":
+            return (f"Locked '{slug}': save_skill, rollback_skill and session-end "
+                    f"distillation will not change it. /skills unlock {slug} to undo.")
+        return f"Unlocked '{slug}'."
+
+    return (f"Unknown subcommand '{sub}'. Use: list | show <name> | history <name> | "
+            f"rm <name> | lock <name> | unlock <name>")
