@@ -72,7 +72,7 @@ _SLASH_COMMANDS: list[tuple[str, list[str], str, bool]] = [
     ("/undo", [], "restore last file snapshot", False),
     ("/checkpoint", ["/cp"], "checkpoint: list | new [label] | rollback <id> | prune", True),
     ("/memory", ["/mem"], "memory + index overview  [index | notes [n]]", True),
-    ("/mcp", [], "show MCP server status + their tools", False),
+    ("/mcp", [], "MCP servers: status + tools | reconnect", True),
     ("/remote", [], "SSH lab hosts: status | check [name] | revoke [name] | approve|off|on <name>", True),
     ("/sandbox", [], "sandbox mask scan: limits + last scan cost  [status | scan]", True),
     ("/speech", [], "speech-to-text input status  [status]", True),

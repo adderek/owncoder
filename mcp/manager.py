@@ -148,10 +148,24 @@ def shutdown_mcp() -> None:
 
 
 def run_mcp_command(config, arg: str) -> str:
-    """Text handler for the /mcp slash command: status of configured servers."""
+    """Text handler for the /mcp slash command.
+
+    /mcp            status of configured servers
+    /mcp reconnect  stop every server, start them again, re-register tools
+    """
     mcp_cfg = getattr(config, "mcp", None)
     if mcp_cfg is None or not getattr(mcp_cfg, "enabled", False):
         return "MCP disabled. Enable with [mcp] enabled = true and configure [[mcp.servers]]."
+    words = (arg or "").split()
+    if words and words[0] == "reconnect":
+        # All servers, not one: a server that died takes its registered tools'
+        # client with it, and a restart is cheap next to a restart of the agent.
+        # Blocks for up to init_timeout_s per server that does not come up.
+        shutdown_mcp()
+        count = load_mcp_tools(config)
+        return f"Reconnected: {count} tool(s) registered.\n" + run_mcp_command(config, "")
+    if words:
+        return "Usage: /mcp [reconnect]"
     servers = list(getattr(mcp_cfg, "servers", []) or [])
     if not servers:
         return "MCP enabled but no servers configured."

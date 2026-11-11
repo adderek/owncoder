@@ -155,6 +155,24 @@ class TestMcpCommand:
         assert "fake" in out and "ok" in out and "echo" in out
         manager.shutdown_mcp()
 
+    def test_reconnect_revives_a_dead_server(self, fake_server, clean_registry):
+        cfg = SimpleNamespace(mcp=MCPConfig(enabled=True, servers=[fake_server]))
+        manager.load_mcp_tools(cfg)
+        client, _server = manager._by_name["fake"]
+        client._proc.kill()
+        client._proc.wait()
+        dead = manager._wrap(client, "fake", "echo")(text="x")
+        assert "error" in dead
+        out = manager.run_mcp_command(cfg, "reconnect")
+        assert "Reconnected: 2 tool(s)" in out and "fake: ok" in out
+        call, _allowed = manager.get_server("fake")
+        assert call("echo", {"text": "hi"}) == "echo: hi"
+        manager.shutdown_mcp()
+
+    def test_unknown_subcommand_prints_usage(self):
+        cfg = SimpleNamespace(mcp=MCPConfig(enabled=True, servers=[]))
+        assert manager.run_mcp_command(cfg, "bogus").startswith("Usage:")
+
     def test_status_reports_failure(self, clean_registry):
         bad = MCPServerConfig(name="bad", command="this-cmd-does-not-exist-zzz")
         cfg = SimpleNamespace(mcp=MCPConfig(enabled=True, servers=[bad]))
