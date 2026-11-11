@@ -428,8 +428,13 @@ async def pre_tool_gates(name: str, args: dict, config: "Config | None",
         from agent.core import hooks as _hooks
         _allow, _hmsg = await _hooks.run_pre_tool(config, name, args)
     except Exception:
-        logger.debug("pre_tool hook run failed (ignored)", exc_info=True)
-        _allow, _hmsg = True, ""
+        # Fail closed. A hook is a gate somebody configured on purpose; if the
+        # machinery around it breaks, "the gate did not run" must not read as
+        # "the gate said yes". No hooks configured never reaches this branch.
+        logger.exception("pre_tool hook machinery failed for %s; call denied", name)
+        _allow = False
+        _hmsg = ("pre_tool hooks could not be evaluated (internal error, see the "
+                 "agent log); the call was not run")
     if not _allow:
         return {"error": _hmsg, "tool": name, "blocked_by_hook": True}, ""
 

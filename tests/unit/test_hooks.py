@@ -114,3 +114,16 @@ async def test_hook_env_scrubbed(monkeypatch):
                         command='test -z "$HOOKTEST_API_TOKEN"'))
     allow, msg = await hooks.run_pre_tool(c, "edit_file", {})
     assert allow, msg
+
+
+async def test_hook_machinery_failure_denies_the_call(monkeypatch):
+    """An exception while evaluating hooks is a denial, never a silent allow."""
+    from agent.core import tool_calls
+
+    async def boom(*_a, **_k):
+        raise RuntimeError("hook engine broke")
+
+    monkeypatch.setattr(hooks, "run_pre_tool", boom)
+    blocked, _note = await tool_calls.pre_tool_gates("read_file", {"path": "x"}, Config())
+    assert blocked and blocked.get("blocked_by_hook")
+    assert "not run" in blocked["error"]
