@@ -58,3 +58,96 @@ async def test_finished_worker_result_is_unchanged(tmp_path, monkeypatch):
     monkeypatch.setattr(turn_mod, "run_turn", quick_turn)
     res = await par._run_worker("task", "w", _config(tmp_path), None, 5, set())
     assert res == {"model": "w", "output": "done", "error": None, "tokens": {}}
+
+
+# ── output_schema ────────────────────────────────────────────────────────────
+
+from agent.tools.parallel import schema as sch  # noqa: E402
+
+FINDINGS = {
+    "type": "object",
+    "required": ["file", "severity"],
+    "properties": {
+        "file": {"type": "string"},
+        "severity": {"enum": ["low", "high"]},
+        "lines": {"type": "array", "items": {"type": "integer"}, "minItems": 1},
+    },
+}
+
+
+class TestSchema:
+    def test_conforming_value(self):
+        assert sch.validate({"file": "a.py", "severity": "high", "lines": [3]}, FINDINGS) == []
+
+    def test_errors_name_the_path(self):
+        errs = sch.validate({"severity": "meh", "lines": [1, "x"]}, FINDINGS)
+        assert "$: missing required field 'file'" in errs
+        assert any(e.startswith("$.severity:") for e in errs)
+        assert "$.lines[1]: expected integer, got string" in errs
+
+    def test_bool_is_not_a_number_and_unknown_keywords_are_ignored(self):
+        assert sch.validate(True, {"type": "integer"}) != []
+        assert sch.validate(1.0, {"type": "integer"}) == []
+        assert sch.validate("x", {"type": "string", "pattern": "^y$", "format": "uri"}) == []
+
+    def test_additional_properties_false(self):
+        s = {"type": "object", "properties": {"a": {}}, "additionalProperties": False}
+        assert sch.validate({"a": 1, "b": 2}, s) == ["$: unexpected field 'b'"]
+
+    def test_parse_accepts_fenced_and_embedded_json(self):
+        good = '{"file": "a.py", "severity": "low"}'
+        for text in (good, f"```json\n{good}\n```", f"Here it is: {good} — done."):
+            data, why = sch.parse(text, FINDINGS)
+            assert why is None and data["file"] == "a.py"
+
+    def test_parse_skips_a_nonconforming_value_before_the_real_one(self):
+        data, why = sch.parse('see {"note": 1} then {"file": "b", "severity": "high"}', FINDINGS)
+        assert why is None and data["file"] == "b"
+
+    def test_parse_reports_why(self):
+        assert sch.parse("", FINDINGS) == (None, "empty answer")
+        assert sch.parse("I found nothing.", FINDINGS)[1] == "no JSON value found in the answer"
+        assert "missing required field 'severity'" in sch.parse('{"file": "a"}', FINDINGS)[1]
+
+
+def _scripted(monkeypatch, answers):
+    """run_turn fake that replies with *answers* in order; records each call."""
+    calls = []
+
+    async def turn(messages, excluded_tools=None, **_kw):
+        calls.append({"messages": messages, "excluded": excluded_tools})
+        return answers[len(calls) - 1], messages
+
+    monkeypatch.setattr(turn_mod, "run_turn", turn)
+    return calls
+
+
+async def test_schema_answer_is_parsed_into_data(tmp_path, monkeypatch):
+    calls = _scripted(monkeypatch, ['{"file": "a.py", "severity": "high"}'])
+    res = await par._run_worker("find it", "w", _config(tmp_path), None, 5, set(),
+                                output_schema=FINDINGS)
+    assert res["data"] == {"file": "a.py", "severity": "high"}
+    assert "schema_error" not in res and len(calls) == 1
+    assert "JSON Schema" in calls[0]["messages"][-1]["content"]
+
+
+async def test_schema_miss_gets_one_toolless_repair_round(tmp_path, monkeypatch):
+    calls = _scripted(monkeypatch, ["It is in a.py, quite severe.",
+                                    '{"file": "a.py", "severity": "high"}'])
+    res = await par._run_worker("find it", "w", _config(tmp_path), None, 5, set(),
+                                output_schema=FINDINGS)
+    assert res["data"]["file"] == "a.py" and res["error"] is None
+    assert len(calls) == 2
+    tail = calls[1]["messages"][-2:]
+    assert tail[0] == {"role": "assistant", "content": "It is in a.py, quite severe."}
+    assert "no JSON value found" in tail[1]["content"]
+    assert "read_file" in calls[1]["excluded"]
+
+
+async def test_schema_miss_twice_is_reported_with_the_original_text(tmp_path, monkeypatch):
+    calls = _scripted(monkeypatch, ["prose", '{"file": 1}'])
+    res = await par._run_worker("find it", "w", _config(tmp_path), None, 5, set(),
+                                output_schema=FINDINGS)
+    assert len(calls) == 2
+    assert res["output"] == "prose" and "data" not in res
+    assert "expected string, got integer" in res["schema_error"]

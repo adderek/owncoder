@@ -224,6 +224,7 @@ async def _run_worker(
     timeout: int,
     excluded_tools: set[str],
     context: str = "",
+    output_schema: dict | None = None,
 ) -> dict:
     from agent.core.llm_client import make_llm_client
     from agent.core.turn import run_turn
@@ -273,6 +274,9 @@ async def _run_worker(
     if context:
         messages.append({"role": "user", "content": context})
         messages.append({"role": "assistant", "content": "Understood. I have the context."})
+    if output_schema:
+        from agent.tools.parallel import schema as _schema
+        task += _schema.instruction(output_schema)
     messages.append({"role": "user", "content": task})
 
     seeded = len(messages)
@@ -285,21 +289,49 @@ async def _run_worker(
     from agent.core.model_status import track_async as _track, register_worker, finish_worker
     wid = register_worker(model_name, task)
     err: str | None = None
+    async def _work() -> dict:
+        response, history = await run_turn(
+            messages=messages,
+            config=wcfg,
+            client=client,
+            on_usage=_on_usage,
+            excluded_tools=excluded_tools,
+            partial_sink=checkpoint,
+        )
+        out = {"model": model_name, "output": response, "error": None, "tokens": usage}
+        if not output_schema:
+            return out
+        data, why = _schema.parse(response, output_schema)
+        if why is not None:
+            # One repair round, in the same conversation and with no tools: the
+            # work is done, only its shape is wrong. Not a loop — a model that
+            # misses twice gets reported, not nagged.
+            from agent.tools import get_schemas
+            no_tools = {t["function"]["name"] for t in get_schemas()}
+            retry = list(history)
+            if not retry or retry[-1].get("role") != "assistant":
+                retry.append({"role": "assistant", "content": response or ""})
+            retry.append({"role": "user", "content": _schema.repair_request(why)})
+            response2, _ = await run_turn(
+                messages=retry, config=wcfg, client=client, on_usage=_on_usage,
+                excluded_tools=no_tools, partial_sink=checkpoint,
+            )
+            data, why2 = _schema.parse(response2, output_schema)
+            if why2 is None:
+                out["output"], why = response2, None
+            else:
+                why = why2
+        if why is None:
+            out["data"] = data
+        else:
+            out["schema_error"] = why
+        return out
+
     try:
         async with _track("workers"):
-            response, _ = await asyncio.wait_for(
-                run_turn(
-                    messages=messages,
-                    config=wcfg,
-                    client=client,
-                    on_usage=_on_usage,
-                    excluded_tools=excluded_tools,
-                    partial_sink=checkpoint,
-                ),
-                timeout=timeout,
-            )
+            result = await asyncio.wait_for(_work(), timeout=timeout)
         finish_worker(wid)
-        return {"model": model_name, "output": response, "error": None, "tokens": usage}
+        return result
     except asyncio.TimeoutError:
         err = f"timeout after {timeout}s"
         finish_worker(wid, error=err)
@@ -372,6 +404,14 @@ async def _run_worker(
                                     "Lets workers skip search tools."
                                 ),
                             },
+                            "output_schema": {
+                                "type": "object",
+                                "description": (
+                                    "JSON Schema the worker's final answer must match "
+                                    "(type, properties, required, items, enum). The result "
+                                    "then has `data` (parsed, validated) or `schema_error`."
+                                ),
+                            },
                         },
                         "required": ["task"],
                     },
@@ -417,10 +457,14 @@ async def spawn_agents(tasks: list[dict]) -> str:
 
     # Rank models per task. A task without an explicit model may spill onto
     # the next live lane when its best one is full (GPU0 -> GPU1 -> Tiiny).
-    tasks_resolved: list[tuple[str, list[str], str]] = []  # (prompt, ranked models, context)
+    # (prompt, ranked models, context, output schema)
+    tasks_resolved: list[tuple[str, list[str], str, dict | None]] = []
     for i, item in enumerate(tasks):
         task_prompt = item.get("task", "")
         context = item.get("context", "") or ""
+        out_schema = item.get("output_schema")
+        if not isinstance(out_schema, dict) or not out_schema:
+            out_schema = None
         explicit_model = item.get("model")
         if explicit_model:
             model_name: str | None = explicit_model
@@ -440,14 +484,15 @@ async def spawn_agents(tasks: list[dict]) -> str:
             if not ranked:
                 ranked = rank_models(_config.model_entries, hint, decision_cfg,
                                      candidates=allowed or list(_config.model_entries.keys()))
-            tasks_resolved.append((task_prompt, ranked, context))
+            tasks_resolved.append((task_prompt, ranked, context, out_schema))
             continue
         else:
             model_name = workers_pool[i % len(workers_pool)] if workers_pool else None
-        tasks_resolved.append((task_prompt, [model_name] if model_name else [], context))
+        tasks_resolved.append((task_prompt, [model_name] if model_name else [], context,
+                               out_schema))
 
     # Probe each ranked endpoint once (cached ~60 s in model_probe) off the loop.
-    probe = sorted({n for _t, ranked, _c in tasks_resolved if len(ranked) > 1 for n in ranked})
+    probe = sorted({n for _t, ranked, _c, _s in tasks_resolved if len(ranked) > 1 for n in ranked})
     live: dict[str, bool] = {}
     if probe:
         from agent.config.model_probe import entry_available
@@ -455,7 +500,8 @@ async def spawn_agents(tasks: list[dict]) -> str:
         live = await asyncio.to_thread(
             lambda: {n: n in entries and entry_available(entries[n]) for n in probe})
 
-    async def _guarded(task_prompt: str, ranked: list[str], context: str):
+    async def _guarded(task_prompt: str, ranked: list[str], context: str,
+                       out_schema: dict | None):
         if not ranked:
             return {
                 "model": None,
@@ -472,10 +518,10 @@ async def spawn_agents(tasks: list[dict]) -> str:
         try:
             return await _run_worker(
                 task_prompt, model_name, _config, _data_provider, timeout, excluded,
-                context=context,
+                context=context, **({"output_schema": out_schema} if out_schema else {}),
             )
         finally:
             await lanes.release(lane)
 
-    results = await asyncio.gather(*[_guarded(t, m, c) for t, m, c in tasks_resolved])
+    results = await asyncio.gather(*[_guarded(*t) for t in tasks_resolved])
     return json.dumps({"results": list(results)}, indent=2)
