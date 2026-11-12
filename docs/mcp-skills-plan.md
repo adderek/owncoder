@@ -84,9 +84,8 @@ Deps: none.
 - Evaluate a docs MCP (e.g. Context7) vs offline alternative (local docs index via existing RAG `agent index` on vendored docs). Network service → leaks queries; must be opt-in, flagged unsuitable for private mode (see memory/notes on private vs cloud modes).
 - Output: recipe in `agent/docs/mcp-recipes.md` or a "rejected, use X" note here. No code unless trivially small.
 
-### T9 [ ] Language skills (only if used)
-Deps: none. Low priority.
-- `bash.md` (set -euo pipefail, quoting, shellcheck) and `c-cpp.md` (UB, sanitizers, `-Wall -Wextra`, embedded/UART notes). Only write if user confirms frequent C/shell work; otherwise mark `[-] skipped`.
+### T9 [x] Language skills
+done 2026-11-12. User confirmed frequent shell + C (llama.cpp). `bash.md`, `c-cpp.md` (llama.cpp CMake options verified against local checkout: `LLAMA_/GGML_SANITIZE_{ADDRESS,UNDEFINED,THREAD}`, `GGML_{HIP,CUDA,VULKAN}`, C11/C++17).
 
 ## Not doing (decided)
 
