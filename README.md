@@ -1,10 +1,149 @@
 [![tests](https://github.com/adderek/owncoder/actions/workflows/tests.yml/badge.svg)](https://github.com/adderek/owncoder/actions/workflows/tests.yml)
 
-# What is it?
+# owncoder
 
-Local-first coding agent with solid security. Runs against your own llama.cpp/vLLM/ollama, or any OpenAI-compatible API (deepseek, openai). Use it when you want a coding agent that keeps code on your machine and is built for heavy analysis of low-structure languages like assembler.
+Local-first coding agent. It runs against your own llama.cpp / vLLM / Ollama server or any
+OpenAI-compatible API, and keeps code on your machine unless you configure otherwise. It is
+mostly used to understand and navigate large, unfamiliar codebases (C/C++, assembler and other
+low-structure code), for multi-day investigations on remote lab machines over SSH, and for long
+sessions that stay coherent through notes, recall and context compaction.
 
-Similar to
+<p align="center">
+  <img src="https://raw.githubusercontent.com/adderek/owncoder/master/website/docs/img/shots/tui-tool.svg" alt="Terminal UI showing a tool call" width="800">
+</p>
+
+Docs: <https://adderek.github.io/owncoder/>. Screenshots in this file come from a demo sandbox
+driven by a scripted fake model (`website/tools/shots*.py`), not from a real model run.
+
+## Interfaces
+
+| Interface | Start with |
+|---|---|
+| Terminal UI (Textual tabs: chat, Q/A, sys) | `agent chat --ui textual` |
+| Text flow (plain scrolling output) | `agent chat --ui simple` |
+| Browser | `agent chat --ui http`, or `--http-sidecar` next to the terminal UI |
+| Phone / remote clients (relay, end-to-end encrypted; Android client) | see [relay](https://adderek.github.io/owncoder/relay/) |
+| One-shot | `agent run "your prompt"` (`--json` for a machine-readable result) |
+
+The UI is chosen by `agent chat --ui X`, then `AGENT_UI_MODE`, then your saved preference, then an
+interactive picker. Valid values: `textual`, `simple`, `http`. Details:
+[interfaces](https://adderek.github.io/owncoder/interfaces/).
+
+<p>
+  <img src="https://raw.githubusercontent.com/adderek/owncoder/master/website/docs/img/shots/text-tool.svg" alt="Text flow" height="220">
+  <img src="https://raw.githubusercontent.com/adderek/owncoder/master/website/docs/img/shots/web-chat.png" alt="Browser UI" height="220">
+  <img src="https://raw.githubusercontent.com/adderek/owncoder/master/website/docs/img/shots/web-phone.png" alt="Phone view" height="220">
+</p>
+
+## Install
+
+Linux and macOS:
+
+```sh
+curl -LsSf https://raw.githubusercontent.com/adderek/owncoder/master/install.sh | sh
+```
+
+It installs [uv](https://docs.astral.sh/uv/) if missing, installs owncoder into an isolated
+environment and starts the first-start wizard. With uv already present:
+
+```sh
+uv tool install git+https://github.com/adderek/owncoder
+```
+
+Windows runs through WSL2 only. In PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/adderek/owncoder/master/install.ps1 | iex
+```
+
+This sets up WSL2 if needed and runs the Linux installer inside it. Keep projects on the Linux
+filesystem, not under `/mnt/c/`.
+
+Prerequisites: `git` (required); `ripgrep` (optional, faster search); `bubblewrap` or `firejail`
+on Linux (the command sandbox; without one the shell and web tools refuse to run). Upgrade with
+`uv tool upgrade owncoder`. Both `owncoder` and `agent` are installed and are the same program.
+More: [install](https://adderek.github.io/owncoder/install/).
+
+## Quick start
+
+```sh
+owncoder setup    # pick provider + model, verify with a test completion, write the config
+cd your-project
+agent init        # required once per project; add --skip-index to skip only the indexing
+agent chat
+```
+
+If the API key is already exported (for example `OPENROUTER_API_KEY`), the wizard stores a
+reference such as `api_key = "env:OPENROUTER_API_KEY"` instead of the key, so the config file is
+safe to sync or paste into a bug report. Indexing is optional for ordinary languages and useful
+for assembler and other low-structure code. More:
+[quickstart](https://adderek.github.io/owncoder/quickstart/).
+
+## What it does
+
+- **Local-first endpoints**: llama.cpp, vLLM, Ollama, LM Studio, OpenRouter, DeepSeek or any
+  OpenAI-compatible URL; per-purpose model roles and failover.
+  [configuration](https://adderek.github.io/owncoder/configuration/)
+- **Sandbox and guards**: shell and web tools run in a bubblewrap/seccomp sandbox; permission
+  prompts, path grants, prompt-injection scanning, output redaction, audit log, loop guard.
+  [security](https://adderek.github.io/owncoder/security/)
+- **Code understanding**: tree-sitter + sqlite-vec RAG, LLM summary pyramids, assembler and
+  binary analysis, call/dependency graph, per-project knowledge base kept current while idle.
+  [code-understanding](https://adderek.github.io/owncoder/code-understanding/)
+- **Planning**: plans stored under `.agent/plans/` (`/plan`, `/plans`, `/abort-plan`, `/pause-plan`),
+  with recovery notes when a plan stalls.
+- **Subagents on mixed models**: `spawn_agents` fans independent subtasks out to strong and weak
+  models with per-group concurrency limits. Off by default (`[parallel] enabled`).
+  [subagents](https://adderek.github.io/owncoder/subagents/)
+- **Remote lab tools**: SSH (`remote_exec`, `remote_copy`), serial consoles, shared USB devices.
+  All off by default, declared in the user config layer only (`agent remote trust` pins host keys).
+- **Memory and recall**: notes, facts, Q/A log and session history, distilled and compacted by
+  the LLM; `recall_facts` re-checks constraints after compaction.
+- **MCP and skills**: external MCP servers and a skills directory extend the toolset.
+- **Per-model compiled prompts**: static prompts and tool results are compacted for the active
+  model and cached (`agent prompts`).
+
+## Configuration
+
+`owncoder setup` writes `~/.config/agent/agent.toml`. By hand, copy
+[`agent.toml.example`](agent.toml.example) to the project root or that path. Models are named
+entries; `[models]` assigns them to roles:
+
+```toml
+[models]
+default    = "local-coder"
+embeddings = "nomic-local"
+
+[models.local-coder]
+base_url   = "http://localhost:8080/v1"
+api_key    = "env:MY_LLM_KEY"          # or a literal such as "sk-…" / "local"
+model      = "qwen3-coder-30b"
+ctx_window = 32768
+
+[models.nomic-local]
+base_url   = "http://localhost:8080/v1"
+api_key    = "local"
+model      = "nomic-embed-text"
+dimensions = 768
+```
+
+Environment overrides need no file: `AGENT_LLM_BASE_URL`, `AGENT_LLM_API_KEY`, `AGENT_LLM_MODEL`,
+`AGENT_EMBEDDINGS_BASE_URL`, `AGENT_EMBEDDINGS_MODEL`. Full reference:
+[configuration](https://adderek.github.io/owncoder/configuration/).
+
+## Known limits
+
+- Beta software; expect rough edges and changing config keys.
+- Local models sometimes emit malformed or text-form tool calls. The harness parses, repairs or
+  nudges, but a weak model can still waste turns.
+- The loop guard may stop repetitive work and ask you to redirect the agent.
+- The command sandbox has no network by design; internet access goes through dedicated tools.
+- Windows is supported only through WSL2.
+
+## Alternatives
+
+Similar tools:
+
 * claude code (best for complex tasks)
 * gemini cli (good even in free version)
 * openai chatgpt codex (currently best offer)
@@ -12,215 +151,19 @@ Similar to
 * cursor (IDE that works)
 * windsurf (IDE that's on develop, but cheaper than cursor and sometimes has better features)
 
+## Development
 
-Normally you don't index so the agent works right away, but languages like assembler lack structure and need initial code analysis.
-
-
-# Install
-
-**Linux and macOS** — one line, no Python setup of your own:
-
-```sh
-curl -LsSf https://raw.githubusercontent.com/adderek/owncoder/master/install.sh | sh
-```
-
-It installs [uv](https://docs.astral.sh/uv/) if you do not have it, installs
-owncoder into its own isolated environment (its own Python, its own
-dependencies — nothing is added to your system or project environments), and
-then runs the first-start wizard.
-
-**Windows** — owncoder runs under WSL2, not natively: its shell and web tools
-execute inside a bubblewrap/seccomp sandbox and its locking uses `fcntl`, none
-of which exist on Windows. In PowerShell:
-
-```powershell
-irm https://raw.githubusercontent.com/adderek/owncoder/master/install.ps1 | iex
-```
-
-That sets up WSL2 if needed and runs the Linux installer inside it. Keep your
-projects on the Linux filesystem (`~/code/...`), not `/mnt/c/` — cross-filesystem
-access is slow enough to dominate indexing time.
-
-Already have uv? Then just:
-
-```sh
-uv tool install owncoder        # or: uv tool install git+https://github.com/adderek/owncoder
-```
-
-Upgrade with `uv tool upgrade owncoder`, remove with `uv tool uninstall owncoder`.
-Both `owncoder` and `agent` are installed as commands; they are the same program.
-
-Prerequisites the agent shells out to: `git` (required), `ripgrep` (faster
-search), and `bubblewrap` or `firejail` on Linux (the sandbox that shell and web
-tools run inside — without one, those tools refuse to run).
-
-## First start
-
-```sh
-owncoder setup    # pick provider + model, verify it, write ~/.config/agent/agent.toml
-```
-
-The wizard asks where the models are hosted — a local server
-(llama.cpp / Ollama / LM Studio), OpenRouter, DeepSeek, or any other
-OpenAI-compatible URL — lists the models that endpoint actually serves, sends
-one test completion, and only then writes the config (mode 0600). If the API key
-is already exported (`OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`,
-`AGENT_LLM_API_KEY`), the config stores a reference to the variable
-(`api_key = "env:OPENROUTER_API_KEY"`) rather than the key itself, so the file
-stays safe to sync or paste into a bug report.
-
-Then, in a project:
-
-```sh
-agent init    # optional: index the code
-agent chat
-```
-
-Running any of `init`, `chat` or `run` with no config at all offers to run the
-wizard for you.
-
-## From source
+From source (the directory must be named `agent`; the tests resolve the package from the parent
+directory):
 
 ```sh
 git clone https://github.com/adderek/owncoder.git agent
 cd agent
 uv venv .venv
 uv pip install -e ".[dev]"
+.venv/bin/pytest            # skips e2e; add -m e2e to run those
+website/build               # build the docs site (needs uv); --serve to preview
 ```
 
-The directory must be named `agent`: the tests resolve the package from the
-parent directory (`pythonpath = [".."]`). Packaging does not care — `setup.py`
-maps the repo root onto the `agent` package, which is why
-`uv tool install git+...` works from any checkout name.
-
-# Usage
-
-```
-agent commit .
-```
-
-checks the current directory (assuming it is a git repo) and creates a commit
-message for it, chunking the diff the standard way.
-
-# About
-
-Local-first heavy coding agent meant for assembler language.
-
-![Self description](https://adderek.github.io/owncoder/img/001-UI_and_features.png)
-
-Key features:
-* **Local-first** — point it at llama.cpp / vLLM / ollama, or any OpenAI-compatible endpoint; nothing leaves your box unless you say so
-* **Security suite** — seccomp sandbox, path grants, airgap mode, prompt-injection scanning, output redaction, audit log, SBOM
-* **Code understanding** — tree-sitter parsing + sqlite-vec semantic search/embeddings (CPU is enough)
-* **Rich toolset** — file edit, git, shell, code/web search, checkpoints, skills
-* **Interfaces** — Textual TUI, plus simple/readline text-only modes
-* **Extensible** — MCP support
-
-Layers of code indexing / retrieval (each optional, used as needed):
-* **RAG** — tree-sitter splits code into chunks, the embeddings model vectorizes them into sqlite-vec; hybrid (vector + keyword) search at query time
-* **Archive** — pruned chunks kept with a TTL, so old/deleted code stays searchable
-* **Summarization** — the LLM writes terse descriptions per chunk, then rolls them up into a multi-level summary pyramid
-* **Assembler analysis** — same LLM describe-and-rollup pyramid (up to 6 levels), tuned for low-structure code tree-sitter can't model
-* **Graph** — static dependency/call graph export (graphify), no model needed
-* **KB** — per-project code knowledge base (`.agent/kb`): the graph's symbols and edges, summaries that still match the code, and your saved notes attached to the code they mention. `kb_get` / `kb_callers` / `find_symbol` take plain names
-* **Memory / recall** — facts, Q&A log, and session history, distilled and compacted by the LLM
-
-While a chat is idle the agent keeps these current by itself (`agent/rag/maintainer.py`): changed files are re-indexed within seconds, the graph and KB are refreshed, and a few pending summaries are written per pass, most-used files first. It waits while a turn runs or the machine is loaded, never embeds through a localhost server (CPU embeddings can overload a desktop) and never sends code to a cloud model; `rag.auto_index`, `rag.auto_kb` and `rag.auto_describe` turn the parts off. `agent index --watch` runs the same loop without a chat.
-
-Prompts and skills/tools are **compiled per model**: the prompt-compiler compresses static prompt files for the active (model, api) pair and caches them, and tool results are compacted by the LLM before re-entering context — smaller context, same meaning.
-
-```
-agent init  # index files
-agent chat  # run agent
-AGENT_UI_MODE=simple  agent chat  # if you wish text-only mode with no text-panels
-agent run "do something"
-agent index --stats
-```
-
-example:
-`python -m agent.main chat`
-
-
-## What you need more
-
-Embeddings model:
-* to index files for the agent
-* it works on CPU good enough
-
-# Configuration
-
-`owncoder setup` writes `~/.config/agent/agent.toml` for you. To do it by hand,
-copy `agent.toml.example` to the project root or to `~/.config/agent/agent.toml`
-
-```
-[llm]
-base_url = "http://localhost:8080/v1"   # your llama-server or OpenAI
-api_key = "local"                        # or your real API key
-model = "qwen3-coder-30b"
-
-[embeddings]
-base_url = "http://localhost:8080/v1"   # embedding endpoint
-model = "nomic-embed-text"
-```
-
-Or env var overrides (no file needed)
-
-```
-export AGENT_LLM_BASE_URL="https://api.openai.com/v1"
-export AGENT_LLM_API_KEY="sk-..."
-export AGENT_LLM_MODEL="gpt-4o"
-export AGENT_EMBEDDINGS_BASE_URL="https://api.openai.com/v1"
-export AGENT_EMBEDDINGS_MODEL="text-embedding-3-small"
-```
-
-## User interface
-
-Readline mode (no Textual UI)
-```
-[ui]
-mode = "readline"
-```
-
-or `AGENT_UI_MODE=readline agent chat`
-
-
-# Screenshots
-
-![Ask it to compare](https://adderek.github.io/owncoder/img/002-TrueComparisonQuestion.png)
-![Discussion summary](https://adderek.github.io/owncoder/img/003-TrueComparisonSummary.png)
-![Questions summary](https://adderek.github.io/owncoder/img/004-QuestionSummary.png)
-![UI](https://adderek.github.io/owncoder/img/005-UI.png)
-![Details of tool call](https://adderek.github.io/owncoder/img/006-ToolCallDetails.png)
-![More details of tool call](https://adderek.github.io/owncoder/img/007-ToolCallDetails.png)
-![Strenghts](https://adderek.github.io/owncoder/img/100-Strengths.png)
-![Strengths - more](https://adderek.github.io/owncoder/img/101-Strengths.png)
-![Weaknesses](https://adderek.github.io/owncoder/img/110-Weaknesses.png)
-![Honest verdict](https://adderek.github.io/owncoder/img/200-HonestVerdict.png)
-
-
-# Fancy commands if you wish to play with it more
-
-## ollama, llama, vLLM, etc.
-
-* ollama is simple and good, but only to run "stable" things
-* llama.cpp is fast and has decent features
-* vLLM is compatible and offers some unique features (and recently is a bit promoted yb AMD)
-
-## Code structure
-
-* owncoder/agent/ = inner agent repo, master branch (dev) - you are looking at it now
-* actual toolset (tests, documentation, etc.) - not published :)
-
-## My local setup
-
-I develop on master; if I break it I fall back to claude/hermes/gemini cli. A stable build is planned as a container image (the old stable worktree is retired).
-
-## To test terminal caps
-
-`python3 scripts/terminal_probe.py --out agent.toml.probe`
-
-My owncoder agent is meant for special modification of:
-* tilix terminal
-* VTE (used by tilix)
-* llama.cpp
-
+Security model and secret handling: [`SECURITY_EXTRA.md`](SECURITY_EXTRA.md). Do not hand real
+secrets to the agent; redaction is best-effort.
