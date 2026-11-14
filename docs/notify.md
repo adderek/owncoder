@@ -92,7 +92,7 @@ Server (runs on your own host; bind to the wg0 address and reach it over
 WireGuard when exposed — no TLS terminator, the WG tunnel encrypts the wire):
 
 ```
-pip install 'local-code-agent[notify]'   # websockets
+uv pip install -e ".[notify]"   # websockets; from a source checkout
 python -m agent.notify.relay_server --port 8970 --token-file ~/.config/agent/relay.token
 ```
 

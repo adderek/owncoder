@@ -230,7 +230,7 @@ tags              = ["reasoning", "background"]
 # ── Agent runtime behavior ────────────────────────────────────────────────────
 
 [agent]
-mode                      = "fast"   # "fast" | "ultrasecure"
+mode                      = "ultrasecure"  # "fast" | "ultrasecure" (default)
                                      #   fast: web_search/web_fetch callable directly.
                                      #   ultrasecure: internet stripped from the main
                                      #   agent; it reaches the net only via the
@@ -297,7 +297,7 @@ show_output_cap           = false    # append the active model's output-token ca
 [rag]
 db_path          = ".agent/index.db"
 archive_db_path  = ".agent/index-archive.db"
-archive_ttl_days = 30
+archive_ttl_days = 14
 chunk_min_tokens = 20
 chunk_max_tokens = 400
 top_k            = 8
@@ -329,7 +329,7 @@ read_range_max_chars        = 16000
 # ── UI ────────────────────────────────────────────────────────────────────────
 
 [ui]
-mode             = "textual"      # "textual" | "simple"
+mode             = "textual"      # "textual" | "simple" | "http"
 syntax_highlight = true
 show_token_count = true
 q_summaries      = true           # one-line Q/A summaries (uses summarizer model)
@@ -522,7 +522,7 @@ sandbox_backend    = "auto"  # "auto" | "bwrap" | "firejail" | "none"
                              # auto tries bwrap then firejail; explicit value must
                              # be the binary name. bwrap gets the curated seccomp
                              # filter; firejail uses its own generic one.
-require_sandbox    = false   # default true: refuse host exec when no backend found
+require_sandbox    = true    # default: refuse host exec when no backend found
 network            = "off"   # "off" | "on" — allow sandboxed commands to opt into
                              # network access (run_shell/run_argv network=true)
 network_isolation  = "auto"  # "auto" | "netns" | "host" — network=on gets its own
@@ -531,7 +531,7 @@ network_isolation  = "auto"  # "auto" | "netns" | "host" — network=on gets its
                              # refuses without pasta; "host" = shared host netns.
 cpu_seconds        = 20
 wall_seconds       = 30
-rss_mb             = 512
+rss_mb             = 1024
 nproc              = 64
 fsize_mb           = 256
 nofile             = 256
@@ -715,7 +715,7 @@ ask_timeout_s = 300.0     # no answer in this long = deny (fail closed)
 # a registry, sudo, raw egress (curl/ssh/nc), scheduled work. Ordinary pushes,
 # installs, builds and `git reset --hard` are NOT in it — a baseline that fires
 # on routine work just teaches you to approve without reading.
-# See `agent permissions` for the resolved list.
+# See `/permissions` in a chat for the resolved list.
 builtin_rules = true
 # Note: with no interactive UI (`agent run`, CI) an `ask` denies, because nobody
 # is there to approve. `agent run` warns about that before it starts.
