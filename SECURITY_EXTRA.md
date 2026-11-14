@@ -83,3 +83,15 @@ secret safe to hand over. Assume the worst case:
   write (`security.redact_tool_output`), but they still contain prompts, tool
   arguments and file contents. They are readable by the agent by design; delete
   them if a session handled material you would not want re-read.
+
+## Secret scanning
+
+- Full history: `gitleaks git . --redact --log-opts=--all --no-banner` (exit 0 = clean).
+  Always keep `--redact` so findings never print secret values.
+- Staged changes only: `gitleaks git --staged --redact --no-banner .`
+- Enable the hook once per clone: `pre-commit install` (config: `.pre-commit-config.yaml`).
+- CI job `secrets` (`.github/workflows/tests.yml`) scans full history on every push/PR.
+- False positive in current code: add `# gitleaks:allow` on that line.
+- False positive already in pushed history: append its `Fingerprint` (from `-f json -r report.json`)
+  to `.gitleaksignore` with a one-line comment. Never allowlist whole files or directories.
+- Real secret: rotate it first; history rewriting is not an option for pushed commits.

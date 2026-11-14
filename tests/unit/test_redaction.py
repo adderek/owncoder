@@ -47,7 +47,7 @@ def test_private_key_block():
 
 
 def test_jwt():
-    jwt = "eyJhbGciOiJIUzI1Niode.eyJzdWIiOiIxMjM0NTY3ODkw.SflKxwRJSMeKKF2QT4f"
+    jwt = "eyJhbGciOiJIUzI1Niode.eyJzdWIiOiIxMjM0NTY3ODkw.SflKxwRJSMeKKF2QT4f"  # gitleaks:allow
     out = redact(jwt)
     assert "REDACTED:jwt" in out
 

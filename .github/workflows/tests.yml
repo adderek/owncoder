@@ -40,3 +40,15 @@ jobs:
       - name: Unit + integration tests (offline)
         working-directory: agent
         run: pytest tests/unit tests/integration -q -o faulthandler_timeout=120
+
+  secrets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: "false"

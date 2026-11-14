@@ -1,0 +1,4 @@
+# Fake JWT test fixture in tests/unit/test_redaction.py
+a4bc0cc1a996b0d38dfa2511a4612418860bd456:tests/unit/test_redaction.py:jwt:50
+# Fake curl Authorization header test fixture in tests/unit/test_query_gate.py
+2b8db6fe052b41de91dd5ec511da5e971ee705f3:tests/unit/test_query_gate.py:curl-auth-header:50

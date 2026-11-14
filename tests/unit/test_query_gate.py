@@ -48,7 +48,7 @@ class TestSecretDetection:
 
     def test_bearer_token_rejected(self, enabled_config):
         query_gate.setup(enabled_config)
-        result = query_gate.gate_query("curl -H 'Authorization: Bearer abcdef1234567890abcdef' url")
+        result = query_gate.gate_query("curl -H 'Authorization: Bearer abcdef1234567890abcdef' url")  # gitleaks:allow
         assert isinstance(result, dict)
         assert "error" in result
 
