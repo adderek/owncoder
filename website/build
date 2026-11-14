@@ -1,0 +1,14 @@
+#!/bin/sh
+# Build (default) or serve (--serve) the docs site. No prompts; prose on stderr.
+# Needs: uv. Env is isolated (uvx); cached after first run.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+command -v uv >/dev/null 2>&1 || { echo "build: uv not found" >&2; exit 127; }
+case "${1:-}" in
+  "")      echo "build: -> $here/_site" >&2
+           exec uvx --with-requirements "$here/requirements.txt" \
+             mkdocs build -f "$here/mkdocs.yml" --strict >&2 ;;
+  --serve) exec uvx --with-requirements "$here/requirements.txt" \
+             mkdocs serve -f "$here/mkdocs.yml" -a 127.0.0.1:8000 ;;
+  *)       echo "usage: build [--serve]" >&2; exit 2 ;;
+esac

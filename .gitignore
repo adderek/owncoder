@@ -10,3 +10,7 @@ graphify-out/
 /build/
 /dist/
 *.egg-info/
+
+# Docs site
+website/_site/
+website/.venv/
