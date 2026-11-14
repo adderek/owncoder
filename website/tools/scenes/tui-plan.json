@@ -1,0 +1,18 @@
+{
+  "prompt": "Plan a fix for the ringbuf overflow bug.",
+  "scenario": [
+    {"content": "", "tool_calls": [{"name": "create_plan", "arguments": {
+      "goal": "Fix ringbuf_write overflow",
+      "context": "ringbuf.c: ringbuf_write ignores cap when the buffer is full.",
+      "steps": [
+        {"description": "Reproduce the overflow with a failing unit test", "acceptance_criteria": ["test fails on current code"]},
+        {"description": "Clamp the write loop to the free capacity in ringbuf_write", "deps": ["s1"], "acceptance_criteria": ["count never exceeds cap"]},
+        {"description": "Return the number of bytes actually written", "deps": ["s2"]},
+        {"description": "Update README and run make", "deps": ["s2", "s3"], "tests": ["make"]}
+      ],
+      "final_tests": ["make test"]}}]},
+    {"content": "Plan created: four steps, starting with a failing test. Press F8 to review it.", "chunk_chars": 8, "delay_ms": 22}
+  ],
+  "keys": ["f8"],
+  "expect": ["Fix ringbuf_write overflow"]
+}

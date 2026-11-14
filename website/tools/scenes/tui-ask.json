@@ -1,0 +1,9 @@
+{
+  "prompt": "Run make and show me the result.",
+  "ask": true,
+  "scenario": [
+    {"content": "", "tool_calls": [{"name": "run_argv", "arguments": {"argv": ["make", "clean", "all"]}}]},
+    {"content": "The command was not approved, so I did not run it.", "chunk_chars": 8, "delay_ms": 22}
+  ],
+  "expect": ["permission required"]
+}
