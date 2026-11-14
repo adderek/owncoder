@@ -99,8 +99,8 @@ console.log(JSON.stringify([fmtMsgTime(t, new Date(2026, 9, 15, 23, 0).getTime()
                             fmtMsgTime(t, new Date(2026, 9, 16, 0, 1).getTime()),
                             fmtClock(new Date(2026, 9, 15, 21, 7, 3).getTime())]));
 """
-    proc = subprocess.run(["node", "-e", script], capture_output=True, text=True,
-                          timeout=30, env={"TZ": "UTC", "LANG": "C", "PATH": "/usr/bin:/bin"})
+    proc = subprocess.run([shutil.which("node"), "-e", script], capture_output=True,
+                          text=True, timeout=30, env={"TZ": "UTC", "LANG": "C"})
     assert proc.returncode == 0, proc.stderr
     today, older, clock = json.loads(proc.stdout)
     assert today == "09:05"
