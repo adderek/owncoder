@@ -1,0 +1,13 @@
+{
+  "prompt": "What does this project do?",
+  "scenario": [
+    {
+      "content": "## ringbuf\n\nA small **byte ring buffer** written in C.\n\n- `ringbuf_init` / `ringbuf_free` manage the storage\n- `ringbuf_write` appends bytes\n- `ringbuf_read` consumes them in FIFO order\n\nBuild it with:\n\n```sh\nmake\n```\n\nThis produces `libringbuf.a`.",
+      "chunk_chars": 8,
+      "delay_ms": 22
+    }
+  ],
+  "expect": [
+    "byte ring buffer"
+  ]
+}
