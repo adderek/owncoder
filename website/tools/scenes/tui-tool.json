@@ -1,0 +1,8 @@
+{
+  "prompt": "Is there a bug in ringbuf.c?",
+  "scenario": [
+    {"content": "", "tool_calls": [{"name": "read_file", "arguments": {"path": "ringbuf.c"}}]},
+    {"content": "Yes. `ringbuf_write` never checks `count` against `cap`.\n\n- When the buffer is full, `head` wraps and overwrites unread data\n- `count` then grows past `cap`, so later reads return stale bytes\n\nFix: clamp the loop with `i < n && rb->count < rb->cap`.", "chunk_chars": 400}
+  ],
+  "expect": "never checks"
+}
